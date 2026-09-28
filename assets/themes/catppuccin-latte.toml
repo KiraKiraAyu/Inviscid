@@ -1,0 +1,69 @@
+name = "Catppuccin Latte"
+
+[colors]
+bg_app = "#e6e9ef"
+bg_editor = "#eff1f5"
+bg_toolbar = "#e6e9ef"
+bg_statusbar = "#dce0e8"
+border = "#ccd0da"
+border_subtle = "#dce0e8"
+
+text_primary = "#4c4f69"
+text_secondary = "#6c6f85"
+text_muted = "#7c7f93"
+text_accent = "#1e66f5"
+
+heading_h1 = "#d20f39"
+heading_h2 = "#fe640b"
+heading_h3 = "#df8e1d"
+heading_h4 = "#40a02b"
+heading_marker = "#9ca0b0"
+
+inline_code_bg = "#ccd0da66"
+inline_code_fg = "#d20f39"
+
+code_block_bg = "#e6e9ef"
+code_block_border = "#ccd0da"
+code_block_header_bg = "#dce0e8"
+code_block_header_fg = "#7c7f93"
+code_block_text = "#4c4f69"
+
+quote_border = "#1e66f5"
+quote_bg = "#1e66f512"
+quote_text = "#6c6f85"
+
+list_marker = "#df8e1d"
+task_box_border = "#9ca0b0"
+task_box_checked_bg = "#40a02b"
+task_box_checked_fg = "#eff1f5"
+
+thematic_break = "#ccd0da"
+link_fg = "#1e66f5"
+
+table_border = "#ccd0da"
+table_cell_border = "#ccd0da80"
+table_header_bg = "#e6e9ef"
+table_alt_bg = "#e6e9ef66"
+
+cursor = "#dc8a78"
+selection = "#7c7f9340"
+line_highlight = "#ccd0da33"
+
+btn_bg = "#dce0e8"
+btn_hover = "#ccd0da"
+btn_active = "#1e66f522"
+btn_text = "#4c4f69"
+
+btn_primary_bg = "#1e66f5"
+btn_primary_hover = "#209fb5"
+btn_primary_active = "#7287fd"
+btn_primary_text = "#eff1f5"
+
+btn_danger_bg = "#d20f39"
+btn_danger_hover = "#e64553"
+btn_danger_active = "#d20f39"
+btn_danger_text = "#eff1f5"
+
+text_danger = "#d20f39"
+text_success = "#40a02b"
+text_warning = "#df8e1d"

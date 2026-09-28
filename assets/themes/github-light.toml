@@ -1,0 +1,69 @@
+name = "GitHub Light"
+
+[colors]
+bg_app = "#f6f8fa"
+bg_editor = "#ffffff"
+bg_toolbar = "#f6f8fa"
+bg_statusbar = "#e6eaef"
+border = "#d0d7de"
+border_subtle = "#dae0e7"
+
+text_primary = "#1f2328"
+text_secondary = "#59636e"
+text_muted = "#818b98"
+text_accent = "#0969da"
+
+heading_h1 = "#1f2328"
+heading_h2 = "#1f2328"
+heading_h3 = "#1f2328"
+heading_h4 = "#1f2328"
+heading_marker = "#818b98"
+
+inline_code_bg = "#818b9833"
+inline_code_fg = "#1f2328"
+
+code_block_bg = "#f6f8fa"
+code_block_border = "#d0d7de"
+code_block_header_bg = "#e6eaef"
+code_block_header_fg = "#59636e"
+code_block_text = "#1f2328"
+
+quote_border = "#d0d7de"
+quote_bg = "#f6f8fa"
+quote_text = "#59636e"
+
+list_marker = "#0969da"
+task_box_border = "#818b98"
+task_box_checked_bg = "#1a7f37"
+task_box_checked_fg = "#ffffff"
+
+thematic_break = "#d0d7de"
+link_fg = "#0969da"
+
+table_border = "#d0d7de"
+table_cell_border = "#d0d7de80"
+table_header_bg = "#f6f8fa"
+table_alt_bg = "#f6f8fa66"
+
+cursor = "#0969da"
+selection = "#0969da2b"
+line_highlight = "#e6eaef80"
+
+btn_bg = "#e6eaef"
+btn_hover = "#dae0e7"
+btn_active = "#0969da1f"
+btn_text = "#1f2328"
+
+btn_primary_bg = "#1f883d"
+btn_primary_hover = "#1c8139"
+btn_primary_active = "#197935"
+btn_primary_text = "#ffffff"
+
+btn_danger_bg = "#cf222e"
+btn_danger_hover = "#a40e26"
+btn_danger_active = "#82071e"
+btn_danger_text = "#ffffff"
+
+text_danger = "#cf222e"
+text_success = "#1a7f37"
+text_warning = "#9a6700"

@@ -1,0 +1,69 @@
+name = "Dracula"
+
+[colors]
+bg_app = "#21222c"
+bg_editor = "#282a36"
+bg_toolbar = "#21222c"
+bg_statusbar = "#191a21"
+border = "#44475a"
+border_subtle = "#343746"
+
+text_primary = "#f8f8f2"
+text_secondary = "#f8f8f2cc"
+text_muted = "#6272a4"
+text_accent = "#bd93f9"
+
+heading_h1 = "#bd93f9"
+heading_h2 = "#bd93f9"
+heading_h3 = "#bd93f9"
+heading_h4 = "#bd93f9"
+heading_marker = "#6272a4"
+
+inline_code_bg = "#44475a66"
+inline_code_fg = "#50fa7b"
+
+code_block_bg = "#191a21"
+code_block_border = "#44475a"
+code_block_header_bg = "#21222c"
+code_block_header_fg = "#8be9fd"
+code_block_text = "#f8f8f2"
+
+quote_border = "#bd93f9"
+quote_bg = "#bd93f915"
+quote_text = "#f1fa8c"
+
+list_marker = "#8be9fd"
+task_box_border = "#6272a4"
+task_box_checked_bg = "#50fa7b"
+task_box_checked_fg = "#282a36"
+
+thematic_break = "#44475a"
+link_fg = "#8be9fd"
+
+table_border = "#44475a"
+table_cell_border = "#44475a80"
+table_header_bg = "#21222c"
+table_alt_bg = "#21222c66"
+
+cursor = "#f8f8f2"
+selection = "#44475a"
+line_highlight = "#44475a75"
+
+btn_bg = "#343746"
+btn_hover = "#44475a"
+btn_active = "#bd93f926"
+btn_text = "#f8f8f2"
+
+btn_primary_bg = "#bd93f9"
+btn_primary_hover = "#d6acff"
+btn_primary_active = "#bd93f9"
+btn_primary_text = "#282a36"
+
+btn_danger_bg = "#ff5555"
+btn_danger_hover = "#ff6e6e"
+btn_danger_active = "#ff5555"
+btn_danger_text = "#f8f8f2"
+
+text_danger = "#ff5555"
+text_success = "#50fa7b"
+text_warning = "#ffb86c"

@@ -1,0 +1,69 @@
+name = "Catppuccin Mocha"
+
+[colors]
+bg_app = "#181825"
+bg_editor = "#1e1e2e"
+bg_toolbar = "#181825"
+bg_statusbar = "#11111b"
+border = "#45475a"
+border_subtle = "#313244"
+
+text_primary = "#cdd6f4"
+text_secondary = "#a6adc8"
+text_muted = "#9399b2"
+text_accent = "#89b4fa"
+
+heading_h1 = "#f38ba8"
+heading_h2 = "#fab387"
+heading_h3 = "#f9e2af"
+heading_h4 = "#a6e3a1"
+heading_marker = "#6c7086"
+
+inline_code_bg = "#31324488"
+inline_code_fg = "#f38ba8"
+
+code_block_bg = "#181825"
+code_block_border = "#313244"
+code_block_header_bg = "#11111b"
+code_block_header_fg = "#9399b2"
+code_block_text = "#cdd6f4"
+
+quote_border = "#89b4fa"
+quote_bg = "#89b4fa12"
+quote_text = "#a6adc8"
+
+list_marker = "#f9e2af"
+task_box_border = "#6c7086"
+task_box_checked_bg = "#a6e3a1"
+task_box_checked_fg = "#11111b"
+
+thematic_break = "#313244"
+link_fg = "#89b4fa"
+
+table_border = "#45475a"
+table_cell_border = "#31324480"
+table_header_bg = "#181825"
+table_alt_bg = "#18182566"
+
+cursor = "#f5e0dc"
+selection = "#9399b240"
+line_highlight = "#31324433"
+
+btn_bg = "#313244"
+btn_hover = "#45475a"
+btn_active = "#89b4fa26"
+btn_text = "#cdd6f4"
+
+btn_primary_bg = "#89b4fa"
+btn_primary_hover = "#74c7ec"
+btn_primary_active = "#b4befe"
+btn_primary_text = "#11111b"
+
+btn_danger_bg = "#f38ba8"
+btn_danger_hover = "#eba0ac"
+btn_danger_active = "#f38ba8"
+btn_danger_text = "#11111b"
+
+text_danger = "#f38ba8"
+text_success = "#a6e3a1"
+text_warning = "#f9e2af"

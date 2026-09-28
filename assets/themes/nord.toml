@@ -1,0 +1,69 @@
+name = "Nord"
+
+[colors]
+bg_app = "#2e3440"
+bg_editor = "#2e3440"
+bg_toolbar = "#2e3440"
+bg_statusbar = "#2e3440"
+border = "#434c5e"
+border_subtle = "#3b4252"
+
+text_primary = "#eceff4"
+text_secondary = "#d8dee9"
+text_muted = "#d8dee999"
+text_accent = "#88c0d0"
+
+heading_h1 = "#88c0d0"
+heading_h2 = "#88c0d0"
+heading_h3 = "#88c0d0"
+heading_h4 = "#88c0d0"
+heading_marker = "#4c566a"
+
+inline_code_bg = "#3b425288"
+inline_code_fg = "#8fbcbb"
+
+code_block_bg = "#2e3440"
+code_block_border = "#434c5e"
+code_block_header_bg = "#3b4252"
+code_block_header_fg = "#88c0d0"
+code_block_text = "#d8dee9"
+
+quote_border = "#88c0d0"
+quote_bg = "#88c0d015"
+quote_text = "#d8dee9"
+
+list_marker = "#ebcb8b"
+task_box_border = "#4c566a"
+task_box_checked_bg = "#a3be8c"
+task_box_checked_fg = "#2e3440"
+
+thematic_break = "#434c5e"
+link_fg = "#88c0d0"
+
+table_border = "#434c5e"
+table_cell_border = "#4c566a80"
+table_header_bg = "#2e3440"
+table_alt_bg = "#2e344066"
+
+cursor = "#d8dee9"
+selection = "#434c5ecc"
+line_highlight = "#3b425250"
+
+btn_bg = "#3b4252"
+btn_hover = "#434c5e"
+btn_active = "#88c0d026"
+btn_text = "#eceff4"
+
+btn_primary_bg = "#88c0d0"
+btn_primary_hover = "#81a1c1"
+btn_primary_active = "#5e81ac"
+btn_primary_text = "#2e3440"
+
+btn_danger_bg = "#bf616aee"
+btn_danger_hover = "#bf616a"
+btn_danger_active = "#bf616acc"
+btn_danger_text = "#eceff4"
+
+text_danger = "#bf616a"
+text_success = "#a3be8c"
+text_warning = "#ebcb8b"
