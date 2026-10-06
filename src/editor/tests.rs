@@ -1142,6 +1142,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         active_col: 0,
         doc_path: None,
         image_cache_version: crate::http::image_cache_version(),
+        syntax_cache_version: crate::syntax::syntax_cache_version(),
         fold_version: 0,
         font_size: 15.0,
         line_height: 1.6,
@@ -1263,6 +1264,7 @@ fn test_folding_layout_height_and_navigation() {
         active_col: 0,
         doc_path: None,
         image_cache_version: 0,
+        syntax_cache_version: 0,
         fold_version: dmap.version(),
         font_size: 15.0,
         line_height: 1.6,
@@ -1314,6 +1316,7 @@ fn test_folding_layout_height_and_navigation() {
         active_col: 0,
         doc_path: None,
         image_cache_version: 0,
+        syntax_cache_version: 0,
         fold_version: dmap.version(),
         font_size: 15.0,
         line_height: 1.6,
@@ -2823,4 +2826,137 @@ fn test_ime_preedit_overlay_sits_on_the_row_baseline_and_outlives_the_caret() {
         origin.x + px(48.0),
         "the caret follows the composition string"
     );
+}
+
+#[test]
+fn test_syntax_highlighting_runs_in_live_preview_and_source_modes() {
+    use crate::editor::shaping::{LineShapingContext, build_line_runs};
+    use crate::markdown::InlineSpan;
+    use crate::syntax::SyntaxToken;
+    use crate::theme::Theme;
+    use gpui::{FontStyle, TextStyle};
+
+    let theme = Theme::default();
+    let base_style = TextStyle::default();
+
+    let spans = vec![
+        InlineSpan::syntax("fn", (0, 2), Some(SyntaxToken::Keyword)),
+        InlineSpan::plain(" ", (2, 3)),
+        InlineSpan::syntax("main", (3, 7), Some(SyntaxToken::Function)),
+        InlineSpan::syntax("()", (7, 9), Some(SyntaxToken::Punctuation)),
+        InlineSpan::plain(" ", (9, 10)),
+        InlineSpan::syntax("// entry", (10, 18), Some(SyntaxToken::Comment)),
+    ];
+
+    let live_scx = LineShapingContext::new(&theme, Some(theme.code_block_text), false, false, 0);
+    let (live_text, live_runs) = build_line_runs(&spans, live_scx, None, &base_style);
+    assert_eq!(live_text, "fn main() // entry");
+    assert_eq!(live_runs.len(), 6);
+    assert_eq!(live_runs[0].color, theme.syntax_keyword);
+    assert_eq!(live_runs[1].color, theme.code_block_text);
+    assert_eq!(live_runs[2].color, theme.syntax_function);
+    assert_eq!(live_runs[3].color, theme.syntax_punctuation);
+    assert_eq!(live_runs[4].color, theme.code_block_text);
+    assert_eq!(live_runs[5].color, theme.syntax_comment);
+    assert_eq!(live_runs[5].font.style, FontStyle::Italic);
+
+    let src_scx = LineShapingContext::new(&theme, None, true, false, 0);
+    let (src_text, src_runs) = build_line_runs(&spans, src_scx, None, &base_style);
+    assert_eq!(src_text, "fn main() // entry");
+    assert_eq!(src_runs.len(), 6);
+    assert_eq!(src_runs[0].color, theme.syntax_keyword);
+    assert_eq!(src_runs[1].color, theme.text_primary);
+    assert_eq!(src_runs[2].color, theme.syntax_function);
+    assert_eq!(src_runs[3].color, theme.syntax_punctuation);
+    assert_eq!(src_runs[4].color, theme.text_primary);
+    assert_eq!(src_runs[5].color, theme.syntax_comment);
+    assert_eq!(src_runs[5].font.style, FontStyle::Italic);
+}
+
+#[gpui::test]
+fn test_code_block_incremental_edit_and_syntax_cache_invalidation(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::syntax::{SyntaxToken, register_global_wasm_grammar};
+
+    let wasm_bytes = include_bytes!("../../tests/fixtures/tree-sitter-json.wasm");
+    register_global_wasm_grammar("json", wasm_bytes, None)
+        .expect("Failed to register JSON WASM grammar");
+
+    let doc = "```json\n{\n\n  \"count\": 1\n}\n```";
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(doc, None), cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _cx| {
+            let snap1 = ed.layout_snapshot();
+            assert!(snap1.parsed_lines[3].spans.iter().any(|s| {
+                s.text == "\"count\"" && s.syntax_token == Some(SyntaxToken::Variable)
+            }));
+            assert!(
+                snap1.parsed_lines[3]
+                    .spans
+                    .iter()
+                    .any(|s| { s.text == "1" && s.syntax_token == Some(SyntaxToken::Number) })
+            );
+
+            // Edit inside the code block across a blank line: change `1` (Number) to `"ok"` (String)
+            ed.buffer_mut().set_cursor(Position::new(3, 11));
+            ed.buffer_mut().drag_selection_to(Position::new(3, 12));
+            ed.buffer_mut().insert_text("\"ok\"");
+
+            let snap2 = ed.layout_snapshot();
+            assert!(
+                snap2.parsed_lines[3]
+                    .spans
+                    .iter()
+                    .any(|s| { s.text == "\"ok\"" && s.syntax_token == Some(SyntaxToken::String) })
+            );
+        });
+    });
+}
+
+#[gpui::test]
+fn test_editor_save_preserves_line_ending_and_tracks_mtime(cx: &mut gpui::TestAppContext) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let test_file = temp_dir.path().join("crlf_doc.md");
+    let crlf_content = "# Title\r\n\r\nFirst paragraph\r\n";
+    std::fs::write(&test_file, crlf_content).unwrap();
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_path(test_file.clone(), cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _cx| {
+            assert_eq!(ed.buffer().line_ending(), crate::buffer::LineEnding::CrLf);
+            assert!(!ed.is_externally_modified());
+        });
+    });
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.perform_edit(cx, |ed| {
+                ed.buffer_mut().insert_text("Updated line\r\n");
+            });
+            let task = ed.save_file_async(cx).expect("save should succeed");
+            cx.spawn(async move |_this, _cx| {
+                task.await.unwrap();
+            })
+            .detach();
+        });
+    });
+    cx.run_until_parked();
+
+    let read_back = std::fs::read_to_string(&test_file).unwrap();
+    assert!(read_back.contains("\r\n"));
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _cx| {
+            assert!(!ed.is_dirty());
+            assert!(!ed.is_externally_modified());
+        });
+    });
 }

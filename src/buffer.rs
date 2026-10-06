@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 pub mod movement;
 pub mod operations;
@@ -12,6 +12,32 @@ pub mod primitives;
 pub mod tests;
 
 pub use primitives::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LineEnding {
+    #[default]
+    Lf,
+    CrLf,
+}
+
+impl LineEnding {
+    #[inline]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LineEnding::Lf => "\n",
+            LineEnding::CrLf => "\r\n",
+        }
+    }
+
+    #[inline]
+    pub fn detect(content: &str) -> Self {
+        if content.contains("\r\n") {
+            LineEnding::CrLf
+        } else {
+            LineEnding::Lf
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EditDelta {
@@ -34,6 +60,8 @@ pub struct TextBuffer {
     lines: Vec<String>,
     pub(in crate::buffer) selection: Selection,
     pub(in crate::buffer) file_path: Option<PathBuf>,
+    pub(in crate::buffer) line_ending: LineEnding,
+    pub(in crate::buffer) last_saved_mtime: Option<SystemTime>,
     pub(in crate::buffer) is_dirty: bool,
     pub(in crate::buffer) column_goal: Option<usize>,
 
@@ -78,6 +106,7 @@ impl TextBuffer {
     }
 
     pub fn from_str(content: &str, file_path: Option<PathBuf>) -> Self {
+        let line_ending = LineEnding::detect(content);
         let normalized = content.replace("\r\n", "\n");
         let is_empty_doc = normalized.is_empty();
         let lines: Vec<String> = if is_empty_doc {
@@ -95,6 +124,8 @@ impl TextBuffer {
             lines,
             selection: Selection::cursor(Position::new(0, 0)),
             file_path,
+            line_ending,
+            last_saved_mtime: None,
             is_dirty: false,
             column_goal: None,
             undo_stack: VecDeque::new(),
@@ -170,6 +201,26 @@ impl TextBuffer {
     }
 
     #[inline]
+    pub fn line_ending(&self) -> LineEnding {
+        self.line_ending
+    }
+
+    #[inline]
+    pub fn set_line_ending(&mut self, line_ending: LineEnding) {
+        self.line_ending = line_ending;
+    }
+
+    #[inline]
+    pub fn last_saved_mtime(&self) -> Option<SystemTime> {
+        self.last_saved_mtime
+    }
+
+    #[inline]
+    pub fn set_last_saved_mtime(&mut self, mtime: Option<SystemTime>) {
+        self.last_saved_mtime = mtime;
+    }
+
+    #[inline]
     pub fn is_dirty(&self) -> bool {
         self.is_dirty
     }
@@ -205,8 +256,36 @@ impl TextBuffer {
         if self.is_empty() {
             String::new()
         } else {
+            self.lines.join(self.line_ending.as_str())
+        }
+    }
+
+    pub fn to_string_normalized(&self) -> String {
+        if self.is_empty() {
+            String::new()
+        } else {
             self.lines.join("\n")
         }
+    }
+
+    /// Yields chunks for each line and line ending.
+    pub fn chunks_with_line_ending(&self) -> impl Iterator<Item = &str> {
+        let line_ending_str = self.line_ending.as_str();
+        let is_empty = self.is_empty();
+        let total_lines = self.lines.len();
+        self.lines
+            .iter()
+            .enumerate()
+            .flat_map(move |(i, line)| {
+                if is_empty {
+                    ["", ""].into_iter()
+                } else if i + 1 < total_lines {
+                    [line.as_str(), line_ending_str].into_iter()
+                } else {
+                    [line.as_str(), ""].into_iter()
+                }
+            })
+            .filter(|s| !s.is_empty())
     }
 
     pub fn word_count(&self) -> usize {

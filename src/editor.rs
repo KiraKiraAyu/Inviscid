@@ -160,7 +160,7 @@ pub struct Editor {
     pub(crate) scroll: ScrollState,
     pub(crate) scroll_task: Option<Task<()>>,
     pub(crate) drag_scroll_task: Option<Task<()>>,
-    pub(crate) _image_update_task: Option<Task<()>>,
+    pub(crate) _async_update_task: Option<Task<()>>,
 
     pub(crate) layout_cache: RefCell<Arc<DocumentLayoutCache>>,
     pub(crate) display_map: DisplayMap,
@@ -361,10 +361,12 @@ impl Editor {
     pub fn new_with_buffer(buffer: TextBuffer, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
 
-        let mut image_rx = crate::http::subscribe_image_updates();
-        let image_update_task = cx.spawn(async move |this, cx| {
+        let image_rx = crate::http::subscribe_image_updates();
+        let syntax_rx = crate::syntax::subscribe_syntax_updates();
+        let mut async_update_rx = futures::stream::select(image_rx, syntax_rx);
+        let async_update_task = cx.spawn(async move |this, cx| {
             use futures::StreamExt;
-            while let Some(()) = image_rx.next().await {
+            while let Some(()) = async_update_rx.next().await {
                 let res = this.update(cx, |_editor, cx| {
                     cx.notify();
                 });
@@ -412,7 +414,7 @@ impl Editor {
             scroll: ScrollState::new(),
             scroll_task: None,
             drag_scroll_task: None,
-            _image_update_task: Some(image_update_task),
+            _async_update_task: Some(async_update_task),
             layout_cache: RefCell::new(Arc::new(DocumentLayoutCache::default())),
             display_map: DisplayMap::new(),
             is_read_only: false,
@@ -774,7 +776,9 @@ impl Editor {
         } else {
             String::new()
         };
+        let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
         self.buffer = TextBuffer::from_str(&content, Some(path));
+        self.buffer.set_last_saved_mtime(mtime);
         self.last_cursor_action = std::time::Instant::now();
         cx.emit(EditorEvent::TitleChanged);
         cx.emit(EditorEvent::DirtyChanged(false));
@@ -792,24 +796,16 @@ impl Editor {
             return Err(std::io::Error::other("File is not editable"));
         }
         if let Some(path) = self.buffer.file_path_buf() {
-            let content = self.buffer.to_string_content();
+            let saved_mtime =
+                crate::fs::save_document_chunks(&path, self.buffer.chunks_with_line_ending())?;
             let baseline = self.buffer.saved_baseline_snapshot();
-            let executor = cx.background_executor().clone();
-            Ok(cx.spawn(async move |this, cx| {
-                executor
-                    .spawn(async move { crate::config::atomic_write(&path, &content) })
-                    .await?;
-
-                this.update(cx, |this, cx| {
-                    this.buffer.mark_saved_as(baseline);
-                    let dirty = this.buffer.is_dirty();
-                    cx.emit(EditorEvent::DirtyChanged(dirty));
-                    cx.notify();
-                })
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-
-                Ok(())
-            }))
+            self.buffer.mark_saved_as(baseline);
+            self.buffer.set_last_saved_mtime(Some(saved_mtime));
+            let dirty = self.buffer.is_dirty();
+            cx.emit(EditorEvent::TitleChanged);
+            cx.emit(EditorEvent::DirtyChanged(dirty));
+            cx.notify();
+            Ok(cx.spawn(async move |_this, _cx| Ok(())))
         } else {
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -824,27 +820,34 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> Task<Result<(), std::io::Error>> {
         self.auto_save_task = None;
-        let content = self.buffer.to_string_content();
-        let baseline = self.buffer.saved_baseline_snapshot();
-        let executor = cx.background_executor().clone();
-        let path_clone = path.clone();
-        cx.spawn(async move |this, cx| {
-            executor
-                .spawn(async move { crate::config::atomic_write(&path_clone, &content) })
-                .await?;
-
-            this.update(cx, |this, cx| {
-                this.buffer.set_file_path(Some(path));
-                this.buffer.mark_saved_as(baseline);
-                let dirty = this.buffer.is_dirty();
+        match crate::fs::save_document_chunks(&path, self.buffer.chunks_with_line_ending()) {
+            Ok(saved_mtime) => {
+                let baseline = self.buffer.saved_baseline_snapshot();
+                self.buffer.set_file_path(Some(path));
+                self.buffer.mark_saved_as(baseline);
+                self.buffer.set_last_saved_mtime(Some(saved_mtime));
+                let dirty = self.buffer.is_dirty();
                 cx.emit(EditorEvent::TitleChanged);
                 cx.emit(EditorEvent::DirtyChanged(dirty));
                 cx.notify();
-            })
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+                cx.spawn(async move |_this, _cx| Ok(()))
+            }
+            Err(e) => cx.spawn(async move |_this, _cx| Err(e)),
+        }
+    }
 
-            Ok(())
-        })
+    /// Returns true if the file on disk has been modified externally since it was opened or last saved.
+    pub fn is_externally_modified(&self) -> bool {
+        if let Some(path) = self.buffer.file_path() {
+            if let Some(last_mtime) = self.buffer.last_saved_mtime() {
+                if let Ok(metadata) = std::fs::metadata(path) {
+                    if let Ok(current_mtime) = metadata.modified() {
+                        return current_mtime > last_mtime;
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn render_unsupported_file_prompt(&self, theme: &Theme) -> impl IntoElement {

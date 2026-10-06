@@ -23,10 +23,51 @@ toml = "1.1.6"
 ureq = { version = "3.4.2", features = ["rustls"] }
 rust-embed = { version = "8", features = ["include-exclude"] }
 trash = { version = "5.2.9", default-features = false, features = ["coinit_apartmentthreaded"] }
-
+tree-sitter = { version = "0.27", features = ["wasm"] }
+tempfile = "3.27"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell"] }
 
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# Optimize compiler-only and debug-info crates for binary size; keep runtime crates at opt-level = 3.
+[profile.release.package.cranelift-codegen]
+opt-level = "s"
+[profile.release.package.cranelift-assembler-x64]
+opt-level = "s"
+[profile.release.package.cranelift-frontend]
+opt-level = "s"
+[profile.release.package.cranelift-native]
+opt-level = "s"
+[profile.release.package.cranelift-bforest]
+opt-level = "s"
+[profile.release.package.cranelift-entity]
+opt-level = "s"
+[profile.release.package.cranelift-control]
+opt-level = "s"
+[profile.release.package.cranelift-bitset]
+opt-level = "s"
+[profile.release.package.wasmtime-environ]
+opt-level = "s"
+[profile.release.package.wasmtime-internal-cranelift]
+opt-level = "s"
+[profile.release.package.wasmparser]
+opt-level = "s"
+[profile.release.package.wasmprinter]
+opt-level = "s"
+[profile.release.package.regalloc2]
+opt-level = "s"
+[profile.release.package.gimli]
+opt-level = "s"
+[profile.release.package.object]
+opt-level = "s"
+[profile.release.package.naga]
+opt-level = "s"

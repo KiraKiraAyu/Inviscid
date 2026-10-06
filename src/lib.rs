@@ -7,11 +7,14 @@ pub mod assets;
 pub mod buffer;
 pub mod config;
 pub mod editor;
+pub mod fs;
 pub mod http;
 pub mod markdown;
 pub mod platform;
+pub mod syntax;
 pub mod theme;
 pub mod ui;
+pub mod wasm;
 
 pub use app::InviscidWindow;
 pub use buffer::TextBuffer;

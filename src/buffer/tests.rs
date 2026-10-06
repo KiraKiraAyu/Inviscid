@@ -1240,3 +1240,40 @@ fn test_utf16_selection_and_ime_mark_helpers() {
     buf.insert_text("你");
     assert_eq!(buf.to_string_content(), "a你b\ncd");
 }
+
+#[test]
+fn test_line_ending_detection_and_preservation() {
+    use super::LineEnding;
+
+    let lf_buf = TextBuffer::from_str("line 1\nline 2", None);
+    assert_eq!(lf_buf.line_ending(), LineEnding::Lf);
+    assert_eq!(lf_buf.to_string_content(), "line 1\nline 2");
+
+    let crlf_buf = TextBuffer::from_str("line 1\r\nline 2", None);
+    assert_eq!(crlf_buf.line_ending(), LineEnding::CrLf);
+    assert_eq!(crlf_buf.to_string_content(), "line 1\r\nline 2");
+    assert_eq!(crlf_buf.to_string_normalized(), "line 1\nline 2");
+
+    let mut switched_buf = crlf_buf.clone();
+    switched_buf.set_line_ending(LineEnding::Lf);
+    assert_eq!(switched_buf.to_string_content(), "line 1\nline 2");
+}
+
+#[test]
+fn test_chunks_with_line_ending_streaming() {
+    let empty_buf = TextBuffer::new();
+    let empty_chunks: Vec<&str> = empty_buf.chunks_with_line_ending().collect();
+    assert!(empty_chunks.is_empty());
+
+    let single_line = TextBuffer::from_str("single line", None);
+    let single_chunks: Vec<&str> = single_line.chunks_with_line_ending().collect();
+    assert_eq!(single_chunks, vec!["single line"]);
+
+    let lf_buf = TextBuffer::from_str("line 1\nline 2\nline 3", None);
+    let lf_chunks: Vec<&str> = lf_buf.chunks_with_line_ending().collect();
+    assert_eq!(lf_chunks, vec!["line 1", "\n", "line 2", "\n", "line 3"]);
+
+    let crlf_buf = TextBuffer::from_str("a\r\nb", None);
+    let crlf_chunks: Vec<&str> = crlf_buf.chunks_with_line_ending().collect();
+    assert_eq!(crlf_chunks, vec!["a", "\r\n", "b"]);
+}
