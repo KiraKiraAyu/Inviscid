@@ -36,7 +36,10 @@ pub fn save_document_chunks<'a>(
 
 /// Atomically writes content to `target_path` using a temporary file and rename.
 pub fn atomic_write(target_path: &Path, content: impl AsRef<[u8]>) -> std::io::Result<()> {
-    if fs::metadata(target_path).map(|m| m.is_dir()).unwrap_or(false) {
+    if fs::metadata(target_path)
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
         return Err(std::io::Error::from(std::io::ErrorKind::IsADirectory));
     }
 
@@ -144,7 +147,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let bare_name = format!("inviscid_test_bare_{}_{}.tmp", std::process::id(), rand_suffix);
+        let bare_name = format!(
+            "inviscid_test_bare_{}_{}.tmp",
+            std::process::id(),
+            rand_suffix
+        );
         let target_path = Path::new(&bare_name);
 
         struct Cleanup<'a>(&'a Path);

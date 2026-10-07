@@ -776,7 +776,9 @@ impl Editor {
         } else {
             String::new()
         };
-        let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+        let mtime = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok());
         self.buffer = TextBuffer::from_str(&content, Some(path));
         self.buffer.set_last_saved_mtime(mtime);
         self.last_cursor_action = std::time::Instant::now();

@@ -2924,9 +2924,8 @@ fn test_editor_save_preserves_line_ending_and_tracks_mtime(cx: &mut gpui::TestAp
     let crlf_content = "# Title\r\n\r\nFirst paragraph\r\n";
     std::fs::write(&test_file, crlf_content).unwrap();
 
-    let (editor, cx) = cx.add_window_view(|_window, cx| {
-        super::Editor::new_with_path(test_file.clone(), cx)
-    });
+    let (editor, cx) =
+        cx.add_window_view(|_window, cx| super::Editor::new_with_path(test_file.clone(), cx));
     cx.run_until_parked();
 
     cx.update(|_window, cx| {
