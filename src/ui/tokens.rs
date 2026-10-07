@@ -99,6 +99,8 @@ impl LineHeight {
 pub struct ControlHeight;
 
 impl ControlHeight {
+    /// 20px: Micro embedded controls (e.g. inline file-tree rename/creation input).
+    pub const XS: Pixels = px(20.0);
     /// 24px: Compact controls (Stepper buttons, small pill, tab close button).
     pub const SM: Pixels = px(24.0);
     /// 28px: Standard controls (Button, OptionPill, MenuItem row).

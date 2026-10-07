@@ -18,11 +18,12 @@ pub mod context {
     pub const APP: &str = "App";
     pub const EDITOR: &str = "Editor";
     pub const INLINE_INPUT: &str = "InlineInput";
-    pub const EDITOR_OR_INLINE: &str = "Editor || InlineInput";
+    pub const EDITOR_OR_INLINE: &str = "Editor || InlineInput || TextInput";
     pub const WORKSPACE: &str = "Workspace";
     pub const PROJECT_PANEL: &str = "ProjectPanel";
     pub const SETTINGS_WINDOW: &str = "SettingsWindow";
     pub const ABOUT_WINDOW: &str = "AboutWindow";
+    pub const TEXT_INPUT: &str = "TextInput";
 }
 
 pub fn format_keystroke_for_display(keystroke: &str) -> String {
