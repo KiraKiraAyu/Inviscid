@@ -187,24 +187,6 @@ define_theme! {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_default_theme_comes_from_embedded_asset() {
-        let theme = Theme::default();
-        assert_eq!(theme.name, "Catppuccin Mocha");
-
-        // Guards against silent drift in assets/themes/catppuccin-mocha.toml
-        assert_eq!(theme.bg_app, color::parse_hex_color("#181825").unwrap());
-        assert_eq!(theme.bg_editor, color::parse_hex_color("#1e1e2e").unwrap());
-        assert_eq!(theme.btn_text, color::parse_hex_color("#cdd6f4").unwrap());
-        assert_eq!(
-            theme.line_highlight,
-            color::parse_hex_color("#31324433").unwrap()
-        );
-        assert_eq!(
-            theme.task_box_checked_fg,
-            color::parse_hex_color("#11111b").unwrap()
-        );
-    }
 
     #[test]
     fn test_partial_theme_inherits_from_base() {

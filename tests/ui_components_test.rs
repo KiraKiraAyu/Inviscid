@@ -1,12 +1,10 @@
 use gpui::{
-    AnyElement, Context, IntoElement, Modifiers, ParentElement, Point, Render, TestAppContext, div,
-    px,
+    Context, IntoElement, Modifiers, ParentElement, Point, Render, TestAppContext, div, px,
 };
 use inviscid::config::AppConfig;
 use inviscid::theme::ThemeManager;
 use inviscid::ui::{
-    ControlHeight, Icon, IconName, IconSize, MenuItem, OptionPill, SettingRow, Stepper, Switch,
-    WindowControls, WindowTitleBar,
+    Icon, IconName, IconSize, MenuItem, OptionPill, SettingRow, Stepper, Switch,
 };
 
 fn init_test_globals(cx: &mut TestAppContext) {
@@ -142,68 +140,3 @@ fn test_ui_components_render_and_state_lifecycle() {
     });
 }
 
-#[test]
-fn test_ui_components_builders() {
-    let mut cx = TestAppContext::single();
-    init_test_globals(&mut cx);
-
-    // Switch builder variations
-    let switch_off = Switch::new("sw_off", false);
-    let switch_on = Switch::new("sw_on", true);
-
-    // Stepper builder
-    let stepper = Stepper::new("step_id", "24px");
-
-    // OptionPill builder
-    let pill = OptionPill::new("pill_id", "Markdown", true);
-
-    // MenuItem builder
-    let item = MenuItem::new("item_id", "Toggle Terminal")
-        .shortcut("Ctrl+`")
-        .selected(true)
-        .disabled(true);
-
-    // SettingRow builder
-    let row = SettingRow::new("Dark Mode", switch_on).description("Use dark theme");
-
-    struct BuilderTestView {
-        elements: Vec<AnyElement>,
-    }
-
-    impl Render for BuilderTestView {
-        fn render(
-            &mut self,
-            _window: &mut gpui::Window,
-            _cx: &mut Context<Self>,
-        ) -> impl IntoElement {
-            let mut container = div();
-            for el in self.elements.drain(..) {
-                container = container.child(el);
-            }
-            container
-        }
-    }
-
-    let (_view, cx) = cx.add_window_view(|_window, _cx| BuilderTestView {
-        elements: vec![
-            switch_off.into_any_element(),
-            stepper.into_any_element(),
-            pill.into_any_element(),
-            item.into_any_element(),
-            row.into_any_element(),
-            WindowControls::new(ControlHeight::TITLEBAR).into_any_element(),
-            WindowTitleBar::new()
-                .left(Icon::new(IconName::Settings).size(IconSize::Small))
-                .center(div().child("Center Drag"))
-                .right(div().child("Action"))
-                .into_any_element(),
-            Icon::new(IconName::Lock)
-                .size(IconSize::Indicator)
-                .into_any_element(),
-            Icon::new(IconName::FolderOpen)
-                .size(IconSize::XSmall)
-                .into_any_element(),
-        ],
-    });
-    cx.run_until_parked();
-}

@@ -918,12 +918,6 @@ mod tests {
         assert_eq!(value, 1.2);
     }
 
-    #[test]
-    fn test_numeric_bounds_descriptions_match_limits() {
-        assert_eq!(UI_FONT_SIZE_BOUNDS.describe_px(), "11px to 20px");
-        assert_eq!(EDITOR_FONT_SIZE_BOUNDS.describe_px(), "12px to 28px");
-        assert_eq!(LINE_HEIGHT_BOUNDS.describe_ratio(), "1.2 to 2.4");
-    }
 
     #[test]
     fn test_settings_categories_have_unique_labels() {

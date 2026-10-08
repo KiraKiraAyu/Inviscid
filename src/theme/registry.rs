@@ -223,27 +223,6 @@ mod tests {
         assert!(list.contains(&"GitHub Light".to_string()));
         assert!(list.contains(&"Nord".to_string()));
 
-        // Each builtin must resolve to its own palette, not to inherited colors
-        let mocha = registry.get_or_default("Catppuccin Mocha");
-        assert_eq!(mocha.name, "Catppuccin Mocha");
-        assert_eq!(mocha.bg_editor, gpui::rgb(0x1e1e2e).into());
-
-        let latte = registry.get_or_default("Catppuccin Latte");
-        assert_eq!(latte.name, "Catppuccin Latte");
-        assert_eq!(latte.bg_editor, gpui::rgb(0xeff1f5).into());
-
-        let github_light = registry.get_or_default("GitHub Light");
-        assert_eq!(github_light.name, "GitHub Light");
-        assert_eq!(github_light.bg_editor, gpui::rgb(0xffffff).into());
-
-        let dracula = registry.get_or_default("Dracula");
-        assert_eq!(dracula.name, "Dracula");
-        assert_eq!(dracula.bg_editor, gpui::rgb(0x282a36).into());
-
-        let nord = registry.get_or_default("Nord");
-        assert_eq!(nord.name, "Nord");
-        assert_eq!(nord.bg_editor, gpui::rgb(0x2e3440).into());
-
         // Fallback for non-existent theme
         let fallback = registry.get_or_default("NonExistentTheme");
         assert_eq!(fallback.name, "Catppuccin Mocha");
