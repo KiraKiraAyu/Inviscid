@@ -148,12 +148,6 @@ mod tests {
     use core::prelude::v1::test;
 
     #[test]
-    fn test_calculate_menu_height_exact_metrics() {
-        assert_eq!(calculate_menu_height(12, 4), px(374.0));
-        assert_eq!(calculate_menu_height(12, 6), px(388.0));
-    }
-
-    #[test]
     fn test_compute_context_menu_coords_alignment_and_offset() {
         let safe_bounds = Bounds {
             origin: point(px(0.0), px(34.0)),

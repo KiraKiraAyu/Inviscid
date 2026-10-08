@@ -1,6 +1,8 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{OnceLock, RwLock};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::sync::{RwLock, VersionReceiver, VersionedNotifier};
 
 static ACCESS_TICK: AtomicU64 = AtomicU64::new(1);
 
@@ -140,52 +142,28 @@ impl ImageCache {
 }
 
 static GLOBAL_IMAGE_CACHE: OnceLock<RwLock<ImageCache>> = OnceLock::new();
-static IMAGE_CACHE_VERSION: AtomicUsize = AtomicUsize::new(0);
-static IMAGE_LISTENERS: OnceLock<RwLock<Vec<futures::channel::mpsc::UnboundedSender<()>>>> =
-    OnceLock::new();
+static IMAGE_NOTIFIER: VersionedNotifier = VersionedNotifier::new();
 
 pub fn image_cache_version() -> usize {
-    IMAGE_CACHE_VERSION.load(Ordering::Acquire)
+    IMAGE_NOTIFIER.version()
 }
 
 fn notify_image_mutation() {
-    IMAGE_CACHE_VERSION.fetch_add(1, Ordering::Release);
-    if let Some(rwlock) = IMAGE_LISTENERS.get() {
-        let mut guard = match rwlock.write() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        guard.retain(|sender| sender.unbounded_send(()).is_ok());
-    }
+    IMAGE_NOTIFIER.notify();
 }
 
-pub fn subscribe_image_updates() -> futures::channel::mpsc::UnboundedReceiver<()> {
-    let rwlock = IMAGE_LISTENERS.get_or_init(|| RwLock::new(Vec::new()));
-    let (tx, rx) = futures::channel::mpsc::unbounded();
-    let mut guard = match rwlock.write() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard.push(tx);
-    rx
+pub fn subscribe_image_updates() -> VersionReceiver {
+    IMAGE_NOTIFIER.subscribe()
 }
 
 pub(crate) fn read_cache<R>(f: impl FnOnce(&ImageCache) -> R) -> R {
     let rwlock = GLOBAL_IMAGE_CACHE.get_or_init(|| RwLock::new(ImageCache::new()));
-    let guard = match rwlock.read() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    f(&guard)
+    f(&rwlock.read())
 }
 
 pub(crate) fn write_cache<R>(f: impl FnOnce(&mut ImageCache) -> R) -> R {
     let rwlock = GLOBAL_IMAGE_CACHE.get_or_init(|| RwLock::new(ImageCache::new()));
-    let mut guard = match rwlock.write() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    f(&mut guard)
+    f(&mut rwlock.write())
 }
 
 pub fn is_url_loaded(url: &str) -> bool {

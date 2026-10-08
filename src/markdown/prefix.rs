@@ -68,10 +68,19 @@ pub fn parse_quote_prefix(trimmed: &str) -> Option<usize> {
     }
 }
 
+/// Returns the info string (trimmed, possibly empty) if `line` is a ``` fence line.
+pub fn fence_info(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix("```").map(str::trim)
+}
+
+#[inline]
+pub fn is_fence_line(line: &str) -> bool {
+    fence_info(line).is_some()
+}
+
 pub fn parse_fence_prefix(trimmed: &str) -> Option<(Option<String>, usize)> {
-    let stripped = trimmed.strip_prefix("```")?;
-    let lang = stripped.trim();
-    let lang_str = (!lang.is_empty()).then(|| lang.to_string());
+    let info = fence_info(trimmed)?;
+    let lang_str = (!info.is_empty()).then(|| info.to_string());
     Some((lang_str, 3))
 }
 

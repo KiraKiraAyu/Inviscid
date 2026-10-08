@@ -270,10 +270,18 @@ pub fn build_line_runs(
             || scx.override_color == Some(scx.theme.code_block_text)
             || scx.override_color == Some(scx.theme.code_block_header_fg)
             || span.is_code
+            || span.syntax_token.is_some()
         {
             font.family = crate::platform::platform_monospace_font().into();
         } else {
             font.family = crate::platform::platform_ui_font().into();
+        }
+
+        if let Some(token) = span.syntax_token {
+            color = token.color(scx.theme);
+            if token.is_italic() {
+                font.style = FontStyle::Italic;
+            }
         }
 
         if span.is_code {

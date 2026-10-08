@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::{Editor, RenderMode};
 use crate::editor::shaping::compute_content_width;
+use crate::markdown::prefix::is_fence_line;
 use crate::markdown::{BlockKind, MarkdownScanner, ParsedLine};
 use crate::theme::Theme;
 
@@ -157,6 +158,7 @@ pub struct DocumentLayoutCache {
     pub active_col: usize,
     pub doc_path: Option<PathBuf>,
     pub image_cache_version: usize,
+    pub syntax_cache_version: usize,
     pub fold_version: usize,
     pub font_size: f32,
     pub line_height: f32,
@@ -179,6 +181,7 @@ impl Default for DocumentLayoutCache {
             active_col: 0,
             doc_path: None,
             image_cache_version: 0,
+            syntax_cache_version: 0,
             fold_version: 0,
             font_size: 15.0,
             line_height: 1.6,
@@ -537,6 +540,7 @@ impl Editor {
         let cursor_line = cursor_pos.line;
         let cursor_col = self.disclosure_col();
         let current_img_v = crate::http::image_cache_version();
+        let current_syntax_v = crate::syntax::syntax_cache_version();
 
         let current_cache = self.layout_cache.borrow().clone();
         let view_matches = self.cache_matches_view(&current_cache, content_width);
@@ -546,6 +550,7 @@ impl Editor {
         if buffer_matches
             && view_matches
             && current_cache.image_cache_version == current_img_v
+            && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.active_line == cursor_line
             && (self.render_mode == RenderMode::Source || current_cache.active_col == cursor_col)
         {
@@ -556,6 +561,7 @@ impl Editor {
         if buffer_matches
             && view_matches
             && current_cache.image_cache_version == current_img_v
+            && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.active_line == cursor_line
             && !current_cache.parsed_lines.is_empty()
             && current_cache.line_heights.len() == current_cache.parsed_lines.len()
@@ -602,6 +608,7 @@ impl Editor {
         if buffer_matches
             && view_matches
             && current_cache.image_cache_version == current_img_v
+            && current_cache.syntax_cache_version == current_syntax_v
             && !current_cache.parsed_lines.is_empty()
             && current_cache.line_heights.len() == current_cache.parsed_lines.len()
         {
@@ -689,6 +696,7 @@ impl Editor {
         if let Some(delta) = self.buffer.last_edit_delta()
             && view_matches
             && current_cache.image_cache_version == current_img_v
+            && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.lines_len == current_cache.parsed_lines.len()
             && current_cache.line_heights.len() == current_cache.lines_len
             && current_cache.line_y_offsets.len() == current_cache.lines_len
@@ -701,7 +709,10 @@ impl Editor {
         }
 
         // Full layout rebuild
-        let parsed_doc = if buffer_matches && view_matches && !current_cache.parsed_lines.is_empty()
+        let parsed_doc = if buffer_matches
+            && view_matches
+            && current_cache.syntax_cache_version == current_syntax_v
+            && !current_cache.parsed_lines.is_empty()
         {
             current_cache.parsed_lines.clone()
         } else {
@@ -745,6 +756,7 @@ impl Editor {
             active_col: cursor_col,
             doc_path: self.buffer.file_path_buf(),
             image_cache_version: current_img_v,
+            syntax_cache_version: current_syntax_v,
             fold_version: self.display_map.version(),
             font_size: self.font_size,
             line_height: self.line_height,
@@ -820,21 +832,41 @@ impl Editor {
         }
 
         let mut block_start = delta.start_line;
-        while block_start > 0 && !buf_lines[block_start - 1].trim().is_empty() {
-            let prev_trimmed = buf_lines[block_start - 1].trim_start();
-            if prev_trimmed.starts_with("```") || prev_trimmed.starts_with('#') {
-                break;
+        if in_code_block {
+            while block_start > 0 {
+                let prev_trimmed = buf_lines[block_start - 1].trim_start();
+                if is_fence_line(prev_trimmed) {
+                    break;
+                }
+                block_start -= 1;
             }
-            block_start -= 1;
+        } else {
+            while block_start > 0 && !buf_lines[block_start - 1].trim().is_empty() {
+                let prev_trimmed = buf_lines[block_start - 1].trim_start();
+                if is_fence_line(prev_trimmed) || prev_trimmed.starts_with('#') {
+                    break;
+                }
+                block_start -= 1;
+            }
         }
 
         let mut block_end = delta.start_line + delta.new_line_count;
-        while block_end < buf_len && !buf_lines[block_end].trim().is_empty() {
-            let next_trimmed = buf_lines[block_end].trim_start();
-            if next_trimmed.starts_with("```") || next_trimmed.starts_with('#') {
-                break;
+        if in_code_block {
+            while block_end < buf_len {
+                let next_trimmed = buf_lines[block_end].trim_start();
+                if is_fence_line(next_trimmed) {
+                    break;
+                }
+                block_end += 1;
             }
-            block_end += 1;
+        } else {
+            while block_end < buf_len && !buf_lines[block_end].trim().is_empty() {
+                let next_trimmed = buf_lines[block_end].trim_start();
+                if is_fence_line(next_trimmed) || next_trimmed.starts_with('#') {
+                    break;
+                }
+                block_end += 1;
+            }
         }
 
         let old_block_end = block_end - delta.new_line_count + delta.old_line_count;

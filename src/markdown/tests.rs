@@ -527,3 +527,60 @@ fn test_continuation_and_toggle() {
         Some("  * [ ] Task 3".to_string())
     );
 }
+
+#[test]
+fn test_fenced_code_block_wasm_syntax_highlighting_and_incremental_scan() {
+    use crate::syntax::{SyntaxToken, register_global_wasm_grammar};
+
+    let wasm_bytes = include_bytes!("../../tests/fixtures/tree-sitter-json.wasm");
+    register_global_wasm_grammar("json", wasm_bytes, None)
+        .expect("Failed to register JSON WASM grammar");
+
+    let lines = vec![
+        "# Config".to_string(),
+        "```json".to_string(),
+        "{\"port\": 8080,".to_string(),
+        " \"enabled\": true}".to_string(),
+        "```".to_string(),
+    ];
+
+    let parsed = MarkdownScanner::scan_document(&lines);
+    assert_eq!(parsed.len(), 5);
+    assert_eq!(parsed[2].kind, BlockKind::CodeBlockContent);
+    assert_eq!(parsed[3].kind, BlockKind::CodeBlockContent);
+
+    // Line 2: {"port": 8080,
+    assert!(
+        parsed[2]
+            .spans
+            .iter()
+            .any(|s| { s.text == "\"port\"" && s.syntax_token == Some(SyntaxToken::Variable) })
+    );
+    assert!(
+        parsed[2]
+            .spans
+            .iter()
+            .any(|s| { s.text == "8080" && s.syntax_token == Some(SyntaxToken::Number) })
+    );
+
+    // Line 3:  "enabled": true}
+    assert!(
+        parsed[3]
+            .spans
+            .iter()
+            .any(|s| { s.text == "\"enabled\"" && s.syntax_token == Some(SyntaxToken::Variable) })
+    );
+    assert!(
+        parsed[3]
+            .spans
+            .iter()
+            .any(|s| { s.text == "true" && s.syntax_token == Some(SyntaxToken::Number) })
+    );
+
+    // Incremental scan starting mid-block (initial_in_code_fence = true) must resolve
+    // the enclosing ```json fence and preserve multi-line AST context.
+    let mid_scan = MarkdownScanner::scan_range(&lines, 3..4, true);
+    assert_eq!(mid_scan.len(), 1);
+    assert_eq!(mid_scan[0].kind, BlockKind::CodeBlockContent);
+    assert_eq!(mid_scan[0].spans, parsed[3].spans);
+}

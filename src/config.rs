@@ -1,46 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::ops::{Deref, DerefMut};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::editor::RenderMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct WorkspaceState {
-    #[serde(default)]
     pub root_dir: Option<PathBuf>,
-    #[serde(default)]
     pub active_file: Option<PathBuf>,
-    #[serde(default)]
     pub open_files: Vec<PathBuf>,
-    #[serde(default = "default_true")]
     pub sidebar_visible: bool,
-    #[serde(default)]
     pub sidebar_width: Option<f32>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_false() -> bool {
-    false
-}
-
-fn default_ui_font_size() -> f32 {
-    13.0
-}
-
-fn default_editor_font_size() -> f32 {
-    15.0
-}
-
-fn default_line_height() -> f32 {
-    1.6
-}
-
-fn default_tab_size() -> usize {
-    4
 }
 
 impl Default for WorkspaceState {
@@ -73,54 +45,53 @@ impl WorkspaceState {
     }
 }
 
-/// User preferences persisted in `config.toml`.
+/// User-configurable preferences persisted in `config.toml`.
+///
+/// # Note
+///
+/// The file is serialized in full on save; manual comments or custom formatting are not preserved.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct UserPreferences {
-    #[serde(default = "default_theme")]
     pub theme: String,
-    #[serde(default = "default_ui_font_size")]
     pub ui_font_size: f32,
-    #[serde(default = "default_true")]
     pub restore_workspace: bool,
-    #[serde(default = "default_false")]
     pub auto_save: bool,
-    #[serde(default = "default_editor_font_size")]
     pub editor_font_size: f32,
-    #[serde(default = "default_line_height")]
     pub line_height: f32,
-    #[serde(default = "default_true")]
     pub soft_wrap: bool,
-    #[serde(default = "default_tab_size")]
     pub tab_size: usize,
-    #[serde(default = "default_true")]
     pub cursor_blink: bool,
-    #[serde(default = "default_true")]
     pub cursor_breathing: bool,
-    #[serde(default)]
     pub default_render_mode: RenderMode,
-    #[serde(default)]
+    pub grammar_base_url: String,
     pub custom_keybindings: std::collections::HashMap<String, String>,
 }
 
-/// Must match the `name` inside `assets/themes/catppuccin-mocha.toml`.
-fn default_theme() -> String {
-    "Catppuccin Mocha".to_string()
+impl UserPreferences {
+    /// Must match the `name` inside `assets/themes/catppuccin-mocha.toml`.
+    pub const DEFAULT_THEME: &'static str = "Catppuccin Mocha";
+    pub const DEFAULT_UI_FONT_SIZE: f32 = 13.0;
+    pub const DEFAULT_EDITOR_FONT_SIZE: f32 = 15.0;
+    pub const DEFAULT_LINE_HEIGHT: f32 = 1.6;
+    pub const DEFAULT_TAB_SIZE: usize = 4;
 }
 
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
-            theme: default_theme(),
-            ui_font_size: default_ui_font_size(),
-            restore_workspace: default_true(),
-            auto_save: default_false(),
-            editor_font_size: default_editor_font_size(),
-            line_height: default_line_height(),
-            soft_wrap: default_true(),
-            tab_size: default_tab_size(),
-            cursor_blink: default_true(),
-            cursor_breathing: default_true(),
+            theme: Self::DEFAULT_THEME.to_string(),
+            ui_font_size: Self::DEFAULT_UI_FONT_SIZE,
+            restore_workspace: true,
+            auto_save: false,
+            editor_font_size: Self::DEFAULT_EDITOR_FONT_SIZE,
+            line_height: Self::DEFAULT_LINE_HEIGHT,
+            soft_wrap: true,
+            tab_size: Self::DEFAULT_TAB_SIZE,
+            cursor_blink: true,
+            cursor_breathing: true,
             default_render_mode: RenderMode::default(),
+            grammar_base_url: crate::syntax::GrammarCdnPreset::DEFAULT_URL.to_string(),
             custom_keybindings: std::collections::HashMap::new(),
         }
     }
@@ -128,10 +99,9 @@ impl Default for UserPreferences {
 
 /// Runtime session state persisted in `state.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct SessionState {
-    #[serde(default)]
     pub last_workspace: Option<WorkspaceState>,
-    #[serde(default)]
     pub recent_workspaces: Vec<WorkspaceState>,
 }
 
@@ -179,51 +149,6 @@ impl AppConfig {
     }
 }
 
-/// Writes `content` to `target_path` via a sibling temporary file, flushing to disk before
-/// renaming with short retries to handle transient file locks on Windows.
-pub fn atomic_write(target_path: &Path, content: &str) -> std::io::Result<()> {
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let rand_suffix: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let tmp_path =
-        target_path.with_extension(format!("tmp.{}.{}", std::process::id(), rand_suffix));
-
-    {
-        use std::io::Write;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-    }
-
-    // Windows anti-virus or search indexers can momentarily lock files; retry a few times.
-    let mut last_err = None;
-    for attempt in 0..3 {
-        match fs::rename(&tmp_path, target_path) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                last_err = Some(e);
-                std::thread::sleep(std::time::Duration::from_millis(5 * (attempt + 1)));
-            }
-        }
-    }
-
-    if let Some(e) = last_err {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
-    Ok(())
-}
-
 impl AppConfig {
     /// Standard system config path (`%APPDATA%/inviscid/config.toml` or `~/.config/inviscid/config.toml`).
     pub fn config_path() -> Option<PathBuf> {
@@ -236,6 +161,11 @@ impl AppConfig {
             .or_else(dirs::data_dir)
             .or_else(dirs::config_dir)
             .map(|p| p.join("inviscid").join("state.toml"))
+    }
+
+    /// Local cache directory for downloaded `.wasm` grammars and `highlights.scm` queries.
+    pub fn grammars_cache_dir() -> Option<PathBuf> {
+        dirs::cache_dir().map(|p| p.join("inviscid").join("grammars"))
     }
 
     /// Loads application configuration from `config.toml` and session state from `state.toml`.
@@ -255,8 +185,15 @@ impl AppConfig {
         if config_path.exists() {
             match fs::read_to_string(&config_path) {
                 Ok(content) => match toml::from_str::<UserPreferences>(&content) {
-                    Ok(parsed) => {
+                    Ok(mut parsed) => {
+                        let normalized_url =
+                            crate::syntax::normalize_grammar_base_url(&parsed.grammar_base_url);
+                        let changed = normalized_url != parsed.grammar_base_url;
+                        parsed.grammar_base_url = normalized_url;
                         config.preferences = parsed;
+                        if changed {
+                            config.save_preferences();
+                        }
                     }
                     Err(e) => {
                         eprintln!(
@@ -311,7 +248,7 @@ impl AppConfig {
     pub fn save_preferences(&self) {
         if let Some(ref path) = self.config_file_path {
             if let Ok(content) = toml::to_string_pretty(&self.preferences) {
-                let _ = atomic_write(path, &content);
+                let _ = crate::fs::atomic_write(path, &content);
             }
         }
     }
@@ -347,7 +284,7 @@ impl AppConfig {
     pub fn save_session(&self) {
         if let Some(ref path) = self.state_file_path {
             if let Ok(content) = toml::to_string_pretty(&self.session) {
-                let _ = atomic_write(path, &content);
+                let _ = crate::fs::atomic_write(path, &content);
             }
         }
     }
@@ -488,30 +425,27 @@ mod tests {
 
     #[test]
     fn test_atomic_write_safety() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("inviscid_test_atomic_{}", std::process::id()));
-        let target_file = temp_dir.join("sub").join("test_config.toml");
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let target_file = temp_dir.path().join("sub").join("test_config.toml");
 
         let content = "theme = \"One Dark Pro\"\n";
-        atomic_write(&target_file, content).expect("atomic_write should succeed");
+        crate::fs::atomic_write(&target_file, content).expect("atomic_write should succeed");
 
         let read_back = fs::read_to_string(&target_file).expect("file must exist and be readable");
         assert_eq!(read_back, content);
 
         let updated_content = "theme = \"Nord\"\n";
-        atomic_write(&target_file, updated_content).expect("atomic overwrite should succeed");
+        crate::fs::atomic_write(&target_file, updated_content)
+            .expect("atomic overwrite should succeed");
         let read_back_updated = fs::read_to_string(&target_file).expect("file must be readable");
         assert_eq!(read_back_updated, updated_content);
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
     fn test_preferences_and_session_separation() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("inviscid_test_split_{}", std::process::id()));
-        let cfg_path = temp_dir.join("config.toml");
-        let state_path = temp_dir.join("state.toml");
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let cfg_path = temp_dir.path().join("config.toml");
+        let state_path = temp_dir.path().join("state.toml");
 
         let mut config = AppConfig {
             config_file_path: Some(cfg_path.clone()),
@@ -541,18 +475,12 @@ mod tests {
         assert!(state_path.exists());
         let state_content = fs::read_to_string(&state_path).unwrap();
         assert!(state_content.contains("/a/b.md"));
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
     fn test_corrupted_config_repaired_on_ui_save() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "inviscid_test_corrupt_repair_{}",
-            std::process::id()
-        ));
-        let target_file = temp_dir.join("config.toml");
-        let _ = fs::create_dir_all(&temp_dir);
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let target_file = temp_dir.path().join("config.toml");
 
         fs::write(&target_file, "theme = [invalid syntax here").unwrap();
 
@@ -566,8 +494,6 @@ mod tests {
         let current_content = fs::read_to_string(&target_file).unwrap();
         assert!(current_content.contains("CustomTheme"));
         assert!(!current_content.contains("invalid syntax here"));
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -639,14 +565,12 @@ mod tests {
 
     #[test]
     fn test_load_filters_nonexistent_workspaces() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("inviscid_test_filter_ws_{}", std::process::id()));
-        let _ = fs::create_dir_all(&temp_dir);
-        let valid_folder = temp_dir.join("real_project");
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let valid_folder = temp_dir.path().join("real_project");
         let _ = fs::create_dir_all(&valid_folder);
 
-        let config_path = temp_dir.join("config.toml");
-        let state_path = temp_dir.join("state.toml");
+        let config_path = temp_dir.path().join("config.toml");
+        let state_path = temp_dir.path().join("state.toml");
         let session = SessionState {
             last_workspace: Some(WorkspaceState {
                 root_dir: Some(PathBuf::from("/fake/nonexistent_last")),
@@ -680,7 +604,25 @@ mod tests {
         assert_eq!(config.last_workspace(), None);
         assert_eq!(config.recent_workspaces().len(), 1);
         assert_eq!(config.recent_workspaces()[0].root_dir, Some(valid_folder));
+    }
 
-        let _ = fs::remove_dir_all(temp_dir);
+    #[test]
+    fn test_grammar_base_url_normalization_on_load() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        let state_path = temp_dir.path().join("state.toml");
+
+        fs::write(&config_path, "grammar_base_url = \"https://unpkg.com/\"\n").unwrap();
+        let config = AppConfig::load_from_paths(config_path.clone(), state_path.clone());
+        assert_eq!(
+            config.grammar_base_url,
+            crate::syntax::GrammarCdnPreset::Unpkg.url()
+        );
+        let saved_toml = fs::read_to_string(&config_path).unwrap();
+        assert!(saved_toml.contains("grammar_base_url = \"https://unpkg.com\""));
+
+        fs::write(&config_path, "grammar_base_url = \"\"\n").unwrap();
+        let offline_config = AppConfig::load_from_paths(config_path.clone(), state_path);
+        assert_eq!(offline_config.grammar_base_url, "");
     }
 }

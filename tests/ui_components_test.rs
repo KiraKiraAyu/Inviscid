@@ -3,9 +3,7 @@ use gpui::{
 };
 use inviscid::config::AppConfig;
 use inviscid::theme::ThemeManager;
-use inviscid::ui::{
-    Icon, IconName, IconSize, MenuItem, OptionPill, SettingRow, Stepper, Switch,
-};
+use inviscid::ui::{Icon, IconName, IconSize, MenuItem, OptionPill, SettingRow, Stepper, Switch};
 
 fn init_test_globals(cx: &mut TestAppContext) {
     let config = AppConfig::default();
@@ -139,4 +137,3 @@ fn test_ui_components_render_and_state_lifecycle() {
         assert!(v.menu_clicked);
     });
 }
-

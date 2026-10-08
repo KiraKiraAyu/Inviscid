@@ -274,4 +274,3 @@ fn test_settings_window_titlebar_drag_and_focus_isolation() {
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
 }
-

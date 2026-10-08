@@ -136,6 +136,17 @@ define_theme! {
     code_block_header_fg,
     code_block_text,
 
+    syntax_keyword,
+    syntax_function,
+    syntax_type,
+    syntax_string,
+    syntax_number,
+    syntax_comment,
+    syntax_operator,
+    syntax_punctuation,
+    syntax_variable,
+    syntax_attribute,
+
     quote_border,
     quote_bg,
     quote_text,
@@ -186,7 +197,6 @@ define_theme! {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn test_partial_theme_inherits_from_base() {

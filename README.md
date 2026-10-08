@@ -29,7 +29,7 @@ Inviscid is currently in pre-`v0.1` active development. Core editing, Live Previ
 - [x] Live Preview with cursor-aware syntax disclosure and raw Source mode
 - [x] GFM tables, task lists, fenced code block folding, and async image dimension probing
 - [x] Multi-tab workspace, project file tree, TOML theme inheritance, and customizable keybindings
-- [ ] Syntax highlighting for fenced code blocks
+- [x] Syntax highlighting for fenced code blocks
 - [ ] Native LaTeX math and diagram (Mermaid) rendering
 - [ ] In-document Find & Replace and workspace-wide search / quick open
 - [ ] Document outline (TOC) view and heading anchor navigation
@@ -59,11 +59,12 @@ cargo test
 
 ## Configuration
 
-| File / Directory | Purpose                               | Default Location (Windows)           | Default Location (macOS / Linux)     |
-| :--------------- | :------------------------------------ | :----------------------------------- | :----------------------------------- |
-| `config.toml`    | User preferences & custom keybindings | `%APPDATA%\inviscid\config.toml`     | `~/.config/inviscid/config.toml`     |
-| `state.toml`     | Open tabs & recent workspaces         | `%LOCALAPPDATA%\inviscid\state.toml` | `~/.local/share/inviscid/state.toml` |
-| `themes/*.toml`  | Custom user themes                    | `%APPDATA%\inviscid\themes\`         | `~/.config/inviscid/themes/`         |
+| File / Directory    | Purpose                                 | Default Location (Windows)           | Default Location (macOS / Linux)     |
+| :------------------ | :-------------------------------------- | :----------------------------------- | :----------------------------------- |
+| `config.toml`       | User preferences & custom keybindings   | `%APPDATA%\inviscid\config.toml`     | `~/.config/inviscid/config.toml`     |
+| `state.toml`        | Open tabs & recent workspaces           | `%LOCALAPPDATA%\inviscid\state.toml` | `~/.local/share/inviscid/state.toml` |
+| `themes/*.toml`     | Custom user themes                      | `%APPDATA%\inviscid\themes\`         | `~/.config/inviscid/themes/`         |
+| `grammars/` (cache) | Grammars & queries fetched from the CDN | `%LOCALAPPDATA%\inviscid\grammars\`  | `~/.local/share/inviscid/grammars/`  |
 
 ### Custom Themes
 

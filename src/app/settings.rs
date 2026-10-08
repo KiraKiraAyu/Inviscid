@@ -4,10 +4,11 @@ use gpui::*;
 use crate::app::actions::{KeybindingMeta, apply_configured_keys, keybindings};
 use crate::config::AppConfig;
 use crate::editor::RenderMode;
+use crate::syntax::{GrammarCdnPreset, normalize_grammar_base_url};
 use crate::theme::ThemeManager;
 use crate::ui::{
     ControlHeight, FontSize, Icon, IconName, IconSize, LineHeight, OptionPill, Radius,
-    SelectableRow, SettingRow, Spacing, Stepper, Switch, WindowTitleBar,
+    SelectableRow, SettingRow, Spacing, Stepper, Switch, TextInput, TextInputEvent, WindowTitleBar,
     format_keystroke_for_display, keystroke_from_gpui,
 };
 
@@ -128,10 +129,24 @@ impl SettingsCategory {
     }
 }
 
+fn is_custom_grammar_url(url: &str) -> bool {
+    let normalized = normalize_grammar_base_url(url);
+    !normalized.is_empty() && GrammarCdnPreset::from_url(&normalized).is_none()
+}
+
+/// Mutually exclusive transient input state within the settings window.
+enum ActiveInput {
+    RecordingKeybinding(&'static str),
+    EditingGrammarUrl {
+        input: Entity<TextInput>,
+        _subscriptions: [Subscription; 2],
+    },
+}
+
 pub struct SettingsWindow {
     focus_handle: FocusHandle,
     active_category: SettingsCategory,
-    recording_action_id: Option<String>,
+    active_input: Option<ActiveInput>,
 }
 
 impl Focusable for SettingsWindow {
@@ -145,7 +160,7 @@ impl SettingsWindow {
         Self {
             focus_handle: cx.focus_handle(),
             active_category: SettingsCategory::General,
-            recording_action_id: None,
+            active_input: None,
         }
     }
 
@@ -155,7 +170,7 @@ impl SettingsWindow {
 
     pub fn set_category(&mut self, category: SettingsCategory, cx: &mut Context<Self>) {
         self.active_category = category;
-        self.recording_action_id = None;
+        self.active_input = None;
         cx.notify();
     }
 
@@ -163,17 +178,104 @@ impl SettingsWindow {
         self.active_category
     }
 
-    pub fn recording_action_id(&self) -> Option<&str> {
-        self.recording_action_id.as_deref()
+    pub fn recording_action_id(&self) -> Option<&'static str> {
+        match self.active_input {
+            Some(ActiveInput::RecordingKeybinding(id)) => Some(id),
+            _ => None,
+        }
     }
 
-    pub fn toggle_recording(&mut self, action_id: &str, cx: &mut Context<Self>) {
-        if self.recording_action_id.as_deref() == Some(action_id) {
-            self.recording_action_id = None;
+    pub fn toggle_recording(&mut self, action_id: &'static str, cx: &mut Context<Self>) {
+        if self.recording_action_id() == Some(action_id) {
+            self.active_input = None;
         } else {
-            self.recording_action_id = Some(action_id.to_string());
+            self.active_input = Some(ActiveInput::RecordingKeybinding(action_id));
         }
         cx.notify();
+    }
+
+    fn is_custom_grammar_mode(&self, cx: &App) -> bool {
+        self.is_editing_grammar_url()
+            || is_custom_grammar_url(&cx.global::<AppConfig>().grammar_base_url)
+    }
+
+    fn select_grammar_preset(&mut self, preset: GrammarCdnPreset, cx: &mut Context<Self>) {
+        self.set_grammar_base_url(preset.url(), cx);
+    }
+
+    fn is_editing_grammar_url(&self) -> bool {
+        matches!(
+            self.active_input,
+            Some(ActiveInput::EditingGrammarUrl { .. })
+        )
+    }
+
+    fn grammar_url_input(&self) -> Option<&Entity<TextInput>> {
+        match &self.active_input {
+            Some(ActiveInput::EditingGrammarUrl { input, .. }) => Some(input),
+            _ => None,
+        }
+    }
+
+    fn start_editing_grammar_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = cx.global::<AppConfig>().grammar_base_url.clone();
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new(&current, cx)
+                .placeholder("https://... (leave empty for offline)")
+                .height(ControlHeight::MD)
+                .radius(Radius::SM)
+                .padding_x(Spacing::MDS);
+            input.buffer_mut().select_all();
+            input
+        });
+        let focus_handle = input.read(cx).focus_handle(cx);
+        let event_sub = cx.subscribe_in(
+            &input,
+            window,
+            |this, _emitter, event: &TextInputEvent, window, cx| match event {
+                TextInputEvent::Commit(text) => {
+                    this.set_grammar_base_url(text.clone(), cx);
+                    window.focus(&this.focus_handle);
+                }
+                TextInputEvent::Cancel => {
+                    this.cancel_editing_grammar_url(cx);
+                    window.focus(&this.focus_handle);
+                }
+            },
+        );
+        let blur_sub = cx.on_blur(&focus_handle, window, |this, _window, cx| {
+            this.commit_grammar_url(cx);
+        });
+        window.focus(&focus_handle);
+        self.active_input = Some(ActiveInput::EditingGrammarUrl {
+            input,
+            _subscriptions: [event_sub, blur_sub],
+        });
+        cx.notify();
+    }
+
+    fn cancel_editing_grammar_url(&mut self, cx: &mut Context<Self>) {
+        if self.is_editing_grammar_url() {
+            self.active_input = None;
+            cx.notify();
+        }
+    }
+
+    fn set_grammar_base_url(&mut self, url: impl Into<String>, cx: &mut Context<Self>) {
+        let normalized = normalize_grammar_base_url(&url.into());
+        self.active_input = None;
+        crate::syntax::set_global_grammar_base_url(normalized.clone());
+        update_config(cx, move |cfg| {
+            cfg.grammar_base_url = normalized;
+        });
+        cx.notify();
+    }
+
+    fn commit_grammar_url(&mut self, cx: &mut Context<Self>) {
+        if let Some(input) = self.grammar_url_input() {
+            let draft = input.read(cx).text();
+            self.set_grammar_base_url(draft, cx);
+        }
     }
 
     /// Publishes an already-mutated keybinding config and drops any in-progress recording.
@@ -183,7 +285,7 @@ impl SettingsWindow {
     fn commit_keybindings(&mut self, cfg: AppConfig, cx: &mut Context<Self>) {
         apply_configured_keys(&cfg, cx);
         cx.set_global(cfg);
-        self.recording_action_id = None;
+        self.active_input = None;
         // Menus in other windows render shortcut hints straight from the keymap.
         cx.refresh_windows();
     }
@@ -295,7 +397,8 @@ impl SettingsWindow {
                     .flex_col()
                     .gap(Spacing::MDS)
                     .child(self.render_mode_row(cx))
-                    .child(self.restore_workspace_row(cx)),
+                    .child(self.restore_workspace_row(cx))
+                    .child(self.grammar_base_url_row(cx)),
             )
     }
 
@@ -347,6 +450,129 @@ impl SettingsWindow {
             })),
         )
         .description("Automatically restore previous open folder and documents on launch.")
+    }
+
+    fn grammar_base_url_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<ThemeManager>().theme().clone();
+        let current_url = cx.global::<AppConfig>().grammar_base_url.clone();
+        let is_custom = self.is_custom_grammar_mode(cx);
+        let preset = if is_custom {
+            None
+        } else {
+            GrammarCdnPreset::from_url(&current_url)
+        };
+        let is_jsdelivr = preset == Some(GrammarCdnPreset::JsDelivr);
+        let is_unpkg = preset == Some(GrammarCdnPreset::Unpkg);
+        let is_offline = preset == Some(GrammarCdnPreset::Offline);
+
+        let url_bar = if let Some(input) = self.grammar_url_input() {
+            div()
+                .id("grammar_url_editor")
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(input.clone())
+                .into_any_element()
+        } else {
+            let display_text = if current_url.is_empty() {
+                "Offline — local grammars only".to_string()
+            } else {
+                current_url.clone()
+            };
+            let text_color = if current_url.is_empty() {
+                theme.text_muted
+            } else {
+                theme.text_secondary
+            };
+
+            div()
+                .id("grammar_url_display")
+                .h(ControlHeight::MD)
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(Spacing::SM)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(FontSize::CAPTION)
+                        .text_color(text_color)
+                        .child(display_text),
+                )
+                .when(is_custom, |this| {
+                    this.child(
+                        div()
+                            .id("grammar_url_edit_btn")
+                            .flex_none()
+                            .px(Spacing::SM)
+                            .py(Spacing::XXS)
+                            .rounded(Radius::XS)
+                            .bg(theme.bg_editor)
+                            .border_1()
+                            .border_color(theme.border_subtle)
+                            .hover(|s| s.bg(theme.btn_hover).border_color(theme.border))
+                            .cursor_pointer()
+                            .text_size(FontSize::CAPTION)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_accent)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.start_editing_grammar_url(window, cx);
+                            }))
+                            .child("Edit"),
+                    )
+                })
+                .into_any_element()
+        };
+
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(Spacing::XS)
+            .child(
+                SettingRow::new(
+                    "Grammar Download Source",
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(Spacing::XS)
+                        .child(
+                            OptionPill::new("grammar_cdn_jsdelivr", "jsDelivr", is_jsdelivr)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.select_grammar_preset(GrammarCdnPreset::JsDelivr, cx);
+                                })),
+                        )
+                        .child(
+                            OptionPill::new("grammar_cdn_unpkg", "unpkg", is_unpkg).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.select_grammar_preset(GrammarCdnPreset::Unpkg, cx);
+                                }),
+                            ),
+                        )
+                        .child(
+                            OptionPill::new("grammar_cdn_offline", "Offline", is_offline).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.select_grammar_preset(GrammarCdnPreset::Offline, cx);
+                                }),
+                            ),
+                        )
+                        .child(
+                            OptionPill::new("grammar_cdn_custom", "Custom", is_custom).on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.start_editing_grammar_url(window, cx);
+                                }),
+                            ),
+                        ),
+                )
+                .description(
+                    "CDN base URL for on-demand Tree-sitter WASM syntax grammars, or Offline to use local grammars only.",
+                ),
+            )
+            .child(url_bar)
     }
 
     fn render_appearance_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -635,7 +861,7 @@ impl SettingsWindow {
 
     /// Whether this action's binding is currently being re-recorded.
     fn is_recording(&self, meta: &KeybindingMeta) -> bool {
-        self.recording_action_id.as_deref() == Some(meta.id)
+        self.recording_action_id() == Some(meta.id)
     }
 
     fn reset_all_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -831,21 +1057,30 @@ impl Render for SettingsWindow {
         div()
             .key_context(crate::ui::key_context::SETTINGS_WINDOW)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                let Some(action_id) = this.recording_action_id.as_deref() else {
-                    if event.keystroke.key.eq_ignore_ascii_case("escape") {
-                        window.remove_window();
+                match &this.active_input {
+                    Some(ActiveInput::RecordingKeybinding(action_id)) => {
+                        let action_id = *action_id;
+                        if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                            this.active_input = None;
+                            cx.notify();
+                            return;
+                        }
+                        if let Some(keystroke) = keystroke_from_gpui(event) {
+                            let mut cfg = cx.global::<AppConfig>().clone();
+                            cfg.set_keybinding(action_id.to_string(), keystroke);
+                            this.commit_keybindings(cfg, cx);
+                        }
                     }
-                    return;
-                };
-                if event.keystroke.key.eq_ignore_ascii_case("escape") {
-                    this.recording_action_id = None;
-                    cx.notify();
-                    return;
-                }
-                if let Some(keystroke) = keystroke_from_gpui(event) {
-                    let mut cfg = cx.global::<AppConfig>().clone();
-                    cfg.set_keybinding(action_id.to_string(), keystroke);
-                    this.commit_keybindings(cfg, cx);
+                    Some(ActiveInput::EditingGrammarUrl { .. }) => {
+                        if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                            this.cancel_editing_grammar_url(cx);
+                        }
+                    }
+                    None => {
+                        if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                            window.remove_window();
+                        }
+                    }
                 }
             }))
             .size_full()
@@ -859,6 +1094,12 @@ impl Render for SettingsWindow {
                 div()
                     .id("settings_body")
                     .track_focus(&self.focus_handle)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, _cx| {
+                            window.focus(&this.focus_handle);
+                        }),
+                    )
                     .flex_1()
                     .min_h_0()
                     .w_full()
@@ -918,7 +1159,6 @@ mod tests {
         assert_eq!(value, 1.2);
     }
 
-
     #[test]
     fn test_settings_categories_have_unique_labels() {
         let all = SettingsCategory::all();
@@ -942,5 +1182,168 @@ mod tests {
             let parsed: crate::config::UserPreferences = toml::from_str(&serialized).unwrap();
             assert_eq!(parsed.default_render_mode, mode);
         }
+    }
+
+    #[test]
+    fn test_is_custom_grammar_url_classification() {
+        assert!(!is_custom_grammar_url(""));
+        assert!(!is_custom_grammar_url("   "));
+        assert!(!is_custom_grammar_url(GrammarCdnPreset::JsDelivr.url()));
+        assert!(!is_custom_grammar_url("https://cdn.jsdelivr.net/npm/"));
+        assert!(!is_custom_grammar_url(GrammarCdnPreset::Unpkg.url()));
+        assert!(!is_custom_grammar_url("https://unpkg.com/"));
+        assert!(is_custom_grammar_url("https://mirror.example.com/npm"));
+    }
+
+    struct ResetGlobalGrammarUrlOnDrop;
+    impl Drop for ResetGlobalGrammarUrlOnDrop {
+        fn drop(&mut self) {
+            crate::syntax::set_global_grammar_base_url("");
+        }
+    }
+
+    fn init_test_globals(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let cfg = AppConfig::default();
+            cx.set_global(ThemeManager::from_config(&cfg));
+            cx.set_global(cfg);
+        });
+    }
+
+    #[gpui::test]
+    fn test_settings_grammar_base_url_presets_and_custom_editing(cx: &mut gpui::TestAppContext) {
+        let _guard = ResetGlobalGrammarUrlOnDrop;
+        init_test_globals(cx);
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            SettingsWindow::new(cx)
+        });
+
+        // Initial presets switching
+        cx.update(|_window, cx| {
+            settings.update(cx, |s, cx| {
+                assert!(!s.is_editing_grammar_url());
+                assert!(!s.is_custom_grammar_mode(cx));
+                assert_eq!(
+                    cx.global::<AppConfig>().grammar_base_url,
+                    GrammarCdnPreset::DEFAULT.url()
+                );
+
+                // Switch to unpkg preset
+                s.select_grammar_preset(GrammarCdnPreset::Unpkg, cx);
+                assert!(!s.is_custom_grammar_mode(cx));
+                assert_eq!(
+                    cx.global::<AppConfig>().grammar_base_url,
+                    GrammarCdnPreset::Unpkg.url()
+                );
+
+                // Switch to offline preset
+                s.select_grammar_preset(GrammarCdnPreset::Offline, cx);
+                assert!(!s.is_custom_grammar_mode(cx));
+                assert_eq!(cx.global::<AppConfig>().grammar_base_url, "");
+            });
+        });
+
+        // 2Custom mode starts editing URL directly
+        let input = cx.update(|window, cx| {
+            settings.update(cx, |s, cx| {
+                s.start_editing_grammar_url(window, cx);
+                assert!(s.is_editing_grammar_url());
+                assert!(s.is_custom_grammar_mode(cx));
+                s.grammar_url_input().unwrap().clone()
+            })
+        });
+
+        // Typing custom URL and blurring/committing normalizes and saves
+        cx.update(|_window, cx| {
+            input.update(cx, |inp, _cx| {
+                inp.buffer_mut()
+                    .insert_text("https://mirror.example.com/npm/");
+            });
+        });
+
+        // Blur event commits input
+        cx.update(|_window, cx| {
+            settings.update(cx, |s, cx| {
+                s.commit_grammar_url(cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|_window, cx| {
+            settings.update(cx, |s, cx| {
+                assert!(!s.is_editing_grammar_url());
+                assert!(s.is_custom_grammar_mode(cx));
+                assert_eq!(
+                    cx.global::<AppConfig>().grammar_base_url,
+                    "https://mirror.example.com/npm"
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_settings_grammar_url_editing_and_cancellation(cx: &mut gpui::TestAppContext) {
+        let _guard = ResetGlobalGrammarUrlOnDrop;
+        init_test_globals(cx);
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            SettingsWindow::new(cx)
+        });
+
+        let input = cx.update(|window, cx| {
+            settings.update(cx, |s, cx| {
+                s.select_grammar_preset(GrammarCdnPreset::Offline, cx);
+                s.start_editing_grammar_url(window, cx);
+                assert!(s.is_editing_grammar_url());
+                s.grammar_url_input().unwrap().clone()
+            })
+        });
+
+        // Typing but cancelling discards draft without mutating config
+        cx.update(|_window, cx| {
+            assert_eq!(input.read(cx).text(), "");
+            input.update(cx, |inp, cx| {
+                inp.buffer_mut()
+                    .insert_text("https://discarded.example.com");
+                inp.cancel(cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|_window, cx| {
+            settings.update(cx, |s, cx| {
+                assert!(!s.is_editing_grammar_url());
+                assert_eq!(cx.global::<AppConfig>().grammar_base_url, "");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_settings_active_input_mutual_exclusion_and_cleanup(cx: &mut gpui::TestAppContext) {
+        let _guard = ResetGlobalGrammarUrlOnDrop;
+        init_test_globals(cx);
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            SettingsWindow::new(cx)
+        });
+
+        cx.update(|window, cx| {
+            settings.update(cx, |s, cx| {
+                // 1. Keybinding recording is active
+                s.toggle_recording("SaveFile", cx);
+                assert_eq!(s.recording_action_id(), Some("SaveFile"));
+
+                // Starting URL editing interrupts and drops keybinding recording
+                s.start_editing_grammar_url(window, cx);
+                assert_eq!(s.recording_action_id(), None);
+                assert!(s.is_editing_grammar_url());
+
+                // 2. Switching categories drops any active input
+                s.set_category(SettingsCategory::Appearance, cx);
+                assert!(!s.is_editing_grammar_url());
+                assert_eq!(s.recording_action_id(), None);
+            });
+        });
     }
 }

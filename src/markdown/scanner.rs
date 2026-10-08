@@ -1,7 +1,34 @@
 use super::inline::{InlineSpan, parse_inline_spans};
-use super::prefix::{BlockPrefix, is_thematic_break, parse_block_prefix};
+use super::prefix::{
+    BlockPrefix, fence_info, is_fence_line, is_thematic_break, parse_block_prefix,
+};
 use super::table::{is_table_delimiter_row, parse_table_alignments, parse_table_row_cells};
 use super::types::{BlockKind, ParsedLine, TableAlignment};
+
+fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
+    lines
+        .get(from_idx..)?
+        .iter()
+        .position(|l| is_fence_line(l))
+        .map(|p| p + from_idx)
+}
+
+fn highlight_fenced_slice(
+    lines: &[String],
+    open_fence_idx: Option<usize>,
+    close_fence_idx: usize,
+) -> (usize, Vec<Vec<InlineSpan>>) {
+    let content_start = open_fence_idx.map(|i| i + 1).unwrap_or(0);
+    let lang = open_fence_idx
+        .and_then(|i| fence_info(&lines[i]))
+        .unwrap_or("");
+    let spans = if content_start < close_fence_idx {
+        crate::syntax::highlight_code_block(lang, &lines[content_start..close_fence_idx])
+    } else {
+        Vec::new()
+    };
+    (content_start, spans)
+}
 
 pub struct MarkdownScanner;
 
@@ -20,6 +47,19 @@ impl MarkdownScanner {
         let mut current_table_alignments: Option<Vec<TableAlignment>> = None;
         let mut next_closing_fence: Option<usize> = None;
         let mut no_more_closing_fences = false;
+        let mut current_code_block_highlights: Option<(usize, Vec<Vec<InlineSpan>>)> =
+            if initial_in_code_fence && range.start < lines.len() {
+                let open_fence_idx = (0..range.start).rev().find(|&i| is_fence_line(&lines[i]));
+                let close_fence_idx =
+                    find_next_fence_from(lines, range.start).unwrap_or(lines.len());
+                Some(highlight_fenced_slice(
+                    lines,
+                    open_fence_idx,
+                    close_fence_idx,
+                ))
+            } else {
+                None
+            };
 
         for idx in range {
             let raw_line = &lines[idx];
@@ -32,18 +72,17 @@ impl MarkdownScanner {
                     if !no_more_closing_fences
                         && (next_closing_fence.is_none() || next_closing_fence.unwrap() <= idx)
                     {
-                        next_closing_fence = lines[(idx + 1)..]
-                            .iter()
-                            .position(|l| l.trim_start().starts_with("```"))
-                            .map(|p| p + idx + 1);
+                        next_closing_fence = find_next_fence_from(lines, idx + 1);
                         if next_closing_fence.is_none() {
                             no_more_closing_fences = true;
                         }
                     }
 
-                    if next_closing_fence.is_some() {
+                    if let Some(close_idx) = next_closing_fence {
                         in_code_fence = true;
                         let lang_str = stripped.trim().to_string();
+                        current_code_block_highlights =
+                            Some(highlight_fenced_slice(lines, Some(idx), close_idx));
 
                         let mut spans = Vec::new();
                         // Opening backticks are hidden in Live Preview mode
@@ -67,6 +106,7 @@ impl MarkdownScanner {
                     // If there is no closing fence below, treat as normal paragraph text
                 } else {
                     in_code_fence = false;
+                    current_code_block_highlights = None;
                     let char_count = raw_line.chars().count();
                     result.push(ParsedLine {
                         raw_text: raw_line.clone(),
@@ -84,11 +124,20 @@ impl MarkdownScanner {
             }
 
             if in_code_fence {
-                let char_count = raw_line.chars().count();
+                let spans = current_code_block_highlights
+                    .as_ref()
+                    .and_then(|(content_start, block_spans)| {
+                        idx.checked_sub(*content_start)
+                            .and_then(|rel_idx| block_spans.get(rel_idx).cloned())
+                    })
+                    .unwrap_or_else(|| {
+                        let char_count = raw_line.chars().count();
+                        vec![InlineSpan::plain(raw_line.clone(), (0, char_count))]
+                    });
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::CodeBlockContent,
-                    spans: vec![InlineSpan::plain(raw_line.clone(), (0, char_count))],
+                    spans,
                 });
                 continue;
             }
@@ -234,7 +283,7 @@ pub fn compute_syntactic_separators(lines: &[String]) -> Vec<bool> {
     let mut prev_is_separator = false;
 
     for (i, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("```") {
+        if is_fence_line(line) {
             in_fence = !in_fence;
         }
 
@@ -262,7 +311,7 @@ pub fn is_syntactic_separator(lines: &[String], idx: usize) -> bool {
     let mut prev_is_separator = false;
 
     for (i, line) in lines.iter().enumerate().take(idx + 1) {
-        if line.trim_start().starts_with("```") {
+        if is_fence_line(line) {
             in_fence = !in_fence;
         }
 

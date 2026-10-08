@@ -11,6 +11,7 @@ pub mod fs;
 pub mod http;
 pub mod markdown;
 pub mod platform;
+pub mod sync;
 pub mod syntax;
 pub mod theme;
 pub mod ui;

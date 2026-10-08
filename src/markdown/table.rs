@@ -1,4 +1,5 @@
 use super::inline::parse_inline_spans;
+use super::prefix::is_fence_line;
 use super::types::{TableAlignment, TableCell};
 
 pub fn is_table_delimiter_row(line: &str) -> bool {
@@ -135,7 +136,7 @@ pub fn get_table_metadata(lines: &[String], target_line: usize) -> Option<TableM
             break;
         }
 
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("```") {
+        if trimmed.is_empty() || trimmed.starts_with('#') || is_fence_line(trimmed) {
             break;
         }
     }
@@ -151,7 +152,7 @@ pub fn get_table_metadata(lines: &[String], target_line: usize) -> Option<TableM
         if trimmed.is_empty()
             || !trimmed.contains('|')
             || trimmed.starts_with('#')
-            || trimmed.starts_with("```")
+            || is_fence_line(trimmed)
         {
             break;
         }

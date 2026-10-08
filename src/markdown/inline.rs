@@ -1,3 +1,17 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SyntaxToken {
+    Keyword,
+    Function,
+    Type,
+    String,
+    Number,
+    Comment,
+    Operator,
+    Punctuation,
+    Variable,
+    Attribute,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct InlineSpan {
     pub text: String,
@@ -11,6 +25,7 @@ pub struct InlineSpan {
     pub is_marker: bool,
     pub is_always_hidden_in_live: bool,
     pub is_ime_preedit: bool,
+    pub syntax_token: Option<SyntaxToken>,
     pub group_range: (usize, usize),
     pub span_range: (usize, usize),
 }
@@ -19,6 +34,20 @@ impl InlineSpan {
     pub fn plain(text: impl Into<String>, range: (usize, usize)) -> Self {
         Self {
             text: text.into(),
+            group_range: range,
+            span_range: range,
+            ..Default::default()
+        }
+    }
+
+    pub fn syntax(
+        text: impl Into<String>,
+        range: (usize, usize),
+        syntax_token: Option<SyntaxToken>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            syntax_token,
             group_range: range,
             span_range: range,
             ..Default::default()

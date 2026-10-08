@@ -366,7 +366,7 @@ impl Editor {
         let mut async_update_rx = futures::stream::select(image_rx, syntax_rx);
         let async_update_task = cx.spawn(async move |this, cx| {
             use futures::StreamExt;
-            while let Some(()) = async_update_rx.next().await {
+            while let Some(_version) = async_update_rx.next().await {
                 let res = this.update(cx, |_editor, cx| {
                     cx.notify();
                 });

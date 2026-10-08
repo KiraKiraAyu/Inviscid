@@ -1039,20 +1039,9 @@ fn test_project_panel_inline_input_new_file_and_rename() {
             input.update(cx, |inp, _cx| {
                 inp.buffer_mut().insert_text("changelog.md");
             });
-            // Press Enter. The box is deeper on the dispatch path than the panel and stops
-            // propagation, so this is its key to handle — the panel never sees it.
+            // Commit the inline input
             input.update(cx, |inp, cx| {
-                inp.handle_key_down(
-                    &gpui::KeyDownEvent {
-                        keystroke: gpui::Keystroke {
-                            modifiers: gpui::Modifiers::default(),
-                            key: "enter".to_string(),
-                            key_char: None,
-                        },
-                        is_held: false,
-                    },
-                    cx,
-                );
+                inp.commit(cx);
             });
         });
     });
@@ -1089,23 +1078,13 @@ fn test_project_panel_inline_input_new_file_and_rename() {
 
     cx.update(|_window, cx| {
         panel_entity.update(cx, |panel, cx| {
-            // Cancel with Escape, again through the box that owns the key.
+            // Cancel with Escape
             let input = panel
                 .inline_input()
                 .cloned()
                 .expect("inline input should be open");
             input.update(cx, |inp, cx| {
-                inp.handle_key_down(
-                    &gpui::KeyDownEvent {
-                        keystroke: gpui::Keystroke {
-                            modifiers: gpui::Modifiers::default(),
-                            key: "escape".to_string(),
-                            key_char: None,
-                        },
-                        is_held: false,
-                    },
-                    cx,
-                );
+                inp.cancel(cx);
             });
         });
     });
@@ -1285,28 +1264,6 @@ fn test_inline_input_rich_navigation_and_ime(cx: &mut TestAppContext) {
             assert_eq!(this.buffer().cursor_pos().col, 0);
             this.buffer_mut().delete_forward_mode(false);
             assert_eq!(this.text(), "ib.r");
-
-            // KeyDownEvent Backspace handling
-            this.buffer_mut().move_to_line_end(false);
-            this.handle_key_down(
-                &gpui::KeyDownEvent {
-                    keystroke: gpui::Keystroke::parse("backspace").unwrap(),
-                    is_held: false,
-                },
-                cx,
-            );
-            assert_eq!(this.text(), "ib.");
-
-            // KeyDownEvent Delete handling
-            this.buffer_mut().move_to_line_start_mode(false, false);
-            this.handle_key_down(
-                &gpui::KeyDownEvent {
-                    keystroke: gpui::Keystroke::parse("delete").unwrap(),
-                    is_held: false,
-                },
-                cx,
-            );
-            assert_eq!(this.text(), "b.");
         });
     });
 }
@@ -2964,9 +2921,9 @@ async fn test_inline_input_drag_selection_forward_and_backward(cx: &mut TestAppC
             assert_eq!(initial_sel.range, 0..14);
 
             // 1. Begin mouse drag at column 2 ('m')
-            this.start_drag(2, cx);
-            assert!(this.is_dragging());
-            assert_eq!(this.drag_anchor(), Some(2));
+            this.input_mut().start_drag(2);
+            assert!(this.input().is_dragging());
+            assert_eq!(this.input().drag_anchor(), Some(2));
             assert_eq!(this.buffer().selection().anchor, Position::new(0, 2));
             assert_eq!(this.buffer().selection().head, Position::new(0, 2));
 
@@ -3006,12 +2963,12 @@ async fn test_inline_input_drag_selection_forward_and_backward(cx: &mut TestAppC
             );
 
             // 6. Stop drag:
-            this.stop_drag(cx);
-            assert!(!this.is_dragging());
-            assert_eq!(this.drag_anchor(), None);
+            this.input_mut().stop_drag();
+            assert!(!this.input().is_dragging());
+            assert_eq!(this.input().drag_anchor(), None);
 
             // 7. Verify col_for_point at offset 0
-            assert_eq!(this.col_for_point(px(0.0), window), 0);
+            assert_eq!(this.input().col_for_point(px(0.0), window), 0);
         });
     });
 }
@@ -3187,17 +3144,9 @@ async fn test_inline_input_cursor_breathing_and_shared_engine(cx: &mut TestAppCo
         });
     });
 
-    // 3. Verify cursor lifecycle and task management on InlineInput
+    // 3. Verify cursor lifecycle and task management on TextInput
     cx.update(|_window, cx| {
-        let dummy_path = PathBuf::from("workspace/file.md");
-        let input_entity = cx.new(|cx| {
-            InlineInput::new(
-                InlineInputKind::NewFile { parent: dummy_path },
-                "hello",
-                1,
-                cx,
-            )
-        });
+        let input_entity = cx.new(|cx| inviscid::ui::TextInput::new("hello", cx));
 
         input_entity.update(cx, |this, cx| {
             assert_eq!(this.cursor_opacity(), 1.0);

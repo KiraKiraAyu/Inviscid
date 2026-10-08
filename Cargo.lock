@@ -3061,6 +3061,7 @@ dependencies = [
  "dirs 7.0.0",
  "futures",
  "gpui",
+ "parking_lot",
  "rfd",
  "rust-embed",
  "serde",

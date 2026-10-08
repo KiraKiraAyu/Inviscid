@@ -36,7 +36,7 @@ impl RenderOnce for SettingRow {
 
         div()
             .w_full()
-            .p(Spacing::SMD)
+            .py(Spacing::SMD)
             .overflow_hidden()
             .flex()
             .flex_row()

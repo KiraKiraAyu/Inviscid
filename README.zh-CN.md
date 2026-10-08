@@ -29,7 +29,7 @@ Inviscid 处于 `v0.1` 发布前的早期开发阶段。核心编辑、Live Prev
 - [x] Live Preview 焦点语法展开与纯源码（Source）双模式切换
 - [x] GFM 表格、任务列表、围栏代码块折叠与本地/远程图片异步尺寸嗅探
 - [x] 多标签页工作区、项目文件树管理、TOML 主题继承与可视化快捷键录制
-- [ ] 围栏代码块语法高亮
+- [x] 围栏代码块语法高亮
 - [ ] 数学公式（LaTeX Math）与图表（Mermaid）原生渲染
 - [ ] 文档内查找与替换（Find & Replace）及工作区快速打开 / 全局搜索
 - [ ] 文档标题大纲（Outline / TOC）视图与标题锚点跳转
@@ -59,11 +59,12 @@ cargo test
 
 ## 配置文件与自定义主题
 
-| 文件 / 目录     | 用途                         | 默认路径（Windows）                  | 默认路径（macOS / Linux）            |
-| :-------------- | :--------------------------- | :----------------------------------- | :----------------------------------- |
-| `config.toml`   | 用户偏好设置与自定义快捷键   | `%APPDATA%\inviscid\config.toml`     | `~/.config/inviscid/config.toml`     |
-| `state.toml`    | 已打开标签页与最近工作区历史 | `%LOCALAPPDATA%\inviscid\state.toml` | `~/.local/share/inviscid/state.toml` |
-| `themes/*.toml` | 用户自定义主题               | `%APPDATA%\inviscid\themes\`         | `~/.config/inviscid/themes/`         |
+| 文件 / 目录         | 用途                          | 默认路径（Windows）                  | 默认路径（macOS / Linux）            |
+| :------------------ | :---------------------------- | :----------------------------------- | :----------------------------------- |
+| `config.toml`       | 用户偏好设置与自定义快捷键    | `%APPDATA%\inviscid\config.toml`     | `~/.config/inviscid/config.toml`     |
+| `state.toml`        | 已打开标签页与最近工作区历史  | `%LOCALAPPDATA%\inviscid\state.toml` | `~/.local/share/inviscid/state.toml` |
+| `themes/*.toml`     | 用户自定义主题                | `%APPDATA%\inviscid\themes\`         | `~/.config/inviscid/themes/`         |
+| `grammars/`（缓存） | 从 CDN 下载的语法包与高亮查询 | `%LOCALAPPDATA%\inviscid\grammars\`  | `~/.local/share/inviscid/grammars/`  |
 
 ### 自定义主题
 
