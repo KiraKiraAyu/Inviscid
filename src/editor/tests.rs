@@ -2999,3 +2999,72 @@ fn test_editor_save_preserves_line_ending_and_tracks_mtime(cx: &mut gpui::TestAp
         });
     });
 }
+
+#[gpui::test]
+fn test_scrollbar_bottom_matches_wheel_max_scroll(cx: &mut gpui::TestAppContext) {
+    use gpui::{Bounds, Point, ScrollDelta, ScrollWheelEvent, point, px, size};
+
+    let content = (0..100)
+        .map(|i| format!("Line content number {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&content, None), cx)
+    });
+    cx.run_until_parked();
+
+    let track_h = px(600.0);
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(800.0), track_h),
+            };
+
+            let total_h = ed.get_total_content_height();
+            assert!(total_h > track_h);
+
+            let metrics = ed.scrollbar_metrics(track_h, total_h);
+            let wheel_max_scroll = ed.get_max_scroll_top();
+
+            assert_eq!(metrics.max_scroll, wheel_max_scroll);
+            assert!(metrics.has_overflow);
+
+            ed.scroll.set_direct(metrics.max_scroll, metrics.max_scroll);
+            assert_eq!(ed.scroll.current_scroll_top, metrics.max_scroll);
+
+            let wheel_event = ScrollWheelEvent {
+                delta: ScrollDelta::Lines(Point::new(0.0, -3.0)),
+                ..Default::default()
+            };
+            ed.handle_scroll_wheel(&wheel_event, cx);
+
+            assert_eq!(ed.scroll.target_scroll_top, metrics.max_scroll);
+        });
+    });
+
+    let short_content = "Line 1\nLine 2\nLine 3\n";
+    let (short_editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(short_content, None), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        short_editor.update(cx, |ed, cx| {
+            ed.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(800.0), track_h),
+            };
+            let total_h = ed.get_total_content_height();
+            assert!(total_h < track_h);
+            assert_eq!(ed.get_max_scroll_top(), px(0.0));
+
+            let wheel_event = ScrollWheelEvent {
+                delta: ScrollDelta::Lines(Point::new(0.0, -3.0)),
+                ..Default::default()
+            };
+            ed.handle_scroll_wheel(&wheel_event, cx);
+            assert_eq!(ed.scroll.target_scroll_top, px(0.0));
+        });
+    });
+}

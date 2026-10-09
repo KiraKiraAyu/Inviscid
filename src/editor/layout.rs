@@ -20,6 +20,9 @@ pub const MAX_CONTENT_WIDTH_SOURCE: Pixels = px(960.0);
 /// Maximum content container width in Live Preview mode.
 pub const MAX_CONTENT_WIDTH_LIVE: Pixels = px(860.0);
 
+/// Bottom overscroll buffer allowing the last line to sit comfortably above the window bottom.
+pub const BOTTOM_OVERSCROLL: Pixels = px(96.0);
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockTypography {
     pub font_size: Pixels,
@@ -967,15 +970,60 @@ impl Editor {
         self.layout_snapshot().total_height
     }
 
-    pub fn get_max_scroll_top(&self) -> Pixels {
-        let total_h = self.get_total_content_height();
-        let viewport = self.viewport_bounds_val();
-        let vp_h = if viewport.size.height > px(50.0) {
-            viewport.size.height
+    /// Viewport height with a fallback before initial layout measurement.
+    #[inline]
+    pub fn viewport_height(&self) -> Pixels {
+        if self.viewport_bounds.size.height > px(50.0) {
+            self.viewport_bounds.size.height
         } else {
             px(700.0)
-        };
-        let overscroll = (vp_h - px(160.0)).max(px(120.0));
-        (total_h + overscroll - vp_h).max(px(0.0))
+        }
     }
+
+    #[inline]
+    pub fn get_max_scroll_top(&self) -> Pixels {
+        self.scrollbar_metrics(self.viewport_height(), self.get_total_content_height())
+            .max_scroll
+    }
+
+    pub(crate) fn scrollbar_metrics(
+        &self,
+        track_h: Pixels,
+        total_content_h: Pixels,
+    ) -> ScrollbarMetrics {
+        let (max_scroll, virtual_h) = if total_content_h <= track_h {
+            (px(0.0), total_content_h)
+        } else {
+            let v_h = total_content_h + BOTTOM_OVERSCROLL;
+            ((v_h - track_h).max(px(0.0)), v_h)
+        };
+
+        let thumb_h = if virtual_h > px(0.0) {
+            ((track_h / virtual_h) * track_h).clamp(px(28.0), track_h)
+        } else {
+            track_h
+        };
+
+        let thumb_y = if max_scroll > px(0.0) {
+            let scroll_ratio = (self.scroll.current_scroll_top / max_scroll).clamp(0.0, 1.0);
+            scroll_ratio * (track_h - thumb_h)
+        } else {
+            px(0.0)
+        };
+
+        ScrollbarMetrics {
+            max_scroll,
+            thumb_y,
+            thumb_h,
+            has_overflow: max_scroll > px(2.0),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollbarMetrics {
+    pub max_scroll: Pixels,
+    pub thumb_y: Pixels,
+    pub thumb_h: Pixels,
+    pub has_overflow: bool,
 }

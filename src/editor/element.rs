@@ -42,6 +42,10 @@ impl InteractiveElement for EditorElement {
     }
 }
 
+const SCROLLBAR_THUMB_WIDTH_IDLE: Pixels = px(5.0);
+const SCROLLBAR_THUMB_WIDTH_DRAGGING: Pixels = px(8.0);
+const SCROLLBAR_THUMB_RIGHT_MARGIN: Pixels = px(2.0);
+
 pub struct ScrollbarDrawInfo {
     pub thumb_bounds: Bounds<Pixels>,
     pub thumb_color: Hsla,
@@ -206,9 +210,7 @@ impl Element for EditorElement {
                     }
 
                     let track_h = bounds.size.height;
-                    let (max_scroll, thumb_y, thumb_h) =
-                        editor.scrollbar_thumb_metrics(track_h, layout.total_height);
-                    let has_overflow = max_scroll > px(2.0);
+                    let metrics = editor.scrollbar_metrics(track_h, layout.total_height);
 
                     let last_scroll = editor.scroll.last_scroll_action;
                     let scroll_elapsed = std::time::Instant::now()
@@ -224,11 +226,11 @@ impl Element for EditorElement {
                             0.0
                         };
 
-                    let scrollbar = if has_overflow && scrollbar_opacity > 0.01 {
+                    let scrollbar = if metrics.has_overflow && scrollbar_opacity > 0.01 {
                         let thumb_w = if editor.scroll.is_scrollbar_dragging {
-                            px(8.0)
+                            SCROLLBAR_THUMB_WIDTH_DRAGGING
                         } else {
-                            px(5.0)
+                            SCROLLBAR_THUMB_WIDTH_IDLE
                         };
                         let thumb_color = if editor.scroll.is_scrollbar_dragging {
                             theme.text_accent.opacity(0.85)
@@ -236,8 +238,11 @@ impl Element for EditorElement {
                             theme.border.opacity(0.6 * scrollbar_opacity)
                         };
                         let thumb_bounds = Bounds::new(
-                            point(bounds.right() - thumb_w - px(2.0), bounds.top() + thumb_y),
-                            size(thumb_w, thumb_h),
+                            point(
+                                bounds.right() - thumb_w - SCROLLBAR_THUMB_RIGHT_MARGIN,
+                                bounds.top() + metrics.thumb_y,
+                            ),
+                            size(thumb_w, metrics.thumb_h),
                         );
                         Some(ScrollbarDrawInfo {
                             thumb_bounds,

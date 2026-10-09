@@ -300,12 +300,7 @@ impl Editor {
         let cursor_line = self.buffer.cursor_pos().line;
         let (line_top, line_bottom) = self.get_line_y_range(cursor_line);
 
-        let viewport = self.viewport_bounds_val();
-        let viewport_height = if viewport.size.height > px(50.0) {
-            viewport.size.height
-        } else {
-            px(700.0) // Safe fallback before first layout measurement
-        };
+        let viewport_height = self.viewport_height();
 
         let margin = px(56.0); // Comfort margin in pixels (~2.5 lines)
         let scroll_top = self.scroll.target_scroll_top;

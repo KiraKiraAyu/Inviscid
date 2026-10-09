@@ -210,29 +210,6 @@ impl Editor {
         }
     }
 
-    /// Returns `(max_scroll, thumb_y, thumb_h)` for the vertical scrollbar over `track_h`.
-    pub(crate) fn scrollbar_thumb_metrics(
-        &self,
-        track_h: Pixels,
-        total_content_h: Pixels,
-    ) -> (Pixels, Pixels, Pixels) {
-        let scroll_h = self.viewport_bounds_val().size.height.max(px(200.0));
-        let max_scroll = (total_content_h - scroll_h).max(px(0.0));
-        let overscroll_h = (track_h - px(160.0)).max(px(120.0));
-        let thumb_h = if total_content_h > px(0.0) {
-            ((track_h / (total_content_h + overscroll_h)) * track_h).clamp(px(28.0), track_h)
-        } else {
-            track_h
-        };
-        let scroll_ratio = if max_scroll > px(0.0) {
-            (self.scroll.current_scroll_top / max_scroll).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let thumb_y = scroll_ratio * (track_h - thumb_h);
-        (max_scroll, thumb_y, thumb_h)
-    }
-
     pub fn handle_drag_move(
         &mut self,
         mouse_pos: Point<Pixels>,
@@ -240,21 +217,20 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if self.scroll.is_scrollbar_dragging {
-            let track_h = self.viewport_bounds_val().size.height.max(px(200.0));
-            let (max_scroll, _, thumb_h) =
-                self.scrollbar_thumb_metrics(track_h, self.get_total_content_height());
+            let track_h = self.viewport_height();
+            let metrics = self.scrollbar_metrics(track_h, self.get_total_content_height());
 
             if let (Some(start_y), Some(start_scroll)) = (
                 self.scroll.scrollbar_drag_start_y,
                 self.scroll.scrollbar_drag_start_scroll,
             ) {
                 let dy = mouse_pos.y - start_y;
-                let available_track = track_h - thumb_h;
+                let available_track = track_h - metrics.thumb_h;
                 if available_track > px(0.0) {
-                    let scroll_delta = (dy / available_track) * max_scroll;
+                    let scroll_delta = (dy / available_track) * metrics.max_scroll;
                     self.scroll_task = None;
                     self.scroll
-                        .set_direct(start_scroll + scroll_delta, max_scroll);
+                        .set_direct(start_scroll + scroll_delta, metrics.max_scroll);
                     self.scroll.last_scroll_action = std::time::Instant::now();
                     cx.notify();
                 }
@@ -508,32 +484,33 @@ impl Editor {
         }
     }
 
+    const SCROLLBAR_TRACK_HIT_WIDTH: Pixels = px(14.0);
+
     pub(crate) fn try_handle_scrollbar_click(
         &mut self,
         pos: Point<Pixels>,
         cx: &mut Context<Self>,
     ) -> bool {
         let vp = self.viewport_bounds_val();
-        if pos.x < vp.right() - px(14.0) {
+        if pos.x < vp.right() - Self::SCROLLBAR_TRACK_HIT_WIDTH {
             return false;
         }
-        let track_h = vp.size.height;
-        let (max_scroll, thumb_y, thumb_h) =
-            self.scrollbar_thumb_metrics(track_h, self.get_total_content_height());
-        if max_scroll <= px(2.0) {
+        let track_h = self.viewport_height();
+        let metrics = self.scrollbar_metrics(track_h, self.get_total_content_height());
+        if !metrics.has_overflow {
             return false;
         }
 
         let rel_y = pos.y - vp.origin.y;
-        if rel_y >= thumb_y && rel_y <= thumb_y + thumb_h {
+        if rel_y >= metrics.thumb_y && rel_y <= metrics.thumb_y + metrics.thumb_h {
             self.scroll.is_scrollbar_dragging = true;
             self.scroll.scrollbar_drag_start_y = Some(pos.y);
             self.scroll.scrollbar_drag_start_scroll = Some(self.scroll.target_scroll_top);
         } else {
             let ratio = (rel_y / track_h).clamp(0.0, 1.0);
-            let target = ratio * max_scroll;
+            let target = ratio * metrics.max_scroll;
             self.scroll_task = None;
-            self.scroll.set_direct(target, max_scroll);
+            self.scroll.set_direct(target, metrics.max_scroll);
             self.scroll.last_scroll_action = std::time::Instant::now();
         }
         cx.notify();
