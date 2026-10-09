@@ -60,6 +60,30 @@ pub fn get_block_left_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
     }
 }
 
+/// Computes the top vertical offset of text content within a block container in Live Preview
+pub fn get_block_top_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
+    if mode == RenderMode::Source {
+        return px(0.0);
+    }
+    match kind {
+        BlockKind::Heading { .. } => px(14.0),
+        BlockKind::CodeBlock {
+            is_fence_start: true,
+        } => px(10.0),
+        BlockKind::CodeBlockContent => px(1.0),
+        BlockKind::Table {
+            is_header: true, ..
+        } => px(8.0),
+        BlockKind::TaskList { .. }
+        | BlockKind::BulletList
+        | BlockKind::OrderedList { .. }
+        | BlockKind::Paragraph
+        | BlockKind::Image { .. }
+        | BlockKind::BlockQuote => px(4.0),
+        _ => px(0.0),
+    }
+}
+
 /// Maps a raw document column to a byte offset in the visible rendered text.
 /// `disclosure_col` must match the column used when building `spans`.
 pub fn raw_col_to_visible_byte(
@@ -894,7 +918,12 @@ fn calculate_col_from_spans(
                 byte_offset += line.unwrapped_layout.len;
             }
 
-            let text_rel_point = point(text_rel_x, remaining_y);
+            let num_v = chosen_line.wrap_boundaries.len() + 1;
+            let last_v = num_v - 1;
+            let max_safe_y = (last_v as f32) * lcx.line_height + lcx.line_height * 0.5;
+            let clamped_y = remaining_y.min(max_safe_y);
+
+            let text_rel_point = point(text_rel_x, clamped_y);
             let idx_in_line =
                 match chosen_line.closest_index_for_position(text_rel_point, lcx.line_height) {
                     Ok(idx) => idx,
@@ -1096,7 +1125,11 @@ fn find_link_at_spans(
     }
 
     let text_rel_x = relative_point.x - lcx.align_x;
-    let text_rel_point = point(text_rel_x, relative_point.y);
+    let num_v = wrapped_line.wrap_boundaries.len() + 1;
+    let last_v = num_v - 1;
+    let max_safe_y = (last_v as f32) * lcx.line_height + lcx.line_height * 0.5;
+    let clamped_y = relative_point.y.max(px(0.0)).min(max_safe_y);
+    let text_rel_point = point(text_rel_x, clamped_y);
 
     let closest_byte =
         match wrapped_line.closest_index_for_position(text_rel_point, lcx.line_height) {

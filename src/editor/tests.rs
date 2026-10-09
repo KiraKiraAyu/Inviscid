@@ -1610,6 +1610,46 @@ fn test_mouse_hit_testing_live_preview_offsets() {
                 ed.find_pos_for_mouse_point(click_9, window),
                 Position::new(9, 0)
             );
+            // Test clicking in the bottom half of the heading to the right of text
+            let click_8_bottom_half_end = point(
+                line_8_bounds.origin.x + px(300.0),
+                line_8_bounds.origin.y + px(42.0),
+            );
+            assert_eq!(
+                ed.find_pos_for_mouse_point(click_8_bottom_half_end, window),
+                Position::new(8, 17)
+            );
+
+            // Test clicking in the bottom padding/gap of heading to the right of text
+            let click_8_gap_end = point(
+                line_8_bounds.origin.x + px(300.0),
+                line_8_bounds.origin.y + px(52.0),
+            );
+            assert_eq!(
+                ed.find_pos_for_mouse_point(click_8_gap_end, window),
+                Position::new(8, 17)
+            );
+
+            // Test clicking in the bottom padding/gap of paragraph 0 to the right of text
+            let click_0_gap_end = point(
+                line_0_bounds.origin.x + px(300.0),
+                line_0_bounds.origin.y + px(30.0),
+            );
+            assert_eq!(
+                ed.find_pos_for_mouse_point(click_0_gap_end, window),
+                Position::new(0, 27)
+            );
+
+            // Test clicking in the middle of heading text in the bottom half
+            let mid_x = ed.get_pixel_x_for_col(Position::new(8, 8), window);
+            let click_8_mid_bottom = point(
+                line_8_bounds.origin.x + mid_x,
+                line_8_bounds.origin.y + px(38.0),
+            );
+            assert_eq!(
+                ed.find_pos_for_mouse_point(click_8_mid_bottom, window),
+                Position::new(8, 8)
+            );
         });
     });
 }

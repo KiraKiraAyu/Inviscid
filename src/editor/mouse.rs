@@ -172,8 +172,11 @@ impl Editor {
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
 
+            let top_offset = super::shaping::get_block_top_offset(&parsed.kind, self.render_mode);
+            let in_canvas_point = gpui::point(rel_point.x, (rel_point.y - top_offset).max(px(0.0)));
+
             let mut col = super::shaping::calculate_col_from_point(
-                rel_point,
+                in_canvas_point,
                 parsed,
                 font_size,
                 line_height,
@@ -437,7 +440,10 @@ impl Editor {
             scx,
         );
 
-        super::shaping::find_link_at_pixel_point(line_idx, rel_point, parsed, lcx, window)
+        let top_offset = super::shaping::get_block_top_offset(&parsed.kind, self.render_mode);
+        let in_canvas_point = gpui::point(rel_point.x, (rel_point.y - top_offset).max(px(0.0)));
+
+        super::shaping::find_link_at_pixel_point(line_idx, in_canvas_point, parsed, lcx, window)
     }
 
     pub fn open_url(&self, url: &str) {

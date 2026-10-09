@@ -245,10 +245,12 @@ impl EntityInputHandler for Editor {
             })
             .unwrap_or(px(0.0));
 
+            let top_offset =
+                crate::editor::shaping::get_block_top_offset(&parsed.kind, self.render_mode);
             return Some(Bounds {
                 origin: point(
                     line_bounds.origin.x + start_cursor_pos.x + preedit_width,
-                    line_bounds.origin.y + start_cursor_pos.y,
+                    line_bounds.origin.y + start_cursor_pos.y + top_offset,
                 ),
                 size: size(width, line_height),
             });

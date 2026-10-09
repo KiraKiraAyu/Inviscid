@@ -117,4 +117,3 @@ mod tests {
         assert!(format!("{err:#}").contains("tree_sitter_rust"));
     }
 }
-
