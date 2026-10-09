@@ -1,9 +1,9 @@
 name = "Catppuccin Mocha"
 
 [colors]
-bg_app = "#181825"
+bg_app = "#11111b"
 bg_editor = "#1e1e2e"
-bg_toolbar = "#181825"
+bg_toolbar = "#11111b"
 bg_statusbar = "#11111b"
 border = "#45475a"
 border_subtle = "#313244"

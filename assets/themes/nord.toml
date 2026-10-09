@@ -1,10 +1,10 @@
 name = "Nord"
 
 [colors]
-bg_app = "#2e3440"
+bg_app = "#242933"
 bg_editor = "#2e3440"
-bg_toolbar = "#2e3440"
-bg_statusbar = "#2e3440"
+bg_toolbar = "#242933"
+bg_statusbar = "#242933"
 border = "#434c5e"
 border_subtle = "#3b4252"
 

@@ -327,12 +327,20 @@ impl Render for TabBar {
             .h(Self::HEIGHT)
             .flex_none()
             .bg(theme.bg_toolbar)
-            .border_b_1()
-            .border_color(theme.border)
+            .relative()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .border_b_1()
+                    .border_color(theme.border_subtle),
+            )
             .child(
                 div()
                     .id("tab_bar_scroll")
@@ -371,13 +379,19 @@ impl Render for TabBar {
                             .gap(Spacing::SMD)
                             .px(Spacing::XXL)
                             .border_r_1()
-                            .border_color(theme.border)
+                            .border_color(theme.border_subtle)
                             .bg(if is_active {
                                 theme.bg_editor
                             } else {
                                 theme.bg_toolbar
                             })
-                            .active(|s| s.bg(theme.btn_hover))
+                            .when(is_active, |this| this.pb(px(1.0)))
+                            .when(!is_active, |this| {
+                                this.border_b_1()
+                                    .border_color(theme.border_subtle)
+                                    .hover(|s| s.bg(theme.btn_hover))
+                            })
+                            .active(|s| s.bg(theme.btn_active))
                             .cursor_pointer()
                             .on_click(cx.listener(move |_this, _event, _window, cx| {
                                 cx.emit(TabBarEvent::Select(tab_idx));
