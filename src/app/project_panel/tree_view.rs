@@ -70,7 +70,7 @@ pub fn render_inline_row(
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .h(px(22.0))
         .w_full()
-        .occlude()
+        .block_mouse_except_scroll()
         .pl(indent)
         .pr(Spacing::SM)
         .flex()
@@ -199,7 +199,7 @@ pub fn build_tree_items(list: TreeItemList<'_>, theme: &Theme, cx: &App) -> Vec<
                 .gap(px(5.0))
                 .overflow_hidden()
                 .bg(bg_color)
-                .occlude()
+                .block_mouse_except_scroll()
                 .hover(|s| s.bg(theme.btn_hover))
                 .cursor_pointer()
                 .on_click(move |_, window, cx| {
