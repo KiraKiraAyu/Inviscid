@@ -387,11 +387,8 @@ impl Render for TabBar {
                             })
                             .when(is_active, |this| this.pb(px(1.0)))
                             .when(!is_active, |this| {
-                                this.border_b_1()
-                                    .border_color(theme.border_subtle)
-                                    .hover(|s| s.bg(theme.btn_hover))
+                                this.border_b_1().border_color(theme.border_subtle)
                             })
-                            .active(|s| s.bg(theme.btn_active))
                             .cursor_pointer()
                             .on_click(cx.listener(move |_this, _event, _window, cx| {
                                 cx.emit(TabBarEvent::Select(tab_idx));
