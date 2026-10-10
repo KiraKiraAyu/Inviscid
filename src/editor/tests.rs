@@ -3068,3 +3068,109 @@ fn test_scrollbar_bottom_matches_wheel_max_scroll(cx: &mut gpui::TestAppContext)
         });
     });
 }
+
+#[gpui::test]
+fn test_paragraph_with_inline_code_layout_height_matches_shape_text(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::TextBuffer;
+    use crate::editor::layout::{LineLayoutContext, get_line_layout_height};
+    use crate::editor::shaping::{LineShapingContext, build_line_runs};
+    use gpui::px;
+
+    // Semantic fixture: a paragraph with mixed CJK text and inline code spans followed by a subsequent paragraph.
+    let doc = "这是一个包含中文文本与 `inline_code()` 等宽代码片段的段落，用于验证排版高度计算与实际视觉折行严格对齐。\n这是紧随其后的第二个段落，用于验证段落之间具有严格正确的垂直定位，绝不重叠。";
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(doc, None), cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, _cx| {
+            let layout = ed.layout_snapshot();
+            assert_eq!(layout.parsed_lines.len(), 2, "Fixture must have exactly 2 lines");
+
+            let parsed_0 = &layout.parsed_lines[0];
+            let typo_0 = crate::editor::layout::get_block_typography_with_metrics(
+                &parsed_0.kind,
+                ed.font_size,
+                ed.line_height,
+            );
+            let theme = crate::theme::Theme::default();
+            let scx = LineShapingContext::new(&theme, None, false, false, 0);
+            let (line_str, runs) = build_line_runs(
+                &parsed_0.spans,
+                scx,
+                None,
+                &window.text_style(),
+            );
+
+            let ts = ed.text_system.clone().unwrap();
+
+            // Verify across diverse viewport widths (from narrow 400px to wide 1200px)
+            for w_val in (400..=1200).step_by(20) {
+                let test_w = px(w_val as f32);
+                let shaped = window
+                    .text_system()
+                    .shape_text(
+                        line_str.clone().into(),
+                        typo_0.font_size,
+                        &runs,
+                        Some(test_w),
+                        None,
+                    )
+                    .unwrap();
+                let expected_lines = shaped[0].wrap_boundaries.len() + 1;
+
+                let calculated_lines = crate::editor::shaping::calculate_visual_lines_with_runs(
+                    &line_str,
+                    &runs,
+                    window.text_style().font(),
+                    typo_0.font_size,
+                    test_w,
+                    true,
+                    Some(&ts),
+                    false,
+                );
+
+                assert_eq!(
+                    calculated_lines,
+                    expected_lines,
+                    "Visual lines mismatch at width {}: calculated={}, shaped={}",
+                    w_val, calculated_lines, expected_lines
+                );
+
+                let lcx = LineLayoutContext::new(
+                    false,
+                    None,
+                    0,
+                    crate::editor::RenderMode::LivePreview,
+                    test_w,
+                    None,
+                )
+                .with_metrics(ed.font_size, ed.line_height, true)
+                .with_text_system(Some(ts.clone()));
+
+                let line_height = get_line_layout_height(
+                    ed.buffer.lines(),
+                    0,
+                    parsed_0,
+                    lcx,
+                );
+                let expected_height = typo_0.padding_vertical + typo_0.line_height * (expected_lines as f32);
+                assert_eq!(
+                    line_height,
+                    expected_height,
+                    "Line height mismatch at width {}: got {:?}, expected {:?}",
+                    w_val, line_height, expected_height
+                );
+            }
+
+            // Verify that subsequent line Y offset strictly starts after the first line's full height (no overlap)
+            assert_eq!(
+                layout.line_y_offsets[1],
+                layout.line_y_offsets[0] + layout.line_heights[0],
+                "Subsequent line offset must strictly equal previous line Y + height (no vertical overlap)"
+            );
+        });
+    });
+}

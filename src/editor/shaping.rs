@@ -543,10 +543,11 @@ pub fn calculate_wrapped_visual_lines_with_wrap(
     calculate_wrapped_visual_lines_with_mode(text, font_size, available_width, soft_wrap, false)
 }
 
-/// Computes wrapped visual line count using `TextSystem::line_wrapper` when available,
-/// falling back to character-width estimation in headless tests.
-pub fn calculate_visual_lines(
+/// Computes wrapped visual line count using GPUI's native `TextSystem::line_wrapper` when available,
+/// falling back to token- and boundary-aware estimation in headless environments.
+pub fn calculate_visual_lines_with_runs(
     text: &str,
+    runs: &[TextRun],
     font: Font,
     font_size: Pixels,
     available_width: Pixels,
@@ -559,28 +560,52 @@ pub fn calculate_visual_lines(
     }
     if let Some(ts) = text_system {
         let mut wrapper = ts.line_wrapper(font, font_size);
-        wrapper
+        let count = wrapper
             .wrap_line(&[LineFragment::text(text)], available_width)
-            .count()
-            + 1
-    } else {
-        calculate_wrapped_visual_lines_with_mode(
-            text,
-            font_size,
-            available_width,
-            soft_wrap,
-            is_monospace,
-        )
+            .count();
+        return count + 1;
     }
+
+    calculate_wrapped_visual_lines_with_runs_fallback(
+        text,
+        runs,
+        font_size,
+        available_width,
+        soft_wrap,
+        is_monospace,
+    )
 }
 
-/// Token- and boundary-aware line wrap estimation used when `TextSystem` is unavailable.
-pub fn calculate_wrapped_visual_lines_with_mode(
+/// Computes wrapped visual line count using `calculate_visual_lines_with_runs` with default single-run styling.
+pub fn calculate_visual_lines(
     text: &str,
+    font: Font,
     font_size: Pixels,
     available_width: Pixels,
     soft_wrap: bool,
+    text_system: Option<&Arc<TextSystem>>,
     is_monospace: bool,
+) -> usize {
+    calculate_visual_lines_with_runs(
+        text,
+        &[],
+        font,
+        font_size,
+        available_width,
+        soft_wrap,
+        text_system,
+        is_monospace,
+    )
+}
+
+/// Token- and boundary-aware line wrap estimation with per-run monospace awareness used when `TextSystem` is unavailable.
+pub fn calculate_wrapped_visual_lines_with_runs_fallback(
+    text: &str,
+    runs: &[TextRun],
+    font_size: Pixels,
+    available_width: Pixels,
+    soft_wrap: bool,
+    fallback_is_monospace: bool,
 ) -> usize {
     if !soft_wrap || text.is_empty() || available_width <= px(0.0) {
         return 1;
@@ -591,12 +616,32 @@ pub fn calculate_wrapped_visual_lines_with_mode(
         return 1;
     }
 
+    let is_run_mono: Vec<bool> = runs
+        .iter()
+        .map(|r| {
+            fallback_is_monospace
+                || r.font.family.to_lowercase().contains("mono")
+                || r.font.family.as_ref() == crate::platform::platform_monospace_font()
+        })
+        .collect();
+
     let mut visual_lines = 1;
     let mut current_line_w = 0.0;
     let mut pending_word_w = 0.0;
 
-    for c in text.chars() {
-        let char_w = fs * char_advance_ratio_with_mono(c, is_monospace);
+    let mut current_run_idx = 0;
+    let mut current_run_end = runs.first().map(|r| r.len).unwrap_or(text.len());
+
+    for (byte_ix, c) in text.char_indices() {
+        while byte_ix >= current_run_end && current_run_idx + 1 < runs.len() {
+            current_run_idx += 1;
+            current_run_end += runs[current_run_idx].len;
+        }
+        let is_mono = is_run_mono
+            .get(current_run_idx)
+            .copied()
+            .unwrap_or(fallback_is_monospace);
+        let char_w = fs * char_advance_ratio_with_mono(c, is_mono);
         let is_cjk = is_wide_char(c);
         let is_space = c == ' ' || c == '\t';
         let is_break_punct = matches!(
@@ -657,7 +702,6 @@ pub fn calculate_wrapped_visual_lines_with_mode(
             if pending_word_w > avail {
                 if current_line_w > 0.0 {
                     visual_lines += 1;
-                    current_line_w = 0.0;
                 }
                 while pending_word_w > avail {
                     visual_lines += 1;
@@ -677,6 +721,24 @@ pub fn calculate_wrapped_visual_lines_with_mode(
     }
 
     visual_lines.max(1)
+}
+
+/// Token- and boundary-aware line wrap estimation used when `TextSystem` is unavailable.
+pub fn calculate_wrapped_visual_lines_with_mode(
+    text: &str,
+    font_size: Pixels,
+    available_width: Pixels,
+    soft_wrap: bool,
+    is_monospace: bool,
+) -> usize {
+    calculate_wrapped_visual_lines_with_runs_fallback(
+        text,
+        &[],
+        font_size,
+        available_width,
+        soft_wrap,
+        is_monospace,
+    )
 }
 
 pub fn calculate_table_row_height(
@@ -701,15 +763,18 @@ pub fn calculate_table_row_height(
 
     let mut max_visual_lines = 1;
     for cell in cells {
-        let cell_text = cell
-            .spans
-            .iter()
-            .filter(|s| s.is_visible(is_active, cursor_col, false))
-            .map(|s| s.text.as_str())
-            .collect::<String>();
+        let scx = LineShapingContext::new(
+            &crate::theme::DEFAULT_THEME,
+            None,
+            false,
+            is_active,
+            cursor_col,
+        );
+        let (cell_text, runs) = build_line_runs(&cell.spans, scx, None, &TextStyle::default());
 
-        let lines = calculate_visual_lines(
+        let lines = calculate_visual_lines_with_runs(
             &cell_text,
+            &runs,
             cell_font.clone(),
             font_size,
             inner_cell_w,
@@ -1302,7 +1367,7 @@ pub fn render_shaped_line(
         disclosure_col,
     )
     .with_heading(is_heading);
-    let (line_str_for_measuring, _) = build_line_runs(
+    let (line_str_for_measuring, runs_for_measuring) = build_line_runs(
         &spans,
         scx_measure,
         hovered_link_range,
@@ -1310,8 +1375,9 @@ pub fn render_shaped_line(
     );
 
     let est_lines = if font_size > px(0.0) && available_width > px(0.0) {
-        calculate_visual_lines(
+        calculate_visual_lines_with_runs(
             &line_str_for_measuring,
+            &runs_for_measuring,
             font,
             font_size,
             available_width,
@@ -1322,6 +1388,7 @@ pub fn render_shaped_line(
     } else {
         1
     };
+
     let total_canvas_h = line_height * (est_lines as f32);
 
     canvas(

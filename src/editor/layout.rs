@@ -320,7 +320,7 @@ pub fn get_line_layout_height(
     }
 
     use crate::editor::shaping::{
-        LineShapingContext, build_line_runs, calculate_visual_lines,
+        LineShapingContext, build_line_runs, calculate_visual_lines_with_runs,
         compute_available_line_width_with_mode,
     };
 
@@ -338,9 +338,10 @@ pub fn get_line_layout_height(
             lcx.is_active,
             lcx.cursor_col,
         );
-        let (line_str, _) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
-        let visual_lines = calculate_visual_lines(
+        let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
+        let visual_lines = calculate_visual_lines_with_runs(
             &line_str,
+            &runs,
             font,
             font_size,
             available_w,
@@ -361,9 +362,10 @@ pub fn get_line_layout_height(
             lcx.cursor_col,
         )
         .with_heading(is_heading);
-        let (line_str, _) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
-        let visual_lines = calculate_visual_lines(
+        let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
+        let visual_lines = calculate_visual_lines_with_runs(
             &line_str,
+            &runs,
             font,
             typo.font_size,
             available_w,
