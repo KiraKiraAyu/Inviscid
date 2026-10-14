@@ -121,7 +121,7 @@ impl Render for AboutWindow {
                                     .text_size(FontSize::SM)
                                     .text_color(theme.text_secondary)
                                     .font_weight(FontWeight::MEDIUM)
-                                    .child("MIT"),
+                                    .child("GPL-3.0"),
                             ),
                     ),
             )

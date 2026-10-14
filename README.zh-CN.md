@@ -82,4 +82,4 @@ accent = "#7aa2f7"
 
 ## 开源协议
 
-GNU General Public License v3.0（GPL-3.0）
+本项目采用 [GNU General Public License v3.0（GPL-3.0）](LICENSE) 开源协议。
