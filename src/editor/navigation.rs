@@ -49,10 +49,12 @@ impl Editor {
 
         let viewport = self.viewport_bounds_val();
         let content_width = compute_content_width(viewport.size.width, self.render_mode);
-        let available_width = crate::editor::shaping::compute_available_line_width_with_mode(
+        let indent_px = self.parsed_line_indent_px(parsed);
+        let available_width = crate::editor::shaping::compute_available_line_width_with_indent(
             content_width,
             &parsed.kind,
             self.render_mode,
+            indent_px,
         );
         let wrap_width = if self.soft_wrap {
             Some(available_width)
@@ -89,8 +91,11 @@ impl Editor {
                 window,
             )
             .x;
-            let left_offset =
-                crate::editor::shaping::get_block_left_offset(&parsed.kind, self.render_mode);
+            let left_offset = crate::editor::shaping::get_block_left_offset_with_indent(
+                &parsed.kind,
+                self.render_mode,
+                layout.indent_px(pos.line),
+            );
             left_offset + in_canvas_x
         } else {
             px(0.0)
@@ -137,8 +142,11 @@ impl Editor {
             let is_active_caret = self.is_active_caret_line(line_idx, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
-            let target_left_offset =
-                crate::editor::shaping::get_block_left_offset(&parsed.kind, self.render_mode);
+            let target_left_offset = crate::editor::shaping::get_block_left_offset_with_indent(
+                &parsed.kind,
+                self.render_mode,
+                layout.indent_px(line_idx),
+            );
             let in_canvas_x = (goal_x - target_left_offset).max(px(0.0));
             let target_y = line_height * (visual_line_idx as f32) + line_height * 0.5;
             let mut col = calculate_col_from_point(

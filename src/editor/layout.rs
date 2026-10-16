@@ -169,6 +169,7 @@ pub struct DocumentLayoutCache {
     pub parsed_lines: Arc<Vec<ParsedLine>>,
     pub line_heights: Vec<Pixels>,
     pub line_y_offsets: Vec<Pixels>,
+    pub space_width: Pixels,
     pub total_height: Pixels,
     pub separators: Vec<bool>,
 }
@@ -192,9 +193,31 @@ impl Default for DocumentLayoutCache {
             parsed_lines: Arc::new(Vec::new()),
             line_heights: Vec::new(),
             line_y_offsets: Vec::new(),
+            space_width: px(0.0),
             total_height: px(0.0),
             separators: Vec::new(),
         }
+    }
+}
+
+impl DocumentLayoutCache {
+    #[inline]
+    pub fn compute_indent_px(parsed: &ParsedLine, mode: RenderMode, space_width: Pixels) -> Pixels {
+        if mode != RenderMode::LivePreview {
+            return px(0.0);
+        }
+        let chars = crate::markdown::line_visual_indent_chars(parsed);
+        px((chars as f32) * f32::from(space_width))
+    }
+
+    /// Visual indent in pixels for `line_idx` (0 in Source mode or out of range).
+    /// Single source of truth dynamically derived from `parsed_lines` and `space_width`.
+    #[inline]
+    pub fn indent_px(&self, line_idx: usize) -> Pixels {
+        let Some(parsed) = self.parsed_lines.get(line_idx) else {
+            return px(0.0);
+        };
+        Self::compute_indent_px(parsed, self.render_mode, self.space_width)
     }
 }
 
@@ -210,6 +233,7 @@ pub struct LineLayoutContext<'a> {
     pub font_size: f32,
     pub line_height: f32,
     pub soft_wrap: bool,
+    pub indent_px: Pixels,
     pub text_system: Option<Arc<TextSystem>>,
 }
 
@@ -226,6 +250,7 @@ impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
             .field("font_size", &self.font_size)
             .field("line_height", &self.line_height)
             .field("soft_wrap", &self.soft_wrap)
+            .field("indent_px", &self.indent_px)
             .field("has_text_system", &self.text_system.is_some())
             .finish()
     }
@@ -244,6 +269,7 @@ impl<'a> Default for LineLayoutContext<'a> {
             font_size: 15.0,
             line_height: 1.6,
             soft_wrap: true,
+            indent_px: px(0.0),
             text_system: None,
         }
     }
@@ -269,6 +295,7 @@ impl<'a> LineLayoutContext<'a> {
             font_size: 15.0,
             line_height: 1.6,
             soft_wrap: true,
+            indent_px: px(0.0),
             text_system: None,
         }
     }
@@ -282,6 +309,11 @@ impl<'a> LineLayoutContext<'a> {
         self.font_size = font_size;
         self.line_height = line_height;
         self.soft_wrap = soft_wrap;
+        self
+    }
+
+    pub fn with_indent(mut self, indent_px: Pixels) -> Self {
+        self.indent_px = indent_px;
         self
     }
 
@@ -321,11 +353,15 @@ pub fn get_line_layout_height(
 
     use crate::editor::shaping::{
         LineShapingContext, build_line_runs, calculate_visual_lines_with_runs,
-        compute_available_line_width_with_mode,
+        compute_available_line_width_with_indent,
     };
 
-    let available_w =
-        compute_available_line_width_with_mode(lcx.content_width, &parsed.kind, lcx.mode);
+    let available_w = compute_available_line_width_with_indent(
+        lcx.content_width,
+        &parsed.kind,
+        lcx.mode,
+        lcx.indent_px,
+    );
 
     if lcx.mode == RenderMode::Source {
         let font_size = px(lcx.font_size);
@@ -516,8 +552,38 @@ impl Editor {
             && cache.soft_wrap == self.soft_wrap
     }
 
+    /// Width of one space character in the UI font at the current font size.
+    /// Memoized per font size; the layout cache stores the measured value so
+    /// rendering, cursor positioning and hit-testing agree on indent widths.
+    pub(crate) fn space_width(&self) -> Pixels {
+        if let Some((fs, w)) = self.space_width_memo.get()
+            && (fs - self.font_size).abs() < f32::EPSILON
+        {
+            return w;
+        }
+        let measured = self
+            .text_system
+            .as_ref()
+            .and_then(|ts| {
+                let font_id = ts.resolve_font(&font(crate::platform::platform_ui_font()));
+                ts.advance(font_id, px(self.font_size), ' ').ok()
+            })
+            .map(|advance| advance.width)
+            .filter(|w| *w > px(0.0))
+            .unwrap_or_else(|| px((self.font_size * 0.5).round()));
+        self.space_width_memo.set(Some((self.font_size, measured)));
+        measured
+    }
+
+    /// Visual indent in pixels for a parsed line (0 in Source mode).
+    #[inline]
+    pub(crate) fn parsed_line_indent_px(&self, parsed: &ParsedLine) -> Pixels {
+        DocumentLayoutCache::compute_indent_px(parsed, self.render_mode, self.space_width())
+    }
+
     fn line_layout_ctx(
         &self,
+        parsed: &ParsedLine,
         is_active: bool,
         is_sep: bool,
         cursor_col: usize,
@@ -525,6 +591,7 @@ impl Editor {
         line_idx: usize,
     ) -> LineLayoutContext<'_> {
         let is_folded = self.display_map.fold_map().is_line_folded(line_idx);
+        let indent_px = self.parsed_line_indent_px(parsed);
         LineLayoutContext::new(
             is_active,
             Some(is_sep),
@@ -535,6 +602,7 @@ impl Editor {
         )
         .with_folded(is_folded)
         .with_metrics(self.font_size, self.line_height, self.soft_wrap)
+        .with_indent(indent_px)
         .with_text_system(self.text_system.clone())
     }
 
@@ -578,9 +646,15 @@ impl Editor {
             } else {
                 crate::markdown::is_syntactic_separator(self.buffer.lines(), cursor_line)
             };
-            let lcx = self.line_layout_ctx(true, is_sep, cursor_col, content_width, cursor_line);
-
             let new_h = if let Some(parsed) = cache.parsed_lines.get(cursor_line) {
+                let lcx = self.line_layout_ctx(
+                    parsed,
+                    true,
+                    is_sep,
+                    cursor_col,
+                    content_width,
+                    cursor_line,
+                );
                 get_line_layout_height(self.buffer.lines(), cursor_line, parsed, lcx)
             } else {
                 px(24.0)
@@ -633,6 +707,7 @@ impl Editor {
                 if let Some(parsed) = cache.parsed_lines.get(line_idx) {
                     let is_sep = separators.get(line_idx).copied().unwrap_or(false);
                     let lcx = self.line_layout_ctx(
+                        parsed,
                         is_active,
                         is_sep,
                         cursor_col,
@@ -739,7 +814,8 @@ impl Editor {
         for (idx, parsed) in parsed_doc.iter().enumerate() {
             let is_active = idx == cursor_line;
             let is_sep = separators.get(idx).copied().unwrap_or(false);
-            let lcx = self.line_layout_ctx(is_active, is_sep, cursor_col, content_width, idx);
+            let lcx =
+                self.line_layout_ctx(parsed, is_active, is_sep, cursor_col, content_width, idx);
             let h = get_line_layout_height(self.buffer.lines(), idx, parsed, lcx);
             line_y_offsets.push(y);
             line_heights.push(h);
@@ -769,6 +845,7 @@ impl Editor {
             parsed_lines: parsed_doc,
             line_heights,
             line_y_offsets,
+            space_width: self.space_width(),
             total_height,
             separators,
         };
@@ -902,7 +979,14 @@ impl Editor {
             } else {
                 cache.separators.get(line_idx).copied().unwrap_or(false)
             };
-            let lcx = self.line_layout_ctx(is_active, is_sep, cursor_col, content_width, line_idx);
+            let lcx = self.line_layout_ctx(
+                parsed,
+                is_active,
+                is_sep,
+                cursor_col,
+                content_width,
+                line_idx,
+            );
             let h = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
             new_heights.push(h);
             new_height_sum += h;

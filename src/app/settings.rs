@@ -691,7 +691,6 @@ impl SettingsWindow {
                 .child(self.line_height_row(cx))
                 .child(self.auto_save_row(cx))
                 .child(self.soft_wrap_row(cx))
-                .child(self.tab_size_row(cx))
                 .child(self.cursor_blink_row(cx))
                 .when(cursor_blink, |this| {
                     this.child(self.cursor_animation_row(cx))
@@ -769,29 +768,6 @@ impl SettingsWindow {
             })),
         )
         .description("Wrap long lines to fit the visible editor width.")
-    }
-
-    fn tab_size_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab_size = cx.global::<AppConfig>().tab_size;
-
-        SettingRow::new(
-            "Tab Size",
-            div()
-                .flex()
-                .flex_row()
-                .gap(Spacing::XS)
-                .child(
-                    OptionPill::new("tab_size_2", "2 spaces", tab_size == 2).on_click(
-                        cx.listener(|_, _, _, cx| update_config(cx, |cfg| cfg.tab_size = 2)),
-                    ),
-                )
-                .child(
-                    OptionPill::new("tab_size_4", "4 spaces", tab_size == 4).on_click(
-                        cx.listener(|_, _, _, cx| update_config(cx, |cfg| cfg.tab_size = 4)),
-                    ),
-                ),
-        )
-        .description("Number of spaces inserted for tab indentation.")
     }
 
     fn cursor_blink_row(&self, cx: &mut Context<Self>) -> impl IntoElement {

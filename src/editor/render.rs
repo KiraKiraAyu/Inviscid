@@ -44,6 +44,7 @@ pub fn render_live_line_content(
 
             div()
                 .w_full()
+                .pl(lrc.indent_px)
                 .pt(px(14.0))
                 .pb(px(4.0))
                 .child(text_canvas)
@@ -183,65 +184,53 @@ pub fn render_live_line_content(
                 false,
             );
 
-            div()
-                .w_full()
-                .min_h(typo.line_height)
-                .py(px(4.0))
+            let marker = div()
+                .id(ElementId::NamedInteger(
+                    "task_check".into(),
+                    line_idx as u64,
+                ))
+                .w(px(16.0))
+                .h(px(16.0))
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(if is_checked {
+                    theme.task_box_checked_bg
+                } else {
+                    theme.task_box_border
+                })
+                .bg(if is_checked {
+                    theme.task_box_checked_bg
+                } else {
+                    transparent_black()
+                })
                 .flex()
-                .flex_row()
-                .items_start()
-                .child(
-                    div()
-                        .w(px(24.0))
-                        .h(typo.line_height)
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_start()
-                        .child(
-                            div()
-                                .id(ElementId::NamedInteger(
-                                    "task_check".into(),
-                                    line_idx as u64,
-                                ))
-                                .w(px(16.0))
-                                .h(px(16.0))
-                                .rounded(px(4.0))
-                                .border_1()
-                                .border_color(if is_checked {
-                                    theme.task_box_checked_bg
-                                } else {
-                                    theme.task_box_border
-                                })
-                                .bg(if is_checked {
-                                    theme.task_box_checked_bg
-                                } else {
-                                    transparent_black()
-                                })
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .when_some(editor, |this, ed| {
-                                    let ed = ed.clone();
-                                    this.on_mouse_down(MouseButton::Left, move |_, _window, cx| {
-                                        ed.update(cx, |this, cx| {
-                                            this.toggle_task_checkbox(line_idx, cx);
-                                        });
-                                    })
-                                })
-                                .child(if is_checked {
-                                    Icon::new(IconName::Check)
-                                        .size(IconSize::Indicator)
-                                        .color(theme.task_box_checked_fg)
-                                        .into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                }),
-                        ),
-                )
-                .child(div().flex_grow().child(text_canvas))
-                .into_any_element()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .when_some(editor, |this, ed| {
+                    let ed = ed.clone();
+                    this.on_mouse_down(MouseButton::Left, move |_, _window, cx| {
+                        ed.update(cx, |this, cx| {
+                            this.toggle_task_checkbox(line_idx, cx);
+                        });
+                    })
+                })
+                .child(if is_checked {
+                    Icon::new(IconName::Check)
+                        .size(IconSize::Indicator)
+                        .color(theme.task_box_checked_fg)
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                });
+
+            render_list_item_row(
+                marker,
+                px(24.0),
+                text_canvas,
+                typo.line_height,
+                lrc.indent_px,
+            )
         }
 
         BlockKind::BulletList => {
@@ -260,31 +249,19 @@ pub fn render_live_line_content(
                 false,
             );
 
-            div()
-                .w_full()
-                .min_h(typo.line_height)
-                .py(px(4.0))
-                .flex()
-                .flex_row()
-                .items_start()
-                .child(
-                    div()
-                        .w(px(22.0))
-                        .h(typo.line_height)
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_start()
-                        .child(
-                            div()
-                                .w(px(5.5))
-                                .h(px(5.5))
-                                .rounded(px(3.0))
-                                .bg(theme.list_marker),
-                        ),
-                )
-                .child(div().flex_grow().child(text_canvas))
-                .into_any_element()
+            let marker = div()
+                .w(px(5.5))
+                .h(px(5.5))
+                .rounded(px(3.0))
+                .bg(theme.list_marker);
+
+            render_list_item_row(
+                marker,
+                px(22.0),
+                text_canvas,
+                typo.line_height,
+                lrc.indent_px,
+            )
         }
 
         BlockKind::OrderedList { num } => {
@@ -304,27 +281,18 @@ pub fn render_live_line_content(
                 false,
             );
 
-            div()
-                .w_full()
-                .min_h(typo.line_height)
-                .py(px(4.0))
-                .flex()
-                .flex_row()
-                .items_start()
-                .child(
-                    div()
-                        .w(px(24.0))
-                        .h(typo.line_height)
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_start()
-                        .text_size(px((lrc.font_size * (14.0 / 15.0)).round()))
-                        .text_color(theme.list_marker)
-                        .child(num_label),
-                )
-                .child(div().flex_grow().child(text_canvas))
-                .into_any_element()
+            let marker = div()
+                .text_size(px((lrc.font_size * (14.0 / 15.0)).round()))
+                .text_color(theme.list_marker)
+                .child(num_label);
+
+            render_list_item_row(
+                marker,
+                px(24.0),
+                text_canvas,
+                typo.line_height,
+                lrc.indent_px,
+            )
         }
 
         BlockKind::BlockQuote => {
@@ -369,7 +337,11 @@ pub fn render_live_line_content(
                 div_elem = div_elem.mb(px(4.0)).rounded_br(px(4.0));
             }
 
-            div_elem.child(text_canvas).into_any_element()
+            div()
+                .w_full()
+                .pl(lrc.indent_px)
+                .child(div_elem.child(text_canvas))
+                .into_any_element()
         }
 
         BlockKind::Image { alt, url } => {
@@ -554,6 +526,35 @@ pub fn render_live_line_content(
                 .into_any_element()
         }
     }
+}
+
+fn render_list_item_row(
+    marker: impl IntoElement,
+    marker_width: Pixels,
+    text_canvas: impl IntoElement,
+    line_height: Pixels,
+    indent_px: Pixels,
+) -> AnyElement {
+    div()
+        .w_full()
+        .pl(indent_px)
+        .min_h(line_height)
+        .py(px(4.0))
+        .flex()
+        .flex_row()
+        .items_start()
+        .child(
+            div()
+                .w(marker_width)
+                .h(line_height)
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_start()
+                .child(marker),
+        )
+        .child(div().flex_grow().child(text_canvas))
+        .into_any_element()
 }
 
 fn render_table_cell(

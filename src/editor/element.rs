@@ -182,6 +182,7 @@ impl Element for EditorElement {
                             font_size: editor.font_size,
                             line_height: editor.line_height,
                             soft_wrap: editor.soft_wrap,
+                            indent_px: layout.indent_px(line_idx),
                             text_system: editor.text_system.as_ref(),
                         };
 

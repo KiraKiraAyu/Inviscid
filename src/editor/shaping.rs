@@ -42,6 +42,25 @@ pub fn compute_available_line_width(content_width: Pixels, kind: &BlockKind) -> 
     compute_available_line_width_with_mode(content_width, kind, RenderMode::LivePreview)
 }
 
+/// Like [`get_block_left_offset`], plus a per-line visual indent in pixels.
+pub fn get_block_left_offset_with_indent(
+    kind: &BlockKind,
+    mode: RenderMode,
+    indent_px: Pixels,
+) -> Pixels {
+    get_block_left_offset(kind, mode) + indent_px
+}
+
+/// Like [`compute_available_line_width_with_mode`], minus a per-line visual indent.
+pub fn compute_available_line_width_with_indent(
+    content_width: Pixels,
+    kind: &BlockKind,
+    mode: RenderMode,
+    indent_px: Pixels,
+) -> Pixels {
+    (compute_available_line_width_with_mode(content_width, kind, mode) - indent_px).max(px(100.0))
+}
+
 /// Computes the left horizontal offset of text content within a block container in Live Preview
 pub fn get_block_left_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
     if mode == RenderMode::Source {
@@ -1343,7 +1362,7 @@ pub fn render_shaped_line(
     let ime_preedit =
         ime_preedit_overlay(&parsed.spans, is_active_caret, disclosure_col, is_source);
 
-    let available_width = compute_available_line_width_with_mode(
+    let available_width = compute_available_line_width_with_indent(
         content_width,
         &parsed.kind,
         if is_source {
@@ -1351,6 +1370,7 @@ pub fn render_shaped_line(
         } else {
             RenderMode::LivePreview
         },
+        lrc.indent_px,
     );
 
     let is_monospace = is_source || parsed.kind == BlockKind::CodeBlockContent;

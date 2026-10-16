@@ -170,25 +170,17 @@ impl Editor {
             }))
             .on_action(cx.listener(|this, _: &Indent, _, cx| {
                 let is_source = this.render_mode == RenderMode::Source;
-                let tab_size = cx
-                    .try_global::<crate::config::AppConfig>()
-                    .map(|c| c.tab_size)
-                    .unwrap_or(4);
                 this.perform_edit(cx, |this| {
                     if is_source || !this.buffer.table_tab_forward() {
-                        this.buffer.indent_lines_with_tab_size(tab_size);
+                        this.buffer.indent_lines_with_tab_size(4);
                     }
                 });
             }))
             .on_action(cx.listener(|this, _: &Outdent, _, cx| {
                 let is_source = this.render_mode == RenderMode::Source;
-                let tab_size = cx
-                    .try_global::<crate::config::AppConfig>()
-                    .map(|c| c.tab_size)
-                    .unwrap_or(4);
                 this.perform_edit(cx, |this| {
                     if is_source || !this.buffer.table_tab_backward() {
-                        this.buffer.outdent_lines_with_tab_size(tab_size);
+                        this.buffer.outdent_lines_with_tab_size(4);
                     }
                 });
             }))

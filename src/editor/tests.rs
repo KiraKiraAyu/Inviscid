@@ -1150,6 +1150,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         parsed_lines: parsed_doc.clone(),
         line_heights: Vec::new(),
         line_y_offsets: Vec::new(),
+        space_width: px(0.0),
         total_height: px(0.0),
         separators: Vec::new(),
     };
@@ -1272,6 +1273,7 @@ fn test_folding_layout_height_and_navigation() {
         parsed_lines: parsed_doc.clone(),
         line_heights: Vec::new(),
         line_y_offsets: Vec::new(),
+        space_width: px(0.0),
         total_height: px(0.0),
         separators: Vec::new(),
     };
@@ -1324,6 +1326,7 @@ fn test_folding_layout_height_and_navigation() {
         parsed_lines: parsed_doc.clone(),
         line_heights: Vec::new(),
         line_y_offsets: Vec::new(),
+        space_width: px(0.0),
         total_height: px(0.0),
         separators: Vec::new(),
     };
@@ -3174,3 +3177,193 @@ fn test_paragraph_with_inline_code_layout_height_matches_shape_text(cx: &mut gpu
         });
     });
 }
+
+#[test]
+fn test_line_visual_indent_chars() {
+    use crate::editor::RenderMode;
+    use crate::editor::layout::DocumentLayoutCache;
+    use crate::markdown::{MarkdownScanner, line_visual_indent_chars};
+
+    let lines = [
+        "- top",
+        "  - nested",
+        "    1. deep",
+        "plain text",
+        "> quote",
+        "  > indented quote",
+        ">   - list inside quote",
+    ];
+    let parsed =
+        MarkdownScanner::scan_document(&lines.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+    // Pure syntax prefix leading indent columns:
+    assert_eq!(line_visual_indent_chars(&parsed[0]), 0);
+    assert_eq!(line_visual_indent_chars(&parsed[1]), 2);
+    assert_eq!(line_visual_indent_chars(&parsed[2]), 4);
+    assert_eq!(line_visual_indent_chars(&parsed[3]), 0);
+    assert_eq!(line_visual_indent_chars(&parsed[4]), 0);
+    assert_eq!(line_visual_indent_chars(&parsed[5]), 2);
+    // `>   - list inside quote` is parsed as an outer BlockQuote at col 0;
+    // the inner spaces before `-` remain visible in the text span and must NOT double-indent the quote border.
+    assert_eq!(line_visual_indent_chars(&parsed[6]), 0);
+
+    // Source mode always resolves to 0px indent via compute_indent_px.
+    assert_eq!(
+        DocumentLayoutCache::compute_indent_px(&parsed[1], RenderMode::Source, px(8.0)),
+        px(0.0)
+    );
+    assert_eq!(
+        DocumentLayoutCache::compute_indent_px(&parsed[1], RenderMode::LivePreview, px(8.0)),
+        px(16.0)
+    );
+}
+
+#[test]
+fn test_layout_cache_visual_indent_px() {
+    use crate::buffer::TextBuffer;
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::editor::RenderMode;
+    use gpui::{TestAppContext, px};
+
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        cx.set_global(AppConfig::default());
+    });
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        let buf = TextBuffer::from_str("- a\n  - b\nplain", None);
+        Editor::new_with_buffer(buf, cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, _| {
+            ed.viewport_bounds = gpui::Bounds {
+                origin: gpui::point(px(0.0), px(0.0)),
+                size: gpui::size(px(1000.0), px(800.0)),
+            };
+            // Headless text systems report a deterministic fake advance;
+            // inject a known space width so indent geometry is exercised.
+            ed.space_width_memo.set(Some((ed.font_size, px(8.0))));
+            ed.invalidate_layout_cache();
+            ed.ensure_layout_cache();
+
+            let layout = ed.layout_snapshot();
+            assert_eq!(layout.space_width, px(8.0));
+            assert_eq!(layout.indent_px(0), px(0.0));
+            assert_eq!(layout.indent_px(1), px(16.0), "2-space nested bullet");
+            assert_eq!(layout.indent_px(2), px(0.0), "plain paragraph");
+
+            // Source mode never offsets.
+            ed.render_mode = RenderMode::Source;
+            ed.ensure_layout_cache();
+            let layout = ed.layout_snapshot();
+            assert_eq!(layout.indent_px(1), px(0.0));
+        });
+        let _ = window;
+    });
+}
+
+#[test]
+fn test_nested_list_coordinate_roundtrip() {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use gpui::{Bounds, TestAppContext, point, px, size};
+
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        cx.set_global(AppConfig::default());
+    });
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        let buf = TextBuffer::from_str("- a\n  - b", None);
+        Editor::new_with_buffer(buf, cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, _| {
+            ed.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(70.0)),
+                size: size(px(1000.0), px(800.0)),
+            };
+            ed.space_width_memo.set(Some((ed.font_size, px(8.0))));
+            ed.invalidate_layout_cache();
+            ed.ensure_layout_cache();
+
+            // Nested item content starts at 22px gutter + 16px indent.
+            let content_x = ed.get_pixel_x_for_col(Position::new(1, 4), window);
+            assert_eq!(content_x, px(38.0));
+
+            // Hit-testing the text start must land back on the content column.
+            // (`line_screen_bounds` already includes the gutter + indent.)
+            let line_bounds = ed.line_screen_bounds(1, ed.viewport_bounds);
+            let click = point(
+                line_bounds.origin.x + px(1.0),
+                line_bounds.origin.y + px(10.0),
+            );
+            assert_eq!(
+                ed.find_pos_for_mouse_point(click, window),
+                Position::new(1, 4)
+            );
+
+            // Pixel-goal navigation round-trips through the same geometry
+            // (goal x is container-relative: 22px gutter + 16px indent).
+            let col = ed.get_col_for_pixel_coords(1, px(38.0), 0, window);
+            assert_eq!(col, 4);
+
+            // Top-level item is unaffected by the nested indent.
+            assert_eq!(
+                ed.get_pixel_x_for_col(Position::new(0, 2), window),
+                px(22.0)
+            );
+        });
+    });
+}
+
+#[test]
+fn test_nested_list_render_live_content() {
+    use crate::buffer::Selection;
+    use crate::editor::LineRenderContext;
+    use crate::editor::RenderMode;
+    use crate::editor::render::render_live_line_content;
+    use crate::markdown::MarkdownScanner;
+    use crate::theme::DEFAULT_THEME;
+    use gpui::px;
+
+    let lines = vec![
+        "- top bullet".to_string(),
+        "  - nested bullet".to_string(),
+        "  - [ ] nested task".to_string(),
+        "  1. nested ordered".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+
+    for (idx, _line) in lines.iter().enumerate() {
+        let lrc = LineRenderContext {
+            is_active_line: false,
+            is_focused: false,
+            cursor_col: 0,
+            disclosure_col: 0,
+            selection: Selection::cursor(crate::buffer::Position::new(0, 0)),
+            is_dragging: false,
+            theme: &DEFAULT_THEME,
+            mode: RenderMode::LivePreview,
+            cursor_opacity: 1.0,
+            hovered_link: None,
+            content_width: px(800.0),
+            doc_path: None,
+            font_size: 15.0,
+            line_height: 24.0,
+            soft_wrap: true,
+            indent_px: if idx == 0 { px(0.0) } else { px(16.0) },
+            text_system: None,
+        };
+
+        let element = render_live_line_content(idx, &parsed[idx], &lines, &lrc, None);
+        let _ = element;
+    }
+}
+

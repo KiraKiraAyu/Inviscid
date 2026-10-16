@@ -89,10 +89,10 @@ fn test_indent_outdent_lines() {
         head: Position::new(1, 6),
     };
 
-    buf.indent_lines();
+    buf.indent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["    Line 1", "    Line 2"]);
 
-    buf.outdent_lines();
+    buf.outdent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["Line 1", "Line 2"]);
 }
 
@@ -510,9 +510,162 @@ fn test_insert_text_crlf_normalization() {
 fn test_outdent_partial_spaces_cursor() {
     let mut buf = TextBuffer::from_str("  indented text", None);
     buf.selection = Selection::cursor(Position::new(0, 10));
-    buf.outdent_lines();
+    buf.outdent_lines_with_tab_size(4);
     assert_eq!(buf.lines[0], "indented text");
     assert_eq!(buf.selection.head, Position::new(0, 8));
+}
+
+#[test]
+fn test_semantic_indent_nests_bullet_under_parent() {
+    let mut buf = TextBuffer::from_str("- a\n- b", None);
+    buf.selection = Selection::cursor(Position::new(1, 0));
+
+    // tab_size 4 indents by 4 spaces
+    buf.indent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["- a", "    - b"]);
+    assert_eq!(buf.selection.head, Position::new(1, 4));
+
+    buf.outdent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["- a", "- b"]);
+    assert_eq!(buf.selection.head, Position::new(1, 0));
+
+    // tab_size 2 indents by 2 spaces
+    buf.indent_lines_with_tab_size(2);
+    assert_eq!(buf.lines, vec!["- a", "  - b"]);
+    assert_eq!(buf.selection.head, Position::new(1, 2));
+
+    buf.outdent_lines_with_tab_size(2);
+    assert_eq!(buf.lines, vec!["- a", "- b"]);
+    assert_eq!(buf.selection.head, Position::new(1, 0));
+}
+
+#[test]
+fn test_semantic_indent_ordered_uses_marker_width() {
+    // tab_size 2 must still produce valid nesting for `1. ` parents (needs at least 3).
+    let mut buf = TextBuffer::from_str("1. a\n2. b", None);
+    buf.selection = Selection::cursor(Position::new(1, 0));
+
+    buf.indent_lines_with_tab_size(2);
+    assert_eq!(buf.lines, vec!["1. a", "   2. b"]);
+
+    buf.outdent_lines_with_tab_size(2);
+    assert_eq!(buf.lines, vec!["1. a", "2. b"]);
+
+    // tab_size 4 cleanly steps by 4 spaces
+    buf.indent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["1. a", "    2. b"]);
+
+    buf.outdent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["1. a", "2. b"]);
+}
+
+#[test]
+fn test_semantic_indent_task_list_and_roundtrip() {
+    let mut buf = TextBuffer::from_str("- [ ] a\n- [ ] b", None);
+    buf.selection = Selection::cursor(Position::new(1, 0));
+
+    buf.indent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["- [ ] a", "    - [ ] b"]);
+
+    buf.outdent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["- [ ] a", "- [ ] b"]);
+
+    buf.indent_lines_with_tab_size(2);
+    assert_eq!(buf.lines, vec!["- [ ] a", "  - [ ] b"]);
+
+    buf.outdent_lines_with_tab_size(2);
+    assert_eq!(buf.lines, vec!["- [ ] a", "- [ ] b"]);
+}
+
+#[test]
+fn test_semantic_indent_inside_blockquote() {
+    let mut buf = TextBuffer::from_str("> - a\n> - b", None);
+    buf.selection = Selection::cursor(Position::new(1, 0));
+
+    buf.indent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["> - a", ">     - b"]);
+
+    buf.outdent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["> - a", "> - b"]);
+}
+
+#[test]
+fn test_semantic_indent_multi_line_uniform_shift() {
+    // Siblings indent together by tab_size (4).
+    let mut buf = TextBuffer::from_str("- a\n- b\n- c", None);
+    buf.set_selection(Selection::new(Position::new(0, 0), Position::new(2, 3)));
+
+    buf.indent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["    - a", "    - b", "    - c"]);
+    assert_eq!(buf.selection.anchor, Position::new(0, 4));
+    assert_eq!(buf.selection.head, Position::new(2, 7));
+
+    buf.outdent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["- a", "- b", "- c"]);
+}
+
+#[test]
+fn test_semantic_indent_generic_fallback_and_undo() {
+    let mut buf = TextBuffer::from_str("plain\n- b", None);
+    buf.selection = Selection::cursor(Position::new(0, 0));
+
+    buf.indent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["    plain", "- b"]);
+
+    buf.undo();
+    assert_eq!(buf.lines, vec!["plain", "- b"]);
+}
+
+#[test]
+fn test_semantic_indent_mid_line_cursor_inserts_spaces() {
+    let mut buf = TextBuffer::from_str("ab", None);
+    buf.selection = Selection::cursor(Position::new(0, 1));
+
+    buf.indent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["a    b"]);
+    assert_eq!(buf.selection.head, Position::new(0, 5));
+}
+
+#[test]
+fn test_indent_multi_line_with_empty_lines() {
+    let mut buf = TextBuffer::from_str("- a\n\n- b", None);
+    buf.set_selection(Selection::new(Position::new(0, 0), Position::new(2, 3)));
+    buf.indent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["    - a", "", "    - b"]);
+
+    buf.outdent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["- a", "", "- b"]);
+}
+
+#[test]
+fn test_indent_cursor_before_insert_col_in_blockquote() {
+    let mut buf = TextBuffer::from_str("> - a", None);
+    // Cursor at col 0 (before '> ')
+    buf.selection = Selection::cursor(Position::new(0, 0));
+    buf.indent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec![">     - a"]);
+    assert_eq!(buf.selection.head, Position::new(0, 0));
+
+    buf.outdent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["> - a"]);
+    assert_eq!(buf.selection.head, Position::new(0, 0));
+}
+
+#[test]
+fn test_outdent_unicode_fullwidth_space_does_not_swallow_cjk() {
+    // Full-width space '\u{3000}' is 3 UTF-8 bytes, 1 char.
+    // Outdent must only strip ASCII indent characters (' ' or '\t') and never swallow CJK text.
+    let mut buf = TextBuffer::from_str("\u{3000}中文测试", None);
+    buf.selection = Selection::cursor(Position::new(0, 3));
+    buf.outdent_lines_with_tab_size(4);
+    assert_eq!(buf.lines, vec!["\u{3000}中文测试"]);
+    assert_eq!(buf.selection.head, Position::new(0, 3));
+
+    let mut buf2 = TextBuffer::from_str("  \u{3000}中文测试", None);
+    buf2.selection = Selection::cursor(Position::new(0, 5));
+    buf2.outdent_lines_with_tab_size(4);
+    assert_eq!(buf2.lines, vec!["\u{3000}中文测试"]);
+    assert_eq!(buf2.selection.head, Position::new(0, 3));
 }
 
 #[test]

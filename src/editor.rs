@@ -178,6 +178,10 @@ pub struct Editor {
 
     /// Native text system handle (`None` in headless unit tests).
     pub(crate) text_system: Option<Arc<TextSystem>>,
+
+    /// Memoized width of one space character in the UI font, keyed by the font
+    /// size it was measured at. Single measurement feeds visual indent layout.
+    pub(crate) space_width_memo: std::cell::Cell<Option<(f32, Pixels)>>,
 }
 
 impl Focusable for Editor {
@@ -421,6 +425,7 @@ impl Editor {
             auto_save_task: None,
             auto_save_delay: std::time::Duration::from_millis(1000),
             text_system: Some(cx.text_system().clone()),
+            space_width_memo: std::cell::Cell::new(None),
         };
         editor.reset_cursor_blink(cx);
         editor
@@ -965,5 +970,7 @@ pub struct LineRenderContext<'a> {
     pub font_size: f32,
     pub line_height: f32,
     pub soft_wrap: bool,
+    /// Per-line visual indent in pixels (Live Preview only).
+    pub indent_px: Pixels,
     pub text_system: Option<&'a Arc<TextSystem>>,
 }

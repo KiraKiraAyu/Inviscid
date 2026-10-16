@@ -1,10 +1,10 @@
 use super::TextBuffer;
 use super::char_col_to_byte_offset;
-use super::movement::{is_closing_code_fence_lines, is_in_code_fence_lines};
+use super::movement::{code_fence_range, is_closing_code_fence_lines, is_in_code_fence_lines};
 use super::primitives::{Position, Selection};
 use crate::markdown::{
-    BlockPrefix, get_smart_continuation_prefix, is_thematic_break, parse_block_prefix,
-    parse_heading_prefix,
+    detect_code_block_indent, list_marker, parse_block_prefix, shift_tab_plan, tab_plan,
+    BlockPrefix, get_smart_continuation_prefix, is_thematic_break, parse_heading_prefix,
 };
 
 fn ensure_min_empty_lines(lines: &mut Vec<String>) {
@@ -238,70 +238,148 @@ impl TextBuffer {
         });
     }
 
+    /// Indents the selected lines with smart tab size detection:
+    /// - Inside code blocks: auto-detects 2 or 4 spaces (default 4)
+    /// - Outside code blocks: always 4 spaces
     pub fn indent_lines(&mut self) {
-        self.indent_lines_with_tab_size(4);
+        let tab_size = self.detect_smart_tab_size();
+        self.indent_lines_with_tab_size(tab_size);
     }
 
+    /// Indents the selected lines (or the cursor line):
+    /// list items nest to their parent's content column, other
+    /// lines step by `tab_size` spaces. A multi-line selection shifts
+    /// uniformly by the smallest per-line step so the block stays coherent.
+    ///
+    /// With the cursor mid-line and no selection, Tab inserts `tab_size`
+    /// spaces at the cursor.
     pub fn indent_lines_with_tab_size(&mut self, tab_size: usize) {
         let tab_size = tab_size.max(1);
-        let tab_str: String = " ".repeat(tab_size);
         let (start, end) = self.selection.range();
-        if start == end && self.selection.head.col > 0 {
-            self.insert_text(&tab_str);
+
+        let is_list = self
+            .lines
+            .get(start.line)
+            .is_some_and(|l| list_marker(l).is_some());
+
+        if start == end && self.selection.head.col > 0 && !is_list {
+            self.insert_text(&" ".repeat(tab_size));
+            return;
+        }
+
+        let last = end.line.min(self.lines.len().saturating_sub(1));
+        if start.line > last {
+            return;
+        }
+
+        let plans: Vec<(usize, usize)> = (start.line..=last)
+            .map(|idx| tab_plan(&self.lines, idx, tab_size))
+            .collect();
+
+        let step = plans
+            .iter()
+            .enumerate()
+            .filter(|(offset, _)| !self.lines[start.line + offset].trim().is_empty())
+            .map(|(_, (_, len))| *len)
+            .min()
+            .or_else(|| plans.first().map(|(_, len)| *len))
+            .unwrap_or(tab_size);
+        if step == 0 {
             return;
         }
 
         self.record_edit(|lines, sel| {
-            for line in lines.iter_mut().take(end.line + 1).skip(start.line) {
-                line.insert_str(0, &tab_str);
+            let spaces = " ".repeat(step);
+            for (offset, (col, _)) in plans.iter().enumerate() {
+                let line_idx = start.line + offset;
+                if let Some(line) = lines.get_mut(line_idx) {
+                    if start.line != last && line.is_empty() {
+                        continue;
+                    }
+                    let byte = char_col_to_byte_offset(line, *col);
+                    line.insert_str(byte, &spaces);
+                }
             }
-            sel.anchor.col += tab_size;
-            sel.head.col += tab_size;
+
+            for pos in [&mut sel.anchor, &mut sel.head] {
+                if pos.line >= start.line && pos.line <= last {
+                    let insert_col = plans.get(pos.line - start.line).map_or(0, |(col, _)| *col);
+                    if pos.col >= insert_col {
+                        pos.col += step;
+                    }
+                }
+            }
         });
     }
 
+    /// Outdents the selected lines with smart tab size detection:
+    /// - Inside code blocks: auto-detects 2 or 4 spaces (default 4)
+    /// - Outside code blocks: always 4 spaces
     pub fn outdent_lines(&mut self) {
-        self.outdent_lines_with_tab_size(4);
+        let tab_size = self.detect_smart_tab_size();
+        self.outdent_lines_with_tab_size(tab_size);
     }
 
+    /// Outdents the selected lines (or the cursor line):
+    /// list items step out to the nearest enclosing list level,
+    /// other lines remove up to `tab_size` leading spaces.
     pub fn outdent_lines_with_tab_size(&mut self, tab_size: usize) {
         let tab_size = tab_size.max(1);
-        let tab_str: String = " ".repeat(tab_size);
         let (start, end) = self.selection.range();
+
+        let last = end.line.min(self.lines.len().saturating_sub(1));
+        if start.line > last {
+            return;
+        }
+
+        let plans: Vec<(usize, usize)> = (start.line..=last)
+            .map(|idx| shift_tab_plan(&self.lines, idx, tab_size))
+            .collect();
+
         self.record_edit(|lines, sel| {
-            let mut anchor_removed = 0;
-            let mut head_removed = 0;
-
-            for (line_idx, line) in lines
-                .iter_mut()
-                .enumerate()
-                .take(end.line + 1)
-                .skip(start.line)
-            {
-                let removed = if let Some(stripped) = line.strip_prefix(&tab_str) {
-                    *line = stripped.to_string();
-                    tab_size
-                } else if let Some(stripped) = line.strip_prefix('\t') {
-                    *line = stripped.to_string();
-                    1
-                } else {
-                    let spaces = line.chars().take_while(|c| *c == ' ').count().min(tab_size);
-                    if spaces > 0 {
-                        *line = line[spaces..].to_string();
+            for (offset, &(col, len)) in plans.iter().enumerate() {
+                let line_idx = start.line + offset;
+                let mut removed_chars = 0;
+                if let Some(line) = lines.get_mut(line_idx) {
+                    let start_byte = char_col_to_byte_offset(line, col);
+                    let max_end_byte = char_col_to_byte_offset(line, col + len);
+                    let safe_len = line[start_byte..max_end_byte]
+                        .bytes()
+                        .take_while(|&b| b == b' ' || b == b'\t')
+                        .count();
+                    if safe_len > 0 {
+                        line.drain(start_byte..start_byte + safe_len);
+                        removed_chars = safe_len;
                     }
-                    spaces
-                };
-
-                if line_idx == sel.anchor.line {
-                    anchor_removed = removed;
                 }
-                if line_idx == sel.head.line {
-                    head_removed = removed;
+                if removed_chars > 0 {
+                    for pos in [&mut sel.anchor, &mut sel.head] {
+                        if pos.line == line_idx && pos.col > col {
+                            pos.col = pos.col.saturating_sub(removed_chars).max(col);
+                        }
+                    }
                 }
             }
-            sel.anchor.col = sel.anchor.col.saturating_sub(anchor_removed);
-            sel.head.col = sel.head.col.saturating_sub(head_removed);
         });
+    }
+
+    /// Detects the appropriate tab size based on context:
+    /// - Inside code blocks: analyzes existing indentation (2 or 4 spaces)
+    /// - Outside code blocks: always returns 4
+    fn detect_smart_tab_size(&self) -> usize {
+        let cursor_line = self.selection.head.line;
+
+        // Check if we're in a code block
+        if let Some((start, end)) = code_fence_range(&self.lines, cursor_line) {
+            // Skip the opening fence line for detection
+            let detect_start = start + 1;
+            if detect_start < end {
+                return detect_code_block_indent(&self.lines, detect_start, end);
+            }
+        }
+
+        // Default to 4 spaces for document editing
+        4
     }
 
     pub fn toggle_comment(&mut self) {

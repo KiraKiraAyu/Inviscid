@@ -45,6 +45,30 @@ fn code_fence_status(lines: &[String], target_idx: usize) -> (bool, bool) {
     (false, false)
 }
 
+/// Returns the range `(start_line, end_line)` of the code fence containing
+/// `target_idx`, or `None` if the line is not inside a code fence.
+/// The range includes the opening and closing fence lines.
+pub fn code_fence_range(lines: &[String], target_idx: usize) -> Option<(usize, usize)> {
+    if target_idx >= lines.len() {
+        return None;
+    }
+    let mut open_idx: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("```") {
+            match open_idx {
+                Some(open) => {
+                    if (target_idx >= open && target_idx <= i) || target_idx == open {
+                        return Some((open, i));
+                    }
+                    open_idx = None;
+                }
+                None => open_idx = Some(i),
+            }
+        }
+    }
+    None
+}
+
 pub fn is_closing_code_fence_lines(lines: &[String], target_idx: usize) -> bool {
     code_fence_status(lines, target_idx).1
 }

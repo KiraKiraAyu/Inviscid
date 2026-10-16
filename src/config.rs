@@ -60,7 +60,6 @@ pub struct UserPreferences {
     pub editor_font_size: f32,
     pub line_height: f32,
     pub soft_wrap: bool,
-    pub tab_size: usize,
     pub cursor_blink: bool,
     pub cursor_breathing: bool,
     pub default_render_mode: RenderMode,
@@ -74,7 +73,6 @@ impl UserPreferences {
     pub const DEFAULT_UI_FONT_SIZE: f32 = 13.0;
     pub const DEFAULT_EDITOR_FONT_SIZE: f32 = 15.0;
     pub const DEFAULT_LINE_HEIGHT: f32 = 1.6;
-    pub const DEFAULT_TAB_SIZE: usize = 4;
 }
 
 impl Default for UserPreferences {
@@ -87,7 +85,6 @@ impl Default for UserPreferences {
             editor_font_size: Self::DEFAULT_EDITOR_FONT_SIZE,
             line_height: Self::DEFAULT_LINE_HEIGHT,
             soft_wrap: true,
-            tab_size: Self::DEFAULT_TAB_SIZE,
             cursor_blink: true,
             cursor_breathing: true,
             default_render_mode: RenderMode::default(),
@@ -509,7 +506,6 @@ mod tests {
         assert_eq!(parsed.editor_font_size, 15.0);
         assert_eq!(parsed.line_height, 1.6);
         assert!(parsed.soft_wrap);
-        assert_eq!(parsed.tab_size, 4);
         assert!(parsed.cursor_blink);
         assert!(parsed.cursor_breathing);
         assert_eq!(parsed.default_render_mode, RenderMode::LivePreview);
@@ -520,7 +516,6 @@ mod tests {
         full_config.editor_font_size = 18.0;
         full_config.line_height = 1.8;
         full_config.auto_save = true;
-        full_config.tab_size = 2;
         full_config.soft_wrap = false;
         full_config.set_keybinding("NewTab", "ctrl-t");
 
@@ -532,7 +527,6 @@ mod tests {
         assert_eq!(deserialized.editor_font_size, 18.0);
         assert_eq!(deserialized.line_height, 1.8);
         assert!(deserialized.auto_save);
-        assert_eq!(deserialized.tab_size, 2);
         assert!(!deserialized.soft_wrap);
         assert!(deserialized.cursor_blink);
         assert!(deserialized.cursor_breathing);

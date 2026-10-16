@@ -42,14 +42,19 @@ impl Editor {
         let layout = self.layout_snapshot();
         let content_width =
             crate::editor::shaping::compute_content_width(viewport.size.width, self.render_mode);
-        let mut container_x =
+        let container_x =
             viewport.origin.x + (viewport.size.width - content_width).max(px(0.0)) / 2.0;
-        if self.render_mode == RenderMode::Source {
-            container_x += crate::editor::layout::SOURCE_GUTTER_WIDTH;
+        let left_offset = if self.render_mode == RenderMode::Source {
+            crate::editor::layout::SOURCE_GUTTER_WIDTH
         } else if let Some(parsed) = layout.parsed_lines.get(line_idx) {
-            container_x +=
-                crate::editor::shaping::get_block_left_offset(&parsed.kind, self.render_mode);
-        }
+            crate::editor::shaping::get_block_left_offset_with_indent(
+                &parsed.kind,
+                self.render_mode,
+                layout.indent_px(line_idx),
+            )
+        } else {
+            px(0.0)
+        };
         let line_top = viewport.origin.y
             + layout
                 .line_y_offsets
@@ -63,8 +68,8 @@ impl Editor {
             .copied()
             .unwrap_or(px(24.0));
         Bounds {
-            origin: gpui::point(container_x, line_top),
-            size: size(content_width, line_h),
+            origin: gpui::point(container_x + left_offset, line_top),
+            size: size((content_width - left_offset).max(px(0.0)), line_h),
         }
     }
 
