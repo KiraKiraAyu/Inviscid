@@ -567,24 +567,21 @@ pub fn calculate_wrapped_visual_lines_with_wrap(
 pub fn calculate_visual_lines_with_runs(
     text: &str,
     runs: &[TextRun],
-    font: Font,
+    _font: Font,
     font_size: Pixels,
     available_width: Pixels,
     soft_wrap: bool,
-    text_system: Option<&Arc<TextSystem>>,
+    _text_system: Option<&Arc<TextSystem>>,
     is_monospace: bool,
 ) -> usize {
     if !soft_wrap || text.is_empty() || available_width <= px(0.0) {
         return 1;
     }
-    if let Some(ts) = text_system {
-        let mut wrapper = ts.line_wrapper(font, font_size);
-        let count = wrapper
-            .wrap_line(&[LineFragment::text(text)], available_width)
-            .count();
-        return count + 1;
-    }
 
+    // Always use the runs-aware fallback to ensure consistent line counting
+    // with mixed font styles (inline code, bold, etc.).
+    // The previous line_wrapper approach ignored runs, causing height mismatches
+    // when inline code with different font metrics was present.
     calculate_wrapped_visual_lines_with_runs_fallback(
         text,
         runs,
