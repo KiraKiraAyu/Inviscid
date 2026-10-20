@@ -59,6 +59,8 @@ table_alt_bg = "#f6f8fa66"
 cursor = "#0969da"
 selection = "#0969da2b"
 line_highlight = "#e6eaef80"
+search_match = "#d4a72c4d"
+search_match_active = "#fb8f4466"
 
 btn_bg = "#e6eaef"
 btn_hover = "#dae0e7"

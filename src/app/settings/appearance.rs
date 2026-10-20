@@ -6,14 +6,12 @@
 use gpui::prelude::*;
 use gpui::*;
 
+use super::SettingsWindow;
 use super::bounds::UI_FONT_SIZE_BOUNDS;
 use super::persistence::update_config_all_windows;
-use super::SettingsWindow;
 use crate::config::AppConfig;
 use crate::theme::ThemeManager;
-use crate::ui::{
-    FontSize, Icon, IconName, IconSize, SelectableRow, SettingRow, Spacing, Stepper,
-};
+use crate::ui::{FontSize, Icon, IconName, IconSize, SelectableRow, SettingRow, Spacing, Stepper};
 
 impl SettingsWindow {
     pub(crate) fn render_appearance_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {

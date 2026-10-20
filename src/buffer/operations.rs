@@ -3,8 +3,8 @@ use super::char_col_to_byte_offset;
 use super::movement::{code_fence_range, is_closing_code_fence_lines, is_in_code_fence_lines};
 use super::primitives::{Position, Selection};
 use crate::markdown::{
-    detect_code_block_indent, list_marker, parse_block_prefix, shift_tab_plan, tab_plan,
-    BlockPrefix, get_smart_continuation_prefix, is_thematic_break, parse_heading_prefix,
+    BlockPrefix, detect_code_block_indent, get_smart_continuation_prefix, is_thematic_break,
+    list_marker, parse_block_prefix, parse_heading_prefix, shift_tab_plan, tab_plan,
 };
 
 fn ensure_min_empty_lines(lines: &mut Vec<String>) {

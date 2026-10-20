@@ -1309,6 +1309,53 @@ pub fn find_link_at_pixel_point(
 
 use super::LineRenderContext;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RangeTail {
+    Clipped,
+    EndOfLine,
+    Continues,
+}
+
+fn push_visual_row_quads(
+    wrapped_line: &WrappedLine,
+    range: std::ops::Range<usize>,
+    tail: RangeTail,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    mut push: impl FnMut(Bounds<Pixels>),
+) {
+    let layout = &wrapped_line.unwrapped_layout;
+    let row_count = wrapped_line.wrap_boundaries.len() + 1;
+    let mut row_start = 0;
+    for row in 0..row_count {
+        let row_end = match wrapped_line.wrap_boundaries.get(row) {
+            Some(b) => layout.runs[b.run_ix].glyphs[b.glyph_ix].index,
+            None => layout.len,
+        };
+
+        if range.start < row_end && range.end >= row_start {
+            let seg_start = range.start.max(row_start);
+            let seg_end = range.end.min(row_end);
+            let row_x = layout.x_for_index(row_start);
+            let x1 = layout.x_for_index(seg_start) - row_x;
+            let x2 = if seg_end == row_end && tail != RangeTail::Clipped {
+                (layout.x_for_index(seg_end) - row_x + px(8.0)).max(x1 + px(4.0))
+            } else {
+                layout.x_for_index(seg_end) - row_x
+            };
+
+            if x2 > x1 || tail == RangeTail::Continues {
+                let y = origin.y + (row as f32) * line_height;
+                push(Bounds::from_corners(
+                    point(origin.x + x1, y),
+                    point(origin.x + x2.max(x1 + px(2.0)), y + line_height),
+                ));
+            }
+        }
+        row_start = row_end;
+    }
+}
+
 enum LinePrepaintState {
     Empty {
         caret_bounds: Option<Bounds<Pixels>>,
@@ -1317,6 +1364,7 @@ enum LinePrepaintState {
     },
     Shaped {
         wrapped_line: Box<WrappedLine>,
+        highlight_quads: Vec<(Bounds<Pixels>, Hsla)>,
         selection_quads: Vec<Bounds<Pixels>>,
         selection_color: Hsla,
         caret_bounds: Option<Bounds<Pixels>>,
@@ -1353,6 +1401,7 @@ pub fn render_shaped_line(
     });
     let content_width = lrc.content_width;
     let soft_wrap = lrc.soft_wrap;
+    let highlights = lrc.highlights.to_vec();
 
     let is_active_caret = is_active;
 
@@ -1490,7 +1539,9 @@ pub fn render_shaped_line(
                 return LinePrepaintState::None;
             };
 
-            let num_visual_lines = wrapped_line.wrap_boundaries.len() + 1;
+            let to_visible = |raw_col: usize| {
+                raw_col_to_visible_byte(raw_col, &spans, is_active_caret, disclosure_col, is_source)
+            };
 
             let mut selection_quads = Vec::new();
             if !selection.is_empty() {
@@ -1511,60 +1562,40 @@ pub fn render_shaped_line(
                         (0, total_raw_len)
                     };
 
-                    let start_byte = raw_col_to_visible_byte(
-                        start_raw_col,
-                        &spans,
-                        is_active_caret,
-                        disclosure_col,
-                        is_source,
+                    let tail = if line_idx < sel_end.line {
+                        RangeTail::Continues
+                    } else if end_raw_col == total_raw_len {
+                        RangeTail::EndOfLine
+                    } else {
+                        RangeTail::Clipped
+                    };
+                    push_visual_row_quads(
+                        &wrapped_line,
+                        to_visible(start_raw_col)..to_visible(end_raw_col),
+                        tail,
+                        bounds.origin,
+                        line_height,
+                        |quad| selection_quads.push(quad),
                     );
-                    let end_byte = raw_col_to_visible_byte(
-                        end_raw_col,
-                        &spans,
-                        is_active_caret,
-                        disclosure_col,
-                        is_source,
-                    );
-
-                    let mut line_start_ix = 0;
-                    for v_ix in 0..num_visual_lines {
-                        let line_end_ix = if v_ix < wrapped_line.wrap_boundaries.len() {
-                            let b = wrapped_line.wrap_boundaries[v_ix];
-                            let run = &wrapped_line.unwrapped_layout.runs[b.run_ix];
-                            run.glyphs[b.glyph_ix].index
-                        } else {
-                            wrapped_line.unwrapped_layout.len
-                        };
-
-                        if start_byte < line_end_ix && end_byte >= line_start_ix {
-                            let seg_s = start_byte.max(line_start_ix);
-                            let seg_e = end_byte.min(line_end_ix);
-                            let line_start_x =
-                                wrapped_line.unwrapped_layout.x_for_index(line_start_ix);
-                            let x1 =
-                                wrapped_line.unwrapped_layout.x_for_index(seg_s) - line_start_x;
-                            let x2 = if seg_e == line_end_ix
-                                && (line_idx < sel_end.line || end_raw_col == total_raw_len)
-                            {
-                                (wrapped_line.unwrapped_layout.x_for_index(seg_e) - line_start_x
-                                    + px(8.0))
-                                .max(x1 + px(4.0))
-                            } else {
-                                wrapped_line.unwrapped_layout.x_for_index(seg_e) - line_start_x
-                            };
-
-                            if x2 > x1 || line_idx < sel_end.line {
-                                let y = bounds.origin.y + (v_ix as f32) * line_height;
-                                let sel_bounds = Bounds::from_corners(
-                                    point(bounds.origin.x + x1, y),
-                                    point(bounds.origin.x + x2.max(x1 + px(2.0)), y + line_height),
-                                );
-                                selection_quads.push(sel_bounds);
-                            }
-                        }
-                        line_start_ix = line_end_ix;
-                    }
                 }
+            }
+
+            let mut highlight_quads = Vec::new();
+            for highlight in &highlights {
+                let color = highlight.kind.color(cx.theme());
+                let tail = if highlight.continues {
+                    RangeTail::Continues
+                } else {
+                    RangeTail::Clipped
+                };
+                push_visual_row_quads(
+                    &wrapped_line,
+                    to_visible(highlight.cols.start)..to_visible(highlight.cols.end),
+                    tail,
+                    bounds.origin,
+                    line_height,
+                    |quad| highlight_quads.push((quad, color)),
+                );
             }
 
             let mut caret_bounds = if is_active
@@ -1613,6 +1644,7 @@ pub fn render_shaped_line(
 
             LinePrepaintState::Shaped {
                 wrapped_line: Box::new(wrapped_line),
+                highlight_quads,
                 selection_quads,
                 selection_color,
                 caret_bounds,
@@ -1642,12 +1674,16 @@ pub fn render_shaped_line(
             }
             LinePrepaintState::Shaped {
                 wrapped_line,
+                highlight_quads,
                 selection_quads,
                 selection_color,
                 caret_bounds,
                 cursor_color,
                 preedit,
             } => {
+                for (quad, color) in highlight_quads {
+                    window.paint_quad(fill(quad, color));
+                }
                 for sel_quad in selection_quads {
                     window.paint_quad(fill(sel_quad, selection_color));
                 }

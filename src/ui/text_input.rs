@@ -21,9 +21,17 @@ use crate::theme::{DEFAULT_THEME, Theme, ThemeManager};
 use crate::ui::tokens::{ControlHeight, FontSize, LineHeight, Radius, Spacing};
 use crate::ui::{calculate_caret_size, start_cursor_animation};
 
-/// Events emitted by [`TextInput`] upon user confirmation or cancellation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextInputBg {
+    #[default]
+    Editor,
+    Toolbar,
+    Transparent,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextInputEvent {
+    Changed(String),
     Commit(String),
     Cancel,
 }
@@ -99,6 +107,7 @@ pub struct TextInput {
     pub(crate) height: Pixels,
     pub(crate) radius: Pixels,
     pub(crate) padding_x: Pixels,
+    pub(crate) bg: TextInputBg,
     pub(crate) marked_range: Option<Range<usize>>,
     pub(crate) cursor_opacity: f32,
     pub(crate) blink_epoch: usize,
@@ -107,6 +116,7 @@ pub struct TextInput {
     pub(crate) drag_anchor: Option<usize>,
     pub(crate) scroll_offset: Rc<Cell<Pixels>>,
     pub(crate) last_bounds: Rc<Cell<Bounds<Pixels>>>,
+    reported_revision: u64,
 }
 
 impl Focusable for TextInput {
@@ -123,6 +133,7 @@ impl TextInput {
         let mut buffer = TextBuffer::from_str(initial_text, None);
         let char_count = initial_text.chars().count();
         buffer.set_selection(Selection::cursor(Position::new(0, char_count)));
+        let reported_revision = buffer.revision();
 
         Self {
             id: ElementId::Name("text_input".into()),
@@ -134,6 +145,7 @@ impl TextInput {
             height: ControlHeight::XS,
             radius: Radius::XS,
             padding_x: Spacing::XS,
+            bg: TextInputBg::default(),
             marked_range: None,
             cursor_opacity: 1.0,
             blink_epoch: 0,
@@ -142,6 +154,7 @@ impl TextInput {
             drag_anchor: None,
             scroll_offset: Rc::new(Cell::new(px(0.0))),
             last_bounds: Rc::new(Cell::new(Bounds::default())),
+            reported_revision,
         }
     }
 
@@ -192,6 +205,11 @@ impl TextInput {
 
     pub fn padding_x(mut self, padding_x: Pixels) -> Self {
         self.padding_x = padding_x;
+        self
+    }
+
+    pub fn bg(mut self, bg: TextInputBg) -> Self {
+        self.bg = bg;
         self
     }
 
@@ -267,6 +285,23 @@ impl TextInput {
 
     pub fn on_mutation(&mut self, cx: &mut Context<Self>) {
         self.reset_cursor_blink(cx);
+        let revision = self.buffer.revision();
+        if revision != self.reported_revision {
+            self.reported_revision = revision;
+            cx.emit(TextInputEvent::Changed(self.text()));
+        }
+    }
+
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let clean = self.sanitize_input(text);
+        if clean != self.text() {
+            self.buffer.select_all();
+            self.buffer.insert_text(&clean);
+            self.marked_range = None;
+            self.on_mutation(cx);
+        }
+        self.buffer.select_all();
+        cx.notify();
     }
 
     pub fn commit(&mut self, cx: &mut Context<Self>) {
@@ -586,6 +621,10 @@ impl TextInputHost for TextInput {
 
     fn on_cancel(&mut self, cx: &mut Context<Self>) {
         self.cancel(cx);
+    }
+
+    fn on_mutation(&mut self, cx: &mut Context<Self>) {
+        TextInput::on_mutation(self, cx);
     }
 }
 
@@ -992,6 +1031,12 @@ impl TextInput {
             self.blink_task = None;
         }
 
+        let bg = match self.bg {
+            TextInputBg::Editor => theme.bg_editor,
+            TextInputBg::Toolbar => theme.bg_toolbar,
+            TextInputBg::Transparent => gpui::transparent_black(),
+        };
+
         let snapshot = TextInputSnapshot {
             line_str: self.text(),
             selection: self.buffer.selection(),
@@ -1129,9 +1174,9 @@ impl TextInput {
             .h(self.height)
             .flex_1()
             .overflow_hidden()
-            .bg(theme.bg_editor)
+            .bg(bg)
             .border_1()
-            .border_color(theme.text_accent)
+            .border_color(theme.border)
             .rounded(self.radius)
             .cursor_text()
             .on_mouse_down(
@@ -1200,6 +1245,37 @@ impl Render for TextInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn test_text_input_emits_changed_only_when_text_changes(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = cx.add_window_view(|_window, cx| TextInput::new("ab", cx));
+        let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = events.clone();
+        let _sub = cx.update(|_window, cx| {
+            cx.subscribe(&input, move |_, event: &TextInputEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+        });
+
+        cx.update(|window, cx| {
+            input.update(cx, |inp, cx| {
+                inp.replace_text_in_range(None, "c", window, cx);
+                inp.buffer.move_left_mode(false, true);
+                inp.on_mutation(cx);
+                inp.set_text("abc", cx);
+                inp.set_text("xyz", cx);
+            });
+        });
+
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                TextInputEvent::Changed("abc".into()),
+                TextInputEvent::Changed("xyz".into()),
+            ],
+            "cursor moves and no-op `set_text` must not report a change"
+        );
+    }
 
     #[gpui::test]
     fn test_text_input_commit_and_cancel_keys(cx: &mut gpui::TestAppContext) {
@@ -1315,6 +1391,7 @@ mod tests {
                         *committed_sub.borrow_mut() = Some(text.clone())
                     }
                     TextInputEvent::Cancel => cancelled_sub.set(true),
+                    TextInputEvent::Changed(_) => {}
                 },
             )
         });

@@ -3360,6 +3360,7 @@ fn test_nested_list_render_live_content() {
             soft_wrap: true,
             indent_px: if idx == 0 { px(0.0) } else { px(16.0) },
             text_system: None,
+            highlights: &[],
         };
 
         let element = render_live_line_content(idx, &parsed[idx], &lines, &lrc, None);
@@ -3367,3 +3368,102 @@ fn test_nested_list_render_live_content() {
     }
 }
 
+#[gpui::test]
+fn test_search_highlights_clip_multiline_matches_to_each_line(cx: &mut gpui::TestAppContext) {
+    use super::{HighlightKind, LineHighlight};
+    use crate::search::{SearchOptions, SearchQuery};
+
+    let content = "one target\ntwo\nthree\nfour target";
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(content, None), cx)
+    });
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            let options = SearchOptions {
+                use_regex: true,
+                ..Default::default()
+            };
+            let query = SearchQuery::new(r"target\ntwo\nth", options).unwrap();
+            ed.set_find_query(Some(query), cx);
+
+            let continues = |cols| LineHighlight {
+                cols,
+                continues: true,
+                kind: HighlightKind::ActiveSearchMatch,
+            };
+            assert_eq!(ed.search_highlights(0), vec![continues(4..10)]);
+            assert_eq!(ed.search_highlights(1), vec![continues(0..3)]);
+            assert_eq!(
+                ed.search_highlights(2),
+                vec![LineHighlight {
+                    cols: 0..2,
+                    continues: false,
+                    kind: HighlightKind::ActiveSearchMatch,
+                }]
+            );
+            assert!(ed.search_highlights(3).is_empty());
+        });
+    });
+}
+
+#[gpui::test]
+fn test_search_highlights_mark_only_the_current_match_active(cx: &mut gpui::TestAppContext) {
+    use super::HighlightKind;
+    use crate::search::{SearchOptions, SearchQuery};
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str("ab ab\nab", None), cx)
+    });
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(
+                Some(SearchQuery::new("ab", SearchOptions::default()).unwrap()),
+                cx,
+            );
+            let kinds = |ed: &super::Editor, line| {
+                ed.search_highlights(line)
+                    .into_iter()
+                    .map(|h| h.kind)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                kinds(ed, 0),
+                vec![HighlightKind::ActiveSearchMatch, HighlightKind::SearchMatch]
+            );
+
+            ed.find_next(cx);
+            ed.find_next(cx);
+            assert_eq!(kinds(ed, 0), vec![HighlightKind::SearchMatch; 2]);
+            assert_eq!(kinds(ed, 1), vec![HighlightKind::ActiveSearchMatch]);
+        });
+    });
+}
+
+#[gpui::test]
+fn test_find_matches_follow_edits(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::Position;
+    use crate::search::{SearchOptions, SearchQuery};
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str("xx foo", None), cx)
+    });
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(
+                Some(SearchQuery::new("foo", SearchOptions::default()).unwrap()),
+                cx,
+            );
+            assert_eq!(ed.search_highlights(0)[0].cols, 3..6);
+
+            ed.buffer.set_cursor(Position::new(0, 0));
+            ed.perform_edit(cx, |ed| ed.buffer.insert_text("ab"));
+            assert_eq!(ed.search_highlights(0)[0].cols, 5..8);
+
+            ed.undo(cx);
+            assert_eq!(ed.search_highlights(0)[0].cols, 3..6);
+        });
+    });
+}

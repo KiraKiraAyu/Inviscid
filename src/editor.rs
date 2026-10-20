@@ -5,13 +5,19 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use gpui::prelude::FluentBuilder;
+
+use crate::app::actions::{CloseFindBar, FindInDocument, FindNext, FindPrevious};
 use crate::buffer::{Position, Selection, TextBuffer};
 use crate::markdown::{VisualDocument, get_block_prefix_len, toggle_task_checkbox};
+use crate::search::FindState;
 use crate::theme::{ActiveTheme, Theme};
 
 pub mod actions;
 pub mod display_map;
 pub mod element;
+pub mod find;
+pub mod find_bar;
 pub mod input_handler;
 pub mod keymap;
 pub mod layout;
@@ -182,6 +188,10 @@ pub struct Editor {
     /// Memoized width of one space character in the UI font, keyed by the font
     /// size it was measured at. Single measurement feeds visual indent layout.
     pub(crate) space_width_memo: std::cell::Cell<Option<(f32, Pixels)>>,
+
+    pub(crate) find_state: FindState,
+    /// `Some` while the find bar is open.
+    pub(crate) find_bar: Option<find::FindBarHandle>,
 }
 
 impl Focusable for Editor {
@@ -426,6 +436,8 @@ impl Editor {
             auto_save_delay: std::time::Duration::from_millis(1000),
             text_system: Some(cx.text_system().clone()),
             space_width_memo: std::cell::Cell::new(None),
+            find_state: FindState::new(),
+            find_bar: None,
         };
         editor.reset_cursor_blink(cx);
         editor
@@ -626,6 +638,10 @@ impl Editor {
         let prev_chars = self.buffer.char_count();
         let prev_version = self.buffer.version();
         f(self);
+        if self.find_state.is_stale(self.buffer.revision()) {
+            self.refresh_find_matches();
+            self.sync_find_bar(cx);
+        }
         if self.buffer.is_dirty() != prev_dirty {
             cx.emit(EditorEvent::DirtyChanged(self.buffer.is_dirty()));
         }
@@ -948,7 +964,24 @@ impl Render for Editor {
             .bg(bg_color);
 
         let element = Self::register_actions(element, cx);
-        Self::register_mouse_listeners(element, cx).into_any_element()
+        let element = Self::register_mouse_listeners(element, cx);
+
+        div()
+            .key_context(self.pane_key_context())
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_action(
+                cx.listener(|this, _: &FindInDocument, window, cx| this.open_find_bar(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_next(cx)))
+            .on_action(cx.listener(|this, _: &FindPrevious, _, cx| this.find_previous(cx)))
+            .on_action(
+                cx.listener(|this, _: &CloseFindBar, window, cx| this.close_find_bar(window, cx)),
+            )
+            .when_some(self.find_bar(), |this, bar| this.child(bar.clone()))
+            .child(div().flex_1().size_full().overflow_hidden().child(element))
+            .into_any_element()
     }
 }
 
@@ -973,4 +1006,27 @@ pub struct LineRenderContext<'a> {
     /// Per-line visual indent in pixels (Live Preview only).
     pub indent_px: Pixels,
     pub text_system: Option<&'a Arc<TextSystem>>,
+    pub highlights: &'a [LineHighlight],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HighlightKind {
+    SearchMatch,
+    ActiveSearchMatch,
+}
+
+impl HighlightKind {
+    pub fn color(self, theme: &Theme) -> Hsla {
+        match self {
+            HighlightKind::SearchMatch => theme.search_match,
+            HighlightKind::ActiveSearchMatch => theme.search_match_active,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineHighlight {
+    pub cols: Range<usize>,
+    pub continues: bool,
+    pub kind: HighlightKind,
 }

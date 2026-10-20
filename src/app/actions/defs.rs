@@ -30,6 +30,13 @@ actions!(
         CutEntry,
         CopyEntry,
         PasteEntry,
+        FindInDocument,
+        FindNext,
+        FindPrevious,
+        CloseFindBar,
+        ToggleCaseSensitive,
+        ToggleWholeWord,
+        ToggleRegex,
     ]
 );
 

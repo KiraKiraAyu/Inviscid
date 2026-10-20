@@ -32,7 +32,7 @@ pub use selectable_row::SelectableRow;
 pub use setting_row::SettingRow;
 pub use stepper::Stepper;
 pub use switch::Switch;
-pub use text_input::{TextInput, TextInputEvent};
+pub use text_input::{TextInput, TextInputBg, TextInputEvent};
 pub use title_bar::WindowTitleBar;
 pub use tokens::{ControlHeight, FontSize, LineHeight, Radius, Spacing, SwitchMetrics};
 pub use window_controls::WindowControls;

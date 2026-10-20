@@ -9,9 +9,9 @@
 use gpui::prelude::*;
 use gpui::*;
 
+use super::SettingsWindow;
 use super::bounds::{EDITOR_FONT_SIZE_BOUNDS, LINE_HEIGHT_BOUNDS};
 use super::persistence::{update_config, update_config_all_windows};
-use super::SettingsWindow;
 use crate::config::AppConfig;
 use crate::ui::{OptionPill, SettingRow, Spacing, Stepper, Switch};
 

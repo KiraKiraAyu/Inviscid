@@ -170,6 +170,10 @@ define_theme! {
     selection,
     line_highlight,
 
+    // Find-in-document highlights
+    search_match,
+    search_match_active,
+
     // Interactive controls and buttons
     btn_bg,
     btn_hover,

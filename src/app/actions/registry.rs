@@ -90,6 +90,9 @@ const EDITOR: Option<&str> = Some(key_context::EDITOR);
 const EDITOR_OR_INLINE: Option<&str> = Some(key_context::EDITOR_OR_INLINE);
 const PROJECT_PANEL_TREE: Option<&str> = Some(key_context::PROJECT_PANEL_TREE);
 const MENU_OPEN: Option<&str> = Some(key_context::MENU_OPEN);
+const EDITOR_PANE: Option<&str> = Some(key_context::EDITOR_PANE);
+const FIND_ACTIVE: Option<&str> = Some(key_context::FIND_ACTIVE);
+const FIND_BAR: Option<&str> = Some(key_context::FIND_BAR);
 
 use Platform::{All, Macos, NonMacos};
 
@@ -118,6 +121,16 @@ define_keybindings!(
     (CopyAction, "Copy", "Edit", &["secondary-c"], EDITOR_OR_INLINE, All),
     (PasteAction, "Paste", "Edit", &["secondary-v"], EDITOR_OR_INLINE, All),
     (SelectAll, "Select All", "Edit", &["secondary-a"], EDITOR_OR_INLINE, All),
+    (FindInDocument, "Find", "Edit", &["secondary-f"], EDITOR_PANE, All),
+    (FindNext, "Find Next", "Edit", &["f3", "secondary-g"], EDITOR_PANE, All),
+    (FindPrevious, "Find Previous", "Edit", &["shift-f3", "secondary-shift-g"], EDITOR_PANE, All),
+    (CloseFindBar, "Close Find Bar", "Edit", &["escape"], FIND_ACTIVE, All),
+    (ToggleCaseSensitive, "Toggle Match Case", "Edit", &["alt-c"], FIND_BAR, NonMacos),
+    (ToggleCaseSensitive, "Toggle Match Case", "Edit", &["cmd-alt-c"], FIND_BAR, Macos),
+    (ToggleWholeWord, "Toggle Whole Word", "Edit", &["alt-w"], FIND_BAR, NonMacos),
+    (ToggleWholeWord, "Toggle Whole Word", "Edit", &["cmd-alt-w"], FIND_BAR, Macos),
+    (ToggleRegex, "Toggle Regex", "Edit", &["alt-r"], FIND_BAR, NonMacos),
+    (ToggleRegex, "Toggle Regex", "Edit", &["cmd-alt-r"], FIND_BAR, Macos),
 
     // Project panel: scoped to the file tree (`PROJECT_PANEL_TREE` also excludes the rename box),
     // so the same keystrokes keep their text meaning in the editor and in the inline input.
@@ -312,6 +325,9 @@ mod tests {
         // component — the project panel's context menu and rename box both want it.
         let spec = spec_for("DismissOverlay").expect("DismissOverlay missing");
         assert_eq!(spec.context, Some(key_context::MENU_OPEN));
+
+        let spec = spec_for("CloseFindBar").expect("CloseFindBar missing");
+        assert_eq!(spec.context, Some(key_context::FIND_ACTIVE));
     }
 
     #[test]

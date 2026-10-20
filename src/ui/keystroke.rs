@@ -17,6 +17,10 @@ pub mod context {
 
     pub const APP: &str = "App";
     pub const EDITOR: &str = "Editor";
+    pub const EDITOR_PANE: &str = "EditorPane";
+    pub const EDITOR_PANE_WITH_FIND_ACTIVE: &str = "EditorPane FindActive";
+    pub const FIND_ACTIVE: &str = "FindActive";
+    pub const FIND_BAR: &str = "FindBar";
     pub const INLINE_INPUT: &str = "InlineInput";
     pub const EDITOR_OR_INLINE: &str = "Editor || InlineInput || TextInput";
     pub const WORKSPACE: &str = "Workspace";

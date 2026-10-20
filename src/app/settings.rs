@@ -249,9 +249,9 @@ impl Render for SettingsWindow {
 mod tests {
     use super::*;
     // `gpui::*` exports its own `test` attribute, which would otherwise shadow the std one.
-    use core::prelude::v1::test;
     use crate::config::AppConfig;
     use crate::theme::ThemeManager;
+    use core::prelude::v1::test;
 
     struct ResetGlobalGrammarUrlOnDrop;
     impl Drop for ResetGlobalGrammarUrlOnDrop {

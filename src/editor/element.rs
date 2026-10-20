@@ -166,6 +166,7 @@ impl Element for EditorElement {
                         }
                         let parsed = &layout.parsed_lines[line_idx];
                         let is_active_line = line_idx == cursor_line;
+                        let highlights = editor.search_highlights(line_idx);
                         let lrc = LineRenderContext {
                             is_active_line,
                             is_focused,
@@ -184,6 +185,7 @@ impl Element for EditorElement {
                             soft_wrap: editor.soft_wrap,
                             indent_px: layout.indent_px(line_idx),
                             text_system: editor.text_system.as_ref(),
+                            highlights: &highlights,
                         };
 
                         let line_el = render_line_element(

@@ -273,6 +273,7 @@ impl SettingsWindow {
                     this.cancel_editing_grammar_url(cx);
                     window.focus(&this.focus_handle);
                 }
+                TextInputEvent::Changed(_) => {}
             },
         );
         let blur_sub = cx.on_blur(&focus_handle, window, |this, _window, cx| {
@@ -293,11 +294,7 @@ impl SettingsWindow {
         }
     }
 
-    pub(crate) fn set_grammar_base_url(
-        &mut self,
-        url: impl Into<String>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn set_grammar_base_url(&mut self, url: impl Into<String>, cx: &mut Context<Self>) {
         let normalized = normalize_grammar_base_url(&url.into());
         self.active_input = None;
         crate::syntax::set_global_grammar_base_url(normalized.clone());

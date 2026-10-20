@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
-use crate::app::actions::{OpenMenu, display_keystroke_for};
+use crate::app::actions::{
+    FindInDocument, FindNext, FindPrevious, OpenMenu, display_keystroke_for,
+};
 use crate::config::{AppConfig, WorkspaceState};
 use crate::editor::RenderMode;
 use crate::editor::actions::{
@@ -367,6 +369,15 @@ fn render_edit_dropdown(editor: Option<FocusHandle>, cx: &mut App) -> impl IntoE
             item("Paste", "PasteAction", PasteAction.boxed_clone(), cx),
             render_menu_separator(cx).into_any_element(),
             item("Select All", "SelectAll", SelectAll.boxed_clone(), cx),
+            render_menu_separator(cx).into_any_element(),
+            item("Find", "FindInDocument", FindInDocument.boxed_clone(), cx),
+            item("Find Next", "FindNext", FindNext.boxed_clone(), cx),
+            item(
+                "Find Previous",
+                "FindPrevious",
+                FindPrevious.boxed_clone(),
+                cx,
+            ),
         ],
         cx,
     )

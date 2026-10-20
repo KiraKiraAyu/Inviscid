@@ -231,6 +231,11 @@ impl TextBuffer {
     }
 
     #[inline]
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    #[inline]
     pub fn last_edit_delta(&self) -> Option<EditDelta> {
         self.last_edit_delta
     }

@@ -14,10 +14,7 @@ use crate::config::AppConfig;
 ///
 /// Use for preferences other windows read while handling an event rather than while painting
 /// (`tab_size`, `auto_save`, `restore_workspace`); repainting everything would be wasted work.
-pub(crate) fn update_config(
-    cx: &mut Context<SettingsWindow>,
-    change: impl FnOnce(&mut AppConfig),
-) {
+pub(crate) fn update_config(cx: &mut Context<SettingsWindow>, change: impl FnOnce(&mut AppConfig)) {
     write_config(cx, change, false)
 }
 
