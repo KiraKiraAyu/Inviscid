@@ -10,6 +10,12 @@ const FIND: &str = if cfg!(target_os = "macos") {
     "ctrl-f"
 };
 
+const REPLACE: &str = if cfg!(target_os = "macos") {
+    "cmd-h"
+} else {
+    "ctrl-h"
+};
+
 fn mount_editor<'a>(
     tcx: &'a mut TestAppContext,
     text: &str,
@@ -178,4 +184,113 @@ fn test_match_highlight_tracks_the_active_match() {
         kinds,
         vec![HighlightKind::SearchMatch, HighlightKind::ActiveSearchMatch]
     );
+}
+
+#[test]
+fn test_replace_shortcut_opens_replace_mode() {
+    let mut tcx = TestAppContext::single();
+    let (editor, cx) = mount_editor(&mut tcx, "foo bar");
+
+    cx.simulate_keystrokes(REPLACE);
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ed = editor.read(cx);
+        assert!(ed.is_find_bar_visible());
+    });
+
+    cx.simulate_input("foo");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("qux");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ed = editor.read(cx);
+        assert_eq!(ed.buffer().line(0), Some("qux bar"));
+    });
+}
+
+#[test]
+fn test_replace_next_replaces_and_advances() {
+    let mut tcx = TestAppContext::single();
+    let (editor, cx) = mount_editor(&mut tcx, "foo bar foo baz foo");
+
+    cx.simulate_keystrokes(REPLACE);
+    cx.simulate_input("foo");
+    cx.run_until_parked();
+    assert_eq!(current_match(&editor, cx), Some((1, 3)));
+
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("qux");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ed = editor.read(cx);
+        assert_eq!(ed.buffer().line(0), Some("qux bar foo baz foo"));
+        assert_eq!(ed.find_state().match_count(), 2);
+    });
+
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ed = editor.read(cx);
+        assert_eq!(ed.buffer().line(0), Some("qux bar qux baz foo"));
+        assert_eq!(ed.find_state().match_count(), 1);
+    });
+}
+
+#[test]
+fn test_replace_all_replaces_all_and_atomic_undo() {
+    let mut tcx = TestAppContext::single();
+    let (editor, cx) = mount_editor(&mut tcx, "apple banana apple cherry apple");
+
+    cx.simulate_keystrokes(REPLACE);
+    cx.simulate_input("apple");
+    cx.run_until_parked();
+    assert_eq!(current_match(&editor, cx), Some((1, 3)));
+
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("orange");
+    let replace_all_key = if cfg!(target_os = "macos") {
+        "cmd-alt-enter"
+    } else {
+        "ctrl-alt-enter"
+    };
+    cx.simulate_keystrokes(replace_all_key);
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ed = editor.read(cx);
+        assert_eq!(
+            ed.buffer().line(0),
+            Some("orange banana orange cherry orange")
+        );
+        assert_eq!(ed.find_state().match_count(), 0);
+    });
+
+    // Close find bar via escape - editor should regain focus automatically
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        let ed = editor.read(cx);
+        assert!(!ed.is_find_bar_visible());
+        assert!(ed.focus_handle(cx).is_focused(window));
+    });
+
+    let undo_key = if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    };
+    cx.simulate_keystrokes(undo_key);
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ed = editor.read(cx);
+        assert_eq!(ed.buffer().line(0), Some("apple banana apple cherry apple"));
+    });
 }

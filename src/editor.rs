@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder;
 
-use crate::app::actions::{CloseFindBar, FindInDocument, FindNext, FindPrevious};
+use crate::app::actions::{
+    CloseFindBar, FindInDocument, FindNext, FindPrevious, ReplaceInDocument,
+};
 use crate::buffer::{Position, Selection, TextBuffer};
 use crate::markdown::{VisualDocument, get_block_prefix_len, toggle_task_checkbox};
 use crate::search::FindState;
@@ -192,6 +194,7 @@ pub struct Editor {
     pub(crate) find_state: FindState,
     /// `Some` while the find bar is open.
     pub(crate) find_bar: Option<find::FindBarHandle>,
+    pub(crate) needs_focus_after_find: bool,
 }
 
 impl Focusable for Editor {
@@ -438,6 +441,7 @@ impl Editor {
             space_width_memo: std::cell::Cell::new(None),
             find_state: FindState::new(),
             find_bar: None,
+            needs_focus_after_find: false,
         };
         editor.reset_cursor_blink(cx);
         editor
@@ -891,7 +895,7 @@ impl Editor {
 }
 
 impl Render for Editor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(config) = cx.try_global::<crate::config::AppConfig>() {
             if !self.has_explicit_render_mode {
                 let target_mode = config.default_render_mode;
@@ -941,7 +945,7 @@ impl Render for Editor {
                 .into_any_element();
         }
 
-        let is_focused = self.focus_handle.is_focused(_window);
+        let is_focused = self.focus_handle.is_focused(window);
         if !is_focused && self.blink_task.is_some() {
             self.cursor_opacity = 0.0;
             self.blink_epoch = self.blink_epoch.wrapping_add(1);
@@ -964,6 +968,11 @@ impl Render for Editor {
             .bg(bg_color);
 
         let element = Self::register_actions(element, cx);
+        if self.needs_focus_after_find {
+            self.needs_focus_after_find = false;
+            window.focus(&self.focus_handle);
+        }
+
         let element = Self::register_mouse_listeners(element, cx);
 
         div()
@@ -974,11 +983,16 @@ impl Render for Editor {
             .on_action(
                 cx.listener(|this, _: &FindInDocument, window, cx| this.open_find_bar(window, cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &ReplaceInDocument, window, cx| {
+                    this.open_replace(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_next(cx)))
             .on_action(cx.listener(|this, _: &FindPrevious, _, cx| this.find_previous(cx)))
-            .on_action(
-                cx.listener(|this, _: &CloseFindBar, window, cx| this.close_find_bar(window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &CloseFindBar, window, cx| {
+                this.close_find_bar(Some(window), cx)
+            }))
             .when_some(self.find_bar(), |this, bar| this.child(bar.clone()))
             .child(div().flex_1().size_full().overflow_hidden().child(element))
             .into_any_element()

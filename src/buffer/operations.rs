@@ -48,6 +48,41 @@ fn delete_range_internal(lines: &mut Vec<String>, (start, end): (Position, Posit
     ensure_min_empty_lines(lines);
 }
 
+fn insert_text_internal(lines: &mut Vec<String>, pos: Position, text: &str) -> Position {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let text_lines: Vec<&str> = normalized.split('\n').collect();
+    if text_lines.len() == 1 {
+        let insert_len = normalized.chars().count();
+        let byte_col = char_col_to_byte_offset(&lines[pos.line], pos.col);
+        lines[pos.line].insert_str(byte_col, &normalized);
+        Position::new(pos.line, pos.col + insert_len)
+    } else {
+        let byte_col = char_col_to_byte_offset(&lines[pos.line], pos.col);
+        let prefix = lines[pos.line][..byte_col].to_string();
+        let suffix = lines[pos.line][byte_col..].to_string();
+
+        let mut new_lines = Vec::with_capacity(text_lines.len());
+        for (i, t_line) in text_lines.iter().enumerate() {
+            if i == 0 {
+                let mut first = prefix.clone();
+                first.push_str(t_line);
+                new_lines.push(first);
+            } else if i == text_lines.len() - 1 {
+                let mut last = (*t_line).to_string();
+                last.push_str(&suffix);
+                new_lines.push(last);
+            } else {
+                new_lines.push(t_line.to_string());
+            }
+        }
+
+        let end_line = pos.line + text_lines.len() - 1;
+        let end_col = text_lines.last().map(|l| l.chars().count()).unwrap_or(0);
+        lines.splice(pos.line..=pos.line, new_lines);
+        Position::new(end_line, end_col)
+    }
+}
+
 fn append_block_below(lines: &mut Vec<String>, current_line_idx: usize) -> usize {
     if current_line_idx + 1 < lines.len() && lines[current_line_idx + 1].trim().is_empty() {
         lines.insert(current_line_idx + 2, String::new());
@@ -434,40 +469,42 @@ impl TextBuffer {
                 let (start, _) = sel.range();
                 *sel = Selection::cursor(start);
             }
-
-            let pos = sel.head;
-            let byte_col = char_col_to_byte_offset(&lines[pos.line], pos.col);
-
-            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-            let text_lines: Vec<&str> = normalized.split('\n').collect();
-            if text_lines.len() == 1 {
-                let insert_len = normalized.chars().count();
-                lines[pos.line].insert_str(byte_col, &normalized);
-                *sel = Selection::cursor(Position::new(pos.line, pos.col + insert_len));
-            } else {
-                let prefix = lines[pos.line][..byte_col].to_string();
-                let suffix = lines[pos.line][byte_col..].to_string();
-
-                let mut new_lines = Vec::with_capacity(text_lines.len());
-                for (i, t_line) in text_lines.iter().enumerate() {
-                    if i == 0 {
-                        let mut first = prefix.clone();
-                        first.push_str(t_line);
-                        new_lines.push(first);
-                    } else if i == text_lines.len() - 1 {
-                        let last_col = t_line.chars().count();
-                        let mut last = (*t_line).to_string();
-                        last.push_str(&suffix);
-                        new_lines.push(last);
-                        *sel = Selection::cursor(Position::new(pos.line + i, last_col));
-                    } else {
-                        new_lines.push(t_line.to_string());
-                    }
-                }
-
-                lines.splice(pos.line..=pos.line, new_lines);
-            }
+            let new_pos = insert_text_internal(lines, sel.head, text);
+            *sel = Selection::cursor(new_pos);
         });
+    }
+
+    pub fn replace_range(&mut self, (start, end): (Position, Position), text: &str) -> Position {
+        let (start, end) = if start < end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let mut new_end = start;
+        self.record_edit(|lines, sel| {
+            delete_range_internal(lines, (start, end));
+            new_end = insert_text_internal(lines, start, text);
+            *sel = Selection::cursor(new_end);
+        });
+        new_end
+    }
+
+    pub fn replace_all_matches(
+        &mut self,
+        query: &crate::search::SearchQuery,
+        replacement: &str,
+    ) -> usize {
+        let normalized_rep = replacement.replace("\r\n", "\n").replace('\r', "\n");
+        let text = self.lines.join("\n");
+        let (new_text, count) = query.replace_all(&text, &normalized_rep);
+        if count > 0 {
+            self.record_edit(|lines, sel| {
+                *lines = new_text.split('\n').map(String::from).collect();
+                ensure_min_empty_lines(lines);
+                *sel = Selection::cursor(Position::default());
+            });
+        }
+        count
     }
 
     #[cfg(test)]

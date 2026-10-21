@@ -1430,3 +1430,60 @@ fn test_chunks_with_line_ending_streaming() {
     let crlf_chunks: Vec<&str> = crlf_buf.chunks_with_line_ending().collect();
     assert_eq!(crlf_chunks, vec!["a", "\r\n", "b"]);
 }
+
+#[test]
+fn test_text_in_range() {
+    let buf = TextBuffer::from_str("hello world\nsecond line", None);
+    assert_eq!(
+        buf.text_in_range((Position::new(0, 0), Position::new(0, 5))),
+        "hello"
+    );
+    assert_eq!(
+        buf.text_in_range((Position::new(0, 6), Position::new(1, 6))),
+        "world\nsecond"
+    );
+}
+
+#[test]
+fn test_replace_range_single_line_and_undo() {
+    let mut buf = TextBuffer::from_str("hello world", None);
+    let new_pos = buf.replace_range((Position::new(0, 0), Position::new(0, 5)), "goodbye");
+    assert_eq!(buf.to_string_content(), "goodbye world");
+    assert_eq!(new_pos, Position::new(0, 7));
+
+    buf.undo();
+    assert_eq!(buf.to_string_content(), "hello world");
+}
+
+#[test]
+fn test_replace_range_multi_line_and_undo() {
+    let mut buf = TextBuffer::from_str("line 1\nline 2\nline 3", None);
+    let new_pos = buf.replace_range(
+        (Position::new(0, 4), Position::new(2, 4)),
+        " A\nline B\nline C",
+    );
+    assert_eq!(buf.to_string_content(), "line A\nline B\nline C 3");
+    assert_eq!(new_pos, Position::new(2, 6));
+
+    buf.undo();
+    assert_eq!(buf.to_string_content(), "line 1\nline 2\nline 3");
+}
+
+#[test]
+fn test_replace_all_matches_atomic_undo() {
+    use crate::search::{SearchOptions, SearchQuery};
+
+    let mut buf = TextBuffer::from_str("aaa bbb aaa ccc aaa", None);
+    let query = SearchQuery::new("aaa", SearchOptions::default()).unwrap();
+    let count = buf.replace_all_matches(&query, "xxx");
+    assert_eq!(count, 3);
+    assert_eq!(buf.to_string_content(), "xxx bbb xxx ccc xxx");
+
+    // Single undo restores all 3 matches atomically
+    buf.undo();
+    assert_eq!(buf.to_string_content(), "aaa bbb aaa ccc aaa");
+
+    // Redo re-applies all 3 matches atomically
+    buf.redo();
+    assert_eq!(buf.to_string_content(), "xxx bbb xxx ccc xxx");
+}

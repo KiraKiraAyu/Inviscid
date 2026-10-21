@@ -80,6 +80,39 @@ impl SearchQuery {
     pub(crate) fn regex(&self) -> &regex::Regex {
         &self.regex
     }
+
+    pub fn replace_all(&self, text: &str, replacement: &str) -> (String, usize) {
+        let mut count = 0;
+        let replaced = self.regex.replace_all(text, |caps: &regex::Captures| {
+            let m = caps.get(0).unwrap();
+            if m.is_empty() {
+                return m.as_str().to_string();
+            }
+            count += 1;
+            if self.options.use_regex {
+                let mut dst = String::new();
+                caps.expand(replacement, &mut dst);
+                dst
+            } else {
+                replacement.to_string()
+            }
+        });
+        (replaced.into_owned(), count)
+    }
+
+    pub fn expand_replacement(&self, matched_text: &str, replacement: &str) -> String {
+        if self.options.use_regex {
+            if let Some(caps) = self.regex.captures(matched_text) {
+                let mut dst = String::new();
+                caps.expand(replacement, &mut dst);
+                dst
+            } else {
+                replacement.to_string()
+            }
+        } else {
+            replacement.to_string()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -117,5 +150,49 @@ mod tests {
     fn test_search_query_empty() {
         let result = SearchQuery::new("", SearchOptions::default());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replace_all_literal_does_not_expand_dollar() {
+        let query = SearchQuery::new("hello", SearchOptions::default()).unwrap();
+        let (replaced, count) = query.replace_all("hello world hello", "hi $1");
+        assert_eq!(count, 2);
+        assert_eq!(replaced, "hi $1 world hi $1");
+    }
+
+    #[test]
+    fn test_replace_all_case_insensitive() {
+        let query = SearchQuery::new("hello", SearchOptions::default()).unwrap();
+        let (replaced, count) = query.replace_all("Hello world HELLO", "hi");
+        assert_eq!(count, 2);
+        assert_eq!(replaced, "hi world hi");
+    }
+
+    #[test]
+    fn test_replace_all_regex_with_capture_groups() {
+        let opts = SearchOptions {
+            use_regex: true,
+            ..Default::default()
+        };
+        let query = SearchQuery::new(r"user_(\d+)", opts).unwrap();
+        let (replaced, count) = query.replace_all("user_123 and user_456", "id_$1");
+        assert_eq!(count, 2);
+        assert_eq!(replaced, "id_123 and id_456");
+    }
+
+    #[test]
+    fn test_expand_replacement_literal() {
+        let query = SearchQuery::new("foo", SearchOptions::default()).unwrap();
+        assert_eq!(query.expand_replacement("foo", "bar$1"), "bar$1");
+    }
+
+    #[test]
+    fn test_expand_replacement_regex() {
+        let opts = SearchOptions {
+            use_regex: true,
+            ..Default::default()
+        };
+        let query = SearchQuery::new(r"(\w+)-(\d+)", opts).unwrap();
+        assert_eq!(query.expand_replacement("item-42", "$2/$1"), "42/item");
     }
 }

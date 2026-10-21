@@ -122,6 +122,7 @@ define_keybindings!(
     (PasteAction, "Paste", "Edit", &["secondary-v"], EDITOR_OR_INLINE, All),
     (SelectAll, "Select All", "Edit", &["secondary-a"], EDITOR_OR_INLINE, All),
     (FindInDocument, "Find", "Edit", &["secondary-f"], EDITOR_PANE, All),
+    (ReplaceInDocument, "Replace in Document", "Edit", &["secondary-h"], EDITOR_PANE, All),
     (FindNext, "Find Next", "Edit", &["f3", "secondary-g"], EDITOR_PANE, All),
     (FindPrevious, "Find Previous", "Edit", &["shift-f3", "secondary-shift-g"], EDITOR_PANE, All),
     (CloseFindBar, "Close Find Bar", "Edit", &["escape"], FIND_ACTIVE, All),

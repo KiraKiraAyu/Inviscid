@@ -34,6 +34,7 @@ actions!(
         FindNext,
         FindPrevious,
         CloseFindBar,
+        ReplaceInDocument,
         ToggleCaseSensitive,
         ToggleWholeWord,
         ToggleRegex,

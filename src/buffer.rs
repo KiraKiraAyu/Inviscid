@@ -690,39 +690,47 @@ impl TextBuffer {
         }
     }
 
+    pub fn text_in_range(&self, (start, end): (Position, Position)) -> String {
+        if start == end {
+            return String::new();
+        }
+        let (start, end) = if start < end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let mut res = String::new();
+        for line_idx in start.line..=end.line {
+            let line = match self.lines.get(line_idx) {
+                Some(l) => l,
+                None => continue,
+            };
+            if line_idx > start.line {
+                res.push('\n');
+            }
+            if line_idx == start.line && line_idx == end.line {
+                let char_count = line.chars().count();
+                let start_col = start.col.min(char_count);
+                let end_col = end.col.min(char_count);
+                if start_col < end_col {
+                    res.extend(line.chars().skip(start_col).take(end_col - start_col));
+                }
+            } else if line_idx == start.line {
+                res.extend(line.chars().skip(start.col));
+            } else if line_idx == end.line {
+                res.extend(line.chars().take(end.col));
+            } else {
+                res.push_str(line);
+            }
+        }
+        res
+    }
+
     pub fn selected_text(&self) -> Option<String> {
         if self.selection.is_empty() {
-            return None;
-        }
-
-        let (start, end) = self.selection.range();
-        if start.line == end.line {
-            let line = &self.lines[start.line];
-            let char_count = line.chars().count();
-            let start_col = start.col.min(char_count);
-            let end_col = end.col.min(char_count);
-            if start_col >= end_col {
-                return Some(String::new());
-            }
-            let selected: String = line
-                .chars()
-                .skip(start_col)
-                .take(end_col - start_col)
-                .collect();
-            Some(selected)
+            None
         } else {
-            let mut res = Vec::with_capacity(end.line - start.line + 1);
-            for line_idx in start.line..=end.line {
-                let line = &self.lines[line_idx];
-                if line_idx == start.line {
-                    res.push(line.chars().skip(start.col).collect::<String>());
-                } else if line_idx == end.line {
-                    res.push(line.chars().take(end.col).collect::<String>());
-                } else {
-                    res.push(line.clone());
-                }
-            }
-            Some(res.join("\n"))
+            Some(self.text_in_range(self.selection.range()))
         }
     }
 

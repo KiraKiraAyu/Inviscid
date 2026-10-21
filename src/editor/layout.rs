@@ -1085,7 +1085,12 @@ impl Editor {
         };
 
         let thumb_h = if virtual_h > px(0.0) {
-            ((track_h / virtual_h) * track_h).clamp(px(28.0), track_h)
+            // Guard against panics when track height is smaller than the minimum thumb height (28px).
+            if track_h < px(28.0) {
+                track_h
+            } else {
+                ((track_h / virtual_h) * track_h).clamp(px(28.0), track_h)
+            }
         } else {
             track_h
         };

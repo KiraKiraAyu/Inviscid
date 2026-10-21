@@ -16,6 +16,7 @@ pub use tabs::TabItem;
 use crate::app::{status_bar, tab_bar};
 use crate::config::{AppConfig, WorkspaceState};
 use crate::editor::Editor;
+use crate::editor::find_bar::FindBar;
 use crate::theme::{DEFAULT_THEME, ThemeManager};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -430,7 +431,21 @@ impl Workspace {
         cx.notify();
     }
 
+    fn transfer_find_bar(&mut self, cx: &mut Context<Self>) -> Option<Entity<FindBar>> {
+        self.active_editor()
+            .and_then(|ed| ed.update(cx, |ed, cx| ed.detach_find_bar(cx)))
+    }
+
+    fn restore_find_bar(&mut self, bar: Option<Entity<FindBar>>, cx: &mut Context<Self>) {
+        if let Some(bar) = bar {
+            if let Some(active_ed) = self.active_editor() {
+                active_ed.update(cx, |ed, cx| ed.attach_find_bar(bar, cx));
+            }
+        }
+    }
+
     pub fn new_tab(&mut self, cx: &mut Context<Self>) {
+        let find_bar = self.transfer_find_bar(cx);
         let (editor, subscription) = Self::init_editor(None, cx);
         self.tabs.push(TabItem {
             editor,
@@ -438,11 +453,19 @@ impl Workspace {
             _subscription: subscription,
         });
         self.active_tab_idx = self.tabs.len() - 1;
+        self.restore_find_bar(find_bar, cx);
         self.sync_active_editor_state(cx);
     }
 
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.tabs.len() {
+            let is_closing_active = index == self.active_tab_idx;
+            let find_bar = if is_closing_active {
+                self.transfer_find_bar(cx)
+            } else {
+                None
+            };
+
             self.tabs.remove(index);
             if self.tabs.is_empty() {
                 self.active_tab_idx = 0;
@@ -451,6 +474,8 @@ impl Workspace {
             } else if self.active_tab_idx > index {
                 self.active_tab_idx -= 1;
             }
+
+            self.restore_find_bar(find_bar, cx);
             self.sync_active_editor_state(cx);
         }
     }
@@ -469,12 +494,14 @@ impl Workspace {
             return;
         }
         let target_editor = self.tabs[keep_idx].editor.clone();
+        let find_bar = self.transfer_find_bar(cx);
         tabs::filter_close_other_tabs(&mut self.tabs, &target_editor);
         self.active_tab_idx = self
             .tabs
             .iter()
             .position(|t| t.editor == target_editor)
             .unwrap_or(0);
+        self.restore_find_bar(find_bar, cx);
         self.sync_active_editor_state(cx);
     }
 
@@ -483,12 +510,14 @@ impl Workspace {
             return;
         }
         let target_editor = self.tabs[target_idx].editor.clone();
+        let find_bar = self.transfer_find_bar(cx);
         tabs::filter_close_tabs_to_left(&mut self.tabs, target_idx);
         self.active_tab_idx = self
             .tabs
             .iter()
             .position(|t| t.editor == target_editor)
             .unwrap_or(0);
+        self.restore_find_bar(find_bar, cx);
         self.sync_active_editor_state(cx);
     }
 
@@ -497,17 +526,20 @@ impl Workspace {
             return;
         }
         let target_editor = self.tabs[target_idx].editor.clone();
+        let find_bar = self.transfer_find_bar(cx);
         tabs::filter_close_tabs_to_right(&mut self.tabs, target_idx);
         self.active_tab_idx = self
             .tabs
             .iter()
             .position(|t| t.editor == target_editor)
             .unwrap_or(0);
+        self.restore_find_bar(find_bar, cx);
         self.sync_active_editor_state(cx);
     }
 
     pub fn close_clean_tabs(&mut self, cx: &mut Context<Self>) {
         let active_editor = self.active_editor().cloned();
+        let find_bar = self.transfer_find_bar(cx);
         tabs::filter_close_clean_tabs(&mut self.tabs, cx);
         if let Some(ed) = active_editor {
             self.active_tab_idx = self.tabs.iter().position(|t| t.editor == ed).unwrap_or(0);
@@ -517,16 +549,19 @@ impl Workspace {
         if !self.tabs.is_empty() && self.active_tab_idx >= self.tabs.len() {
             self.active_tab_idx = self.tabs.len() - 1;
         }
+        self.restore_find_bar(find_bar, cx);
         self.sync_active_editor_state(cx);
     }
 
     pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
+        let find_bar = self.transfer_find_bar(cx);
         self.tabs.retain(|t| t.is_pinned);
         if self.tabs.is_empty() {
             self.active_tab_idx = 0;
         } else if self.active_tab_idx >= self.tabs.len() {
             self.active_tab_idx = self.tabs.len() - 1;
         }
+        self.restore_find_bar(find_bar, cx);
         self.sync_active_editor_state(cx);
     }
 
@@ -595,22 +630,24 @@ impl Workspace {
 
     pub fn switch_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.tabs.len() && self.active_tab_idx != index {
+            let find_bar = self.transfer_find_bar(cx);
             self.active_tab_idx = index;
+            self.restore_find_bar(find_bar, cx);
             self.sync_active_editor_state(cx);
         }
     }
 
     pub fn next_tab(&mut self, cx: &mut Context<Self>) {
         if !self.tabs.is_empty() {
-            self.active_tab_idx = (self.active_tab_idx + 1) % self.tabs.len();
-            self.sync_active_editor_state(cx);
+            let next_idx = (self.active_tab_idx + 1) % self.tabs.len();
+            self.switch_tab(next_idx, cx);
         }
     }
 
     pub fn prev_tab(&mut self, cx: &mut Context<Self>) {
         if !self.tabs.is_empty() {
-            self.active_tab_idx = (self.active_tab_idx + self.tabs.len() - 1) % self.tabs.len();
-            self.sync_active_editor_state(cx);
+            let prev_idx = (self.active_tab_idx + self.tabs.len() - 1) % self.tabs.len();
+            self.switch_tab(prev_idx, cx);
         }
     }
 
@@ -632,10 +669,15 @@ impl Workspace {
             if let Some(active_editor) = self.active_editor() {
                 active_editor.update(cx, |editor, cx| {
                     let _ = editor.load_file(path.clone(), cx);
+                    if editor.is_find_bar_visible() {
+                        editor.refresh_find_matches();
+                        editor.sync_find_bar(cx);
+                    }
                 });
                 self.sync_active_editor_state(cx);
             }
         } else {
+            let find_bar = self.transfer_find_bar(cx);
             let (editor, subscription) = Self::init_editor(Some(path.clone()), cx);
             self.tabs.push(TabItem {
                 editor,
@@ -643,6 +685,7 @@ impl Workspace {
                 _subscription: subscription,
             });
             self.active_tab_idx = self.tabs.len() - 1;
+            self.restore_find_bar(find_bar, cx);
             self.sync_active_editor_state(cx);
         }
 
@@ -954,5 +997,123 @@ impl Render for Workspace {
                     ),
             )
             .child(self.status_bar.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Workspace;
+    use crate::config::AppConfig;
+    use crate::theme::ThemeManager;
+    use gpui::TestAppContext;
+
+    fn init_globals(cx: &mut TestAppContext) {
+        let config = AppConfig::default().with_theme("Dracula");
+        let theme_manager = ThemeManager::from_config(&config);
+        cx.update(|cx| {
+            cx.set_global(theme_manager);
+            cx.set_global(config);
+            crate::app::actions::bind_default_bindings(cx);
+        });
+    }
+
+    #[gpui::test]
+    fn test_workspace_tab_switch_preserves_find_bar(cx: &mut TestAppContext) {
+        init_globals(cx);
+
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(None, cx));
+
+        ws.update(cx, |ws, cx| {
+            ws.new_tab(cx);
+            ws.new_tab(cx);
+        });
+
+        let (ed0, ed1) = ws.read_with(cx, |ws, _| {
+            (ws.tabs[0].editor.clone(), ws.tabs[1].editor.clone())
+        });
+        ed0.update(cx, |ed, _| {
+            ed.buffer_mut().insert_text("first doc with match");
+        });
+        ed1.update(cx, |ed, _| {
+            ed.buffer_mut().insert_text("second doc match match");
+        });
+
+        ws.update(cx, |ws, cx| ws.switch_tab(0, cx));
+        cx.update(|window, cx| {
+            ed0.update(cx, |ed, cx| {
+                ed.open_find_bar(window, cx);
+                let bar = ed.find_bar().cloned().unwrap();
+                bar.update(cx, |bar, cx| bar.focus_query(Some("match"), window, cx));
+            });
+        });
+
+        ed0.read_with(cx, |ed, _| {
+            assert!(ed.is_find_bar_visible());
+            assert_eq!(ed.find_state().match_count(), 1);
+        });
+        ed1.read_with(cx, |ed, _| {
+            assert!(!ed.is_find_bar_visible());
+        });
+
+        ws.update(cx, |ws, cx| ws.switch_tab(1, cx));
+
+        ed0.read_with(cx, |ed, _| {
+            assert!(!ed.is_find_bar_visible());
+            assert_eq!(ed.find_state().match_count(), 0);
+        });
+        ed1.read_with(cx, |ed, cx| {
+            assert!(ed.is_find_bar_visible());
+            assert_eq!(ed.find_state().match_count(), 2);
+            assert_eq!(ed.find_bar().unwrap().read(cx).query_text(cx), "match");
+        });
+
+        ws.update(cx, |ws, cx| ws.switch_tab(0, cx));
+        ed0.read_with(cx, |ed, cx| {
+            assert!(ed.is_find_bar_visible());
+            assert_eq!(ed.find_state().match_count(), 1);
+            assert_eq!(ed.find_bar().unwrap().read(cx).query_text(cx), "match");
+        });
+        ed1.read_with(cx, |ed, _| {
+            assert!(!ed.is_find_bar_visible());
+        });
+    }
+
+    #[gpui::test]
+    fn test_workspace_close_tab_preserves_find_bar_to_remaining_tab(cx: &mut TestAppContext) {
+        init_globals(cx);
+
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(None, cx));
+        ws.update(cx, |ws, cx| {
+            ws.new_tab(cx);
+            ws.new_tab(cx);
+        });
+
+        let (ed0, ed1) = ws.read_with(cx, |ws, _| {
+            (ws.tabs[0].editor.clone(), ws.tabs[1].editor.clone())
+        });
+        ed0.update(cx, |ed, _| {
+            ed.buffer_mut().insert_text("item in zero");
+        });
+        ed1.update(cx, |ed, _| {
+            ed.buffer_mut().insert_text("item in one");
+        });
+
+        cx.update(|window, cx| {
+            ed1.update(cx, |ed, cx| {
+                ed.open_find_bar(window, cx);
+                let bar = ed.find_bar().cloned().unwrap();
+                bar.update(cx, |bar, cx| bar.focus_query(Some("item"), window, cx));
+            });
+        });
+
+        assert!(ed1.read_with(cx, |ed, _| ed.is_find_bar_visible()));
+
+        ws.update(cx, |ws, cx| ws.close_tab(1, cx));
+
+        ed0.read_with(cx, |ed, cx| {
+            assert!(ed.is_find_bar_visible());
+            assert_eq!(ed.find_state().match_count(), 1);
+            assert_eq!(ed.find_bar().unwrap().read(cx).query_text(cx), "item");
+        });
     }
 }
