@@ -1000,6 +1000,7 @@ impl Workspace {
             active_editor.update(cx, |ed, cx| {
                 ed.buffer_mut().set_cursor(position);
                 ed.scroll_to_cursor();
+                ed.start_scroll_animation_if_needed(cx);
                 ed.reset_cursor_blink(cx);
             });
         }

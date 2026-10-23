@@ -168,7 +168,7 @@ fn render_match_row(
     let (pre, matched, post) = split_preview(m);
     let action = OpenWorkspaceMatch {
         path: path.to_path_buf(),
-        position: Position::new(m.line_number.saturating_sub(1), m.char_range.0),
+        position: workspace_match_position(m),
     };
     let (hover, active) = (theme.btn_hover, theme.btn_active);
 
@@ -222,6 +222,11 @@ fn render_match_row(
         )
 }
 
+/// Returns the cursor position immediately after a workspace-search match.
+fn workspace_match_position(m: &WorkspaceMatch) -> Position {
+    Position::new(m.line_number.saturating_sub(1), m.char_range.1)
+}
+
 /// Splits the matched line around the hit, dropping the leading indentation.
 fn split_preview(m: &WorkspaceMatch) -> (&str, &str, &str) {
     let line = &*m.line_content;
@@ -254,6 +259,12 @@ mod tests {
             byte_range,
             char_range: byte_range,
         }
+    }
+
+    #[test]
+    fn workspace_match_position_places_cursor_at_match_end() {
+        let m = hit("prefix needle suffix", (7, 13));
+        assert_eq!(workspace_match_position(&m), Position::new(0, 13));
     }
 
     #[test]

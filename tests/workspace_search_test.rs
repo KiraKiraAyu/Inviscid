@@ -161,7 +161,7 @@ fn test_workspace_search_finds_matches_and_opens_at_location() {
         window.dispatch_action(
             Box::new(OpenWorkspaceMatch {
                 path: file2.clone(),
-                position: Position::new(hit.line_number - 1, hit.char_range.0),
+                position: Position::new(hit.line_number - 1, hit.char_range.1),
             }),
             cx,
         );
@@ -173,7 +173,7 @@ fn test_workspace_search_finds_matches_and_opens_at_location() {
         let ed_entity = ws.active_editor().expect("active editor open");
         let ed = ed_entity.read(cx);
         assert_eq!(ed.file_path(), Some(file2.as_path()));
-        assert_eq!(ed.buffer().cursor_pos(), Position::new(1, 8));
+        assert_eq!(ed.buffer().cursor_pos(), Position::new(1, 13));
     });
     cx.update(|window, cx| {
         let ed_entity = ws
