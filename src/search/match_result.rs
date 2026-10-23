@@ -12,6 +12,13 @@ impl SearchMatch {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchToggle {
+    CaseSensitive,
+    WholeWord,
+    Regex,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchOptions {
     pub case_sensitive: bool,

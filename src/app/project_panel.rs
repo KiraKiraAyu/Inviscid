@@ -77,6 +77,7 @@ pub enum ProjectPanelEvent {
     OpenFile(PathBuf),
     PathRenamed { old: PathBuf, new: PathBuf },
     PathDeleted(PathBuf),
+    PathCreated(PathBuf),
 }
 
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
@@ -97,7 +98,6 @@ pub struct ProjectPanel {
     scroll_handle: ScrollHandle,
     tree_scroll: TreeScrollState,
     scroll_task: Option<Task<()>>,
-    panel_width: Pixels,
     active_file: Option<PathBuf>,
 }
 
@@ -128,7 +128,6 @@ impl ProjectPanel {
             scroll_handle: ScrollHandle::new(),
             tree_scroll: TreeScrollState::new(),
             scroll_task: None,
-            panel_width: px(crate::app::workspace::DEFAULT_SIDEBAR_WIDTH),
             active_file: None,
         };
         panel.rebuild_entries();
@@ -157,14 +156,6 @@ impl ProjectPanel {
     #[inline]
     pub fn root_dir(&self) -> Option<&Path> {
         self.root_dir.as_deref()
-    }
-
-    /// Sets the panel width.
-    pub fn set_panel_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
-        if self.panel_width != width {
-            self.panel_width = width;
-            cx.notify();
-        }
     }
 
     /// Sets the currently active file path.
@@ -491,6 +482,7 @@ impl ProjectPanel {
                     self.expanded_dirs.insert(parent);
                     self.rebuild_entries();
                     self.selected_path = Some(new_path.clone());
+                    cx.emit(ProjectPanelEvent::PathCreated(new_path.clone()));
                     cx.emit(ProjectPanelEvent::OpenFile(new_path));
                 }
                 Err(e) => {
@@ -703,6 +695,8 @@ impl ProjectPanel {
                         old: src,
                         new: target,
                     });
+                } else {
+                    cx.emit(ProjectPanelEvent::PathCreated(target));
                 }
                 self.expanded_dirs.insert(dest_dir);
                 self.rebuild_entries();
@@ -900,7 +894,6 @@ impl Render for ProjectPanel {
 
         let theme = cx.global::<ThemeManager>().theme().clone();
 
-        let panel_width = self.panel_width;
         let active_file = self.active_file.as_deref();
 
         let entries_count = self.entries.len();
@@ -1018,11 +1011,9 @@ impl Render for ProjectPanel {
             .on_action(cx.listener(|this, _: &DeleteEntry, window, cx| {
                 this.handle_entry_action(ContextMenuAction::Delete, window, cx);
             }))
-            .w(panel_width)
+            .w_full()
             .h_full()
             .bg(theme.bg_toolbar)
-            .border_r_1()
-            .border_color(theme.border_subtle)
             .flex()
             .flex_col()
             .overflow_hidden()

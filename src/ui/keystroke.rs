@@ -25,6 +25,7 @@ pub mod context {
     pub const EDITOR_OR_INLINE: &str = "Editor || InlineInput || TextInput";
     pub const WORKSPACE: &str = "Workspace";
     pub const PROJECT_PANEL: &str = "ProjectPanel";
+    pub const SEARCH_PANEL: &str = "SearchPanel";
     pub const SETTINGS_WINDOW: &str = "SettingsWindow";
     pub const ABOUT_WINDOW: &str = "AboutWindow";
     pub const TEXT_INPUT: &str = "TextInput";

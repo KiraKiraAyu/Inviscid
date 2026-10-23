@@ -93,6 +93,7 @@ const MENU_OPEN: Option<&str> = Some(key_context::MENU_OPEN);
 const EDITOR_PANE: Option<&str> = Some(key_context::EDITOR_PANE);
 const FIND_ACTIVE: Option<&str> = Some(key_context::FIND_ACTIVE);
 const FIND_BAR: Option<&str> = Some(key_context::FIND_BAR);
+const SEARCH_PANEL: Option<&str> = Some(key_context::SEARCH_PANEL);
 
 use Platform::{All, Macos, NonMacos};
 
@@ -123,6 +124,8 @@ define_keybindings!(
     (SelectAll, "Select All", "Edit", &["secondary-a"], EDITOR_OR_INLINE, All),
     (FindInDocument, "Find", "Edit", &["secondary-f"], EDITOR_PANE, All),
     (ReplaceInDocument, "Replace in Document", "Edit", &["secondary-h"], EDITOR_PANE, All),
+    (FindInWorkspace, "Find in Files", "Edit", &["secondary-shift-f"], APP, All),
+    (CloseSearchPanel, "Close Search Panel", "Edit", &["escape"], SEARCH_PANEL, All),
     (FindNext, "Find Next", "Edit", &["f3", "secondary-g"], EDITOR_PANE, All),
     (FindPrevious, "Find Previous", "Edit", &["shift-f3", "secondary-shift-g"], EDITOR_PANE, All),
     (CloseFindBar, "Close Find Bar", "Edit", &["escape"], FIND_ACTIVE, All),
@@ -329,6 +332,9 @@ mod tests {
 
         let spec = spec_for("CloseFindBar").expect("CloseFindBar missing");
         assert_eq!(spec.context, Some(key_context::FIND_ACTIVE));
+
+        let spec = spec_for("CloseSearchPanel").expect("CloseSearchPanel missing");
+        assert_eq!(spec.context, Some(key_context::SEARCH_PANEL));
     }
 
     #[test]

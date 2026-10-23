@@ -234,7 +234,7 @@ fn test_sidebar_toggle_action_and_visibility() {
         let ws = app.read(cx).workspace().read(cx);
         (
             ws.sidebar_visible(),
-            ws.status_bar().read(cx).sidebar_visible(),
+            ws.status_bar().read(cx).active_sidebar().is_some(),
         )
     });
     assert!(initial_visible);
@@ -262,7 +262,7 @@ fn test_sidebar_toggle_action_and_visibility() {
         let ws = app.read(cx).workspace().read(cx);
         (
             ws.sidebar_visible(),
-            ws.status_bar().read(cx).sidebar_visible(),
+            ws.status_bar().read(cx).active_sidebar().is_some(),
         )
     });
     assert!(
@@ -280,7 +280,7 @@ fn test_sidebar_toggle_action_and_visibility() {
         let ws = app.read(cx).workspace().read(cx);
         (
             ws.sidebar_visible(),
-            ws.status_bar().read(cx).sidebar_visible(),
+            ws.status_bar().read(cx).active_sidebar().is_some(),
         )
     });
     assert!(

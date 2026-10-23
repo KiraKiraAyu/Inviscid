@@ -1,7 +1,8 @@
 use std::rc::Rc;
 
 use crate::app::actions::{
-    FindInDocument, FindNext, FindPrevious, OpenMenu, ReplaceInDocument, display_keystroke_for,
+    FindInDocument, FindInWorkspace, FindNext, FindPrevious, OpenMenu, ReplaceInDocument,
+    display_keystroke_for,
 };
 use crate::config::{AppConfig, WorkspaceState};
 use crate::editor::RenderMode;
@@ -375,6 +376,12 @@ fn render_edit_dropdown(editor: Option<FocusHandle>, cx: &mut App) -> impl IntoE
                 "Replace",
                 "ReplaceInDocument",
                 ReplaceInDocument.boxed_clone(),
+                cx,
+            ),
+            item(
+                "Find in Files",
+                "FindInWorkspace",
+                FindInWorkspace.boxed_clone(),
                 cx,
             ),
             item("Find Next", "FindNext", FindNext.boxed_clone(), cx),

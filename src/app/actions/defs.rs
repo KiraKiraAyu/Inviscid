@@ -1,4 +1,7 @@
+use std::path::PathBuf;
+
 use crate::app::menu::ActiveMenu;
+use crate::buffer::Position;
 use crate::editor::RenderMode;
 use gpui::Action;
 use gpui::actions;
@@ -19,6 +22,7 @@ actions!(
         NewWindow,
         ToggleRenderMode,
         ToggleSidebar,
+        ToggleSearchSidebar,
         DismissOverlay,
         OpenAbout,
         OpenSettings,
@@ -35,6 +39,8 @@ actions!(
         FindPrevious,
         CloseFindBar,
         ReplaceInDocument,
+        FindInWorkspace,
+        CloseSearchPanel,
         ToggleCaseSensitive,
         ToggleWholeWord,
         ToggleRegex,
@@ -62,3 +68,14 @@ pub struct OpenMenu(pub ActiveMenu);
 #[derive(Clone, PartialEq, Eq, Debug, Action)]
 #[action(namespace = inviscid, no_json)]
 pub struct SetRenderMode(pub RenderMode);
+
+/// Opens a workspace search hit and moves the cursor to it.
+///
+/// Dispatched by the search results list rather than emitted as an event, so the handler runs
+/// with the window and can focus the editor. Carries runtime data and is never bound to a key.
+#[derive(Clone, PartialEq, Eq, Debug, Action)]
+#[action(namespace = inviscid, no_json)]
+pub struct OpenWorkspaceMatch {
+    pub path: PathBuf,
+    pub position: Position,
+}

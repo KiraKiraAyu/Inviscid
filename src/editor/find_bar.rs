@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::search::{SearchOptions, SearchQuery};
+use crate::search::{SearchOptions, SearchQuery, SearchToggle};
 use crate::theme::ActiveTheme;
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
 use crate::ui::{Icon, IconName, IconSize, TextInput, TextInputEvent};
@@ -38,13 +38,6 @@ enum QueryState {
     Empty,
     Invalid,
     Valid,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SearchToggle {
-    CaseSensitive,
-    WholeWord,
-    Regex,
 }
 
 pub struct FindBar {

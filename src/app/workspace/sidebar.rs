@@ -81,6 +81,21 @@ pub fn render_sidebar_resize_canvas(ws_weak: WeakEntity<Workspace>) -> impl Into
     .absolute()
 }
 
+/// The sidebar frame; owns the width and the divider so the panels inside only fill it.
+pub fn render_sidebar_panel(width: Pixels, content: AnyElement, theme: &Theme) -> impl IntoElement {
+    div()
+        .id("sidebar_panel")
+        .w(width)
+        .h_full()
+        .bg(theme.bg_toolbar)
+        .border_r_1()
+        .border_color(theme.border_subtle)
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(content)
+}
+
 pub fn render_sidebar_resize_handle(
     is_resizing: bool,
     ws_weak: WeakEntity<Workspace>,

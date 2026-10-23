@@ -1,7 +1,8 @@
 use gpui::*;
 use std::path::PathBuf;
 
-use crate::app::{ActiveMenu, InviscidWindow};
+use crate::app::actions::OpenWorkspaceMatch;
+use crate::app::{ActiveMenu, InviscidWindow, SidebarView};
 use crate::config::AppConfig;
 use crate::editor::RenderMode;
 use crate::theme::ThemeManager;
@@ -422,10 +423,69 @@ pub fn toggle_render_mode(app: &mut InviscidWindow, cx: &mut Context<InviscidWin
     }
 }
 
-pub fn toggle_sidebar(app: &mut InviscidWindow, cx: &mut Context<InviscidWindow>) {
+pub fn toggle_sidebar(
+    app: &mut InviscidWindow,
+    window: &mut Window,
+    cx: &mut Context<InviscidWindow>,
+) {
     app.close_menu(cx);
     app.workspace().update(cx, |ws, cx| {
-        ws.toggle_sidebar(cx);
+        ws.toggle_sidebar_view(SidebarView::Files, window, cx);
+    });
+    sync_workspace_to_global(app, cx);
+    cx.notify();
+}
+
+pub fn toggle_search_view(
+    app: &mut InviscidWindow,
+    window: &mut Window,
+    cx: &mut Context<InviscidWindow>,
+) {
+    app.close_menu(cx);
+    app.workspace().update(cx, |ws, cx| {
+        ws.toggle_sidebar_view(SidebarView::Search, window, cx);
+    });
+    sync_workspace_to_global(app, cx);
+    cx.notify();
+}
+
+pub fn open_workspace_search(
+    app: &mut InviscidWindow,
+    window: &mut Window,
+    cx: &mut Context<InviscidWindow>,
+) {
+    app.close_menu(cx);
+    app.workspace().update(cx, |ws, cx| {
+        ws.open_workspace_search(window, cx);
+    });
+    sync_workspace_to_global(app, cx);
+    cx.notify();
+}
+
+pub fn open_workspace_match(
+    app: &mut InviscidWindow,
+    action: &OpenWorkspaceMatch,
+    window: &mut Window,
+    cx: &mut Context<InviscidWindow>,
+) {
+    app.close_menu(cx);
+    app.workspace().update(cx, |ws, cx| {
+        ws.open_file_at(action.path.clone(), action.position, cx);
+        ws.focus_active_editor(window, cx);
+    });
+    sync_workspace_to_global(app, cx);
+    cx.notify();
+}
+
+pub fn close_search_panel(
+    app: &mut InviscidWindow,
+    window: &mut Window,
+    cx: &mut Context<InviscidWindow>,
+) {
+    app.close_menu(cx);
+    app.workspace().update(cx, |ws, cx| {
+        ws.set_sidebar_visible(false, cx);
+        ws.focus_active_editor(window, cx);
     });
     sync_workspace_to_global(app, cx);
     cx.notify();

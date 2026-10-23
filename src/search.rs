@@ -6,7 +6,12 @@
 mod engine;
 mod find_state;
 mod match_result;
+mod workspace;
 
 pub use engine::find_matches;
 pub use find_state::FindState;
-pub use match_result::{SearchMatch, SearchOptions, SearchQuery};
+pub use match_result::{SearchMatch, SearchOptions, SearchQuery, SearchToggle};
+pub use workspace::{
+    FileSearchResult, ScanLimits, WorkspaceFileCache, WorkspaceMatch, WorkspaceScan,
+    WorkspaceSearchResults,
+};

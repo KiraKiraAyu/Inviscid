@@ -13,7 +13,9 @@ pub use sidebar::{
 };
 pub use tabs::TabItem;
 
-use crate::app::{status_bar, tab_bar};
+use crate::app::search_panel::SearchPanel;
+use crate::app::{SidebarView, status_bar, tab_bar};
+use crate::buffer::Position;
 use crate::config::{AppConfig, WorkspaceState};
 use crate::editor::Editor;
 use crate::editor::find_bar::FindBar;
@@ -38,6 +40,8 @@ pub struct Workspace {
     root_dir: Option<PathBuf>,
     sidebar_visible: bool,
     sidebar_width: Pixels,
+    sidebar_view: SidebarView,
+    search_panel: Entity<SearchPanel>,
     is_resizing_sidebar: bool,
     sidebar_drag_start_x: Option<Pixels>,
     sidebar_drag_start_width: Option<Pixels>,
@@ -107,9 +111,14 @@ impl Workspace {
             }
             crate::app::project_panel::ProjectPanelEvent::PathRenamed { old, new } => {
                 this.handle_path_renamed(old, new, cx);
+                this.search_panel.update(cx, |sp, cx| sp.refresh_files(cx));
             }
             crate::app::project_panel::ProjectPanelEvent::PathDeleted(path) => {
                 this.handle_path_deleted(path, cx);
+                this.search_panel.update(cx, |sp, cx| sp.refresh_files(cx));
+            }
+            crate::app::project_panel::ProjectPanelEvent::PathCreated(_) => {
+                this.search_panel.update(cx, |sp, cx| sp.refresh_files(cx));
             }
         })
     }
@@ -154,7 +163,8 @@ impl Workspace {
             (Vec::new(), 0, Vec::new(), None)
         };
 
-        let status_bar = cx.new(|_cx| status_bar::StatusBar::new(status_meta, true));
+        let status_bar =
+            cx.new(|_cx| status_bar::StatusBar::new(status_meta, Some(SidebarView::default())));
         let sidebar_offset = px(DEFAULT_SIDEBAR_WIDTH);
         let has_workspace_root = root_dir.is_some();
         let tab_bar = cx.new(|_cx| tab_bar::TabBar::new(tabs_meta.clone(), active_tab_idx));
@@ -174,6 +184,8 @@ impl Workspace {
         let initial_active_file = file_path.clone();
         project_panel.update(cx, |p, cx| p.set_active_file(initial_active_file, cx));
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
+        let search_panel = cx.new(SearchPanel::new);
+        search_panel.update(cx, |sp, cx| sp.set_root_dir(root_dir.clone(), cx));
         Self {
             focus_handle,
             tabs,
@@ -186,6 +198,8 @@ impl Workspace {
             root_dir,
             sidebar_visible: true,
             sidebar_width: px(DEFAULT_SIDEBAR_WIDTH),
+            sidebar_view: SidebarView::default(),
+            search_panel,
             is_resizing_sidebar: false,
             sidebar_drag_start_x: None,
             sidebar_drag_start_width: None,
@@ -232,7 +246,8 @@ impl Workspace {
         } else {
             tabs[active_tab_idx].editor.read(cx).status_meta()
         };
-        let status_bar = cx.new(|_cx| status_bar::StatusBar::new(status_meta, ws.sidebar_visible));
+        let active_sidebar = ws.sidebar_visible.then_some(SidebarView::default());
+        let status_bar = cx.new(|_cx| status_bar::StatusBar::new(status_meta, active_sidebar));
         let tabs_meta = tabs::collect_tabs_meta(&tabs, cx);
         let sidebar_width = px(ws
             .sidebar_width
@@ -259,10 +274,11 @@ impl Workspace {
             crate::app::project_panel::ProjectPanel::new(ws.root_dir.clone(), cx.focus_handle())
         });
         project_panel.update(cx, |p, cx| {
-            p.set_panel_width(sidebar_width, cx);
             p.set_active_file(ws.active_file.clone(), cx);
         });
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
+        let search_panel = cx.new(SearchPanel::new);
+        search_panel.update(cx, |sp, cx| sp.set_root_dir(ws.root_dir.clone(), cx));
         Self {
             focus_handle,
             tabs,
@@ -275,6 +291,8 @@ impl Workspace {
             root_dir: ws.root_dir.clone(),
             sidebar_visible: ws.sidebar_visible,
             sidebar_width,
+            sidebar_view: SidebarView::default(),
+            search_panel,
             is_resizing_sidebar: false,
             sidebar_drag_start_x: None,
             sidebar_drag_start_width: None,
@@ -299,12 +317,13 @@ impl Workspace {
 
         self.project_panel.update(cx, |p, cx| {
             p.set_root_dir(ws.root_dir.clone(), cx);
-            p.set_panel_width(sidebar_width, cx);
             p.set_active_file(ws.active_file.clone(), cx);
         });
 
-        self.status_bar.update(cx, |sb, cx| {
-            sb.set_sidebar_visible(ws.sidebar_visible, cx);
+        self.sync_sidebar_state(cx);
+
+        self.search_panel.update(cx, |sp, cx| {
+            sp.set_root_dir(ws.root_dir.clone(), cx);
         });
 
         self.sync_active_editor_state(cx);
@@ -623,7 +642,7 @@ impl Workspace {
         if let Some(tab) = self.tabs.get(tab_idx)
             && let Some(path) = tab.editor.read(cx).file_path().map(|p| p.to_path_buf())
         {
-            self.set_sidebar_visible(true, cx);
+            self.show_sidebar(SidebarView::Files, cx);
             self.defer_reveal_path(path, cx);
         }
     }
@@ -783,6 +802,9 @@ impl Workspace {
         self.project_panel.update(cx, |panel, cx| {
             panel.set_root_dir(Some(folder_clone), cx);
         });
+        self.search_panel.update(cx, |sp, cx| {
+            sp.set_root_dir(Some(folder.clone()), cx);
+        });
 
         if let Some(file) = Self::find_folder_target_file(&folder) {
             self.open_file(file, cx);
@@ -795,6 +817,9 @@ impl Workspace {
         self.root_dir = None;
         self.project_panel.update(cx, |panel, cx| {
             panel.set_root_dir(None, cx);
+        });
+        self.search_panel.update(cx, |sp, cx| {
+            sp.set_root_dir(None, cx);
         });
         self.tabs.clear();
         self.active_tab_idx = 0;
@@ -857,9 +882,6 @@ impl Workspace {
             };
             self.tab_bar
                 .update(cx, |tb, cx| tb.set_sidebar_offset(offset, cx));
-            self.project_panel.update(cx, |panel, cx| {
-                panel.set_panel_width(clamped, cx);
-            });
             cx.notify();
         }
     }
@@ -895,21 +917,41 @@ impl Workspace {
         self.set_sidebar_width(px(DEFAULT_SIDEBAR_WIDTH), cx);
     }
 
-    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.set_sidebar_visible(!self.sidebar_visible, cx);
-    }
-
     pub fn set_sidebar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if self.sidebar_visible != visible {
             self.sidebar_visible = visible;
-            let offset = if visible { self.sidebar_width } else { px(0.0) };
-            self.tab_bar
-                .update(cx, |tb, cx| tb.set_sidebar_offset(offset, cx));
-            self.status_bar.update(cx, |sb, cx| {
-                sb.set_sidebar_visible(visible, cx);
-            });
+            self.sync_sidebar_state(cx);
             cx.notify();
         }
+    }
+
+    /// Shows the sidebar with `view` on screen.
+    pub fn show_sidebar(&mut self, view: SidebarView, cx: &mut Context<Self>) {
+        if !self.sidebar_visible || self.sidebar_view != view {
+            self.sidebar_visible = true;
+            self.sidebar_view = view;
+            self.sync_sidebar_state(cx);
+            cx.notify();
+        }
+    }
+
+    /// The sidebar panel on screen; `None` while the sidebar is hidden.
+    pub fn active_sidebar(&self) -> Option<SidebarView> {
+        self.sidebar_visible.then_some(self.sidebar_view)
+    }
+
+    /// Pushes the sidebar state to the views that mirror it.
+    fn sync_sidebar_state(&mut self, cx: &mut Context<Self>) {
+        let offset = if self.sidebar_visible {
+            self.sidebar_width
+        } else {
+            px(0.0)
+        };
+        let active = self.active_sidebar();
+        self.tab_bar
+            .update(cx, |tb, cx| tb.set_sidebar_offset(offset, cx));
+        self.status_bar
+            .update(cx, |sb, cx| sb.set_active_sidebar(active, cx));
     }
 
     pub fn active_file_path<'a>(&'a self, cx: &'a App) -> Option<&'a std::path::Path> {
@@ -927,12 +969,56 @@ impl Workspace {
     pub fn status_bar(&self) -> &Entity<status_bar::StatusBar> {
         &self.status_bar
     }
+
+    pub fn search_panel(&self) -> &Entity<SearchPanel> {
+        &self.search_panel
+    }
+
+    /// Hides the sidebar when `view` is already on screen, otherwise shows it.
+    ///
+    /// Hiding hands focus back to the editor, since the focused panel may be the one going away.
+    pub fn toggle_sidebar_view(
+        &mut self,
+        view: SidebarView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_sidebar() == Some(view) {
+            self.set_sidebar_visible(false, cx);
+            self.focus_active_editor(window, cx);
+        } else if view == SidebarView::Search {
+            self.open_workspace_search(window, cx);
+        } else {
+            self.show_sidebar(view, cx);
+        }
+    }
+
+    /// Opens `path` with the cursor at `position`. Focus is left to the caller.
+    pub fn open_file_at(&mut self, path: PathBuf, position: Position, cx: &mut Context<Self>) {
+        self.open_file(path, cx);
+        if let Some(active_editor) = self.active_editor() {
+            active_editor.update(cx, |ed, cx| {
+                ed.buffer_mut().set_cursor(position);
+                ed.scroll_to_cursor();
+                ed.reset_cursor_blink(cx);
+            });
+        }
+    }
+
+    /// Shows the search panel and focuses its input. The file listing is refreshed because
+    /// files may have changed outside the app while the panel was closed.
+    pub fn open_workspace_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_sidebar(SidebarView::Search, cx);
+        self.search_panel.update(cx, |sp, cx| {
+            sp.refresh_files(cx);
+            sp.focus_input(window, cx);
+        });
+    }
 }
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active_editor = self.active_editor().cloned();
-        let project_panel = self.project_panel.clone();
         let sidebar_visible = self.sidebar_visible;
         let has_tabs = !self.tabs.is_empty();
         let has_workspace = self.root_dir.is_some();
@@ -963,7 +1049,17 @@ impl Render for Workspace {
                     .w_full()
                     .flex()
                     .flex_row()
-                    .when(sidebar_visible, |this| this.child(project_panel))
+                    .when(sidebar_visible, |this| {
+                        let content = match self.sidebar_view {
+                            SidebarView::Files => self.project_panel.clone().into_any_element(),
+                            SidebarView::Search => self.search_panel.clone().into_any_element(),
+                        };
+                        this.child(sidebar::render_sidebar_panel(
+                            self.sidebar_width,
+                            content,
+                            &theme,
+                        ))
+                    })
                     .when(sidebar_visible, |this| {
                         this.child(sidebar::render_sidebar_resize_handle(
                             self.is_resizing_sidebar,
@@ -1003,6 +1099,8 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::Workspace;
+    use crate::app::SidebarView;
+    use crate::buffer::Position;
     use crate::config::AppConfig;
     use crate::theme::ThemeManager;
     use gpui::TestAppContext;
@@ -1115,5 +1213,70 @@ mod tests {
             assert_eq!(ed.find_state().match_count(), 1);
             assert_eq!(ed.find_bar().unwrap().read(cx).query_text(cx), "item");
         });
+    }
+
+    #[gpui::test]
+    fn test_workspace_open_workspace_search(cx: &mut TestAppContext) {
+        init_globals(cx);
+
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(None, cx));
+        assert_eq!(
+            ws.read_with(cx, |ws, _| ws.active_sidebar()),
+            Some(SidebarView::Files)
+        );
+
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_workspace_search(window, cx);
+            });
+        });
+
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.active_sidebar(), Some(SidebarView::Search));
+            assert_eq!(
+                ws.status_bar().read(cx).active_sidebar(),
+                Some(SidebarView::Search)
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_workspace_open_file_at_position(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file = temp_dir.path().join("target.txt");
+        std::fs::write(&file, "first line\nsecond target line\nthird line").unwrap();
+
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(None, cx));
+
+        ws.update(cx, |ws, cx| {
+            ws.open_file_at(file.clone(), Position::new(1, 7), cx);
+        });
+
+        ws.read_with(cx, |ws, cx| {
+            let active = ws.active_editor().expect("active editor");
+            let ed = active.read(cx);
+            assert_eq!(ed.file_path(), Some(file.as_path()));
+            assert_eq!(ed.buffer().cursor_pos(), Position::new(1, 7));
+        });
+    }
+
+    #[gpui::test]
+    fn test_reveal_in_project_panel_switches_from_search_to_files(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file = temp_dir.path().join("doc.md");
+        std::fs::write(&file, "text").unwrap();
+
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(Some(file.clone()), cx));
+        ws.update(cx, |ws, cx| {
+            ws.show_sidebar(SidebarView::Search, cx);
+            ws.reveal_tab_in_project_panel(0, cx);
+        });
+
+        assert_eq!(
+            ws.read_with(cx, |ws, _| ws.active_sidebar()),
+            Some(SidebarView::Files)
+        );
     }
 }

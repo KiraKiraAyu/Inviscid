@@ -53,6 +53,17 @@ fn attach_workspace_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
         this.close_menu(cx);
         commands::clear_recent_workspaces(cx);
     }))
+    .on_action(cx.listener(|this, _: &FindInWorkspace, window, cx| {
+        commands::open_workspace_search(this, window, cx);
+    }))
+    .on_action(
+        cx.listener(|this, action: &OpenWorkspaceMatch, window, cx| {
+            commands::open_workspace_match(this, action, window, cx);
+        }),
+    )
+    .on_action(cx.listener(|this, _: &CloseSearchPanel, window, cx| {
+        commands::close_search_panel(this, window, cx);
+    }))
 }
 
 fn attach_menu_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
@@ -70,7 +81,12 @@ fn attach_view_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
     div.on_action(
         cx.listener(|this, _: &ToggleRenderMode, _, cx| commands::toggle_render_mode(this, cx)),
     )
-    .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| commands::toggle_sidebar(this, cx)))
+    .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
+        commands::toggle_sidebar(this, window, cx);
+    }))
+    .on_action(cx.listener(|this, _: &ToggleSearchSidebar, window, cx| {
+        commands::toggle_search_view(this, window, cx);
+    }))
     .on_action(cx.listener(|this, action: &SetRenderMode, _, cx| {
         commands::set_render_mode(this, action.0, cx);
     }))
