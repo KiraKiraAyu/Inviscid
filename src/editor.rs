@@ -184,8 +184,8 @@ pub struct Editor {
     pub(crate) cursor_blink: bool,
     pub(crate) cursor_breathing: bool,
 
-    /// Native text system handle (`None` in headless unit tests).
-    pub(crate) text_system: Option<Arc<TextSystem>>,
+    /// Window text system handle, captured on first render (`None` before then and in headless tests).
+    pub(crate) text_system: Option<Arc<WindowTextSystem>>,
 
     /// Memoized width of one space character in the UI font, keyed by the font
     /// size it was measured at. Single measurement feeds visual indent layout.
@@ -437,7 +437,7 @@ impl Editor {
             is_read_only: false,
             auto_save_task: None,
             auto_save_delay: std::time::Duration::from_millis(1000),
-            text_system: Some(cx.text_system().clone()),
+            text_system: None,
             space_width_memo: std::cell::Cell::new(None),
             find_state: FindState::new(),
             find_bar: None,
@@ -896,6 +896,14 @@ impl Editor {
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.text_system.is_none() {
+            // Layout measurement must shape text exactly like painting does, which requires the
+            // window's text system; drop anything measured with the headless fallback.
+            self.text_system = Some(window.text_system().clone());
+            self.space_width_memo.set(None);
+            self.invalidate_layout_cache();
+        }
+
         if let Some(config) = cx.try_global::<crate::config::AppConfig>() {
             if !self.has_explicit_render_mode {
                 let target_mode = config.default_render_mode;
@@ -1019,7 +1027,7 @@ pub struct LineRenderContext<'a> {
     pub soft_wrap: bool,
     /// Per-line visual indent in pixels (Live Preview only).
     pub indent_px: Pixels,
-    pub text_system: Option<&'a Arc<TextSystem>>,
+    pub text_system: Option<&'a Arc<WindowTextSystem>>,
     pub highlights: &'a [LineHighlight],
 }
 

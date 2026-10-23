@@ -562,26 +562,58 @@ pub fn calculate_wrapped_visual_lines_with_wrap(
     calculate_wrapped_visual_lines_with_mode(text, font_size, available_width, soft_wrap, false)
 }
 
-/// Computes wrapped visual line count using GPUI's native `TextSystem::line_wrapper` when available,
-/// falling back to token- and boundary-aware estimation in headless environments.
+/// Computes wrapped visual line count by shaping the styled runs with GPUI's `shape_text`,
+/// the same path used for painting, so layout heights match rendered wrapping exactly.
+/// Falls back to token- and boundary-aware estimation when no text system is available.
 pub fn calculate_visual_lines_with_runs(
     text: &str,
     runs: &[TextRun],
-    _font: Font,
+    font: Font,
     font_size: Pixels,
     available_width: Pixels,
     soft_wrap: bool,
-    _text_system: Option<&Arc<TextSystem>>,
+    text_system: Option<&Arc<WindowTextSystem>>,
     is_monospace: bool,
 ) -> usize {
     if !soft_wrap || text.is_empty() || available_width <= px(0.0) {
         return 1;
     }
 
-    // Always use the runs-aware fallback to ensure consistent line counting
-    // with mixed font styles (inline code, bold, etc.).
-    // The previous line_wrapper approach ignored runs, causing height mismatches
-    // when inline code with different font metrics was present.
+    if let Some(ts) = text_system {
+        let default_runs;
+        let runs = if runs.is_empty() {
+            default_runs = [TextRun {
+                len: text.len(),
+                font,
+                color: Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            &default_runs[..]
+        } else {
+            runs
+        };
+        match ts.shape_text(
+            SharedString::from(text.to_string()),
+            font_size,
+            runs,
+            Some(available_width),
+            None,
+        ) {
+            Ok(lines) => {
+                return lines
+                    .iter()
+                    .map(|line| line.wrap_boundaries.len() + 1)
+                    .sum::<usize>()
+                    .max(1);
+            }
+            Err(err) => {
+                eprintln!("shape_text failed while measuring wrapped lines: {err:#}");
+            }
+        }
+    }
+
     calculate_wrapped_visual_lines_with_runs_fallback(
         text,
         runs,
@@ -599,7 +631,7 @@ pub fn calculate_visual_lines(
     font_size: Pixels,
     available_width: Pixels,
     soft_wrap: bool,
-    text_system: Option<&Arc<TextSystem>>,
+    text_system: Option<&Arc<WindowTextSystem>>,
     is_monospace: bool,
 ) -> usize {
     calculate_visual_lines_with_runs(
@@ -763,7 +795,7 @@ pub fn calculate_table_row_height(
     is_active: bool,
     cursor_col: usize,
     container_width: Pixels,
-    text_system: Option<&Arc<TextSystem>>,
+    text_system: Option<&Arc<WindowTextSystem>>,
 ) -> Pixels {
     if cells.is_empty() {
         return if is_header { px(34.0) } else { px(30.0) };

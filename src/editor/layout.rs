@@ -234,7 +234,7 @@ pub struct LineLayoutContext<'a> {
     pub line_height: f32,
     pub soft_wrap: bool,
     pub indent_px: Pixels,
-    pub text_system: Option<Arc<TextSystem>>,
+    pub text_system: Option<Arc<WindowTextSystem>>,
 }
 
 impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
@@ -317,7 +317,7 @@ impl<'a> LineLayoutContext<'a> {
         self
     }
 
-    pub fn with_text_system(mut self, text_system: Option<Arc<TextSystem>>) -> Self {
+    pub fn with_text_system(mut self, text_system: Option<Arc<WindowTextSystem>>) -> Self {
         self.text_system = text_system;
         self
     }
