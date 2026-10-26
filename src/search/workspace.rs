@@ -3,9 +3,11 @@
 
 mod cache;
 mod discovery;
+mod replace;
 mod results;
 mod scan;
 
 pub use cache::WorkspaceFileCache;
+pub use replace::{replace_all_in_file, replace_match_in_file};
 pub use results::{FileSearchResult, WorkspaceMatch, WorkspaceSearchResults};
 pub use scan::{ScanLimits, WorkspaceScan};

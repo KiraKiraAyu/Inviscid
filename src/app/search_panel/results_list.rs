@@ -42,7 +42,16 @@ impl SearchPanel {
                             } => {
                                 let file = this.results.files().get(file_idx)?;
                                 let m = file.matches.get(match_idx)?;
-                                render_match_row(row_idx, &file.path, m, theme).into_any_element()
+                                render_match_row(
+                                    row_idx,
+                                    &file.path,
+                                    m,
+                                    this.replacing,
+                                    this.show_replace,
+                                    &panel,
+                                    theme,
+                                )
+                                .into_any_element()
                             }
                         };
                         Some(element)
@@ -163,6 +172,9 @@ fn render_match_row(
     row_idx: usize,
     path: &Path,
     m: &WorkspaceMatch,
+    replacing: bool,
+    show_replace: bool,
+    panel: &Entity<SearchPanel>,
     theme: &Theme,
 ) -> impl IntoElement {
     let (pre, matched, post) = split_preview(m);
@@ -171,6 +183,9 @@ fn render_match_row(
         position: workspace_match_position(m),
     };
     let (hover, active) = (theme.btn_hover, theme.btn_active);
+    let panel = panel.downgrade();
+    let replace_path = path.to_path_buf();
+    let replace_match = m.clone();
 
     div()
         .id(("search_match", row_idx))
@@ -220,6 +235,40 @@ fn render_match_row(
                         .child(post.to_string()),
                 ),
         )
+        .when(show_replace, |this| {
+            this.child(
+                div()
+                    .id(("search_replace_match_btn", row_idx))
+                    .h(ROW_HEIGHT)
+                    .px(Spacing::XS)
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .text_size(FontSize::CAPTION)
+                    .text_color(if replacing {
+                        theme.text_muted.opacity(0.5)
+                    } else {
+                        theme.text_secondary
+                    })
+                    .when(!replacing, |this| {
+                        this.cursor_pointer().hover(move |s| s.bg(hover)).on_click(
+                            move |_, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(panel) = panel.upgrade() {
+                                    panel.update(cx, |this, cx| {
+                                        this.replace_match(
+                                            replace_path.clone(),
+                                            replace_match.clone(),
+                                            cx,
+                                        );
+                                    });
+                                }
+                            },
+                        )
+                    })
+                    .child("Replace"),
+            )
+        })
 }
 
 /// Returns the cursor position immediately after a workspace-search match.

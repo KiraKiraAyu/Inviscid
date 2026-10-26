@@ -19,6 +19,7 @@ impl SearchPanel {
         let has_query = !self.query_text(cx).is_empty();
         let has_results = !self.results.is_empty();
         let all_collapsed = self.is_all_collapsed();
+        let (hover, active) = (theme.btn_hover, theme.btn_active);
 
         div()
             .w_full()
@@ -42,6 +43,63 @@ impl SearchPanel {
                         )
                     }),
             )
+            .when(self.show_replace, |this| {
+                this.child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(Spacing::XS)
+                        .child(div().flex_1().min_w_0().child(self.replace_input.clone()))
+                        .child(
+                            div()
+                                .id("search_replace_all_btn")
+                                .h(BUTTON_SIZE)
+                                .px(Spacing::SM)
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(Radius::SM)
+                                .text_size(FontSize::CAPTION)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(if has_results && !self.replacing {
+                                    theme.text_secondary
+                                } else {
+                                    theme.text_muted.opacity(0.5)
+                                })
+                                .when(has_results && !self.replacing, |this| {
+                                    this.cursor_pointer()
+                                        .hover(move |s| s.bg(hover))
+                                        .active(move |s| s.bg(active))
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.replace_all(cx)),
+                                        )
+                                })
+                                .child(if self.replacing {
+                                    "Replacing..."
+                                } else {
+                                    "Replace All"
+                                }),
+                        ),
+                )
+            })
+            .when_some(self.replace_error.as_deref(), |this, error| {
+                this.child(
+                    div()
+                        .text_size(FontSize::CAPTION)
+                        .text_color(theme.text_danger)
+                        .child(error.to_string()),
+                )
+            })
+            .when_some(self.replace_count, |this, count| {
+                this.child(
+                    div()
+                        .text_size(FontSize::CAPTION)
+                        .text_color(theme.text_muted)
+                        .child(format!("Replaced {count} matches")),
+                )
+            })
             .child(
                 div()
                     .w_full()
@@ -57,6 +115,7 @@ impl SearchPanel {
                                 self.render_option_toggle(toggle, label, theme, cx)
                             })),
                     )
+                    .child(self.render_replace_toggle(theme, cx))
                     .when(has_results, |this| {
                         let expand_icon = if all_collapsed {
                             IconName::ChevronRight
@@ -92,6 +151,35 @@ impl SearchPanel {
             self.results.total_matches(),
             self.results.files().len()
         )
+    }
+
+    fn render_replace_toggle(&self, theme: &Theme, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (hover, active) = (theme.btn_hover, theme.btn_active);
+        div()
+            .id("search_toggle_replace")
+            .h(BUTTON_SIZE)
+            .px(Spacing::XS)
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(Spacing::XXS)
+            .rounded(Radius::SM)
+            .text_size(FontSize::CAPTION)
+            .text_color(theme.text_secondary)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .active(move |s| s.bg(active))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_replace(cx)))
+            .child(
+                Icon::new(if self.show_replace {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .size(IconSize::XSmall)
+                .color(theme.text_secondary),
+            )
+            .child("Replace")
     }
 
     fn render_option_toggle(

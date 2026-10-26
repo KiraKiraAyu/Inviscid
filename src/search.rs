@@ -13,5 +13,5 @@ pub use find_state::FindState;
 pub use match_result::{SearchMatch, SearchOptions, SearchQuery, SearchToggle};
 pub use workspace::{
     FileSearchResult, ScanLimits, WorkspaceFileCache, WorkspaceMatch, WorkspaceScan,
-    WorkspaceSearchResults,
+    WorkspaceSearchResults, replace_all_in_file, replace_match_in_file,
 };

@@ -17,7 +17,8 @@ use gpui::*;
 
 use crate::search::{
     FileSearchResult, ScanLimits, SearchOptions, SearchQuery, SearchToggle, WorkspaceFileCache,
-    WorkspaceScan, WorkspaceSearchResults,
+    WorkspaceMatch, WorkspaceScan, WorkspaceSearchResults, replace_all_in_file,
+    replace_match_in_file,
 };
 use crate::theme::ThemeManager;
 use crate::ui::text_input::{TextInput, TextInputBg, TextInputEvent};
@@ -45,6 +46,7 @@ enum ResultRow {
 pub struct SearchPanel {
     focus_handle: FocusHandle,
     input: Entity<TextInput>,
+    replace_input: Entity<TextInput>,
     scroll_handle: UniformListScrollHandle,
     root_dir: Option<PathBuf>,
     file_cache: WorkspaceFileCache,
@@ -57,7 +59,12 @@ pub struct SearchPanel {
     /// Flattened view of `results` for the virtual list, rebuilt lazily when `rows_dirty`.
     rows: Vec<ResultRow>,
     rows_dirty: bool,
+    show_replace: bool,
+    replacing: bool,
+    replace_count: Option<usize>,
+    replace_error: Option<String>,
     _input_sub: Subscription,
+    _replace_sub: Subscription,
 }
 
 /// Everything a background search needs, detached from the panel.
@@ -79,6 +86,15 @@ impl SearchPanel {
                 .padding_x(Spacing::SM)
                 .bg(TextInputBg::Toolbar)
         });
+        let replace_input = cx.new(|cx| {
+            TextInput::new("", cx)
+                .id("workspace_search_replace_input")
+                .placeholder("Replace")
+                .height(ControlHeight::SM)
+                .radius(Radius::SM)
+                .padding_x(Spacing::SM)
+                .bg(TextInputBg::Toolbar)
+        });
         // `escape` never reaches the input as `Cancel`: the `CloseSearchPanel` binding claims it
         // first and closes the panel with access to the window.
         let _input_sub = cx.subscribe(&input, |this, _, event: &TextInputEvent, cx| match event {
@@ -86,10 +102,20 @@ impl SearchPanel {
             TextInputEvent::Commit(_) => this.search_now(cx),
             TextInputEvent::Cancel => {}
         });
+        let _replace_sub =
+            cx.subscribe(
+                &replace_input,
+                |this, _, event: &TextInputEvent, cx| match event {
+                    TextInputEvent::Changed(_) => {}
+                    TextInputEvent::Commit(_) => this.replace_all(cx),
+                    TextInputEvent::Cancel => {}
+                },
+            );
 
         Self {
             focus_handle: cx.focus_handle(),
             input,
+            replace_input,
             scroll_handle: UniformListScrollHandle::default(),
             root_dir: None,
             file_cache: WorkspaceFileCache::default(),
@@ -101,7 +127,12 @@ impl SearchPanel {
             collapsed_files: HashSet::new(),
             rows: Vec::new(),
             rows_dirty: false,
+            show_replace: false,
+            replacing: false,
+            replace_count: None,
+            replace_error: None,
             _input_sub,
+            _replace_sub,
         }
     }
 
@@ -144,6 +175,120 @@ impl SearchPanel {
 
     pub fn set_query_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| input.set_text(text, cx));
+    }
+
+    pub fn replace_text(&self, cx: &App) -> String {
+        self.replace_input.read(cx).text()
+    }
+
+    pub fn set_replace_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.replace_input
+            .update(cx, |input, cx| input.set_text(text, cx));
+    }
+
+    pub fn toggle_replace(&mut self, cx: &mut Context<Self>) {
+        self.show_replace = !self.show_replace;
+        cx.notify();
+    }
+
+    pub fn focus_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_replace = true;
+        self.replace_input.update(cx, |input, cx| {
+            input.select_all();
+            cx.notify();
+        });
+        window.focus(&self.replace_input.read(cx).focus_handle(cx));
+        cx.notify();
+    }
+
+    pub fn replace_match(
+        &mut self,
+        path: PathBuf,
+        matched: WorkspaceMatch,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(query) = self.current_query(cx) else {
+            return;
+        };
+        if self.replacing {
+            return;
+        }
+        let replacement = self.replace_text(cx);
+        self.start_replacement(cx, move || {
+            replace_match_in_file(&path, &query, &replacement, &matched)
+                .map(|replaced| if replaced { 1 } else { 0 })
+        });
+    }
+
+    pub fn replace_all(&mut self, cx: &mut Context<Self>) {
+        let Some(query) = self.current_query(cx) else {
+            return;
+        };
+        if self.replacing {
+            return;
+        }
+        let Some(root) = self.root_dir.clone() else {
+            return;
+        };
+        let replacement = self.replace_text(cx);
+        let cache = self.file_cache.clone();
+        self.start_replacement(cx, move || {
+            let cancel = AtomicBool::new(false);
+            let files = cache
+                .get_or_discover(&root, &cancel)
+                .ok_or_else(|| std::io::Error::other("workspace search was cancelled"))?;
+            let mut count = 0;
+            for path in files.iter() {
+                count += replace_all_in_file(&path, &query, &replacement)?;
+            }
+            Ok(count)
+        });
+    }
+
+    fn current_query(&self, cx: &App) -> Option<SearchQuery> {
+        let text = self.query_text(cx);
+        if text.is_empty() {
+            None
+        } else {
+            SearchQuery::new(text, self.options.clone()).ok()
+        }
+    }
+
+    fn start_replacement(
+        &mut self,
+        cx: &mut Context<Self>,
+        operation: impl FnOnce() -> std::io::Result<usize> + Send + 'static,
+    ) {
+        self.replacing = true;
+        self.replace_count = None;
+        self.replace_error = None;
+        let task = cx.background_executor().spawn(async move { operation() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.replacing = false;
+                match result {
+                    Ok(count) => {
+                        this.replace_count = Some(count);
+                        this.rescan_after_replacement(cx);
+                    }
+                    Err(error) => {
+                        eprintln!("[search] Replacement failed: {error}");
+                        this.refresh_files(cx);
+                        this.replace_error = Some(error.to_string());
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn rescan_after_replacement(&mut self, cx: &mut Context<Self>) {
+        self.file_cache.invalidate();
+        self.prewarm_file_cache(cx);
+        self.start_search(Some(SEARCH_DEBOUNCE), cx);
     }
 
     /// Walks the tree in the background so the first search does not have to.
@@ -236,6 +381,8 @@ impl SearchPanel {
 // which is how a superseded search knows to drop its results.
 impl SearchPanel {
     fn schedule_search(&mut self, cx: &mut Context<Self>) {
+        self.replace_count = None;
+        self.replace_error = None;
         self.start_search(Some(SEARCH_DEBOUNCE), cx);
     }
 
@@ -552,6 +699,54 @@ mod tests {
             assert_eq!(p.status(), SearchStatus::InvalidQuery);
             assert!(p.results().is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn test_search_panel_replace_all_updates_workspace_files(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        let first = root.join("a.txt");
+        let second = root.join("b.md");
+        fs::write(&first, "apple apple\n").unwrap();
+        fs::write(&second, "apple\n").unwrap();
+        let (panel, cx) = cx.add_window_view(|_window, cx| SearchPanel::new(cx));
+
+        panel.update(cx, |p, cx| {
+            p.set_root_dir(Some(root.to_path_buf()), cx);
+            p.set_query_text("apple", cx);
+            p.set_replace_text("pear", cx);
+        });
+        settle(cx);
+        panel.update(cx, |p, cx| p.replace_all(cx));
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        assert_eq!(fs::read_to_string(&first).unwrap(), "pear pear\n");
+        assert_eq!(fs::read_to_string(&second).unwrap(), "pear\n");
+    }
+
+    #[gpui::test]
+    fn test_search_panel_replace_match_updates_only_selected_hit(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        let path = root.join("a.txt");
+        fs::write(&path, "apple apple\n").unwrap();
+        let (panel, cx) = cx.add_window_view(|_window, cx| SearchPanel::new(cx));
+
+        panel.update(cx, |p, cx| {
+            p.set_root_dir(Some(root.to_path_buf()), cx);
+            p.set_query_text("apple", cx);
+            p.set_replace_text("pear", cx);
+        });
+        settle(cx);
+        let matched = panel.read_with(cx, |p, _| p.results().files()[0].matches[0].clone());
+        panel.update(cx, |p, cx| p.replace_match(path.clone(), matched, cx));
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "pear apple\n");
     }
 
     #[gpui::test]
