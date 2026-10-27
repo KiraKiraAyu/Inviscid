@@ -56,10 +56,6 @@ fn main() {
                 },
                 |window, cx| {
                     let app = cx.new(|cx| InviscidWindow::open_initial(initial_file, cx));
-                    app.read(cx)
-                        .workspace()
-                        .read(cx)
-                        .focus_active_editor(window, cx);
                     window.activate_window();
                     app
                 },
