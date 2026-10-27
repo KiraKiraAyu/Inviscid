@@ -201,9 +201,66 @@ impl Editor {
         }
     }
 
+    fn code_block_content_bounds(&self, line_idx: usize) -> Option<(Position, Position)> {
+        let layout = self.layout_snapshot();
+        if !matches!(
+            &layout.parsed_lines.get(line_idx)?.kind,
+            crate::markdown::BlockKind::CodeBlockContent
+        ) {
+            return None;
+        }
+
+        let mut start_line = line_idx;
+        while start_line > 0
+            && matches!(
+                &layout.parsed_lines[start_line - 1].kind,
+                crate::markdown::BlockKind::CodeBlockContent
+            )
+        {
+            start_line -= 1;
+        }
+
+        let mut end_line = line_idx;
+        while end_line + 1 < layout.parsed_lines.len()
+            && matches!(
+                &layout.parsed_lines[end_line + 1].kind,
+                crate::markdown::BlockKind::CodeBlockContent
+            )
+        {
+            end_line += 1;
+        }
+
+        Some((
+            Position::new(start_line, 0),
+            Position::new(end_line, self.buffer.line_len(end_line)),
+        ))
+    }
+
+    fn clamp_drag_position(&self, pos: Position) -> Position {
+        let Some((start, end)) = self.drag_code_block_bounds else {
+            return pos;
+        };
+        pos.max(start).min(end)
+    }
+
+    fn is_within_drag_code_block(&self, line_idx: usize) -> bool {
+        let Some((start, end)) = self.drag_code_block_bounds else {
+            return true;
+        };
+        (start.line..=end.line).contains(&line_idx)
+    }
+
+    fn drag_mouse_is_within_code_block(&self, mouse_pos: Point<Pixels>) -> bool {
+        let Some((line_idx, _, _)) = self.find_line_at_point(mouse_pos, false) else {
+            return false;
+        };
+        self.is_within_drag_code_block(line_idx)
+    }
+
     pub fn stop_drag(&mut self, cx: &mut Context<Self>) {
         if self.is_dragging || self.scroll.is_scrollbar_dragging {
             self.is_dragging = false;
+            self.drag_code_block_bounds = None;
             self.drag_scroll_task = None;
             self.scroll.is_scrollbar_dragging = false;
             self.scroll.scrollbar_drag_start_y = None;
@@ -248,9 +305,15 @@ impl Editor {
             self.last_mouse_pos = Some(mouse_pos);
             self.last_cursor_action = std::time::Instant::now();
             let pos = self.find_pos_for_mouse_point(mouse_pos, window);
+            let within_code_block = self.is_within_drag_code_block(pos.line);
+            let pos = self.clamp_drag_position(pos);
             self.buffer.drag_selection_to(pos);
-            self.handle_drag_scroll(window);
-            self.check_start_drag_scroll(cx);
+            if within_code_block {
+                self.handle_drag_scroll(window);
+                self.check_start_drag_scroll(cx);
+            } else {
+                self.drag_scroll_task = None;
+            }
             if self.buffer.cursor_pos() != prev_head {
                 cx.emit(crate::editor::EditorEvent::CursorMoved);
             }
@@ -294,20 +357,31 @@ impl Editor {
         let Some(mouse_pos) = self.last_mouse_pos else {
             return;
         };
+        if !self.drag_mouse_is_within_code_block(mouse_pos) {
+            self.drag_scroll_task = None;
+            return;
+        }
         if self.apply_drag_edge_scroll(mouse_pos.y) {
-            let pos = self.find_pos_for_mouse_point(mouse_pos, window);
+            let pos = self.clamp_drag_position(self.find_pos_for_mouse_point(mouse_pos, window));
             self.buffer.drag_selection_to(pos);
         }
     }
 
     /// Starts a background task to auto-scroll when dragging near or outside viewport edges.
     pub(crate) fn check_start_drag_scroll(&mut self, cx: &mut Context<Self>) {
-        if !self.is_dragging || self.drag_scroll_task.is_some() {
+        if !self.is_dragging {
             return;
         }
         let Some(mouse_pos) = self.last_mouse_pos else {
             return;
         };
+        if !self.drag_mouse_is_within_code_block(mouse_pos) {
+            self.drag_scroll_task = None;
+            return;
+        }
+        if self.drag_scroll_task.is_some() {
+            return;
+        }
         let viewport = self.viewport_bounds_val();
         let top_edge = viewport.top() + px(40.0);
         let bottom_edge = viewport.bottom() - px(40.0);
@@ -353,6 +427,9 @@ impl Editor {
         let Some(mouse_pos) = self.last_mouse_pos else {
             return false;
         };
+        if !self.drag_mouse_is_within_code_block(mouse_pos) {
+            return false;
+        }
 
         let scrolled = self.apply_drag_edge_scroll(mouse_pos.y);
         if scrolled && let Some((target_line, _, _)) = self.find_line_at_point(mouse_pos, false) {
@@ -362,7 +439,7 @@ impl Editor {
                 .col
                 .min(self.buffer.line_len(target_line));
             self.buffer
-                .drag_selection_to(Position::new(target_line, col));
+                .drag_selection_to(self.clamp_drag_position(Position::new(target_line, col)));
         }
 
         scrolled
@@ -530,6 +607,7 @@ impl Editor {
     ) {
         window.focus(&self.focus_handle);
         self.reset_cursor_blink(cx);
+        self.drag_code_block_bounds = None;
 
         // Check if clicking on the right scrollbar track/thumb
         if self.try_handle_scrollbar_click(event.position, cx) {
@@ -560,6 +638,8 @@ impl Editor {
             let pos = self.find_pos_for_mouse_point_mut(event.position, window);
             self.buffer.set_cursor(pos);
         }
+        self.drag_code_block_bounds =
+            self.code_block_content_bounds(self.buffer.selection().anchor.line);
         if self.buffer.cursor_pos() != prev_head {
             cx.emit(EditorEvent::CursorMoved);
         }

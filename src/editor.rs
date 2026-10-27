@@ -151,6 +151,7 @@ pub struct Editor {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) render_mode: RenderMode,
     pub(crate) is_dragging: bool,
+    pub(crate) drag_code_block_bounds: Option<(Position, Position)>,
     pub(crate) marked_range: Option<Range<usize>>,
     /// Timestamp when the IME last cleared an active composition to empty text,
     /// used to ignore the trailing `WM_KEYDOWN` for the key the IME already handled.
@@ -418,6 +419,7 @@ impl Editor {
             cursor_blink,
             cursor_breathing,
             is_dragging: false,
+            drag_code_block_bounds: None,
             marked_range: None,
             ime_consumed_edit_key_at: None,
             viewport_bounds: Bounds::default(),
