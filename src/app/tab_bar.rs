@@ -360,6 +360,8 @@ impl Render for TabBar {
                         let is_pinned = meta.is_pinned;
                         let fname = meta.title.clone();
                         let is_d = meta.is_dirty;
+                        let is_search_tab =
+                            meta.title == "Search" && !meta.has_file_path && !meta.supports_editing;
                         let has_duplicate_title = duplicate_titles.contains(&meta.title);
                         let dir_hint = if has_duplicate_title {
                             meta.dir_hint.clone()
@@ -425,6 +427,17 @@ impl Render for TabBar {
                             .when(meta.is_read_only, |this| {
                                 this.child(
                                     Icon::new(IconName::Lock).size(IconSize::Indicator).color(
+                                        if is_active {
+                                            theme.text_secondary
+                                        } else {
+                                            theme.text_muted
+                                        },
+                                    ),
+                                )
+                            })
+                            .when(is_search_tab, |this| {
+                                this.child(
+                                    Icon::new(IconName::Search).size(IconSize::Indicator).color(
                                         if is_active {
                                             theme.text_secondary
                                         } else {

@@ -2,9 +2,13 @@ use gpui::prelude::*;
 use gpui::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::actions::{CopyEntry, CutEntry, DeleteEntry, PasteEntry, RenameEntry, TrashEntry};
 use crate::theme::ThemeManager;
+use crate::ui::text_input::{TextInput, TextInputBg, TextInputEvent};
+use crate::ui::tokens::{ControlHeight, Radius, Spacing};
 
 pub mod confirm_modal;
 pub mod context_menu;
@@ -69,6 +73,13 @@ impl FileTreeEntry {
     }
 }
 
+struct ScannedTreeEntry {
+    path: PathBuf,
+    name: String,
+    is_dir: bool,
+    can_recurse: bool,
+}
+
 /// Smooth scroll physics state for the file tree (re-exports unified SmoothScrollPhysics)
 pub type TreeScrollState = crate::ui::SmoothScrollPhysics;
 
@@ -87,6 +98,14 @@ pub struct ProjectPanel {
     root_dir: Option<PathBuf>,
     expanded_dirs: HashSet<PathBuf>,
     entries: Vec<FileTreeEntry>,
+    all_entries: Vec<FileTreeEntry>,
+    all_entries_loaded: bool,
+    filter_query: String,
+    matching_indices: Vec<usize>,
+    filtered_indices: Vec<usize>,
+    filter_collapsed_dirs: HashSet<PathBuf>,
+    filter_scan_pending: bool,
+    filter_scan_cancel: Arc<AtomicBool>,
     focus_handle: FocusHandle,
     active_context_menu: Option<ContextMenuState>,
     active_confirm_modal: Option<ConfirmModalState>,
@@ -95,10 +114,13 @@ pub struct ProjectPanel {
     selected_path: Option<PathBuf>,
     /// Keeps the focus-lost handler alive; it can only be built during render, which needs a window.
     blur_subscription: Option<Subscription>,
-    scroll_handle: ScrollHandle,
+    scroll_handle: UniformListScrollHandle,
     tree_scroll: TreeScrollState,
     scroll_task: Option<Task<()>>,
     active_file: Option<PathBuf>,
+    show_filter: bool,
+    filter_input: Option<Entity<TextInput>>,
+    filter_subscription: Option<Subscription>,
 }
 
 impl Focusable for ProjectPanel {
@@ -118,6 +140,14 @@ impl ProjectPanel {
             root_dir,
             expanded_dirs,
             entries: Vec::new(),
+            all_entries: Vec::new(),
+            all_entries_loaded: false,
+            filter_query: String::new(),
+            matching_indices: Vec::new(),
+            filtered_indices: Vec::new(),
+            filter_collapsed_dirs: HashSet::new(),
+            filter_scan_pending: false,
+            filter_scan_cancel: Arc::new(AtomicBool::new(false)),
             focus_handle,
             active_context_menu: None,
             active_confirm_modal: None,
@@ -125,10 +155,13 @@ impl ProjectPanel {
             inline_input: None,
             selected_path: None,
             blur_subscription: None,
-            scroll_handle: ScrollHandle::new(),
+            scroll_handle: UniformListScrollHandle::default(),
             tree_scroll: TreeScrollState::new(),
             scroll_task: None,
             active_file: None,
+            show_filter: false,
+            filter_input: None,
+            filter_subscription: None,
         };
         panel.rebuild_entries();
         panel
@@ -136,8 +169,8 @@ impl ProjectPanel {
 
     /// Accessor for the panel's scroll handle.
     #[inline]
-    pub fn scroll_handle(&self) -> &ScrollHandle {
-        &self.scroll_handle
+    pub fn scroll_handle(&self) -> ScrollHandle {
+        self.scroll_handle.0.borrow().base_handle.clone()
     }
 
     /// Accessor for the tree scroll state.
@@ -216,6 +249,89 @@ impl ProjectPanel {
         }
     }
 
+    fn ensure_filter_input(&mut self, cx: &mut Context<Self>) -> Entity<TextInput> {
+        if let Some(input) = &self.filter_input {
+            return input.clone();
+        }
+        let input = cx.new(|cx| {
+            TextInput::new("", cx)
+                .id("project_file_filter")
+                .placeholder("Filter files")
+                .height(ControlHeight::SM)
+                .radius(Radius::SM)
+                .padding_x(Spacing::SM)
+                .bg(TextInputBg::Toolbar)
+        });
+        let subscription =
+            cx.subscribe(&input, |this, _, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Changed(query) => {
+                    this.set_filter_query(query.clone(), cx);
+                    cx.notify();
+                }
+                TextInputEvent::Cancel => {
+                    this.set_filter_visible(false, cx);
+                }
+                TextInputEvent::Commit(_) => {}
+            });
+        self.filter_input = Some(input.clone());
+        self.filter_subscription = Some(subscription);
+        input
+    }
+
+    pub(crate) fn set_filter_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.show_filter == visible {
+            return;
+        }
+        self.show_filter = visible;
+        if !visible {
+            self.set_filter_query(String::new(), cx);
+            if let Some(input) = &self.filter_input {
+                input.update(cx, |input, cx| input.set_text("", cx));
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn focus_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_filter = true;
+        let input = self.ensure_filter_input(cx);
+        input.update(cx, |input, cx| {
+            input.select_all();
+            cx.notify();
+        });
+        window.focus(&input.read(cx).focus_handle(cx));
+        cx.notify();
+    }
+
+    pub(crate) fn prewarm_filter_index(&mut self, cx: &mut Context<Self>) {
+        self.start_filter_scan(cx);
+    }
+
+    fn set_filter_query(&mut self, query: String, cx: &mut Context<Self>) {
+        if self.filter_query == query {
+            return;
+        }
+        self.filter_query = query;
+        if self.filter_query.trim().is_empty() {
+            self.matching_indices.clear();
+            self.filtered_indices.clear();
+        } else if self.all_entries_loaded {
+            self.matching_indices =
+                matching_file_tree_entry_indices(&self.all_entries, &self.filter_query);
+            self.refresh_filtered_indices();
+        } else {
+            self.filtered_indices.clear();
+            self.start_filter_scan(cx);
+        }
+        self.scroll_task = None;
+        self.tree_scroll = TreeScrollState::new();
+        self.scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(Point::default());
+    }
+
     /// Clears the currently selected path, if any.
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         if self.selected_path.is_some() {
@@ -249,6 +365,7 @@ impl ProjectPanel {
                 if self.selected_path.as_ref() == Some(&target) {
                     self.selected_path = None;
                 }
+                self.refresh_all_entries(cx);
                 self.rebuild_entries();
                 cx.notify();
             }
@@ -276,18 +393,47 @@ impl ProjectPanel {
         if let Some(ref r) = self.root_dir {
             self.expanded_dirs.insert(r.clone());
         }
+        self.filter_collapsed_dirs.clear();
+        self.refresh_all_entries(cx);
         self.rebuild_entries();
         cx.notify();
     }
 
     /// Toggles directory expanded/collapsed state and updates the visible list.
     pub fn toggle_expand(&mut self, dir_path: &Path, cx: &mut Context<Self>) {
-        if self.expanded_dirs.contains(dir_path) {
-            self.expanded_dirs.remove(dir_path);
+        let is_filtering = !self.filter_query.trim().is_empty();
+        if !is_filtering {
+            if self.expanded_dirs.contains(dir_path) {
+                self.expanded_dirs.remove(dir_path);
+            } else {
+                self.expanded_dirs.insert(dir_path.to_path_buf());
+            }
         } else {
-            self.expanded_dirs.insert(dir_path.to_path_buf());
+            let is_expanded = if self.filter_collapsed_dirs.remove(dir_path) {
+                true
+            } else {
+                self.filter_collapsed_dirs.insert(dir_path.to_path_buf());
+                false
+            };
+            if let Some(entry) = self
+                .all_entries
+                .iter_mut()
+                .find(|entry| entry.path == dir_path && entry.is_dir())
+            {
+                entry.kind = FileTreeEntryKind::Directory { is_expanded };
+            }
+            if is_expanded {
+                self.refresh_filtered_indices();
+            } else {
+                self.filtered_indices.retain(|&index| {
+                    let path = &self.all_entries[index].path;
+                    path == dir_path || !path.starts_with(dir_path)
+                });
+            }
         }
-        self.rebuild_entries();
+        if !is_filtering {
+            self.rebuild_entries();
+        }
         cx.notify();
     }
 
@@ -338,7 +484,7 @@ impl ProjectPanel {
             |panel| {
                 let still_animating = panel.tree_scroll.step_interpolation();
                 panel
-                    .scroll_handle
+                    .scroll_handle()
                     .set_offset(Point::new(px(0.0), -panel.tree_scroll.current_scroll_top));
                 still_animating
             },
@@ -347,13 +493,14 @@ impl ProjectPanel {
 
     /// Handles mouse wheel and precision touchpad events with smooth scroll physics
     pub(crate) fn handle_scroll_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let max_scroll = self.scroll_handle.max_offset().height;
+        let scroll_handle = self.scroll_handle();
+        let max_scroll = scroll_handle.max_offset().height;
         if max_scroll <= px(0.0) {
             return;
         }
 
         // Sync with actual offset if not animating (handles window resize / collapse)
-        let actual_top = (-self.scroll_handle.offset().y).clamp(px(0.0), max_scroll);
+        let actual_top = (-scroll_handle.offset().y).clamp(px(0.0), max_scroll);
         if !self.tree_scroll.is_animating()
             && (self.tree_scroll.current_scroll_top - actual_top).abs() > px(1.0)
         {
@@ -367,7 +514,7 @@ impl ProjectPanel {
                 if p.y.abs() > px(0.01) {
                     self.scroll_task = None;
                     self.tree_scroll.scroll_direct(p.y, max_scroll);
-                    self.scroll_handle
+                    scroll_handle
                         .set_offset(Point::new(px(0.0), -self.tree_scroll.current_scroll_top));
                     cx.notify();
                 }
@@ -480,6 +627,7 @@ impl ProjectPanel {
             InlineInputKind::NewFile { parent } => match fs_ops::create_file(&parent, trimmed) {
                 Ok(new_path) => {
                     self.expanded_dirs.insert(parent);
+                    self.refresh_all_entries(cx);
                     self.rebuild_entries();
                     self.selected_path = Some(new_path.clone());
                     cx.emit(ProjectPanelEvent::PathCreated(new_path.clone()));
@@ -499,6 +647,7 @@ impl ProjectPanel {
                     Ok(new_path) => {
                         self.expanded_dirs.insert(parent);
                         self.expanded_dirs.insert(new_path.clone());
+                        self.refresh_all_entries(cx);
                         self.rebuild_entries();
                         self.selected_path = Some(new_path);
                     }
@@ -522,6 +671,7 @@ impl ProjectPanel {
                             old: target,
                             new: new_path.clone(),
                         });
+                        self.refresh_all_entries(cx);
                         self.rebuild_entries();
                         self.selected_path = Some(new_path);
                     }
@@ -584,6 +734,7 @@ impl ProjectPanel {
                     if let Some(parent) = new_path.parent() {
                         self.expanded_dirs.insert(parent.to_path_buf());
                     }
+                    self.refresh_all_entries(cx);
                     self.rebuild_entries();
                     cx.notify();
                 }
@@ -699,6 +850,7 @@ impl ProjectPanel {
                     cx.emit(ProjectPanelEvent::PathCreated(target));
                 }
                 self.expanded_dirs.insert(dest_dir);
+                self.refresh_all_entries(cx);
                 self.rebuild_entries();
                 cx.notify();
             }
@@ -761,6 +913,82 @@ impl ProjectPanel {
         {
             scan_dir_recursive(root, 0, &self.expanded_dirs, &mut self.entries);
         }
+    }
+
+    fn cancel_filter_scan(&mut self) {
+        self.filter_scan_cancel.store(true, Ordering::Relaxed);
+        self.filter_scan_cancel = Arc::new(AtomicBool::new(false));
+        self.filter_scan_pending = false;
+    }
+
+    fn start_filter_scan(&mut self, cx: &mut Context<Self>) {
+        if self.filter_scan_pending || self.all_entries_loaded {
+            return;
+        }
+        let Some(root) = self.root_dir.clone() else {
+            return;
+        };
+
+        self.cancel_filter_scan();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.filter_scan_cancel = cancel.clone();
+        self.filter_scan_pending = true;
+        let scan_cancel = cancel.clone();
+        let task = cx.background_executor().spawn(async move {
+            let mut entries = Vec::new();
+            scan_dir_recursive_all(&root, 0, &mut entries, &scan_cancel);
+            (!scan_cancel.load(Ordering::Relaxed)).then_some(entries)
+        });
+        cx.spawn(async move |this, cx| {
+            let entries = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if !Arc::ptr_eq(&this.filter_scan_cancel, &cancel) {
+                    return;
+                }
+                this.filter_scan_pending = false;
+                if let Some(mut entries) = entries {
+                    this.filter_collapsed_dirs.retain(|path| {
+                        entries
+                            .iter()
+                            .any(|entry| entry.path == *path && entry.is_dir())
+                    });
+                    for entry in &mut entries {
+                        if entry.is_dir() && this.filter_collapsed_dirs.contains(&entry.path) {
+                            entry.kind = FileTreeEntryKind::Directory { is_expanded: false };
+                        }
+                    }
+                    this.all_entries = entries;
+                    this.all_entries_loaded = true;
+                    if this.filter_query.trim().is_empty() {
+                        this.matching_indices.clear();
+                        this.filtered_indices.clear();
+                    } else {
+                        this.matching_indices =
+                            matching_file_tree_entry_indices(&this.all_entries, &this.filter_query);
+                        this.refresh_filtered_indices();
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn refresh_all_entries(&mut self, cx: &mut Context<Self>) {
+        self.cancel_filter_scan();
+        self.all_entries.clear();
+        self.all_entries_loaded = false;
+        self.matching_indices.clear();
+        self.filtered_indices.clear();
+        self.start_filter_scan(cx);
+    }
+
+    fn refresh_filtered_indices(&mut self) {
+        self.filtered_indices = visible_file_tree_entry_indices(
+            &self.all_entries,
+            &self.matching_indices,
+            &self.filter_collapsed_dirs,
+        );
     }
 
     /// Indent depth of `path` in the flattened tree. The root and anything currently hidden by a
@@ -841,46 +1069,125 @@ fn scan_dir_recursive(
     expanded: &HashSet<PathBuf>,
     out: &mut Vec<FileTreeEntry>,
 ) {
-    let mut items = Vec::new();
-    if let Ok(read_dir) = std::fs::read_dir(dir) {
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            let file_name = entry.file_name().to_string_lossy().to_string();
-
-            // Hidden entries (.git, .vscode, .DS_Store) plus the build directories that would
-            // otherwise dominate the tree.
-            if file_name.starts_with('.') || file_name == "target" || file_name == "node_modules" {
-                continue;
-            }
-
-            let is_dir = path.is_dir();
-            items.push((path, file_name, is_dir));
-        }
-    }
-
-    // Sort: directories first, then alphabetically case-insensitive
-    items.sort_by(|a, b| match (a.2, b.2) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.1.to_lowercase().cmp(&b.1.to_lowercase()),
-    });
-
-    for (path, name, is_dir) in items {
-        if is_dir {
-            let is_expanded = expanded.contains(&path);
+    for entry in read_tree_entries(dir) {
+        if entry.is_dir {
+            let is_expanded = expanded.contains(&entry.path) && entry.can_recurse;
             out.push(FileTreeEntry::new_dir(
-                path.clone(),
-                name,
+                entry.path.clone(),
+                entry.name,
                 depth,
                 is_expanded,
             ));
             if is_expanded {
-                scan_dir_recursive(&path, depth + 1, expanded, out);
+                scan_dir_recursive(&entry.path, depth + 1, expanded, out);
             }
         } else {
-            out.push(FileTreeEntry::new_file(path, name, depth));
+            out.push(FileTreeEntry::new_file(entry.path, entry.name, depth));
         }
     }
+}
+
+fn read_tree_entries(dir: &Path) -> Vec<ScannedTreeEntry> {
+    let mut items = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(dir) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || name == "target" || name == "node_modules" {
+                continue;
+            }
+            let is_dir = path.is_dir();
+            let can_recurse = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
+            items.push(ScannedTreeEntry {
+                path,
+                name,
+                is_dir,
+                can_recurse,
+            });
+        }
+    }
+    items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    items
+}
+
+fn scan_dir_recursive_all(
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<FileTreeEntry>,
+    cancel: &AtomicBool,
+) {
+    if cancel.load(Ordering::Relaxed) {
+        return;
+    }
+    for entry in read_tree_entries(dir) {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if entry.is_dir {
+            out.push(FileTreeEntry::new_dir(
+                entry.path.clone(),
+                entry.name,
+                depth,
+                entry.can_recurse,
+            ));
+            if entry.can_recurse {
+                scan_dir_recursive_all(&entry.path, depth + 1, out, cancel);
+            }
+        } else {
+            out.push(FileTreeEntry::new_file(entry.path, entry.name, depth));
+        }
+    }
+}
+
+fn matching_file_tree_entry_indices(entries: &[FileTreeEntry], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return (0..entries.len()).collect();
+    }
+
+    let mut included_paths = HashSet::new();
+    for entry in entries
+        .iter()
+        .filter(|entry| !entry.is_dir() && entry.name.to_lowercase().contains(&query))
+    {
+        let mut path = Some(entry.path.as_path());
+        while let Some(current) = path {
+            if !included_paths.insert(current.to_path_buf()) {
+                break;
+            }
+            path = current.parent();
+        }
+    }
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| included_paths.contains(&entry.path).then_some(index))
+        .collect()
+}
+
+fn visible_file_tree_entry_indices(
+    entries: &[FileTreeEntry],
+    matching_indices: &[usize],
+    collapsed_dirs: &HashSet<PathBuf>,
+) -> Vec<usize> {
+    matching_indices
+        .iter()
+        .copied()
+        .filter(|&index| {
+            let mut parent = entries[index].path.parent();
+            while let Some(path) = parent {
+                if collapsed_dirs.contains(path) {
+                    return false;
+                }
+                parent = path.parent();
+            }
+            true
+        })
+        .collect()
 }
 
 impl Render for ProjectPanel {
@@ -894,12 +1201,60 @@ impl Render for ProjectPanel {
 
         let theme = cx.global::<ThemeManager>().theme().clone();
 
-        let active_file = self.active_file.as_deref();
-
-        let entries_count = self.entries.len();
+        let is_filtering = !self.filter_query.trim().is_empty();
+        let entries_count = if is_filtering {
+            self.filtered_indices.len()
+        } else {
+            self.entries.len()
+        };
+        let has_inline_new_row = self.inline_input.as_ref().is_some_and(|input| {
+            matches!(
+                input.read(cx).kind(),
+                InlineInputKind::NewFile { .. } | InlineInputKind::NewFolder { .. }
+            )
+        });
+        let tree_item_count = entries_count + usize::from(has_inline_new_row);
         let has_root = self.root_dir.is_some();
 
         let panel_weak = cx.entity().downgrade();
+
+        let tree_items = uniform_list("project_panel_tree_scroll", tree_item_count, {
+            let panel_weak = panel_weak.clone();
+            move |range, _window, cx| {
+                let Some(panel) = panel_weak.upgrade() else {
+                    return Vec::new();
+                };
+                let theme = cx.global::<ThemeManager>().theme().clone();
+                let panel = panel.read(cx);
+                let is_filtering = !panel.filter_query.trim().is_empty();
+                tree_view::build_tree_items(
+                    tree_view::TreeItemList {
+                        entries: if is_filtering {
+                            &panel.all_entries
+                        } else {
+                            &panel.entries
+                        },
+                        visible_indices: is_filtering.then_some(panel.filtered_indices.as_slice()),
+                        inline_input: panel.inline_input.as_ref(),
+                        selected_path: panel.selected_path.as_deref(),
+                        active_file: panel.active_file.as_deref(),
+                        root_dir: panel.root_dir.as_deref(),
+                        panel: &panel_weak,
+                    },
+                    range,
+                    &theme,
+                    cx,
+                )
+            }
+        })
+        .track_scroll(self.scroll_handle.clone())
+        .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+            cx.stop_propagation();
+            this.handle_scroll_wheel(event, cx);
+        }))
+        .flex_1()
+        .w_full()
+        .py(px(4.0));
 
         let on_action = {
             let panel_weak = panel_weak.clone();
@@ -944,19 +1299,6 @@ impl Render for ProjectPanel {
                 }
             }
         };
-
-        let item_elements = tree_view::build_tree_items(
-            tree_view::TreeItemList {
-                entries: &self.entries,
-                inline_input: self.inline_input.as_ref(),
-                selected_path: self.selected_path.as_deref(),
-                active_file,
-                root_dir: self.root_dir.as_deref(),
-                panel: &panel_weak,
-            },
-            &theme,
-            cx,
-        );
 
         // Right-click on the empty area below the tree targets the workspace root.
         let bg_right_click = cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -1019,32 +1361,52 @@ impl Render for ProjectPanel {
             .overflow_hidden()
             .on_mouse_down(MouseButton::Right, bg_right_click)
             .on_mouse_down(MouseButton::Left, bg_left_click)
-            .when(!has_root || entries_count == 0, |this| {
-                this.child(tree_view::render_empty_state(
-                    has_root,
-                    self.inline_input.as_ref(),
-                    &theme,
-                    cx,
-                ))
+            .when(self.show_filter, |this| {
+                let input = self.ensure_filter_input(cx);
+                this.child(div().flex_none().w_full().p(Spacing::SM).child(input))
             })
-            .when(has_root && entries_count > 0, |this| {
-                this.child(
-                    div()
-                        .id("project_panel_tree_scroll")
-                        .track_scroll(&self.scroll_handle)
-                        .overflow_y_scroll()
-                        .on_scroll_wheel(cx.listener(
-                            |this, event: &ScrollWheelEvent, _window, cx| {
-                                cx.stop_propagation();
-                                this.handle_scroll_wheel(event, cx);
-                            },
-                        ))
-                        .flex_1()
-                        .w_full()
-                        .py(px(4.0))
-                        .children(item_elements),
-                )
-            })
+            .when(
+                has_root && entries_count == 0 && self.filter_scan_pending,
+                |this| {
+                    this.child(
+                        div()
+                            .flex_1()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(theme.text_muted)
+                            .child("Scanning files..."),
+                    )
+                },
+            )
+            .when(
+                has_root && is_filtering && entries_count == 0 && !self.filter_scan_pending,
+                |this| {
+                    this.child(
+                        div()
+                            .flex_1()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(theme.text_muted)
+                            .child("No matching files"),
+                    )
+                },
+            )
+            .when(
+                !has_root || (entries_count == 0 && !self.filter_scan_pending && !is_filtering),
+                |this| {
+                    this.child(tree_view::render_empty_state(
+                        has_root,
+                        self.inline_input.as_ref(),
+                        &theme,
+                        cx,
+                    ))
+                },
+            )
+            .when(has_root && entries_count > 0, |this| this.child(tree_items))
             .when_some(self.active_context_menu.clone(), |this, menu_state| {
                 let safe_bounds = self.safe_menu_bounds(window.bounds());
                 this.child(deferred(context_menu::render_context_menu(
@@ -1071,6 +1433,194 @@ impl Render for ProjectPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filter_file_tree_entry_indices_match_names_and_keep_parent_directories() {
+        let entries = vec![
+            FileTreeEntry::new_dir(PathBuf::from("/workspace/src"), "src".into(), 0, true),
+            FileTreeEntry::new_file(PathBuf::from("/workspace/src/main.rs"), "main.rs".into(), 1),
+            FileTreeEntry::new_file(PathBuf::from("/workspace/README.md"), "README.md".into(), 0),
+        ];
+
+        let matched = matching_file_tree_entry_indices(&entries, "MAIN");
+        let filtered = visible_file_tree_entry_indices(&entries, &matched, &HashSet::new());
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|index| entries[*index].name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src", "main.rs"]
+        );
+        assert!(matching_file_tree_entry_indices(&entries, "src").is_empty());
+    }
+
+    #[test]
+    fn filter_file_tree_entry_indices_hide_matches_below_collapsed_directories() {
+        let entries = vec![
+            FileTreeEntry::new_dir(PathBuf::from("/workspace/src"), "src".into(), 0, false),
+            FileTreeEntry::new_file(PathBuf::from("/workspace/src/main.rs"), "main.rs".into(), 1),
+        ];
+        let collapsed_dirs = HashSet::from([PathBuf::from("/workspace/src")]);
+
+        let matched = matching_file_tree_entry_indices(&entries, "main");
+        let filtered = visible_file_tree_entry_indices(&entries, &matched, &collapsed_dirs);
+
+        assert_eq!(filtered, vec![0]);
+    }
+
+    #[test]
+    fn filter_file_tree_entry_indices_scales_to_large_workspaces() {
+        let entries = (0..25_000)
+            .map(|index| {
+                let name = format!("file_{index:05}.rs");
+                FileTreeEntry::new_file(PathBuf::from("/workspace").join(&name), name, 0)
+            })
+            .collect::<Vec<_>>();
+
+        let started = std::time::Instant::now();
+        let filtered = matching_file_tree_entry_indices(&entries, "file_");
+        let elapsed = started.elapsed();
+
+        assert_eq!(filtered.len(), entries.len());
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "filtering 25,000 flat files took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn filter_file_tree_entry_indices_scales_to_large_match_sets() {
+        let entries = (0..25_000)
+            .map(|index| {
+                let name = format!("file_{index:05}.rs");
+                FileTreeEntry::new_file(PathBuf::from("/workspace").join(&name), name, 0)
+            })
+            .collect::<Vec<_>>();
+
+        let started = std::time::Instant::now();
+        let indices = matching_file_tree_entry_indices(&entries, "i");
+        let elapsed = started.elapsed();
+
+        assert_eq!(indices.len(), entries.len());
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "filtering indices for 25,000 matching files took {elapsed:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn test_recursive_file_index_is_not_built_during_panel_construction(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let nested_dir = temp_dir.path().join("nested");
+        std::fs::create_dir(&nested_dir).unwrap();
+        std::fs::write(nested_dir.join("needle.rs"), "").unwrap();
+        let root = temp_dir.path().to_path_buf();
+
+        let panel = cx.update(|cx| cx.new(|cx| ProjectPanel::new(Some(root), cx.focus_handle())));
+
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.all_entries.is_empty());
+            assert!(!panel.all_entries_loaded);
+        });
+
+        panel.update(cx, |panel, cx| panel.set_filter_query("needle".into(), cx));
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.all_entries_loaded);
+            let matching_names = panel
+                .filtered_indices
+                .iter()
+                .map(|index| panel.all_entries[*index].name.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(matching_names, vec!["nested", "needle.rs"]);
+        });
+    }
+
+    #[gpui::test]
+    fn test_filter_index_can_be_prewarmed_before_query(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let nested_dir = temp_dir.path().join("nested");
+        std::fs::create_dir(&nested_dir).unwrap();
+        std::fs::write(nested_dir.join("needle.rs"), "").unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let panel = cx.update(|cx| cx.new(|cx| ProjectPanel::new(Some(root), cx.focus_handle())));
+
+        panel.update(cx, |panel, cx| panel.prewarm_filter_index(cx));
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.all_entries_loaded);
+            assert!(panel.filtered_indices.is_empty());
+        });
+
+        panel.update(cx, |panel, cx| panel.set_filter_query("needle".into(), cx));
+        panel.read_with(cx, |panel, _| {
+            let matching_names = panel
+                .filtered_indices
+                .iter()
+                .map(|index| panel.all_entries[*index].name.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(matching_names, vec!["nested", "needle.rs"]);
+            assert!(panel.all_entries[0].is_expanded());
+        });
+
+        panel.update(cx, |panel, cx| panel.toggle_expand(&nested_dir, cx));
+        panel.read_with(cx, |panel, _| {
+            let matching_names = panel
+                .filtered_indices
+                .iter()
+                .map(|index| panel.all_entries[*index].name.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(matching_names, vec!["nested"]);
+            assert!(!panel.all_entries[0].is_expanded());
+        });
+
+        panel.update(cx, |panel, cx| panel.toggle_expand(&nested_dir, cx));
+        panel.read_with(cx, |panel, _| {
+            let matching_names = panel
+                .filtered_indices
+                .iter()
+                .map(|index| panel.all_entries[*index].name.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(matching_names, vec!["nested", "needle.rs"]);
+            assert!(panel.all_entries[0].is_expanded());
+        });
+    }
+
+    #[test]
+    fn scan_dir_recursive_all_does_not_follow_directory_symlinks() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        let target = root.join("target_dir");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("needle.rs"), "").unwrap();
+        let link = root.join("linked_dir");
+
+        #[cfg(unix)]
+        let link_result = std::os::unix::fs::symlink(&target, &link);
+        #[cfg(windows)]
+        let link_result = std::os::windows::fs::symlink_dir(&target, &link);
+        #[cfg(not(any(unix, windows)))]
+        return;
+
+        if let Err(error) = link_result {
+            if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("failed to create directory symlink for test: {error}");
+        }
+
+        let mut entries = Vec::new();
+        scan_dir_recursive_all(root, 0, &mut entries, &AtomicBool::new(false));
+
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.name == "needle.rs")
+                .count(),
+            1
+        );
+    }
+
     // Load-bearing: `use super::*` also brings in `gpui::test`, so this explicit import
     // shadows it and keeps bare `#[test]` resolving to the built-in test attribute.
     use crate::config::AppConfig;

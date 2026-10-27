@@ -1,5 +1,5 @@
-//! Workspace search sidebar: owns the query, the options, and the lifecycle of the background
-//! scan. Rendering lives in the submodules.
+//! Workspace search tab: owns the query, the options, and the lifecycle of the background scan.
+//! Rendering lives in the submodules.
 
 mod header;
 mod results_list;

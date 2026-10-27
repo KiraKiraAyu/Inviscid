@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
-use std::path::Path;
+use std::{ops::Range, path::Path};
 
 use crate::app::project_panel::inline_input::{InlineInput, InlineInputKind};
 use crate::app::project_panel::{FileTreeEntry, ProjectPanel};
@@ -13,11 +13,28 @@ pub fn calculate_new_entry_insert_index(
     root_dir: Option<&Path>,
     input: &InlineInput,
 ) -> Option<usize> {
+    calculate_new_entry_insert_index_for_list(entries, None, root_dir, input)
+}
+
+fn calculate_new_entry_insert_index_for_list(
+    entries: &[FileTreeEntry],
+    visible_indices: Option<&[usize]>,
+    root_dir: Option<&Path>,
+    input: &InlineInput,
+) -> Option<usize> {
+    let entry_count = visible_indices.map_or(entries.len(), <[usize]>::len);
+    let entry_at = |display_index: usize| {
+        let entry_index = visible_indices.map_or(display_index, |indices| indices[display_index]);
+        &entries[entry_index]
+    };
+
     match input.kind() {
         InlineInputKind::NewFolder { parent } => {
             if root_dir == Some(parent) {
                 Some(0)
-            } else if let Some(pos) = entries.iter().position(|e| e.path == *parent) {
+            } else if let Some(pos) =
+                (0..entry_count).find(|&index| entry_at(index).path == *parent)
+            {
                 Some(pos + 1)
             } else {
                 Some(0)
@@ -25,17 +42,19 @@ pub fn calculate_new_entry_insert_index(
         }
         InlineInputKind::NewFile { parent } => {
             // Find the last direct directory child of parent in entries
-            let last_dir = entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| e.is_dir() && e.path.parent() == Some(parent.as_path()))
-                .next_back();
+            let last_dir = (0..entry_count)
+                .rev()
+                .find(|&index| {
+                    let entry = entry_at(index);
+                    entry.is_dir() && entry.path.parent() == Some(parent.as_path())
+                })
+                .map(|index| (index, entry_at(index)));
 
             if let Some((dir_idx, dir_entry)) = last_dir {
                 // Advance past the directory and all of its expanded subtree
                 let mut after_idx = dir_idx + 1;
-                while after_idx < entries.len()
-                    && entries[after_idx].path.starts_with(&dir_entry.path)
+                while after_idx < entry_count
+                    && entry_at(after_idx).path.starts_with(&dir_entry.path)
                 {
                     after_idx += 1;
                 }
@@ -44,7 +63,9 @@ pub fn calculate_new_entry_insert_index(
                 // If parent has no directory children, insert at top of parent
                 if root_dir == Some(parent) {
                     Some(0)
-                } else if let Some(pos) = entries.iter().position(|e| e.path == *parent) {
+                } else if let Some(pos) =
+                    (0..entry_count).find(|&index| entry_at(index).path == *parent)
+                {
                     Some(pos + 1)
                 } else {
                     Some(0)
@@ -104,6 +125,7 @@ pub fn render_inline_row(
 /// `panel`, since an element cannot borrow the entity it is rendered from.
 pub struct TreeItemList<'a> {
     pub entries: &'a [FileTreeEntry],
+    pub visible_indices: Option<&'a [usize]>,
     pub inline_input: Option<&'a Entity<InlineInput>>,
     pub selected_path: Option<&'a Path>,
     pub active_file: Option<&'a Path>,
@@ -112,9 +134,15 @@ pub struct TreeItemList<'a> {
 }
 
 /// Builds the visual elements for file tree items, including active inline inputs.
-pub fn build_tree_items(list: TreeItemList<'_>, theme: &Theme, cx: &App) -> Vec<AnyElement> {
+pub fn build_tree_items(
+    list: TreeItemList<'_>,
+    range: Range<usize>,
+    theme: &Theme,
+    cx: &App,
+) -> Vec<AnyElement> {
     let TreeItemList {
         entries,
+        visible_indices,
         inline_input,
         selected_path,
         active_file,
@@ -122,13 +150,25 @@ pub fn build_tree_items(list: TreeItemList<'_>, theme: &Theme, cx: &App) -> Vec<
         panel: panel_weak,
     } = list;
 
-    let new_entry_insert_index = inline_input
-        .and_then(|input| calculate_new_entry_insert_index(entries, root_dir, input.read(cx)));
+    let new_entry_insert_index = inline_input.and_then(|input| {
+        calculate_new_entry_insert_index_for_list(
+            entries,
+            visible_indices,
+            root_dir,
+            input.read(cx),
+        )
+    });
+    let entry_count = visible_indices.map_or(entries.len(), <[usize]>::len);
+    let item_count = entry_count + usize::from(new_entry_insert_index.is_some());
 
-    let mut item_elements = Vec::with_capacity(entries.len() + 1);
+    let mut item_elements = Vec::with_capacity(range.len());
 
-    for (entry_idx, entry) in entries.iter().enumerate() {
-        if new_entry_insert_index == Some(entry_idx)
+    for row_idx in range {
+        if row_idx >= item_count {
+            break;
+        }
+
+        if new_entry_insert_index == Some(row_idx)
             && let Some(input) = inline_input
         {
             let input_ref = input.read(cx);
@@ -140,7 +180,16 @@ pub fn build_tree_items(list: TreeItemList<'_>, theme: &Theme, cx: &App) -> Vec<
                 input_ref.depth(),
                 theme,
             ));
+            continue;
         }
+
+        let display_idx = if new_entry_insert_index.is_some_and(|insert_at| row_idx > insert_at) {
+            row_idx - 1
+        } else {
+            row_idx
+        };
+        let entry_idx = visible_indices.map_or(display_idx, |indices| indices[display_idx]);
+        let entry = &entries[entry_idx];
 
         if let Some(input) = inline_input {
             let input_ref = input.read(cx);
@@ -262,20 +311,6 @@ pub fn build_tree_items(list: TreeItemList<'_>, theme: &Theme, cx: &App) -> Vec<
                 );
 
         item_elements.push(row.into_any_element());
-    }
-
-    if new_entry_insert_index == Some(entries.len())
-        && let Some(input) = inline_input
-    {
-        let input_ref = input.read(cx);
-        let is_dir = matches!(input_ref.kind(), InlineInputKind::NewFolder { .. });
-        item_elements.push(render_inline_row(
-            input,
-            is_dir,
-            false,
-            input_ref.depth(),
-            theme,
-        ));
     }
 
     item_elements

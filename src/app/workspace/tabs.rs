@@ -3,25 +3,43 @@ use gpui::*;
 use crate::app::tab_bar::TabMeta;
 use crate::editor::Editor;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabKind {
+    Editor,
+    WorkspaceSearch,
+}
+
 pub struct TabItem {
     pub editor: Entity<Editor>,
+    pub(crate) kind: TabKind,
     pub is_pinned: bool,
     pub(crate) _subscription: Subscription,
 }
 
 pub fn collect_tabs_meta(tabs: &[TabItem], cx: &App) -> Vec<TabMeta> {
     tabs.iter()
-        .map(|tab| {
-            let ed = tab.editor.read(cx);
-            TabMeta {
-                title: ed.title(),
-                is_dirty: ed.is_dirty(),
-                dir_hint: ed.dir_hint(),
-                is_pinned: tab.is_pinned,
-                is_read_only: ed.is_read_only(),
-                has_file_path: ed.file_path().is_some(),
-                supports_editing: ed.is_editable(),
+        .map(|tab| match tab.kind {
+            TabKind::Editor => {
+                let ed = tab.editor.read(cx);
+                TabMeta {
+                    title: ed.title(),
+                    is_dirty: ed.is_dirty(),
+                    dir_hint: ed.dir_hint(),
+                    is_pinned: tab.is_pinned,
+                    is_read_only: ed.is_read_only(),
+                    has_file_path: ed.file_path().is_some(),
+                    supports_editing: ed.is_editable(),
+                }
             }
+            TabKind::WorkspaceSearch => TabMeta {
+                title: "Search".to_string(),
+                is_dirty: false,
+                dir_hint: None,
+                is_pinned: tab.is_pinned,
+                is_read_only: false,
+                has_file_path: false,
+                supports_editing: false,
+            },
         })
         .collect()
 }

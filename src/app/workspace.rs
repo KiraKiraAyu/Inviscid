@@ -12,6 +12,7 @@ pub use sidebar::{
     DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, clamp_sidebar_width,
 };
 pub use tabs::TabItem;
+use tabs::TabKind;
 
 use crate::app::search_panel::SearchPanel;
 use crate::app::{SidebarView, status_bar, tab_bar};
@@ -152,6 +153,7 @@ impl Workspace {
             (
                 vec![TabItem {
                     editor,
+                    kind: TabKind::Editor,
                     is_pinned: false,
                     _subscription: subscription,
                 }],
@@ -182,7 +184,10 @@ impl Workspace {
             crate::app::project_panel::ProjectPanel::new(root_dir.clone(), cx.focus_handle())
         });
         let initial_active_file = file_path.clone();
-        project_panel.update(cx, |p, cx| p.set_active_file(initial_active_file, cx));
+        project_panel.update(cx, |p, cx| {
+            p.set_active_file(initial_active_file, cx);
+            p.prewarm_filter_index(cx);
+        });
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
         let search_panel = cx.new(SearchPanel::new);
         search_panel.update(cx, |sp, cx| sp.set_root_dir(root_dir.clone(), cx));
@@ -215,6 +220,7 @@ impl Workspace {
                 let (editor, subscription) = Self::init_editor(Some(file_path.clone()), cx);
                 tabs.push(TabItem {
                     editor,
+                    kind: TabKind::Editor,
                     is_pinned: false,
                     _subscription: subscription,
                 });
@@ -275,6 +281,7 @@ impl Workspace {
         });
         project_panel.update(cx, |p, cx| {
             p.set_active_file(ws.active_file.clone(), cx);
+            p.prewarm_filter_index(cx);
         });
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
         let search_panel = cx.new(SearchPanel::new);
@@ -302,6 +309,7 @@ impl Workspace {
     pub fn restore_from_state(&mut self, ws: &WorkspaceState, cx: &mut Context<Self>) {
         self.root_dir = ws.root_dir.clone();
         self.sidebar_visible = ws.sidebar_visible;
+        self.sidebar_view = SidebarView::Files;
         let sidebar_width = px(ws
             .sidebar_width
             .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
@@ -318,6 +326,7 @@ impl Workspace {
         self.project_panel.update(cx, |p, cx| {
             p.set_root_dir(ws.root_dir.clone(), cx);
             p.set_active_file(ws.active_file.clone(), cx);
+            p.set_filter_visible(false, cx);
         });
 
         self.sync_sidebar_state(cx);
@@ -388,7 +397,7 @@ impl Workspace {
     }
 
     pub fn active_editor(&self) -> Option<&Entity<Editor>> {
-        if self.tabs.is_empty() {
+        if self.tabs.is_empty() || self.active_tab_kind() != Some(TabKind::Editor) {
             None
         } else {
             let idx = self.active_tab_idx.min(self.tabs.len() - 1);
@@ -412,6 +421,11 @@ impl Workspace {
     #[inline]
     pub fn active_tab_idx(&self) -> usize {
         self.active_tab_idx
+    }
+
+    #[inline]
+    fn active_tab_kind(&self) -> Option<TabKind> {
+        self.tabs.get(self.active_tab_idx).map(|tab| tab.kind)
     }
 
     fn sync_active_editor_state(&mut self, cx: &mut Context<Self>) {
@@ -468,6 +482,7 @@ impl Workspace {
         let (editor, subscription) = Self::init_editor(None, cx);
         self.tabs.push(TabItem {
             editor,
+            kind: TabKind::Editor,
             is_pinned: false,
             _subscription: subscription,
         });
@@ -479,7 +494,16 @@ impl Workspace {
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.tabs.len() {
             let is_closing_active = index == self.active_tab_idx;
-            let find_bar = if is_closing_active {
+            let next_active_is_editor = is_closing_active
+                && self.tabs.len() > 1
+                && self.tabs[if index + 1 < self.tabs.len() {
+                    index + 1
+                } else {
+                    index - 1
+                }]
+                .kind
+                    == TabKind::Editor;
+            let find_bar = if next_active_is_editor {
                 self.transfer_find_bar(cx)
             } else {
                 None
@@ -513,7 +537,13 @@ impl Workspace {
             return;
         }
         let target_editor = self.tabs[keep_idx].editor.clone();
-        let find_bar = self.transfer_find_bar(cx);
+        let find_bar = if self.active_tab_kind() == Some(TabKind::Editor)
+            && self.tabs[keep_idx].kind == TabKind::Editor
+        {
+            self.transfer_find_bar(cx)
+        } else {
+            None
+        };
         tabs::filter_close_other_tabs(&mut self.tabs, &target_editor);
         self.active_tab_idx = self
             .tabs
@@ -529,7 +559,13 @@ impl Workspace {
             return;
         }
         let target_editor = self.tabs[target_idx].editor.clone();
-        let find_bar = self.transfer_find_bar(cx);
+        let find_bar = if self.active_tab_kind() == Some(TabKind::Editor)
+            && self.tabs[target_idx].kind == TabKind::Editor
+        {
+            self.transfer_find_bar(cx)
+        } else {
+            None
+        };
         tabs::filter_close_tabs_to_left(&mut self.tabs, target_idx);
         self.active_tab_idx = self
             .tabs
@@ -545,7 +581,13 @@ impl Workspace {
             return;
         }
         let target_editor = self.tabs[target_idx].editor.clone();
-        let find_bar = self.transfer_find_bar(cx);
+        let find_bar = if self.active_tab_kind() == Some(TabKind::Editor)
+            && self.tabs[target_idx].kind == TabKind::Editor
+        {
+            self.transfer_find_bar(cx)
+        } else {
+            None
+        };
         tabs::filter_close_tabs_to_right(&mut self.tabs, target_idx);
         self.active_tab_idx = self
             .tabs
@@ -558,7 +600,16 @@ impl Workspace {
 
     pub fn close_clean_tabs(&mut self, cx: &mut Context<Self>) {
         let active_editor = self.active_editor().cloned();
-        let find_bar = self.transfer_find_bar(cx);
+        let active_is_retained = self.active_tab_kind() == Some(TabKind::Editor)
+            && self
+                .tabs
+                .get(self.active_tab_idx)
+                .is_some_and(|tab| tab.is_pinned || tab.editor.read(cx).is_dirty());
+        let find_bar = if active_is_retained {
+            self.transfer_find_bar(cx)
+        } else {
+            None
+        };
         tabs::filter_close_clean_tabs(&mut self.tabs, cx);
         if let Some(ed) = active_editor {
             self.active_tab_idx = self.tabs.iter().position(|t| t.editor == ed).unwrap_or(0);
@@ -573,7 +624,16 @@ impl Workspace {
     }
 
     pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
-        let find_bar = self.transfer_find_bar(cx);
+        let find_bar = if self.active_tab_kind() == Some(TabKind::Editor)
+            && self
+                .tabs
+                .get(self.active_tab_idx)
+                .is_some_and(|tab| tab.is_pinned)
+        {
+            self.transfer_find_bar(cx)
+        } else {
+            None
+        };
         self.tabs.retain(|t| t.is_pinned);
         if self.tabs.is_empty() {
             self.active_tab_idx = 0;
@@ -585,7 +645,9 @@ impl Workspace {
     }
 
     pub fn toggle_tab_read_only(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get(tab_idx) {
+        if let Some(tab) = self.tabs.get(tab_idx)
+            && tab.kind == TabKind::Editor
+        {
             tab.editor.update(cx, |ed, _cx| {
                 ed.toggle_read_only();
             });
@@ -649,7 +711,13 @@ impl Workspace {
 
     pub fn switch_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.tabs.len() && self.active_tab_idx != index {
-            let find_bar = self.transfer_find_bar(cx);
+            let find_bar = if self.active_tab_kind() == Some(TabKind::Editor)
+                && self.tabs[index].kind == TabKind::Editor
+            {
+                self.transfer_find_bar(cx)
+            } else {
+                None
+            };
             self.active_tab_idx = index;
             self.restore_find_bar(find_bar, cx);
             self.sync_active_editor_state(cx);
@@ -700,6 +768,7 @@ impl Workspace {
             let (editor, subscription) = Self::init_editor(Some(path.clone()), cx);
             self.tabs.push(TabItem {
                 editor,
+                kind: TabKind::Editor,
                 is_pinned: false,
                 _subscription: subscription,
             });
@@ -817,6 +886,7 @@ impl Workspace {
         self.root_dir = None;
         self.project_panel.update(cx, |panel, cx| {
             panel.set_root_dir(None, cx);
+            panel.set_filter_visible(false, cx);
         });
         self.search_panel.update(cx, |sp, cx| {
             sp.set_root_dir(None, cx);
@@ -833,7 +903,9 @@ impl Workspace {
         let mut active_file = None;
 
         for (i, tab) in self.tabs.iter().enumerate() {
-            if let Some(path) = tab.editor.read(cx).file_path_buf() {
+            if tab.kind == TabKind::Editor
+                && let Some(path) = tab.editor.read(cx).file_path_buf()
+            {
                 if i == self.active_tab_idx {
                     active_file = Some(path.clone());
                 }
@@ -927,6 +999,9 @@ impl Workspace {
 
     /// Shows the sidebar with `view` on screen.
     pub fn show_sidebar(&mut self, view: SidebarView, cx: &mut Context<Self>) {
+        self.project_panel.update(cx, |panel, cx| {
+            panel.set_filter_visible(view == SidebarView::Search, cx);
+        });
         if !self.sidebar_visible || self.sidebar_view != view {
             self.sidebar_visible = true;
             self.sidebar_view = view;
@@ -958,6 +1033,10 @@ impl Workspace {
         self.active_editor().and_then(|ed| ed.read(cx).file_path())
     }
 
+    pub(crate) fn is_workspace_search_active(&self) -> bool {
+        self.active_tab_kind() == Some(TabKind::WorkspaceSearch)
+    }
+
     pub fn get_tabs_meta(&self, cx: &App) -> Vec<tab_bar::TabMeta> {
         tabs::collect_tabs_meta(&self.tabs, cx)
     }
@@ -986,10 +1065,13 @@ impl Workspace {
         if self.active_sidebar() == Some(view) {
             self.set_sidebar_visible(false, cx);
             self.focus_active_editor(window, cx);
-        } else if view == SidebarView::Search {
-            self.open_workspace_search(window, cx);
         } else {
             self.show_sidebar(view, cx);
+            if view == SidebarView::Search {
+                self.project_panel.update(cx, |panel, cx| {
+                    panel.focus_filter(window, cx);
+                });
+            }
         }
     }
 
@@ -1010,6 +1092,23 @@ impl Workspace {
     /// files may have changed outside the app while the panel was closed.
     pub fn open_workspace_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_sidebar(SidebarView::Search, cx);
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.kind == TabKind::WorkspaceSearch)
+        {
+            self.switch_tab(index, cx);
+        } else {
+            let (editor, subscription) = Self::init_editor(None, cx);
+            self.tabs.push(TabItem {
+                editor,
+                kind: TabKind::WorkspaceSearch,
+                is_pinned: false,
+                _subscription: subscription,
+            });
+            self.active_tab_idx = self.tabs.len() - 1;
+            self.sync_active_editor_state(cx);
+        }
         self.search_panel.update(cx, |sp, cx| {
             sp.refresh_files(cx);
             sp.focus_input(window, cx);
@@ -1020,6 +1119,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active_editor = self.active_editor().cloned();
+        let active_is_search = self.active_tab_kind() == Some(TabKind::WorkspaceSearch);
         let sidebar_visible = self.sidebar_visible;
         let has_tabs = !self.tabs.is_empty();
         let has_workspace = self.root_dir.is_some();
@@ -1053,7 +1153,7 @@ impl Render for Workspace {
                     .when(sidebar_visible, |this| {
                         let content = match self.sidebar_view {
                             SidebarView::Files => self.project_panel.clone().into_any_element(),
-                            SidebarView::Search => self.search_panel.clone().into_any_element(),
+                            SidebarView::Search => self.project_panel.clone().into_any_element(),
                         };
                         this.child(sidebar::render_sidebar_panel(
                             self.sidebar_width,
@@ -1077,7 +1177,9 @@ impl Render for Workspace {
                             .flex_col()
                             .when(has_tabs, |this| this.child(self.tab_bar.clone()))
                             .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(
-                                if let Some(editor) = active_editor {
+                                if active_is_search {
+                                    self.search_panel.clone().into_any_element()
+                                } else if let Some(editor) = active_editor {
                                     editor.into_any_element()
                                 } else if has_workspace {
                                     div()
@@ -1233,11 +1335,34 @@ mod tests {
         });
 
         ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.tab_count(), 1);
+            assert!(ws.active_editor().is_none());
+            assert_eq!(ws.tab_bar().read(cx).tabs_meta()[0].title, "Search");
             assert_eq!(ws.active_sidebar(), Some(SidebarView::Search));
             assert_eq!(
                 ws.status_bar().read(cx).active_sidebar(),
                 Some(SidebarView::Search)
             );
+        });
+    }
+
+    #[gpui::test]
+    fn test_workspace_search_tab_is_reused_and_preserves_editor_tabs(cx: &mut TestAppContext) {
+        init_globals(cx);
+
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(None, cx));
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.open_workspace_search(window, cx));
+        });
+        ws.update(cx, |ws, cx| ws.new_tab(cx));
+        assert_eq!(ws.read_with(cx, |ws, _| ws.tab_count()), 2);
+
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.open_workspace_search(window, cx));
+        });
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.tab_count(), 2);
+            assert!(ws.active_editor().is_none());
         });
     }
 

@@ -8,6 +8,8 @@ use crate::ui::icon::{Icon, IconName, IconSize};
 use crate::ui::tokens::{FontSize, Radius, Spacing};
 
 const BUTTON_SIZE: Pixels = px(22.0);
+/// The fixed trailing controls area keeps the search and replacement inputs aligned.
+const RIGHT_SECTION_WIDTH: Pixels = px(96.0);
 const OPTION_TOGGLES: [(SearchToggle, &str); 3] = [
     (SearchToggle::CaseSensitive, "Aa"),
     (SearchToggle::WholeWord, "ab"),
@@ -35,13 +37,51 @@ impl SearchPanel {
                     .flex()
                     .items_center()
                     .gap(Spacing::XS)
-                    .child(div().flex_1().min_w_0().child(self.input.clone()))
-                    .when(has_query, |this| {
-                        this.child(
-                            icon_button("search_clear_btn", IconName::Close, theme)
-                                .on_click(cx.listener(|this, _, _, cx| this.clear_query(cx))),
-                        )
-                    }),
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.input.clone())
+                            .when(has_query, |this| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .right(Spacing::XS)
+                                        .w(BUTTON_SIZE)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            compact_icon_button(
+                                                "search_clear_btn",
+                                                IconName::Close,
+                                                theme,
+                                            )
+                                            .bg(theme.bg_toolbar)
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.clear_query(cx);
+                                                }),
+                                            ),
+                                        ),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .w(RIGHT_SECTION_WIDTH)
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(Spacing::XS)
+                            .child(self.render_replace_toggle(theme, cx)),
+                    ),
             )
             .when(self.show_replace, |this| {
                 this.child(
@@ -53,34 +93,42 @@ impl SearchPanel {
                         .child(div().flex_1().min_w_0().child(self.replace_input.clone()))
                         .child(
                             div()
-                                .id("search_replace_all_btn")
-                                .h(BUTTON_SIZE)
-                                .px(Spacing::SM)
+                                .w(RIGHT_SECTION_WIDTH)
                                 .flex_none()
                                 .flex()
                                 .items_center()
-                                .justify_center()
-                                .rounded(Radius::SM)
-                                .text_size(FontSize::CAPTION)
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(if has_results && !self.replacing {
-                                    theme.text_secondary
-                                } else {
-                                    theme.text_muted.opacity(0.5)
-                                })
-                                .when(has_results && !self.replacing, |this| {
-                                    this.cursor_pointer()
-                                        .hover(move |s| s.bg(hover))
-                                        .active(move |s| s.bg(active))
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.replace_all(cx)),
-                                        )
-                                })
-                                .child(if self.replacing {
-                                    "Replacing..."
-                                } else {
-                                    "Replace All"
-                                }),
+                                .justify_end()
+                                .child(
+                                    div()
+                                        .id("search_replace_all_btn")
+                                        .h(BUTTON_SIZE)
+                                        .px(Spacing::SM)
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(Radius::SM)
+                                        .text_size(FontSize::CAPTION)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(if has_results && !self.replacing {
+                                            theme.text_secondary
+                                        } else {
+                                            theme.text_muted.opacity(0.5)
+                                        })
+                                        .when(has_results && !self.replacing, |this| {
+                                            this.cursor_pointer()
+                                                .hover(move |s| s.bg(hover))
+                                                .active(move |s| s.bg(active))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.replace_all(cx)
+                                                }))
+                                        })
+                                        .child(if self.replacing {
+                                            "Replacing..."
+                                        } else {
+                                            "Replace All"
+                                        }),
+                                ),
                         ),
                 )
             })
@@ -115,7 +163,6 @@ impl SearchPanel {
                                 self.render_option_toggle(toggle, label, theme, cx)
                             })),
                     )
-                    .child(self.render_replace_toggle(theme, cx))
                     .when(has_results, |this| {
                         let expand_icon = if all_collapsed {
                             IconName::ChevronRight
@@ -227,19 +274,29 @@ impl SearchPanel {
 }
 
 fn icon_button(id: &'static str, icon: IconName, theme: &Theme) -> Stateful<Div> {
+    sized_icon_button(id, icon, BUTTON_SIZE, IconSize::XSmall, theme)
+}
+
+fn compact_icon_button(id: &'static str, icon: IconName, theme: &Theme) -> Stateful<Div> {
+    sized_icon_button(id, icon, px(18.0), IconSize::Indicator, theme)
+}
+
+fn sized_icon_button(
+    id: &'static str,
+    icon: IconName,
+    size: Pixels,
+    icon_size: IconSize,
+    theme: &Theme,
+) -> Stateful<Div> {
     let hover = theme.btn_hover;
     div()
         .id(id)
-        .size(BUTTON_SIZE)
+        .size(size)
         .flex()
         .items_center()
         .justify_center()
         .rounded(Radius::SM)
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
-        .child(
-            Icon::new(icon)
-                .size(IconSize::XSmall)
-                .color(theme.text_secondary),
-        )
+        .child(Icon::new(icon).size(icon_size).color(theme.text_secondary))
 }

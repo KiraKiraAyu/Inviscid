@@ -484,6 +484,9 @@ pub fn close_search_panel(
 ) {
     app.close_menu(cx);
     app.workspace().update(cx, |ws, cx| {
+        if ws.is_workspace_search_active() {
+            ws.close_active_tab(cx);
+        }
         ws.set_sidebar_visible(false, cx);
         ws.focus_active_editor(window, cx);
     });
