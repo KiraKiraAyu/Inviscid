@@ -75,9 +75,6 @@ impl InlineSpan {
         cursor_col: usize,
         is_source_mode: bool,
     ) -> bool {
-        if self.is_ime_preedit {
-            return false;
-        }
         if is_source_mode {
             return true;
         }

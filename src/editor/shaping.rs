@@ -380,6 +380,13 @@ pub fn build_line_runs(
                 color: Some(color),
             });
         }
+        if span.is_ime_preedit {
+            underline = Some(UnderlineStyle {
+                thickness: px(1.0),
+                color: Some(color),
+                wavy: false,
+            });
+        }
 
         runs.push(TextRun {
             len: span_byte_len,
@@ -402,101 +409,6 @@ pub fn line_font_for(kind: &BlockKind, is_source: bool) -> Font {
     } else {
         font(crate::platform::platform_ui_font())
     }
-}
-
-fn shape_ime_preedit(
-    text: &str,
-    line_font: &Font,
-    font_size: Pixels,
-    color: Hsla,
-    window: &mut Window,
-) -> Option<Box<WrappedLine>> {
-    if text.is_empty() {
-        return None;
-    }
-    let runs = vec![TextRun {
-        len: text.len(),
-        font: line_font.clone(),
-        color,
-        background_color: None,
-        underline: Some(UnderlineStyle {
-            thickness: px(1.0),
-            color: Some(color),
-            wavy: false,
-        }),
-        strikethrough: None,
-    }];
-    window
-        .text_system()
-        .shape_text(text.to_owned().into(), font_size, &runs, None, None)
-        .ok()
-        .and_then(|mut lines| lines.pop())
-        .map(Box::new)
-}
-
-/// Extracts the active IME preedit text and the byte offset in visible text where it is anchored.
-pub fn ime_preedit_overlay(
-    spans: &[InlineSpan],
-    is_active_caret: bool,
-    disclosure_col: usize,
-    is_source: bool,
-) -> Option<(String, usize)> {
-    let anchor_col = spans.iter().find(|span| span.is_ime_preedit)?.span_range.0;
-    let text: String = spans
-        .iter()
-        .filter(|span| span.is_ime_preedit)
-        .map(|span| span.text.as_str())
-        .collect();
-    let anchor_byte = raw_col_to_visible_byte(
-        anchor_col,
-        spans,
-        is_active_caret,
-        disclosure_col,
-        is_source,
-    );
-    Some((text, anchor_byte))
-}
-
-/// Computes the IME preedit overlay origin on its visual row and shifts the caret to the end of the preedit.
-pub fn ime_preedit_placement(
-    line_origin: Point<Pixels>,
-    anchor: Point<Pixels>,
-    preedit_width: Pixels,
-    caret_bounds: Option<Bounds<Pixels>>,
-) -> (Point<Pixels>, Option<Bounds<Pixels>>) {
-    let row_top = point(line_origin.x + anchor.x, line_origin.y + anchor.y);
-    let caret = caret_bounds.map(|mut caret| {
-        caret.origin.x = row_top.x + preedit_width;
-        caret
-    });
-    (row_top, caret)
-}
-
-pub fn measure_ime_preedit(
-    text: &str,
-    font_size: Pixels,
-    line_font: &Font,
-    color: Hsla,
-    window: &mut Window,
-) -> Pixels {
-    if text.is_empty() {
-        return px(0.0);
-    }
-    let runs = vec![TextRun {
-        len: text.len(),
-        font: line_font.clone(),
-        color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    }];
-    window
-        .text_system()
-        .shape_text(text.to_owned().into(), font_size, &runs, None, None)
-        .ok()
-        .and_then(|mut lines| lines.pop())
-        .map(|line| line.unwrapped_layout.width)
-        .unwrap_or(px(0.0))
 }
 
 #[inline]
@@ -1392,7 +1304,6 @@ enum LinePrepaintState {
     Empty {
         caret_bounds: Option<Bounds<Pixels>>,
         cursor_color: Hsla,
-        preedit: Option<(Box<WrappedLine>, Point<Pixels>)>,
     },
     Shaped {
         wrapped_line: Box<WrappedLine>,
@@ -1401,7 +1312,6 @@ enum LinePrepaintState {
         selection_color: Hsla,
         caret_bounds: Option<Bounds<Pixels>>,
         cursor_color: Hsla,
-        preedit: Option<(Box<WrappedLine>, Point<Pixels>)>,
     },
     None,
 }
@@ -1437,9 +1347,6 @@ pub fn render_shaped_line(
 
     let is_active_caret = is_active;
 
-    let ime_preedit =
-        ime_preedit_overlay(&parsed.spans, is_active_caret, disclosure_col, is_source);
-
     let available_width = compute_available_line_width_with_indent(
         content_width,
         &parsed.kind,
@@ -1454,8 +1361,6 @@ pub fn render_shaped_line(
     let is_monospace = is_source || parsed.kind == BlockKind::CodeBlockContent;
     let is_heading = matches!(parsed.kind, BlockKind::Heading { .. });
     let font = line_font_for(&parsed.kind, is_source);
-    let preedit_font = font.clone();
-    let preedit_color = override_color.unwrap_or(lrc.theme.text_primary);
 
     let scx_measure = LineShapingContext::new(
         lrc.theme,
@@ -1509,7 +1414,7 @@ pub fn render_shaped_line(
             };
 
             if line_str.is_empty() || runs.is_empty() {
-                let mut caret_bounds = if is_active
+                let caret_bounds = if is_active
                     && is_focused
                     && selection.is_empty()
                     && !is_dragging
@@ -1526,25 +1431,9 @@ pub fn render_shaped_line(
                     None
                 };
 
-                let mut preedit = None;
-                if let Some((text, _)) = ime_preedit.as_ref()
-                    && let Some(line) =
-                        shape_ime_preedit(text, &preedit_font, font_size, preedit_color, window)
-                {
-                    let (origin, caret) = ime_preedit_placement(
-                        bounds.origin,
-                        point(px(0.0), px(0.0)),
-                        line.unwrapped_layout.width,
-                        caret_bounds,
-                    );
-                    caret_bounds = caret;
-                    preedit = Some((line, origin));
-                }
-
                 return LinePrepaintState::Empty {
                     caret_bounds,
                     cursor_color,
-                    preedit,
                 };
             }
 
@@ -1630,7 +1519,7 @@ pub fn render_shaped_line(
                 );
             }
 
-            let mut caret_bounds = if is_active
+            let caret_bounds = if is_active
                 && is_focused
                 && selection.is_empty()
                 && !is_dragging
@@ -1658,22 +1547,6 @@ pub fn render_shaped_line(
                 None
             };
 
-            let mut preedit = None;
-            if let Some((text, anchor_byte)) = &ime_preedit
-                && let Some(anchor) = wrapped_line.position_for_index(*anchor_byte, line_height)
-                && let Some(line) =
-                    shape_ime_preedit(text, &preedit_font, font_size, preedit_color, window)
-            {
-                let (origin, caret) = ime_preedit_placement(
-                    bounds.origin,
-                    anchor,
-                    line.unwrapped_layout.width,
-                    caret_bounds,
-                );
-                caret_bounds = caret;
-                preedit = Some((line, origin));
-            }
-
             LinePrepaintState::Shaped {
                 wrapped_line: Box::new(wrapped_line),
                 highlight_quads,
@@ -1681,25 +1554,13 @@ pub fn render_shaped_line(
                 selection_color,
                 caret_bounds,
                 cursor_color,
-                preedit,
             }
         },
         move |bounds, prepaint, window, cx| match prepaint {
             LinePrepaintState::Empty {
                 caret_bounds,
                 cursor_color,
-                preedit,
             } => {
-                if let Some((preedit_line, origin)) = preedit {
-                    let _ = preedit_line.paint(
-                        origin,
-                        line_height,
-                        TextAlign::default(),
-                        None,
-                        window,
-                        cx,
-                    );
-                }
                 if let Some(caret) = caret_bounds {
                     window.paint_quad(fill(caret, cursor_color));
                 }
@@ -1711,7 +1572,6 @@ pub fn render_shaped_line(
                 selection_color,
                 caret_bounds,
                 cursor_color,
-                preedit,
             } => {
                 for (quad, color) in highlight_quads {
                     window.paint_quad(fill(quad, color));
@@ -1735,16 +1595,6 @@ pub fn render_shaped_line(
                     window,
                     cx,
                 );
-                if let Some((preedit_line, origin)) = preedit {
-                    let _ = preedit_line.paint(
-                        origin,
-                        line_height,
-                        TextAlign::default(),
-                        None,
-                        window,
-                        cx,
-                    );
-                }
                 if let Some(caret) = caret_bounds {
                     window.paint_quad(fill(caret, cursor_color));
                 }
@@ -1762,7 +1612,6 @@ pub struct TableCellRenderContext<'a> {
     pub theme: &'a Theme,
     pub font_size: Pixels,
     pub line_height: Pixels,
-    pub font: Font,
     pub is_active_cell: bool,
     pub disclosure_col: usize,
     pub cursor_col: usize,
@@ -1778,7 +1627,6 @@ enum CellPrepaintState {
         text_align: TextAlign,
         caret_bounds: Option<Bounds<Pixels>>,
         cursor_color: Hsla,
-        preedit: Option<(Box<WrappedLine>, Point<Pixels>)>,
     },
     None,
 }
@@ -1790,7 +1638,6 @@ pub fn render_shaped_cell_canvas(
     let spans = spans.to_vec();
     let font_size = tcx.font_size;
     let line_height = tcx.line_height;
-    let font = tcx.font;
     let is_active_cell = tcx.is_active_cell;
     let disclosure_col = tcx.disclosure_col;
     let cursor_col = tcx.cursor_col;
@@ -1800,14 +1647,14 @@ pub fn render_shaped_cell_canvas(
 
     canvas(
         move |bounds, window, cx| {
-            let (line_str, runs, cursor_color, text_color) = {
+            let (line_str, runs, cursor_color) = {
                 let theme = cx.theme();
                 let scx =
                     LineShapingContext::new(theme, None, false, is_active_cell, disclosure_col);
                 let (line_str, runs) =
                     build_line_runs(&spans, scx, hovered_link_range, &window.text_style());
                 let cursor_color = theme.cursor.opacity(cursor_opacity);
-                (line_str, runs, cursor_color, theme.text_primary)
+                (line_str, runs, cursor_color)
             };
 
             let shaped = window.text_system().shape_text(
@@ -1843,7 +1690,7 @@ pub fn render_shaped_cell_canvas(
                 align,
             );
 
-            let mut caret_bounds = if is_active_cell && cursor_opacity > 0.01 {
+            let caret_bounds = if is_active_cell && cursor_opacity > 0.01 {
                 let target_byte =
                     raw_col_to_visible_byte(cursor_col, &spans, true, disclosure_col, false);
                 if let Some(caret_pos) = wrapped_line.position_for_index(target_byte, line_height) {
@@ -1861,29 +1708,12 @@ pub fn render_shaped_cell_canvas(
                 None
             };
 
-            let cell_preedit = ime_preedit_overlay(&spans, true, disclosure_col, false);
-            let mut preedit = None;
-            if let Some((text, anchor_byte)) = cell_preedit.as_ref()
-                && let Some(anchor) = wrapped_line.position_for_index(*anchor_byte, line_height)
-                && let Some(line) = shape_ime_preedit(text, &font, font_size, text_color, window)
-            {
-                let (preedit_origin, caret) = ime_preedit_placement(
-                    point(origin.x + align_x, origin.y),
-                    anchor,
-                    line.unwrapped_layout.width,
-                    caret_bounds,
-                );
-                caret_bounds = caret;
-                preedit = Some((line, preedit_origin));
-            }
-
             CellPrepaintState::Shaped {
                 wrapped_line: Box::new(wrapped_line),
                 origin,
                 text_align,
                 caret_bounds,
                 cursor_color,
-                preedit,
             }
         },
         move |bounds, prepaint, window, cx| match prepaint {
@@ -1893,7 +1723,6 @@ pub fn render_shaped_cell_canvas(
                 text_align,
                 caret_bounds,
                 cursor_color,
-                preedit,
             } => {
                 let _ = wrapped_line.paint_background(
                     origin,
@@ -1908,16 +1737,6 @@ pub fn render_shaped_cell_canvas(
                 }
                 let _ =
                     wrapped_line.paint(origin, line_height, text_align, Some(bounds), window, cx);
-                if let Some((preedit_line, preedit_origin)) = preedit {
-                    let _ = preedit_line.paint(
-                        preedit_origin,
-                        line_height,
-                        TextAlign::default(),
-                        None,
-                        window,
-                        cx,
-                    );
-                }
             }
             CellPrepaintState::None => {}
         },

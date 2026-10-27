@@ -507,8 +507,7 @@ pub fn get_line_layout_height(
 }
 
 impl Editor {
-    /// Marks any active IME preedit range in `parsed_lines` so composition text is excluded from
-    /// line-width measurement and rendered as an overlay at the composition anchor.
+    /// Marks active IME preedit text so it participates in line shaping and receives an underline.
     fn project_ime_preedit(&self, first_line: usize, parsed_lines: &mut [ParsedLine]) {
         let Some(marked) = self.marked_range.clone() else {
             return;

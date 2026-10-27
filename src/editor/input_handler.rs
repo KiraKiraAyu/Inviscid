@@ -10,8 +10,7 @@ const IME_CONSUMED_KEY_GRACE: Duration = Duration::from_millis(20);
 
 impl Editor {
     /// Column used for markdown syntax-marker disclosure.
-    /// Pinned to the composition start while an IME preedit is active so transient composition text
-    /// does not reflow the document before commit.
+    /// Pinned to the composition start while an IME preedit is active so markdown disclosure stays stable.
     pub(crate) fn disclosure_col(&self) -> usize {
         match &self.marked_range {
             Some(marked) => self.buffer.utf16_offset_to_pos(marked.start).col,
@@ -222,35 +221,28 @@ impl EntityInputHandler for Editor {
                 px(1.5)
             };
 
-            // The preedit is projected with zero width (see `mark_ime_preedit`), so the anchor box has to
-            // be pushed past it — otherwise the candidate window would detach from the pinyin being typed.
-            let preedit_width = crate::editor::shaping::ime_preedit_overlay(
-                &parsed.spans,
-                is_active_caret,
-                self.disclosure_col(),
-                self.render_mode == super::RenderMode::Source,
-            )
-            .map(|(text, _)| {
-                let line_font = crate::editor::shaping::line_font_for(
-                    &parsed.kind,
-                    self.render_mode == super::RenderMode::Source,
-                );
-                crate::editor::shaping::measure_ime_preedit(
-                    &text,
-                    font_size,
-                    &line_font,
-                    theme.text_primary,
-                    window,
-                )
-            })
-            .unwrap_or(px(0.0));
+            let anchor_pos = self
+                .marked_range
+                .as_ref()
+                .map(|marked| self.buffer.utf16_offset_to_pos(marked.end))
+                .filter(|pos| pos.line == start_pos.line)
+                .unwrap_or(start_pos);
+            let anchor = crate::editor::shaping::calculate_pos_from_col(
+                anchor_pos.col,
+                parsed,
+                font_size,
+                line_height,
+                wrap_width,
+                scx,
+                window,
+            );
 
             let top_offset =
                 crate::editor::shaping::get_block_top_offset(&parsed.kind, self.render_mode);
             return Some(Bounds {
                 origin: point(
-                    line_bounds.origin.x + start_cursor_pos.x + preedit_width,
-                    line_bounds.origin.y + start_cursor_pos.y + top_offset,
+                    line_bounds.origin.x + anchor.x,
+                    line_bounds.origin.y + anchor.y + top_offset,
                 ),
                 size: size(width, line_height),
             });

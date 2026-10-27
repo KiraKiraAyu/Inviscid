@@ -4,6 +4,23 @@ use crate::markdown::{MarkdownScanner, is_syntactic_separator};
 use gpui::px;
 
 #[test]
+fn test_ime_preedit_occupies_inline_width_and_is_underlined() {
+    use crate::editor::shaping::{LineShapingContext, build_line_runs};
+    use crate::markdown::{InlineSpan, mark_ime_preedit};
+    use crate::theme::Theme;
+    use gpui::TextStyle;
+
+    let spans = mark_ime_preedit(&[InlineSpan::plain("leftni right", (0, 12))], (4, 6));
+    let theme = Theme::default();
+    let scx = LineShapingContext::new(&theme, None, false, true, 4);
+    let (line, runs) = build_line_runs(&spans, scx, None, &TextStyle::default());
+
+    assert_eq!(line, "leftni right");
+    assert_eq!(runs.len(), 3);
+    assert!(runs[1].underline.is_some());
+}
+
+#[test]
 fn test_line_layout_heights() {
     let lines = vec![
         "# Heading 1".to_string(),
@@ -2551,36 +2568,16 @@ fn test_ime_composition_pins_disclosure_to_composition_anchor(cx: &mut gpui::Tes
                 "disclosure must stay pinned to the composition anchor, not follow the preedit tail"
             );
             let during = ed.layout_snapshot();
-            assert_eq!(
-                during.line_heights[0], before_height,
-                "an in-flight preedit must not re-flow its own line"
+            let during_visible =
+                during.parsed_lines[0].visible_text(true, ed.disclosure_col(), false);
+            assert!(
+                during_visible.ends_with("ni"),
+                "the preedit must be included in the shaped line after the visible content"
             );
-            assert_eq!(
-                during.total_height, before_total,
-                "an in-flight preedit must not shift subsequent lines"
-            );
-            assert_eq!(
-                during.parsed_lines[0]
-                    .visible_text(true, ed.disclosure_col(), false)
-                    .chars()
-                    .count(),
-                before_visible,
-                "an in-flight preedit must not change the projected text"
-            );
-            assert_eq!(
-                crate::editor::shaping::ime_preedit_overlay(
-                    &during.parsed_lines[0].spans,
-                    true,
-                    ed.disclosure_col(),
-                    false,
-                ),
-                Some((
-                    "ni".to_string(),
-                    before.parsed_lines[0]
-                        .visible_text(true, line_len, false)
-                        .len()
-                )),
-                "the preedit must still be paintable as an overlay, anchored where the visible text ends"
+            assert_eq!(during_visible.chars().count(), before_visible + 2);
+            assert!(
+                during.line_heights[0] >= before_height && during.total_height >= before_total,
+                "composition may add wrapped rows but must not collapse document geometry"
             );
 
             ed.replace_text_in_range(None, "你", window, cx);
@@ -2594,9 +2591,9 @@ fn test_ime_composition_pins_disclosure_to_composition_anchor(cx: &mut gpui::Tes
     });
 }
 
-/// Verifies that composing on an empty line projects the preedit as an overlay without growing line height.
+/// Verifies that composing on an empty line renders and measures the underlined preedit inline.
 #[gpui::test]
-fn test_ime_composition_on_empty_line_is_overlay_only(cx: &mut gpui::TestAppContext) {
+fn test_ime_composition_on_empty_line_is_inline_and_underlined(cx: &mut gpui::TestAppContext) {
     use crate::buffer::{Position, TextBuffer};
     use gpui::{Bounds, EntityInputHandler, point, px, size};
 
@@ -2624,34 +2621,37 @@ fn test_ime_composition_on_empty_line_is_overlay_only(cx: &mut gpui::TestAppCont
             ed.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
 
             let during = ed.layout_snapshot();
-            assert!(
-                during.parsed_lines[1]
-                    .visible_text(true, 0, false)
-                    .is_empty(),
-                "an in-flight preedit must not become line content"
+            assert_eq!(
+                during.parsed_lines[1].visible_text(true, 0, false),
+                "ni",
+                "an in-flight preedit must participate in line shaping"
             );
             assert_eq!(
                 during.line_heights[1], before_height,
                 "an empty line must not grow while composing"
             );
             assert_eq!(during.total_height, before.total_height);
-            assert_eq!(
-                crate::editor::shaping::ime_preedit_overlay(
-                    &during.parsed_lines[1].spans,
+            let (line, runs) = crate::editor::shaping::build_line_runs(
+                &during.parsed_lines[1].spans,
+                crate::editor::shaping::LineShapingContext::new(
+                    &crate::theme::Theme::default(),
+                    None,
+                    false,
                     true,
                     ed.disclosure_col(),
-                    false,
                 ),
-                Some(("ni".to_string(), 0)),
-                "the empty-line render path must still be able to paint the preedit"
+                None,
+                &window.text_style(),
             );
+            assert_eq!(line, "ni");
+            assert!(runs[0].underline.is_some());
         });
     });
 }
 
-/// Verifies that an active IME composition does not shift document geometry while the candidate is open.
+/// Verifies that an active IME composition participates in width measurement and wrapping.
 #[gpui::test]
-fn test_ime_composition_does_not_move_document_geometry(cx: &mut gpui::TestAppContext) {
+fn test_ime_composition_reserves_width_and_wraps(cx: &mut gpui::TestAppContext) {
     use crate::buffer::{Position, TextBuffer};
     use gpui::{Bounds, EntityInputHandler, point, px, size};
 
@@ -2750,23 +2750,13 @@ fn test_ime_composition_does_not_move_document_geometry(cx: &mut gpui::TestAppCo
                 );
                 let during = probe(ed, window, col + u16_len, col + u16_len);
 
-                assert_eq!(
-                    during, before,
-                    "col {col}: the document geometry must be untouched while composing"
+                assert!(
+                    during.2 != before.2 || during.0 > before.0 || during.1 > before.1,
+                    "col {col}: the composition width must move the caret or create a wrapped row"
                 );
 
                 ed.replace_text_in_range(None, "你", window, cx);
-                let settled = ed.layout_snapshot();
-                assert_eq!(
-                    crate::editor::shaping::ime_preedit_overlay(
-                        &settled.parsed_lines[0].spans,
-                        true,
-                        ed.disclosure_col(),
-                        false,
-                    ),
-                    None,
-                    "col {col}: the preedit overlay must be gone once the candidate is committed"
-                );
+                assert!(ed.marked_range.is_none());
                 assert!(
                     ed.buffer_mut().line(0).unwrap().contains('你'),
                     "col {col}: the committed character must land in the document"
@@ -2828,47 +2818,6 @@ fn test_ime_consumed_backspace_is_not_replayed_on_document(cx: &mut gpui::TestAp
             );
         });
     });
-}
-
-/// Verifies that the IME preedit overlay sits on the row baseline and remains visible across caret blinks.
-#[test]
-fn test_ime_preedit_overlay_sits_on_the_row_baseline_and_outlives_the_caret() {
-    use crate::editor::shaping::{calculate_caret_size, ime_preedit_placement};
-    use gpui::{Bounds, point, px, size};
-
-    let font_size = px(16.0);
-    let line_height = px(26.0);
-    let (caret_w, caret_h) = calculate_caret_size(font_size, line_height);
-    let line_origin = point(px(40.0), px(70.0));
-    let anchor = point(px(120.0), px(26.0));
-    let caret = Bounds::new(
-        point(
-            line_origin.x + anchor.x,
-            (line_origin.y + anchor.y + (line_height - caret_h) / 2.0).round(),
-        ),
-        size(caret_w, caret_h.round()),
-    );
-
-    let (origin, caret_out) = ime_preedit_placement(line_origin, anchor, px(48.0), None);
-    assert_eq!(
-        origin,
-        point(line_origin.x + anchor.x, line_origin.y + anchor.y),
-        "the preedit must be placed on the anchor's baseline even while the caret is invisible"
-    );
-    assert!(caret_out.is_none());
-
-    let (origin, caret_out) = ime_preedit_placement(line_origin, anchor, px(48.0), Some(caret));
-    assert_eq!(origin.y, line_origin.y + anchor.y);
-    assert_ne!(
-        origin.y, caret.origin.y,
-        "the caret is centered in the line box, so anchoring the preedit at it pushes the \
-         composition string below the line"
-    );
-    assert_eq!(
-        caret_out.unwrap().origin.x,
-        origin.x + px(48.0),
-        "the caret follows the composition string"
-    );
 }
 
 #[test]

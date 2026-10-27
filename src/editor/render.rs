@@ -481,7 +481,6 @@ pub fn render_live_line_content(
                     theme,
                     font_size,
                     line_height,
-                    font: super::shaping::line_font_for(&parsed.kind, false),
                     is_active_cell,
                     // Disclosure must match what `get_line_layout_height` measured this row with;
                     // the caret target stays on the live caret column.
