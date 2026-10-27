@@ -112,11 +112,34 @@ pub fn raw_col_to_visible_byte(
     disclosure_col: usize,
     is_source: bool,
 ) -> usize {
+    raw_col_to_visible_byte_with_selection(
+        raw_col,
+        spans,
+        is_active_caret,
+        disclosure_col,
+        is_source,
+        false,
+    )
+}
+
+pub fn raw_col_to_visible_byte_with_selection(
+    raw_col: usize,
+    spans: &[InlineSpan],
+    is_active_caret: bool,
+    disclosure_col: usize,
+    is_source: bool,
+    is_selection_disclosure: bool,
+) -> usize {
     let mut cur_visible_byte = 0;
     let mut target_byte = None;
 
     for span in spans {
-        let is_visible = span.is_visible(is_active_caret, disclosure_col, is_source);
+        let is_visible = span.is_visible_for_selection(
+            is_active_caret,
+            disclosure_col,
+            is_source,
+            is_selection_disclosure,
+        );
         let (s_start, s_end) = span.span_range;
 
         if !is_visible {
@@ -157,10 +180,35 @@ pub fn visible_byte_to_raw_col(
     is_source: bool,
     total_raw_len: usize,
 ) -> usize {
+    visible_byte_to_raw_col_with_selection(
+        visible_byte,
+        spans,
+        is_active_caret,
+        cursor_col,
+        is_source,
+        total_raw_len,
+        false,
+    )
+}
+
+pub fn visible_byte_to_raw_col_with_selection(
+    visible_byte: usize,
+    spans: &[InlineSpan],
+    is_active_caret: bool,
+    cursor_col: usize,
+    is_source: bool,
+    total_raw_len: usize,
+    is_selection_disclosure: bool,
+) -> usize {
     let mut cur_byte = 0;
 
     for span in spans {
-        let is_visible = span.is_visible(is_active_caret, cursor_col, is_source);
+        let is_visible = span.is_visible_for_selection(
+            is_active_caret,
+            cursor_col,
+            is_source,
+            is_selection_disclosure,
+        );
         if !is_visible {
             continue;
         }
@@ -247,6 +295,7 @@ pub struct LineShapingContext<'a> {
     pub is_source: bool,
     pub is_active_caret: bool,
     pub cursor_col: usize,
+    pub is_selection_disclosure: bool,
     pub is_heading: bool,
 }
 
@@ -264,8 +313,14 @@ impl<'a> LineShapingContext<'a> {
             is_source,
             is_active_caret,
             cursor_col,
+            is_selection_disclosure: false,
             is_heading: false,
         }
+    }
+
+    pub fn with_selection_disclosure(mut self, is_selection_disclosure: bool) -> Self {
+        self.is_selection_disclosure = is_selection_disclosure;
+        self
     }
 
     pub fn with_heading(mut self, is_heading: bool) -> Self {
@@ -295,7 +350,12 @@ pub fn build_line_runs(
     let mut runs = Vec::new();
 
     for span in spans {
-        let is_visible = span.is_visible(scx.is_active_caret, scx.cursor_col, scx.is_source);
+        let is_visible = span.is_visible_for_selection(
+            scx.is_active_caret,
+            scx.cursor_col,
+            scx.is_source,
+            scx.is_selection_disclosure,
+        );
         if !is_visible || span.text.is_empty() {
             continue;
         }
@@ -708,6 +768,7 @@ pub fn calculate_table_row_height(
     cursor_col: usize,
     container_width: Pixels,
     text_system: Option<&Arc<WindowTextSystem>>,
+    is_selection_disclosure: bool,
 ) -> Pixels {
     if cells.is_empty() {
         return if is_header { px(34.0) } else { px(30.0) };
@@ -729,7 +790,8 @@ pub fn calculate_table_row_height(
             false,
             is_active,
             cursor_col,
-        );
+        )
+        .with_selection_disclosure(is_selection_disclosure);
         let (cell_text, runs) = build_line_runs(&cell.spans, scx, None, &TextStyle::default());
 
         let lines = calculate_visual_lines_with_runs(
@@ -769,12 +831,13 @@ pub fn calculate_pos_from_col(
         return Point::default();
     }
 
-    let target_byte = raw_col_to_visible_byte(
+    let target_byte = raw_col_to_visible_byte_with_selection(
         col,
         &parsed.spans,
         scx.is_active_caret,
         scx.cursor_col,
         scx.is_source,
+        scx.is_selection_disclosure,
     );
 
     let shaped_lines =
@@ -815,12 +878,13 @@ pub fn get_visual_line_info(
         return (0, 1);
     }
 
-    let target_byte = raw_col_to_visible_byte(
+    let target_byte = raw_col_to_visible_byte_with_selection(
         col,
         &parsed.spans,
         scx.is_active_caret,
         scx.cursor_col,
         scx.is_source,
+        scx.is_selection_disclosure,
     );
 
     let shaped_lines =
@@ -959,13 +1023,14 @@ fn calculate_col_from_spans(
         _ => 0,
     };
 
-    visible_byte_to_raw_col(
+    visible_byte_to_raw_col_with_selection(
         closest_byte,
         spans,
         lcx.scx.is_active_caret,
         lcx.scx.cursor_col,
         lcx.scx.is_source,
         lcx.total_raw_len,
+        lcx.scx.is_selection_disclosure,
     )
 }
 
@@ -1164,10 +1229,11 @@ fn find_link_at_spans(
 
     let mut cur_byte = 0;
     for span in spans {
-        let is_visible = span.is_visible(
+        let is_visible = span.is_visible_for_selection(
             lcx.scx.is_active_caret,
             lcx.scx.cursor_col,
             lcx.scx.is_source,
+            lcx.scx.is_selection_disclosure,
         );
         if !is_visible || span.text.is_empty() {
             continue;
@@ -1333,6 +1399,7 @@ pub fn render_shaped_line(
     let disclosure_col = lrc.disclosure_col;
     let selection = lrc.selection;
     let is_dragging = lrc.is_dragging;
+    let is_selection_disclosure = lrc.is_selection_disclosure;
     let cursor_opacity = lrc.cursor_opacity;
     let hovered_link_range = lrc.hovered_link.and_then(|hl| {
         if hl.line_idx == line_idx {
@@ -1345,7 +1412,7 @@ pub fn render_shaped_line(
     let soft_wrap = lrc.soft_wrap;
     let highlights = lrc.highlights.to_vec();
 
-    let is_active_caret = is_active;
+    let is_active_caret = lrc.is_disclosure_line;
 
     let available_width = compute_available_line_width_with_indent(
         content_width,
@@ -1369,6 +1436,7 @@ pub fn render_shaped_line(
         is_active_caret,
         disclosure_col,
     )
+    .with_selection_disclosure(is_selection_disclosure)
     .with_heading(is_heading);
     let (line_str_for_measuring, runs_for_measuring) = build_line_runs(
         &spans,
@@ -1405,6 +1473,7 @@ pub fn render_shaped_line(
                     is_active_caret,
                     disclosure_col,
                 )
+                .with_selection_disclosure(is_selection_disclosure)
                 .with_heading(is_heading);
                 let (line_str, runs) =
                     build_line_runs(&spans, scx, hovered_link_range, &window.text_style());
@@ -1461,7 +1530,14 @@ pub fn render_shaped_line(
             };
 
             let to_visible = |raw_col: usize| {
-                raw_col_to_visible_byte(raw_col, &spans, is_active_caret, disclosure_col, is_source)
+                raw_col_to_visible_byte_with_selection(
+                    raw_col,
+                    &spans,
+                    is_active_caret,
+                    disclosure_col,
+                    is_source,
+                    is_selection_disclosure,
+                )
             };
 
             let mut selection_quads = Vec::new();
@@ -1525,12 +1601,13 @@ pub fn render_shaped_line(
                 && !is_dragging
                 && cursor_opacity > 0.01
             {
-                let target_byte = raw_col_to_visible_byte(
+                let target_byte = raw_col_to_visible_byte_with_selection(
                     cursor_col,
                     &spans,
                     is_active_caret,
                     disclosure_col,
                     is_source,
+                    is_selection_disclosure,
                 );
                 if let Some(pos) = wrapped_line.position_for_index(target_byte, line_height) {
                     let (caret_w, caret_h) = calculate_caret_size(font_size, line_height);
@@ -1613,7 +1690,9 @@ pub struct TableCellRenderContext<'a> {
     pub font_size: Pixels,
     pub line_height: Pixels,
     pub is_active_cell: bool,
+    pub is_disclosure_cell: bool,
     pub disclosure_col: usize,
+    pub is_selection_disclosure: bool,
     pub cursor_col: usize,
     pub cursor_opacity: f32,
     pub align: crate::markdown::TableAlignment,
@@ -1639,7 +1718,9 @@ pub fn render_shaped_cell_canvas(
     let font_size = tcx.font_size;
     let line_height = tcx.line_height;
     let is_active_cell = tcx.is_active_cell;
+    let is_disclosure_cell = tcx.is_disclosure_cell;
     let disclosure_col = tcx.disclosure_col;
+    let is_selection_disclosure = tcx.is_selection_disclosure;
     let cursor_col = tcx.cursor_col;
     let cursor_opacity = tcx.cursor_opacity;
     let align = tcx.align;
@@ -1650,7 +1731,8 @@ pub fn render_shaped_cell_canvas(
             let (line_str, runs, cursor_color) = {
                 let theme = cx.theme();
                 let scx =
-                    LineShapingContext::new(theme, None, false, is_active_cell, disclosure_col);
+                    LineShapingContext::new(theme, None, false, is_disclosure_cell, disclosure_col)
+                        .with_selection_disclosure(is_selection_disclosure);
                 let (line_str, runs) =
                     build_line_runs(&spans, scx, hovered_link_range, &window.text_style());
                 let cursor_color = theme.cursor.opacity(cursor_opacity);
@@ -1691,8 +1773,14 @@ pub fn render_shaped_cell_canvas(
             );
 
             let caret_bounds = if is_active_cell && cursor_opacity > 0.01 {
-                let target_byte =
-                    raw_col_to_visible_byte(cursor_col, &spans, true, disclosure_col, false);
+                let target_byte = raw_col_to_visible_byte_with_selection(
+                    cursor_col,
+                    &spans,
+                    true,
+                    disclosure_col,
+                    false,
+                    is_selection_disclosure,
+                );
                 if let Some(caret_pos) = wrapped_line.position_for_index(target_byte, line_height) {
                     let (caret_w, caret_h) = calculate_caret_size(font_size, line_height);
                     let caret_x = (origin.x + align_x + caret_pos.x).round();

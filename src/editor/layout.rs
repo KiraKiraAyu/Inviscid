@@ -226,6 +226,7 @@ pub struct LineLayoutContext<'a> {
     pub is_active: bool,
     pub is_separator: Option<bool>,
     pub cursor_col: usize,
+    pub is_selection_disclosure: bool,
     pub mode: RenderMode,
     pub content_width: Pixels,
     pub doc_path: Option<&'a std::path::Path>,
@@ -243,6 +244,7 @@ impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
             .field("is_active", &self.is_active)
             .field("is_separator", &self.is_separator)
             .field("cursor_col", &self.cursor_col)
+            .field("is_selection_disclosure", &self.is_selection_disclosure)
             .field("mode", &self.mode)
             .field("content_width", &self.content_width)
             .field("doc_path", &self.doc_path)
@@ -262,6 +264,7 @@ impl<'a> Default for LineLayoutContext<'a> {
             is_active: false,
             is_separator: None,
             cursor_col: 0,
+            is_selection_disclosure: false,
             mode: RenderMode::LivePreview,
             content_width: px(800.0),
             doc_path: None,
@@ -288,6 +291,7 @@ impl<'a> LineLayoutContext<'a> {
             is_active,
             is_separator,
             cursor_col,
+            is_selection_disclosure: false,
             mode,
             content_width,
             doc_path,
@@ -302,6 +306,11 @@ impl<'a> LineLayoutContext<'a> {
 
     pub fn with_folded(mut self, is_folded: bool) -> Self {
         self.is_folded = is_folded;
+        self
+    }
+
+    pub fn with_selection_disclosure(mut self, is_selection_disclosure: bool) -> Self {
+        self.is_selection_disclosure = is_selection_disclosure;
         self
     }
 
@@ -373,7 +382,8 @@ pub fn get_line_layout_height(
             true,
             lcx.is_active,
             lcx.cursor_col,
-        );
+        )
+        .with_selection_disclosure(lcx.is_selection_disclosure);
         let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
         let visual_lines = calculate_visual_lines_with_runs(
             &line_str,
@@ -397,6 +407,7 @@ pub fn get_line_layout_height(
             lcx.is_active,
             lcx.cursor_col,
         )
+        .with_selection_disclosure(lcx.is_selection_disclosure)
         .with_heading(is_heading);
         let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
         let visual_lines = calculate_visual_lines_with_runs(
@@ -490,6 +501,7 @@ pub fn get_line_layout_height(
                     lcx.cursor_col,
                     lcx.content_width,
                     lcx.text_system.as_ref(),
+                    lcx.is_selection_disclosure,
                 );
                 if *is_header {
                     px(8.0) + row_h
@@ -600,6 +612,7 @@ impl Editor {
             self.buffer.file_path(),
         )
         .with_folded(is_folded)
+        .with_selection_disclosure(self.is_selection_disclosure())
         .with_metrics(self.font_size, self.line_height, self.soft_wrap)
         .with_indent(indent_px)
         .with_text_system(self.text_system.clone())
@@ -608,9 +621,9 @@ impl Editor {
     pub fn ensure_layout_cache(&self) {
         let viewport = self.viewport_bounds_val();
         let content_width = compute_content_width(viewport.size.width, self.render_mode);
-        let cursor_pos = self.buffer.cursor_pos();
-        let cursor_line = cursor_pos.line;
-        let cursor_col = self.disclosure_col();
+        let disclosure_position = self.disclosure_position();
+        let active_line = disclosure_position.line;
+        let active_col = disclosure_position.col;
         let current_img_v = crate::http::image_cache_version();
         let current_syntax_v = crate::syntax::syntax_cache_version();
 
@@ -623,8 +636,8 @@ impl Editor {
             && view_matches
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
-            && current_cache.active_line == cursor_line
-            && (self.render_mode == RenderMode::Source || current_cache.active_col == cursor_col)
+            && current_cache.active_line == active_line
+            && (self.render_mode == RenderMode::Source || current_cache.active_col == active_col)
         {
             return;
         }
@@ -634,41 +647,41 @@ impl Editor {
             && view_matches
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
-            && current_cache.active_line == cursor_line
+            && current_cache.active_line == active_line
             && !current_cache.parsed_lines.is_empty()
             && current_cache.line_heights.len() == current_cache.parsed_lines.len()
-            && cursor_line < current_cache.line_heights.len()
+            && active_line < current_cache.line_heights.len()
         {
             let mut cache = (*current_cache).clone();
             let is_sep = if cache.separators.len() == cache.lines_len {
-                cache.separators.get(cursor_line).copied().unwrap_or(false)
+                cache.separators.get(active_line).copied().unwrap_or(false)
             } else {
-                crate::markdown::is_syntactic_separator(self.buffer.lines(), cursor_line)
+                crate::markdown::is_syntactic_separator(self.buffer.lines(), active_line)
             };
-            let new_h = if let Some(parsed) = cache.parsed_lines.get(cursor_line) {
+            let new_h = if let Some(parsed) = cache.parsed_lines.get(active_line) {
                 let lcx = self.line_layout_ctx(
                     parsed,
                     true,
                     is_sep,
-                    cursor_col,
+                    active_col,
                     content_width,
-                    cursor_line,
+                    active_line,
                 );
-                get_line_layout_height(self.buffer.lines(), cursor_line, parsed, lcx)
+                get_line_layout_height(self.buffer.lines(), active_line, parsed, lcx)
             } else {
                 px(24.0)
             };
 
-            let old_h = cache.line_heights[cursor_line];
+            let old_h = cache.line_heights[active_line];
             if (new_h - old_h).abs() < px(0.01) {
-                cache.active_col = cursor_col;
+                cache.active_col = active_col;
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
 
-            cache.line_heights[cursor_line] = new_h;
-            let mut y = cache.line_y_offsets[cursor_line] + new_h;
-            for idx in (cursor_line + 1)..cache.line_heights.len() {
+            cache.line_heights[active_line] = new_h;
+            let mut y = cache.line_y_offsets[active_line] + new_h;
+            for idx in (active_line + 1)..cache.line_heights.len() {
                 cache.line_y_offsets[idx] = y;
                 y += cache.line_heights[idx];
             }
@@ -677,7 +690,7 @@ impl Editor {
             } else {
                 y + px(24.0)
             };
-            cache.active_col = cursor_col;
+            cache.active_col = active_col;
             *self.layout_cache.borrow_mut() = Arc::new(cache);
             return;
         }
@@ -692,7 +705,7 @@ impl Editor {
         {
             let mut cache = (*current_cache).clone();
             let old_active = cache.active_line;
-            let new_active = cursor_line;
+            let new_active = active_line;
 
             let separators = if self.render_mode == RenderMode::Source {
                 Vec::new()
@@ -709,7 +722,7 @@ impl Editor {
                         parsed,
                         is_active,
                         is_sep,
-                        cursor_col,
+                        active_col,
                         content_width,
                         line_idx,
                     );
@@ -736,8 +749,8 @@ impl Editor {
                     .unwrap_or(new_active_new_h);
 
             if old_diff.abs() < px(0.01) && new_diff.abs() < px(0.01) {
-                cache.active_line = cursor_line;
-                cache.active_col = cursor_col;
+                cache.active_line = active_line;
+                cache.active_col = active_col;
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
@@ -765,8 +778,8 @@ impl Editor {
             } else {
                 y + px(24.0)
             };
-            cache.active_line = cursor_line;
-            cache.active_col = cursor_col;
+            cache.active_line = active_line;
+            cache.active_col = active_col;
             *self.layout_cache.borrow_mut() = Arc::new(cache);
             return;
         }
@@ -781,7 +794,7 @@ impl Editor {
             && current_cache.line_y_offsets.len() == current_cache.lines_len
         {
             let mut cache = (*current_cache).clone();
-            if self.try_incremental_layout_update(&mut cache, delta, cursor_line, content_width) {
+            if self.try_incremental_layout_update(&mut cache, delta, active_line, content_width) {
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
@@ -811,10 +824,10 @@ impl Editor {
         let mut y = px(24.0);
 
         for (idx, parsed) in parsed_doc.iter().enumerate() {
-            let is_active = idx == cursor_line;
+            let is_active = idx == active_line;
             let is_sep = separators.get(idx).copied().unwrap_or(false);
             let lcx =
-                self.line_layout_ctx(parsed, is_active, is_sep, cursor_col, content_width, idx);
+                self.line_layout_ctx(parsed, is_active, is_sep, active_col, content_width, idx);
             let h = get_line_layout_height(self.buffer.lines(), idx, parsed, lcx);
             line_y_offsets.push(y);
             line_heights.push(h);
@@ -832,8 +845,8 @@ impl Editor {
             lines_len: self.buffer.line_count(),
             render_mode: self.render_mode,
             content_width,
-            active_line: cursor_line,
-            active_col: cursor_col,
+            active_line,
+            active_col,
             doc_path: self.buffer.file_path_buf(),
             image_cache_version: current_img_v,
             syntax_cache_version: current_syntax_v,
@@ -856,7 +869,7 @@ impl Editor {
         &self,
         cache: &mut DocumentLayoutCache,
         delta: crate::buffer::EditDelta,
-        cursor_line: usize,
+        active_line: usize,
         content_width: Pixels,
     ) -> bool {
         let buf_lines = self.buffer.lines();
@@ -868,7 +881,7 @@ impl Editor {
         {
             return false;
         }
-        let cursor_col = self.disclosure_col();
+        let active_col = self.disclosure_col();
 
         if cache_len.saturating_sub(delta.old_line_count) + delta.new_line_count != buf_len {
             return false;
@@ -955,7 +968,7 @@ impl Editor {
             return false;
         }
 
-        if cache.active_line != cursor_line
+        if cache.active_line != active_line
             && (cache.active_line < block_start || cache.active_line >= old_block_end)
         {
             return false;
@@ -972,7 +985,7 @@ impl Editor {
         let mut new_height_sum = px(0.0);
         for (i, parsed) in new_parsed.iter().enumerate() {
             let line_idx = block_start + i;
-            let is_active = line_idx == cursor_line;
+            let is_active = line_idx == active_line;
             let is_sep = if in_code_block {
                 false
             } else {
@@ -982,7 +995,7 @@ impl Editor {
                 parsed,
                 is_active,
                 is_sep,
-                cursor_col,
+                active_col,
                 content_width,
                 line_idx,
             );
@@ -1032,8 +1045,8 @@ impl Editor {
 
         cache.buffer_version = self.buffer.version();
         cache.lines_len = buf_len;
-        cache.active_line = cursor_line;
-        cache.active_col = cursor_col;
+        cache.active_line = active_line;
+        cache.active_col = active_col;
         cache.fold_version = self.display_map.version();
 
         true

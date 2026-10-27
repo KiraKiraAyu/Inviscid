@@ -356,6 +356,8 @@ pub fn render_live_line_content(
 
             let mut img_lrc = *lrc;
             img_lrc.is_active_line = should_show_source;
+            img_lrc.is_disclosure_line = should_show_source;
+            img_lrc.is_disclosure_line = should_show_source;
 
             let typo = crate::editor::layout::get_block_typography_with_metrics(
                 &parsed.kind,
@@ -413,16 +415,22 @@ pub fn render_live_line_content(
             } else {
                 None
             };
+            let disclosure_cell_idx = if lrc.is_disclosure_line {
+                Some(table::get_cell_index_for_col(cells, lrc.disclosure_col))
+            } else {
+                None
+            };
 
             let num_cells = cells.len();
 
             let row_h = super::shaping::calculate_table_row_height(
                 cells,
                 *is_header,
-                is_active && is_focused,
-                selection.head.col,
+                lrc.is_disclosure_line,
+                lrc.disclosure_col,
                 lrc.content_width,
                 lrc.text_system,
+                lrc.is_selection_disclosure,
             );
 
             let hovered_link_range = lrc.hovered_link.and_then(|hl| {
@@ -477,14 +485,17 @@ pub fn render_live_line_content(
                     .unwrap_or(crate::markdown::TableAlignment::None);
                 let is_last = c_idx + 1 == num_cells;
                 let is_active_cell = active_cell_idx == Some(c_idx);
+                let is_disclosure_cell = disclosure_cell_idx == Some(c_idx);
                 let tcx = super::shaping::TableCellRenderContext {
                     theme,
                     font_size,
                     line_height,
                     is_active_cell,
+                    is_disclosure_cell,
                     // Disclosure must match what `get_line_layout_height` measured this row with;
                     // the caret target stays on the live caret column.
                     disclosure_col: lrc.disclosure_col,
+                    is_selection_disclosure: lrc.is_selection_disclosure,
                     cursor_col: selection.head.col,
                     cursor_opacity: lrc.cursor_opacity,
                     align,

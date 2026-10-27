@@ -467,6 +467,20 @@ fn test_nested_focus_disclosure() {
 }
 
 #[test]
+fn test_selection_disclosure_hides_markers_at_group_end() {
+    let parsed = MarkdownScanner::scan_document(&["This is **bold** text.".to_string()]);
+    let spans = &parsed[0].spans;
+    let bold_open = spans
+        .iter()
+        .find(|span| span.text == "**" && span.span_range.0 == 8)
+        .unwrap();
+
+    assert_eq!(bold_open.group_range, (8, 16));
+    assert!(bold_open.is_visible(true, 16, false));
+    assert!(!bold_open.is_visible_for_selection(true, 16, false, true));
+}
+
+#[test]
 fn test_block_prefix_parsing() {
     assert_eq!(
         parse_block_prefix("  # Title"),

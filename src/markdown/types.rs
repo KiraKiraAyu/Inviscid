@@ -80,12 +80,23 @@ impl ParsedLine {
     }
 
     pub fn visible_text(&self, is_active: bool, cursor_col: usize, is_source: bool) -> String {
+        self.visible_text_for_selection(is_active, cursor_col, is_source, false)
+    }
+
+    pub fn visible_text_for_selection(
+        &self,
+        is_active: bool,
+        cursor_col: usize,
+        is_source: bool,
+        is_selection_disclosure: bool,
+    ) -> String {
         if is_source {
             return self.raw_text.clone();
         }
         let mut out = String::with_capacity(self.raw_text.len());
         for span in &self.spans {
-            if span.is_visible(is_active, cursor_col, false) {
+            if span.is_visible_for_selection(is_active, cursor_col, false, is_selection_disclosure)
+            {
                 out.push_str(&span.text);
             }
         }

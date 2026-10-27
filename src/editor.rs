@@ -1010,9 +1010,11 @@ impl Render for Editor {
 #[derive(Clone, Copy)]
 pub struct LineRenderContext<'a> {
     pub is_active_line: bool,
+    pub is_disclosure_line: bool,
+    pub is_selection_disclosure: bool,
     pub is_focused: bool,
     pub cursor_col: usize,
-    /// Column used for markdown syntax-marker disclosure (pinned to the IME composition start when composing).
+    /// Column used for markdown syntax-marker disclosure.
     pub disclosure_col: usize,
     pub selection: Selection,
     pub is_dragging: bool,

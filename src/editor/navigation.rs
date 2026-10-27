@@ -11,8 +11,8 @@ use crate::theme::Theme;
 
 impl Editor {
     #[inline]
-    pub(crate) fn is_active_caret_line(&self, line_idx: usize, window: &Window) -> bool {
-        self.focus_handle.is_focused(window) && line_idx == self.buffer.cursor_pos().line
+    pub(crate) fn is_active_disclosure_line(&self, line_idx: usize, window: &Window) -> bool {
+        self.focus_handle.is_focused(window) && line_idx == self.disclosure_position().line
     }
 
     pub fn line_shaping_context<'a>(
@@ -62,12 +62,14 @@ impl Editor {
             None
         };
 
-        let scx = self.line_shaping_context(
-            override_color,
-            is_active_caret,
-            self.disclosure_col(),
-            theme,
-        );
+        let scx = self
+            .line_shaping_context(
+                override_color,
+                is_active_caret,
+                self.disclosure_col(),
+                theme,
+            )
+            .with_selection_disclosure(self.is_selection_disclosure());
         (font_size, line_height, wrap_width, scx)
     }
 
@@ -78,7 +80,7 @@ impl Editor {
         }
         let layout = self.layout_snapshot();
         if let Some(parsed) = layout.parsed_lines.get(pos.line) {
-            let is_active_caret = self.is_active_caret_line(pos.line, window);
+            let is_active_caret = self.is_active_disclosure_line(pos.line, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
             let in_canvas_x = calculate_pos_from_col(
@@ -109,7 +111,7 @@ impl Editor {
         }
         let layout = self.layout_snapshot();
         if let Some(parsed) = layout.parsed_lines.get(pos.line) {
-            let is_active_caret = self.is_active_caret_line(pos.line, window);
+            let is_active_caret = self.is_active_disclosure_line(pos.line, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
             crate::editor::shaping::get_visual_line_info(
@@ -139,7 +141,7 @@ impl Editor {
         }
         let layout = self.layout_snapshot();
         if let Some(parsed) = layout.parsed_lines.get(line_idx) {
-            let is_active_caret = self.is_active_caret_line(line_idx, window);
+            let is_active_caret = self.is_active_disclosure_line(line_idx, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
             let target_left_offset = crate::editor::shaping::get_block_left_offset_with_indent(

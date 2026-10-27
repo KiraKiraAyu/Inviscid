@@ -75,6 +75,16 @@ impl InlineSpan {
         cursor_col: usize,
         is_source_mode: bool,
     ) -> bool {
+        self.is_visible_for_selection(is_active_line, cursor_col, is_source_mode, false)
+    }
+
+    pub fn is_visible_for_selection(
+        &self,
+        is_active_line: bool,
+        cursor_col: usize,
+        is_source_mode: bool,
+        is_selection_disclosure: bool,
+    ) -> bool {
         if is_source_mode {
             return true;
         }
@@ -88,7 +98,12 @@ impl InlineSpan {
             return is_active_line;
         }
         if is_active_line {
-            cursor_col >= self.group_range.0 && cursor_col <= self.group_range.1
+            cursor_col >= self.group_range.0
+                && if is_selection_disclosure {
+                    cursor_col < self.group_range.1
+                } else {
+                    cursor_col <= self.group_range.1
+                }
         } else {
             false
         }

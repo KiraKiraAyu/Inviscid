@@ -173,7 +173,7 @@ impl Editor {
                 return Position::new(target_line, col);
             }
 
-            let is_active_caret = self.is_active_caret_line(target_line, window);
+            let is_active_caret = self.is_active_disclosure_line(target_line, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
 
@@ -405,7 +405,7 @@ impl Editor {
             );
         }
 
-        let is_active_caret = self.is_active_caret_line(line_idx, window)
+        let is_active_caret = self.is_active_disclosure_line(line_idx, window)
             && self.buffer.selection().is_empty()
             && !self.is_dragging;
 

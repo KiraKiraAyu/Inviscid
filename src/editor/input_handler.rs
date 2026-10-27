@@ -2,20 +2,30 @@ use gpui::*;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use super::Editor;
+use super::{Editor, RenderMode};
 
 /// Grace window to recognize an edit key (e.g. Backspace) that the platform IME already consumed
 /// when clearing a single-character preedit before forwarding `WM_KEYDOWN`.
 const IME_CONSUMED_KEY_GRACE: Duration = Duration::from_millis(20);
 
 impl Editor {
-    /// Column used for markdown syntax-marker disclosure.
-    /// Pinned to the composition start while an IME preedit is active so markdown disclosure stays stable.
-    pub(crate) fn disclosure_col(&self) -> usize {
+    pub(crate) fn is_selection_disclosure(&self) -> bool {
+        self.marked_range.is_none()
+            && self.render_mode != RenderMode::Source
+            && !self.buffer.selection().is_empty()
+    }
+
+    /// Position used for markdown syntax-marker disclosure.
+    pub(crate) fn disclosure_position(&self) -> crate::buffer::Position {
         match &self.marked_range {
-            Some(marked) => self.buffer.utf16_offset_to_pos(marked.start).col,
-            None => self.buffer.cursor_pos().col,
+            Some(marked) => self.buffer.utf16_offset_to_pos(marked.start),
+            None if self.is_selection_disclosure() => self.buffer.selection().anchor,
+            None => self.buffer.cursor_pos(),
         }
+    }
+
+    pub(crate) fn disclosure_col(&self) -> usize {
+        self.disclosure_position().col
     }
 
     fn note_ime_preedit_cleared(&mut self) {

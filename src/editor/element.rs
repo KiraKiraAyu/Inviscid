@@ -148,9 +148,11 @@ impl Element for EditorElement {
                     let cursor = editor.buffer.cursor_pos();
                     let cursor_line = cursor.line;
                     let cursor_col = cursor.col;
-                    let disclosure_col = editor.disclosure_col();
+                    let disclosure_position = editor.disclosure_position();
+                    let disclosure_col = disclosure_position.col;
                     let selection = editor.buffer.selection();
                     let is_dragging = editor.is_dragging;
+                    let is_selection_disclosure = editor.is_selection_disclosure();
                     let mode = editor.render_mode;
                     let theme = cx.theme();
                     let content_width = compute_content_width(bounds.size.width, mode);
@@ -166,9 +168,12 @@ impl Element for EditorElement {
                         }
                         let parsed = &layout.parsed_lines[line_idx];
                         let is_active_line = line_idx == cursor_line;
+                        let is_disclosure_line = line_idx == disclosure_position.line;
                         let highlights = editor.search_highlights(line_idx);
                         let lrc = LineRenderContext {
                             is_active_line,
+                            is_disclosure_line,
+                            is_selection_disclosure,
                             is_focused,
                             cursor_col,
                             disclosure_col,
