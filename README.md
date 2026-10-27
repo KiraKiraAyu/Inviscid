@@ -31,7 +31,7 @@ Inviscid is currently in pre-`v0.1` active development. Core editing, Live Previ
 - [x] Multi-tab workspace, project file tree, TOML theme inheritance, and customizable keybindings
 - [x] Syntax highlighting for fenced code blocks
 - [ ] Native LaTeX math and diagram (Mermaid) rendering
-- [ ] In-document Find & Replace and workspace-wide search / quick open
+- [x] In-document Find & Replace and workspace-wide search / quick open
 - [ ] Document outline (TOC) view and heading anchor navigation
 - [ ] File system watcher for external modification detection and reload
 - [ ] Rope-backed text buffer for large-document scalability
