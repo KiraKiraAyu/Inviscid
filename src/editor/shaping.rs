@@ -2,7 +2,7 @@ use gpui::*;
 use std::sync::Arc;
 
 use crate::editor::RenderMode;
-use crate::markdown::{BlockKind, InlineSpan, ParsedLine};
+use crate::markdown::{BlockKind, InlineSpan, MathSpan, ParsedLine};
 use crate::theme::{ActiveTheme, Theme};
 
 /// Computes the centered document content container width based on window width and render mode
@@ -150,22 +150,34 @@ pub fn raw_col_to_visible_byte_with_selection(
         }
 
         let start_byte = cur_visible_byte;
+        let rendered_text = span.rendered_text(is_active_caret, disclosure_col, is_source);
 
         if target_byte.is_none() {
             if raw_col <= s_start {
                 target_byte = Some(start_byte);
             } else if raw_col <= s_end {
-                let byte_offset: usize = span
-                    .text
-                    .chars()
-                    .take(raw_col - s_start)
-                    .map(char::len_utf8)
-                    .sum();
-                target_byte = Some(start_byte + byte_offset);
+                if span.math.is_some()
+                    && !span.math_is_disclosed(is_active_caret, disclosure_col, is_source)
+                {
+                    let end_byte = start_byte + rendered_text.len();
+                    let midpoint = s_start + (s_end - s_start) / 2;
+                    target_byte = Some(if raw_col <= midpoint {
+                        start_byte
+                    } else {
+                        end_byte
+                    });
+                } else {
+                    let byte_offset: usize = rendered_text
+                        .chars()
+                        .take(raw_col - s_start)
+                        .map(char::len_utf8)
+                        .sum();
+                    target_byte = Some(start_byte + byte_offset);
+                }
             }
         }
 
-        cur_visible_byte += span.text.len();
+        cur_visible_byte += rendered_text.len();
     }
 
     target_byte.unwrap_or(cur_visible_byte)
@@ -213,11 +225,22 @@ pub fn visible_byte_to_raw_col_with_selection(
             continue;
         }
 
-        let span_len = span.text.len();
+        let rendered_text = span.rendered_text(is_active_caret, cursor_col, is_source);
+        let span_len = rendered_text.len();
         let span_end_byte = cur_byte + span_len;
 
         if visible_byte < span_end_byte {
             let offset_in_span_bytes = visible_byte.saturating_sub(cur_byte);
+            if span.math.is_some()
+                && !span.math_is_disclosed(is_active_caret, cursor_col, is_source)
+            {
+                let midpoint = span_len / 2;
+                return if offset_in_span_bytes <= midpoint {
+                    span.group_range.0
+                } else {
+                    span.group_range.1.min(total_raw_len)
+                };
+            }
             if offset_in_span_bytes == 0
                 && !is_source
                 && !is_active_caret
@@ -228,7 +251,7 @@ pub fn visible_byte_to_raw_col_with_selection(
             }
             let mut byte_count = 0;
             let mut char_count = 0;
-            for c in span.text.chars() {
+            for c in rendered_text.chars() {
                 if byte_count >= offset_in_span_bytes {
                     break;
                 }
@@ -356,18 +379,29 @@ pub fn build_line_runs(
             scx.is_source,
             scx.is_selection_disclosure,
         );
-        if !is_visible || span.text.is_empty() {
+        if !is_visible {
             continue;
         }
 
-        let span_byte_len = span.text.len();
-        line_str.push_str(&span.text);
+        let rendered_text = span.rendered_text(scx.is_active_caret, scx.cursor_col, scx.is_source);
+        if rendered_text.is_empty() {
+            continue;
+        }
+
+        let span_byte_len = rendered_text.len();
+        line_str.push_str(&rendered_text);
 
         let mut font = base_style.font();
         let mut color = scx.override_color.unwrap_or(scx.theme.text_primary);
         let mut background_color = None;
         let mut strikethrough = None;
         let mut underline = None;
+
+        if span.math_is_disclosed(scx.is_active_caret, scx.cursor_col, scx.is_source) == false
+            && span.math.is_some()
+        {
+            color = color.opacity(0.0);
+        }
 
         if scx.is_source
             || scx.override_color == Some(scx.theme.code_block_text)
@@ -783,6 +817,7 @@ pub fn calculate_table_row_height(
     let cell_font = font(crate::platform::platform_ui_font());
 
     let mut max_visual_lines = 1;
+    let mut max_math_height = px(0.0);
     for cell in cells {
         let scx = LineShapingContext::new(
             &crate::theme::DEFAULT_THEME,
@@ -793,6 +828,15 @@ pub fn calculate_table_row_height(
         )
         .with_selection_disclosure(is_selection_disclosure);
         let (cell_text, runs) = build_line_runs(&cell.spans, scx, None, &TextStyle::default());
+
+        for span in &cell.spans {
+            if !span.math_is_disclosed(is_active, cursor_col, false)
+                && let Some(math) = &span.math
+            {
+                max_math_height =
+                    max_math_height.max(math_render_size(&math.rendered, font_size).height);
+            }
+        }
 
         let lines = calculate_visual_lines_with_runs(
             &cell_text,
@@ -809,7 +853,7 @@ pub fn calculate_table_row_height(
 
     let pad = if is_header { px(12.0) } else { px(10.0) };
     let min_h = if is_header { px(34.0) } else { px(30.0) };
-    (pad + line_height * (max_visual_lines as f32)).max(min_h)
+    (pad + line_height.max(max_math_height) * (max_visual_lines as f32)).max(min_h)
 }
 
 pub fn calculate_pos_from_col(
@@ -1239,7 +1283,13 @@ fn find_link_at_spans(
             continue;
         }
 
-        let span_len = span.text.len();
+        let span_len = span
+            .rendered_text(
+                lcx.scx.is_active_caret,
+                lcx.scx.cursor_col,
+                lcx.scx.is_source,
+            )
+            .len();
         let span_end_byte = cur_byte + span_len;
 
         if closest_byte >= cur_byte
@@ -1373,6 +1423,7 @@ enum LinePrepaintState {
     },
     Shaped {
         wrapped_line: Box<WrappedLine>,
+        math_paints: Vec<MathPaint>,
         highlight_quads: Vec<(Bounds<Pixels>, Hsla)>,
         selection_quads: Vec<Bounds<Pixels>>,
         selection_color: Hsla,
@@ -1380,6 +1431,136 @@ enum LinePrepaintState {
         cursor_color: Hsla,
     },
     None,
+}
+
+struct MathPaint {
+    bounds: Bounds<Pixels>,
+    asset_path: SharedString,
+    color: Hsla,
+}
+
+pub(crate) fn math_render_size(math: &crate::math::MathSvg, font_size: Pixels) -> Size<Pixels> {
+    size(
+        px(math.width_milli_em as f32 * f32::from(font_size) * crate::math::MATH_SCALE / 1000.0),
+        px(math.height_milli_em as f32 * f32::from(font_size) * crate::math::MATH_SCALE / 1000.0),
+    )
+}
+
+fn math_vertical_offset(line_height: Pixels, math_height: Pixels) -> Pixels {
+    (line_height.max(math_height) - math_height) / 2.0
+}
+
+fn collect_math_runs(
+    spans: &[InlineSpan],
+    is_active_line: bool,
+    cursor_col: usize,
+    is_source: bool,
+    is_selection_disclosure: bool,
+) -> Vec<(MathSpan, std::ops::Range<usize>)> {
+    let mut math_runs = Vec::new();
+    let mut visible_byte = 0;
+
+    for span in spans {
+        if !span.is_visible_for_selection(
+            is_active_line,
+            cursor_col,
+            is_source,
+            is_selection_disclosure,
+        ) {
+            continue;
+        }
+        let rendered_text = span.rendered_text(is_active_line, cursor_col, is_source);
+        if let Some(math) = &span.math
+            && !span.math_is_disclosed(is_active_line, cursor_col, is_source)
+        {
+            math_runs.push((
+                math.clone(),
+                visible_byte..visible_byte + rendered_text.len(),
+            ));
+        }
+        visible_byte += rendered_text.len();
+    }
+
+    math_runs
+}
+
+fn math_paints_for_row(
+    math_runs: &[(MathSpan, std::ops::Range<usize>)],
+    wrapped_line: &WrappedLine,
+    origin: Point<Pixels>,
+    align_x: Pixels,
+    content_width: Pixels,
+    font_size: Pixels,
+    line_height: Pixels,
+    color: Hsla,
+    center_display: bool,
+) -> Vec<MathPaint> {
+    math_runs
+        .iter()
+        .filter_map(|(math, range)| {
+            let start = wrapped_line.position_for_index(range.start, line_height)?;
+            let end = wrapped_line.position_for_index(range.end, line_height)?;
+            let rendered_size = math_render_size(&math.rendered, font_size);
+            let intrinsic_width = rendered_size.width;
+            let height = rendered_size.height;
+            let centered = math.is_display && center_display;
+            let reserved_width = if start.y == end.y {
+                (end.x - start.x).max(px(1.0))
+            } else {
+                intrinsic_width
+            };
+            let width = if centered {
+                intrinsic_width
+            } else {
+                reserved_width
+            };
+            let x = if centered {
+                ((content_width - width) / 2.0).max(px(0.0))
+            } else {
+                align_x + start.x
+            };
+            let y = origin.y + start.y + math_vertical_offset(line_height, height);
+            let _reserved_width = if start.y == end.y {
+                (end.x - start.x).max(px(1.0))
+            } else {
+                width
+            };
+
+            Some(MathPaint {
+                bounds: Bounds::new(point(origin.x + x, y), size(width, height)),
+                asset_path: math.rendered.asset_path.clone().into(),
+                color,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod math_render_geometry_tests {
+    use super::{math_render_size, math_vertical_offset};
+    use gpui::px;
+
+    #[test]
+    fn math_is_scaled_up_from_the_editor_font_size() {
+        let math = crate::math::prepare_latex(r"\omega", false).unwrap();
+        let font_size = px(16.0);
+        let size = math_render_size(&math, font_size);
+
+        assert_eq!(
+            size.width,
+            px(math.width_milli_em as f32 * 16.0 * 1.2 / 1000.0)
+        );
+        assert_eq!(
+            size.height,
+            px(math.height_milli_em as f32 * 16.0 * 1.2 / 1000.0)
+        );
+    }
+
+    #[test]
+    fn math_is_centered_in_the_actual_row_height() {
+        assert_eq!(math_vertical_offset(px(24.0), px(16.0)), px(4.0));
+        assert_eq!(math_vertical_offset(px(24.0), px(32.0)), px(0.0));
+    }
 }
 
 pub fn render_shaped_line(
@@ -1413,6 +1594,14 @@ pub fn render_shaped_line(
     let highlights = lrc.highlights.to_vec();
 
     let is_active_caret = lrc.is_disclosure_line;
+
+    let math_runs = collect_math_runs(
+        &spans,
+        is_active_caret,
+        disclosure_col,
+        is_source,
+        is_selection_disclosure,
+    );
 
     let available_width = compute_available_line_width_with_indent(
         content_width,
@@ -1460,7 +1649,11 @@ pub fn render_shaped_line(
         1
     };
 
-    let total_canvas_h = line_height * (est_lines as f32);
+    let math_height = math_runs
+        .iter()
+        .map(|(math, _)| math_render_size(&math.rendered, font_size).height)
+        .fold(px(0.0), Pixels::max);
+    let total_canvas_h = (line_height * (est_lines as f32)).max(math_height);
 
     canvas(
         move |bounds, window, cx| {
@@ -1528,6 +1721,29 @@ pub fn render_shaped_line(
             let Some(wrapped_line) = lines_iter.next() else {
                 return LinePrepaintState::None;
             };
+
+            let has_other_content = spans.iter().any(|span| {
+                span.math.is_none()
+                    && span.is_visible_for_selection(
+                        is_active_caret,
+                        disclosure_col,
+                        is_source,
+                        is_selection_disclosure,
+                    )
+                    && !span.text.trim().is_empty()
+            });
+            let math_color = override_color.unwrap_or_else(|| cx.theme().text_primary);
+            let math_paints = math_paints_for_row(
+                &math_runs,
+                &wrapped_line,
+                bounds.origin,
+                px(0.0),
+                bounds.size.width,
+                font_size,
+                line_height,
+                math_color,
+                !has_other_content,
+            );
 
             let to_visible = |raw_col: usize| {
                 raw_col_to_visible_byte_with_selection(
@@ -1626,6 +1842,7 @@ pub fn render_shaped_line(
 
             LinePrepaintState::Shaped {
                 wrapped_line: Box::new(wrapped_line),
+                math_paints,
                 highlight_quads,
                 selection_quads,
                 selection_color,
@@ -1644,6 +1861,7 @@ pub fn render_shaped_line(
             }
             LinePrepaintState::Shaped {
                 wrapped_line,
+                math_paints,
                 highlight_quads,
                 selection_quads,
                 selection_color,
@@ -1672,6 +1890,15 @@ pub fn render_shaped_line(
                     window,
                     cx,
                 );
+                for math in math_paints {
+                    let _ = window.paint_svg(
+                        math.bounds,
+                        math.asset_path,
+                        TransformationMatrix::default(),
+                        math.color,
+                        cx,
+                    );
+                }
                 if let Some(caret) = caret_bounds {
                     window.paint_quad(fill(caret, cursor_color));
                 }
@@ -1704,6 +1931,7 @@ enum CellPrepaintState {
         wrapped_line: Box<WrappedLine>,
         origin: Point<Pixels>,
         text_align: TextAlign,
+        math_paints: Vec<MathPaint>,
         caret_bounds: Option<Bounds<Pixels>>,
         cursor_color: Hsla,
     },
@@ -1725,6 +1953,13 @@ pub fn render_shaped_cell_canvas(
     let cursor_opacity = tcx.cursor_opacity;
     let align = tcx.align;
     let hovered_link_range = tcx.hovered_link_range;
+    let math_runs = collect_math_runs(
+        &spans,
+        is_disclosure_cell,
+        disclosure_col,
+        false,
+        is_selection_disclosure,
+    );
 
     canvas(
         move |bounds, window, cx| {
@@ -1763,13 +1998,38 @@ pub fn render_shaped_cell_canvas(
             };
 
             let num_visual_lines = wrapped_line.wrap_boundaries.len() + 1;
-            let total_text_h = line_height * (num_visual_lines as f32);
+            let math_height = math_runs
+                .iter()
+                .map(|(math, _)| math_render_size(&math.rendered, font_size).height)
+                .fold(px(0.0), Pixels::max);
+            let total_text_h = (line_height * (num_visual_lines as f32)).max(math_height);
             let origin_y = bounds.origin.y + (bounds.size.height - total_text_h).max(px(0.0)) / 2.0;
             let origin = point(bounds.origin.x, origin_y);
             let align_x = table_align_offset(
                 bounds.size.width,
                 wrapped_line.unwrapped_layout.width,
                 align,
+            );
+            let has_other_content = spans.iter().any(|span| {
+                span.math.is_none()
+                    && span.is_visible_for_selection(
+                        is_disclosure_cell,
+                        disclosure_col,
+                        false,
+                        is_selection_disclosure,
+                    )
+                    && !span.text.trim().is_empty()
+            });
+            let math_paints = math_paints_for_row(
+                &math_runs,
+                &wrapped_line,
+                origin,
+                align_x,
+                bounds.size.width,
+                font_size,
+                line_height,
+                cx.theme().text_primary,
+                !has_other_content,
             );
 
             let caret_bounds = if is_active_cell && cursor_opacity > 0.01 {
@@ -1800,6 +2060,7 @@ pub fn render_shaped_cell_canvas(
                 wrapped_line: Box::new(wrapped_line),
                 origin,
                 text_align,
+                math_paints,
                 caret_bounds,
                 cursor_color,
             }
@@ -1809,6 +2070,7 @@ pub fn render_shaped_cell_canvas(
                 wrapped_line,
                 origin,
                 text_align,
+                math_paints,
                 caret_bounds,
                 cursor_color,
             } => {
@@ -1820,11 +2082,20 @@ pub fn render_shaped_cell_canvas(
                     window,
                     cx,
                 );
+                let _ =
+                    wrapped_line.paint(origin, line_height, text_align, Some(bounds), window, cx);
+                for math in math_paints {
+                    let _ = window.paint_svg(
+                        math.bounds,
+                        math.asset_path,
+                        TransformationMatrix::default(),
+                        math.color,
+                        cx,
+                    );
+                }
                 if let Some(caret) = caret_bounds {
                     window.paint_quad(fill(caret, cursor_color));
                 }
-                let _ =
-                    wrapped_line.paint(origin, line_height, text_align, Some(bounds), window, cx);
             }
             CellPrepaintState::None => {}
         },

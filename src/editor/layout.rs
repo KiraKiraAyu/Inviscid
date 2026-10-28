@@ -97,6 +97,18 @@ pub fn get_block_typography_with_metrics(
             px((22.0 * scale * lh_ratio).round()),
             px(2.0),
         ),
+        BlockKind::MathBlock { is_start: true } | BlockKind::MathBlockContent => {
+            BlockTypography::new(
+                px(base_font_size),
+                px((base_font_size * line_height_factor).round()),
+                px((8.0 * scale).round()),
+            )
+        }
+        BlockKind::MathBlock { is_start: false } => BlockTypography::new(
+            px(base_font_size),
+            px((base_font_size * line_height_factor).round()),
+            px(0.0),
+        ),
         BlockKind::Table { .. } => BlockTypography::new(
             px((14.0 * scale).round()),
             px((22.0 * scale * lh_ratio).round()),
@@ -159,6 +171,7 @@ pub struct DocumentLayoutCache {
     pub content_width: Pixels,
     pub active_line: usize,
     pub active_col: usize,
+    pub active_math_block: Option<(usize, usize)>,
     pub doc_path: Option<PathBuf>,
     pub image_cache_version: usize,
     pub syntax_cache_version: usize,
@@ -183,6 +196,7 @@ impl Default for DocumentLayoutCache {
             content_width: px(0.0),
             active_line: 0,
             active_col: 0,
+            active_math_block: None,
             doc_path: None,
             image_cache_version: 0,
             syntax_cache_version: 0,
@@ -224,6 +238,7 @@ impl DocumentLayoutCache {
 #[derive(Clone)]
 pub struct LineLayoutContext<'a> {
     pub is_active: bool,
+    pub math_block_editing: bool,
     pub is_separator: Option<bool>,
     pub cursor_col: usize,
     pub is_selection_disclosure: bool,
@@ -242,6 +257,7 @@ impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LineLayoutContext")
             .field("is_active", &self.is_active)
+            .field("math_block_editing", &self.math_block_editing)
             .field("is_separator", &self.is_separator)
             .field("cursor_col", &self.cursor_col)
             .field("is_selection_disclosure", &self.is_selection_disclosure)
@@ -262,6 +278,7 @@ impl<'a> Default for LineLayoutContext<'a> {
     fn default() -> Self {
         Self {
             is_active: false,
+            math_block_editing: false,
             is_separator: None,
             cursor_col: 0,
             is_selection_disclosure: false,
@@ -289,6 +306,7 @@ impl<'a> LineLayoutContext<'a> {
     ) -> Self {
         Self {
             is_active,
+            math_block_editing: false,
             is_separator,
             cursor_col,
             is_selection_disclosure: false,
@@ -306,6 +324,11 @@ impl<'a> LineLayoutContext<'a> {
 
     pub fn with_folded(mut self, is_folded: bool) -> Self {
         self.is_folded = is_folded;
+        self
+    }
+
+    pub fn with_math_block_editing(mut self, math_block_editing: bool) -> Self {
+        self.math_block_editing = math_block_editing;
         self
     }
 
@@ -365,8 +388,14 @@ pub fn get_line_layout_height(
         compute_available_line_width_with_indent,
     };
 
+    let content_width =
+        if lcx.math_block_editing && matches!(parsed.kind, BlockKind::MathBlockContent) {
+            (lcx.content_width / 2.0 + px(40.0)).max(px(0.0))
+        } else {
+            lcx.content_width
+        };
     let available_w = compute_available_line_width_with_indent(
-        lcx.content_width,
+        content_width,
         &parsed.kind,
         lcx.mode,
         lcx.indent_px,
@@ -420,7 +449,16 @@ pub fn get_line_layout_height(
             lcx.text_system.as_ref(),
             false,
         );
-        typo.padding_vertical + typo.line_height * (visual_lines as f32)
+        let math_height = parsed
+            .spans
+            .iter()
+            .filter(|span| !span.math_is_disclosed(lcx.is_active, lcx.cursor_col, false))
+            .filter_map(|span| span.math.as_ref())
+            .map(|math| {
+                crate::editor::shaping::math_render_size(&math.rendered, px(lcx.font_size)).height
+            })
+            .fold(px(0.0), Pixels::max);
+        typo.padding_vertical + typo.line_height.max(math_height) * (visual_lines as f32)
     };
 
     match &parsed.kind {
@@ -434,6 +472,58 @@ pub fn get_line_layout_height(
         }
         BlockKind::CodeBlock { .. } | BlockKind::CodeBlockContent | BlockKind::ThematicBreak => {
             typo.base_layout_height
+        }
+        BlockKind::MathBlock { is_start: true } => {
+            if lcx.math_block_editing {
+                px(0.0)
+            } else {
+                wrapped_prose_height(font(crate::platform::platform_ui_font()), None, false)
+            }
+        }
+        BlockKind::MathBlock { is_start: false } => px(0.0),
+        BlockKind::MathBlockContent => {
+            if !lcx.math_block_editing {
+                return px(0.0);
+            }
+
+            let source_font_size = px(lcx.font_size);
+            let source_line_height = px((lcx.font_size * lcx.line_height).round());
+            let source_scx = LineShapingContext::new(
+                &crate::theme::DEFAULT_THEME,
+                None,
+                true,
+                lcx.is_active,
+                lcx.cursor_col,
+            );
+            let (source, source_runs) =
+                build_line_runs(&parsed.spans, source_scx, None, &TextStyle::default());
+            let source_visual_lines = calculate_visual_lines_with_runs(
+                &source,
+                &source_runs,
+                font(crate::platform::platform_monospace_font()),
+                source_font_size,
+                (content_width - SOURCE_GUTTER_WIDTH).max(px(0.0)),
+                lcx.soft_wrap,
+                lcx.text_system.as_ref(),
+                true,
+            );
+            let source_height =
+                source_line_height * source_visual_lines as f32 + typo.padding_vertical;
+            let preview_height = if idx > 0 && lines[idx - 1].trim() == "$$" {
+                let close_idx = (idx + 1..lines.len()).find(|&line| lines[line].trim() == "$$");
+                close_idx
+                    .and_then(|close_idx| {
+                        crate::math::prepare_latex(&lines[idx..close_idx].join("\n"), true)
+                    })
+                    .map(|math| {
+                        crate::editor::shaping::math_render_size(&math, px(lcx.font_size)).height
+                            + typo.padding_vertical
+                    })
+                    .unwrap_or(px(0.0))
+            } else {
+                px(0.0)
+            };
+            source_height.max(preview_height)
         }
         BlockKind::BlockQuote => {
             let is_prev_quote = idx > 0 && lines[idx - 1].trim_start().starts_with("> ");
@@ -600,6 +690,7 @@ impl Editor {
         cursor_col: usize,
         content_width: Pixels,
         line_idx: usize,
+        active_math_block: Option<(usize, usize)>,
     ) -> LineLayoutContext<'_> {
         let is_folded = self.display_map.fold_map().is_line_folded(line_idx);
         let indent_px = self.parsed_line_indent_px(parsed);
@@ -612,10 +703,21 @@ impl Editor {
             self.buffer.file_path(),
         )
         .with_folded(is_folded)
+        .with_math_block_editing(
+            active_math_block.is_some_and(|(start, end)| (start..=end).contains(&line_idx)),
+        )
         .with_selection_disclosure(self.is_selection_disclosure())
         .with_metrics(self.font_size, self.line_height, self.soft_wrap)
         .with_indent(indent_px)
         .with_text_system(self.text_system.clone())
+    }
+
+    fn active_math_block(&self, active_line: usize) -> Option<(usize, usize)> {
+        if self.render_mode == RenderMode::Source {
+            return None;
+        }
+        crate::markdown::math_block_range(self.buffer.lines(), active_line)
+            .filter(|(start, end)| active_line > *start && active_line < *end)
     }
 
     pub fn ensure_layout_cache(&self) {
@@ -624,6 +726,7 @@ impl Editor {
         let disclosure_position = self.disclosure_position();
         let active_line = disclosure_position.line;
         let active_col = disclosure_position.col;
+        let active_math_block = self.active_math_block(active_line);
         let current_img_v = crate::http::image_cache_version();
         let current_syntax_v = crate::syntax::syntax_cache_version();
 
@@ -637,6 +740,7 @@ impl Editor {
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.active_line == active_line
+            && current_cache.active_math_block == active_math_block
             && (self.render_mode == RenderMode::Source || current_cache.active_col == active_col)
         {
             return;
@@ -666,6 +770,7 @@ impl Editor {
                     active_col,
                     content_width,
                     active_line,
+                    active_math_block,
                 );
                 get_line_layout_height(self.buffer.lines(), active_line, parsed, lcx)
             } else {
@@ -675,6 +780,7 @@ impl Editor {
             let old_h = cache.line_heights[active_line];
             if (new_h - old_h).abs() < px(0.01) {
                 cache.active_col = active_col;
+                cache.active_math_block = active_math_block;
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
@@ -691,6 +797,7 @@ impl Editor {
                 y + px(24.0)
             };
             cache.active_col = active_col;
+            cache.active_math_block = active_math_block;
             *self.layout_cache.borrow_mut() = Arc::new(cache);
             return;
         }
@@ -702,6 +809,7 @@ impl Editor {
             && current_cache.syntax_cache_version == current_syntax_v
             && !current_cache.parsed_lines.is_empty()
             && current_cache.line_heights.len() == current_cache.parsed_lines.len()
+            && self.active_math_block(current_cache.active_line) == active_math_block
         {
             let mut cache = (*current_cache).clone();
             let old_active = cache.active_line;
@@ -725,6 +833,7 @@ impl Editor {
                         active_col,
                         content_width,
                         line_idx,
+                        active_math_block,
                     );
                     get_line_layout_height(self.buffer.lines(), line_idx, parsed, lcx)
                 } else {
@@ -751,6 +860,7 @@ impl Editor {
             if old_diff.abs() < px(0.01) && new_diff.abs() < px(0.01) {
                 cache.active_line = active_line;
                 cache.active_col = active_col;
+                cache.active_math_block = active_math_block;
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
@@ -780,6 +890,7 @@ impl Editor {
             };
             cache.active_line = active_line;
             cache.active_col = active_col;
+            cache.active_math_block = active_math_block;
             *self.layout_cache.borrow_mut() = Arc::new(cache);
             return;
         }
@@ -826,8 +937,15 @@ impl Editor {
         for (idx, parsed) in parsed_doc.iter().enumerate() {
             let is_active = idx == active_line;
             let is_sep = separators.get(idx).copied().unwrap_or(false);
-            let lcx =
-                self.line_layout_ctx(parsed, is_active, is_sep, active_col, content_width, idx);
+            let lcx = self.line_layout_ctx(
+                parsed,
+                is_active,
+                is_sep,
+                active_col,
+                content_width,
+                idx,
+                active_math_block,
+            );
             let h = get_line_layout_height(self.buffer.lines(), idx, parsed, lcx);
             line_y_offsets.push(y);
             line_heights.push(h);
@@ -847,6 +965,7 @@ impl Editor {
             content_width,
             active_line,
             active_col,
+            active_math_block,
             doc_path: self.buffer.file_path_buf(),
             image_cache_version: current_img_v,
             syntax_cache_version: current_syntax_v,
@@ -882,6 +1001,7 @@ impl Editor {
             return false;
         }
         let active_col = self.disclosure_col();
+        let active_math_block = self.active_math_block(active_line);
 
         if cache_len.saturating_sub(delta.old_line_count) + delta.new_line_count != buf_len {
             return false;
@@ -893,13 +1013,16 @@ impl Editor {
 
         for line in &cache.parsed_lines[delta.start_line..delta.start_line + delta.old_line_count] {
             if line.raw_text.trim_start().starts_with("```")
-                || matches!(line.kind, BlockKind::CodeBlock { .. })
+                || matches!(
+                    line.kind,
+                    BlockKind::CodeBlock { .. } | BlockKind::MathBlock { .. }
+                )
             {
                 return false;
             }
         }
         for line in &buf_lines[delta.start_line..delta.start_line + delta.new_line_count] {
-            if line.trim_start().starts_with("```") {
+            if line.trim_start().starts_with("```") || line.trim() == "$$" {
                 return false;
             }
         }
@@ -908,6 +1031,11 @@ impl Editor {
             && matches!(
                 cache.parsed_lines[delta.start_line].kind,
                 BlockKind::CodeBlockContent
+            );
+        let in_math_block = delta.start_line < cache_len
+            && matches!(
+                cache.parsed_lines[delta.start_line].kind,
+                BlockKind::MathBlockContent
             );
 
         if !in_code_block {
@@ -934,6 +1062,17 @@ impl Editor {
                 }
                 block_start -= 1;
             }
+        } else if in_math_block {
+            while block_start > 0 {
+                if matches!(
+                    cache.parsed_lines[block_start - 1].kind,
+                    BlockKind::MathBlock { is_start: true }
+                ) {
+                    block_start -= 1;
+                    break;
+                }
+                block_start -= 1;
+            }
         } else {
             while block_start > 0 && !buf_lines[block_start - 1].trim().is_empty() {
                 let prev_trimmed = buf_lines[block_start - 1].trim_start();
@@ -952,6 +1091,14 @@ impl Editor {
                     break;
                 }
                 block_end += 1;
+            }
+        } else if in_math_block {
+            while block_end < buf_len {
+                let is_close = buf_lines[block_end].trim() == "$$";
+                block_end += 1;
+                if is_close {
+                    break;
+                }
             }
         } else {
             while block_end < buf_len && !buf_lines[block_end].trim().is_empty() {
@@ -974,8 +1121,12 @@ impl Editor {
             return false;
         }
 
-        let mut new_parsed =
-            MarkdownScanner::scan_range(buf_lines, block_start..block_end, in_code_block);
+        let mut new_parsed = MarkdownScanner::scan_range_with_state(
+            buf_lines,
+            block_start..block_end,
+            in_code_block,
+            false,
+        );
         if new_parsed.len() != block_end - block_start {
             return false;
         }
@@ -998,6 +1149,7 @@ impl Editor {
                 active_col,
                 content_width,
                 line_idx,
+                active_math_block,
             );
             let h = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
             new_heights.push(h);
@@ -1047,6 +1199,7 @@ impl Editor {
         cache.lines_len = buf_len;
         cache.active_line = active_line;
         cache.active_col = active_col;
+        cache.active_math_block = active_math_block;
         cache.fold_version = self.display_map.version();
 
         true

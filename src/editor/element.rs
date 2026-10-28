@@ -154,6 +154,17 @@ impl Element for EditorElement {
                     let is_dragging = editor.is_dragging;
                     let is_selection_disclosure = editor.is_selection_disclosure();
                     let mode = editor.render_mode;
+                    let active_math_block = if mode == RenderMode::Source {
+                        None
+                    } else {
+                        crate::markdown::math_block_range(
+                            editor.buffer.lines(),
+                            disclosure_position.line,
+                        )
+                        .filter(|(start, end)| {
+                            disclosure_position.line > *start && disclosure_position.line < *end
+                        })
+                    };
                     let theme = cx.theme();
                     let content_width = compute_content_width(bounds.size.width, mode);
                     let container_x =
@@ -169,9 +180,20 @@ impl Element for EditorElement {
                         let parsed = &layout.parsed_lines[line_idx];
                         let is_active_line = line_idx == cursor_line;
                         let is_disclosure_line = line_idx == disclosure_position.line;
+                        let is_math_block_editing = active_math_block
+                            .is_some_and(|(start, end)| (start..=end).contains(&line_idx));
+                        let math_preview = active_math_block
+                            .filter(|(start, _)| line_idx == start + 1)
+                            .and_then(|(start, _)| layout.parsed_lines.get(start))
+                            .and_then(|start_line| {
+                                start_line.spans.iter().find_map(|span| span.math.as_ref())
+                            })
+                            .map(|math| &math.rendered);
                         let highlights = editor.search_highlights(line_idx);
                         let lrc = LineRenderContext {
                             is_active_line,
+                            is_math_block_editing,
+                            math_preview,
                             is_disclosure_line,
                             is_selection_disclosure,
                             is_focused,

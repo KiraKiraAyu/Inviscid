@@ -19,6 +19,7 @@ Inviscid is currently in pre-`v0.1` active development. Core editing, Live Previ
 ## Highlights
 
 - **Live Preview & Source Modes** — WYSIWYG. Switch to raw Source mode at any time (`Ctrl+E` / `Cmd+E`).
+- **LaTeX Math Rendering** — Live Preview renders inline `$...$` and multiline display math wrapped by standalone `$$` lines while keeping the Markdown source editable.
 - **Incremental Markdown Layout** — Re-scans only affected block ranges on edit, caches per-line shaped runs, and supports GFM tables with column alignment, interactive task lists, fenced code block folding, blockquotes, and asynchronous local/remote image dimension probing with LRU caching.
 - **Native Input & Motion** — ~120 FPS cubic ease-out smooth scrolling, soft-wrap line measurement, auto-surrounding pairs (ASCII and CJK brackets/quotes), and underlined inline IME preedit text that participates in shaping and wrapping.
 - **Workspace & Multi-Tab Editing** — Single-window tab bar with drag-and-drop reordering, content-hash dirty tracking against saved baselines, optional debounced auto-save, and a project file tree supporting inline file/folder creation, renaming, clipboard copy/cut/paste, and OS trash integration.
@@ -30,7 +31,8 @@ Inviscid is currently in pre-`v0.1` active development. Core editing, Live Previ
 - [x] GFM tables, task lists, fenced code block folding, and async image dimension probing
 - [x] Multi-tab workspace, project file tree, TOML theme inheritance, and customizable keybindings
 - [x] Syntax highlighting for fenced code blocks
-- [ ] Native LaTeX math and diagram (Mermaid) rendering
+- [x] Native LaTeX math rendering
+- [ ] Mermaid diagram rendering
 - [x] In-document Find & Replace and workspace-wide search / quick open
 - [ ] Document outline (TOC) view and heading anchor navigation
 - [ ] File system watcher for external modification detection and reload
@@ -41,7 +43,7 @@ Inviscid is currently in pre-`v0.1` active development. Core editing, Live Previ
 
 ### Prerequisites
 
-- **Rust**: 1.85+ (Rust 2024 Edition)
+- **Rust**: 1.99+ (Rust 2024 Edition)
 - **Platform dependencies**:
   - **Windows**: Windows 10/11 SDK (DirectX / Vulkan via `blade-graphics`)
   - **macOS**: Xcode Command Line Tools

@@ -82,6 +82,7 @@ pub(crate) struct LineIndex {
     version: usize,
     syntactic_separators: Vec<bool>,
     fence_pairs: Vec<(usize, usize)>,
+    math_pairs: Vec<(usize, usize)>,
     pub(crate) line_utf16_offsets: Vec<usize>,
 }
 
@@ -114,6 +115,7 @@ impl LineIndex {
             version,
             syntactic_separators,
             fence_pairs,
+            math_pairs: crate::markdown::math_block_pairs(lines),
             line_utf16_offsets,
         }
     }
@@ -152,9 +154,45 @@ impl LineIndex {
     fn is_closing_fence(&self, target_idx: usize) -> bool {
         self.fence_state(target_idx).1
     }
+
+    fn math_pair(&self, target_idx: usize) -> Option<(usize, usize)> {
+        self.math_pairs
+            .iter()
+            .copied()
+            .find(|&(start, end)| (start..=end).contains(&target_idx))
+    }
+
+    fn is_math_delimiter(&self, target_idx: usize) -> bool {
+        self.math_pairs
+            .iter()
+            .any(|&(start, end)| target_idx == start || target_idx == end)
+    }
 }
 
 impl TextBuffer {
+    pub(crate) fn ensure_cursor_not_on_math_delimiter(&mut self, is_source: bool) {
+        if is_source || !self.selection.is_empty() {
+            return;
+        }
+
+        let pos = self.selection.head;
+        let index = self.line_index();
+        let Some((start, end)) = index.math_pair(pos.line) else {
+            return;
+        };
+        if end == start + 1 || (pos.line != start && pos.line != end) {
+            return;
+        }
+
+        let target = if pos.line == start {
+            Position::new(start + 1, 0)
+        } else {
+            Position::new(end - 1, self.line_len(end - 1))
+        };
+        drop(index);
+        self.update_cursor(false, target);
+    }
+
     pub(crate) fn line_index(&self) -> Ref<'_, LineIndex> {
         {
             let cache = self.line_index_cache.borrow();
@@ -179,26 +217,32 @@ impl TextBuffer {
         self.line_index().is_in_fence(target_idx)
     }
 
-    fn is_line_editable(&self, index: &LineIndex, line: usize) -> bool {
+    fn is_line_editable(&self, index: &LineIndex, line: usize, is_source: bool) -> bool {
+        let is_math_content = index
+            .math_pair(line)
+            .is_some_and(|(start, end)| line > start && line < end);
+        let is_separator = index
+            .syntactic_separators
+            .get(line)
+            .copied()
+            .unwrap_or(false);
         !crate::markdown::table::is_table_delimiter_row(&self.lines[line])
-            && !index
-                .syntactic_separators
-                .get(line)
-                .copied()
-                .unwrap_or(false)
+            && (!is_separator || is_math_content)
             && !index.is_closing_fence(line)
+            && (is_source || !index.is_math_delimiter(line))
     }
 
-    pub fn find_next_editable_line(&self, from_line: usize) -> Option<usize> {
+    pub fn find_next_editable_line(&self, from_line: usize, is_source: bool) -> Option<usize> {
         let index = self.line_index();
-        ((from_line + 1)..self.lines.len()).find(|&line| self.is_line_editable(&index, line))
+        ((from_line + 1)..self.lines.len())
+            .find(|&line| self.is_line_editable(&index, line, is_source))
     }
 
-    pub fn find_prev_editable_line(&self, from_line: usize) -> Option<usize> {
+    pub fn find_prev_editable_line(&self, from_line: usize, is_source: bool) -> Option<usize> {
         let index = self.line_index();
         (0..from_line)
             .rev()
-            .find(|&line| self.is_line_editable(&index, line))
+            .find(|&line| self.is_line_editable(&index, line, is_source))
     }
 
     pub fn move_left_mode(&mut self, select: bool, is_source: bool) {
@@ -210,6 +254,27 @@ impl TextBuffer {
         }
 
         let pos = self.selection.head;
+        if !is_source {
+            let index = self.line_index();
+            if let Some((start, end)) = index.math_pair(pos.line)
+                && (pos.line == start || pos.line == end)
+            {
+                let target = if pos.line == start {
+                    self.find_prev_editable_line(start, false)
+                        .map(|line| Position::new(line, self.line_len(line)))
+                        .unwrap_or(Position::new(start + 1, 0))
+                } else if end > start + 1 {
+                    Position::new(end - 1, self.line_len(end - 1))
+                } else {
+                    self.find_prev_editable_line(start, false)
+                        .map(|line| Position::new(line, self.line_len(line)))
+                        .unwrap_or(Position::new(start, 0))
+                };
+                drop(index);
+                self.update_cursor(select, target);
+                return;
+            }
+        }
         let new_pos = if is_source {
             if pos.col > 0 {
                 Position::new(pos.line, pos.col - 1)
@@ -241,7 +306,9 @@ impl TextBuffer {
                         crate::markdown::table::parse_table_row_cells(&self.lines[prev_row]);
                     let col = prev_cells.last().map(|c| c.col_range.1).unwrap_or(2);
                     Position::new(prev_row, col)
-                } else if let Some(prev_line) = self.find_prev_editable_line(meta.header_line) {
+                } else if let Some(prev_line) =
+                    self.find_prev_editable_line(meta.header_line, is_source)
+                {
                     Position::new(prev_line, self.line_len(prev_line))
                 } else {
                     pos
@@ -254,14 +321,14 @@ impl TextBuffer {
             let prefix_len = get_block_prefix_len(line);
 
             if pos.col <= prefix_len {
-                if let Some(prev_line) = self.find_prev_editable_line(pos.line) {
+                if let Some(prev_line) = self.find_prev_editable_line(pos.line, is_source) {
                     Position::new(prev_line, self.line_len(prev_line))
                 } else {
                     Position::new(pos.line, prefix_len)
                 }
             } else if pos.col > 0 {
                 Position::new(pos.line, pos.col - 1)
-            } else if let Some(prev_line) = self.find_prev_editable_line(pos.line) {
+            } else if let Some(prev_line) = self.find_prev_editable_line(pos.line, is_source) {
                 Position::new(prev_line, self.line_len(prev_line))
             } else {
                 pos
@@ -280,6 +347,31 @@ impl TextBuffer {
         }
 
         let pos = self.selection.head;
+        if !is_source {
+            let index = self.line_index();
+            if let Some((start, end)) = index.math_pair(pos.line)
+                && (pos.line == start || pos.line == end)
+            {
+                let target = if pos.line == start {
+                    if end > start + 1 {
+                        Position::new(start + 1, 0)
+                    } else {
+                        self.find_next_editable_line(end, false)
+                            .map(|line| {
+                                Position::new(line, get_block_prefix_len(&self.lines[line]))
+                            })
+                            .unwrap_or(Position::new(end, 0))
+                    }
+                } else {
+                    self.find_next_editable_line(end, false)
+                        .map(|line| Position::new(line, get_block_prefix_len(&self.lines[line])))
+                        .unwrap_or(Position::new(end, 0))
+                };
+                drop(index);
+                self.update_cursor(select, target);
+                return;
+            }
+        }
         let line_len = self.line_len(pos.line);
 
         let new_pos = if is_source {
@@ -318,7 +410,9 @@ impl TextBuffer {
                         crate::markdown::table::parse_table_row_cells(&self.lines[next_row]);
                     let col = next_cells.first().map(|c| c.col_range.0).unwrap_or(2);
                     Position::new(next_row, col)
-                } else if let Some(next_line) = self.find_next_editable_line(meta.last_table_line) {
+                } else if let Some(next_line) =
+                    self.find_next_editable_line(meta.last_table_line, is_source)
+                {
                     Position::new(next_line, get_block_prefix_len(&self.lines[next_line]))
                 } else {
                     pos
@@ -335,7 +429,7 @@ impl TextBuffer {
                 Position::new(pos.line, (prefix_len + 1).min(line_len))
             } else if pos.col < line_len {
                 Position::new(pos.line, pos.col + 1)
-            } else if let Some(next_line) = self.find_next_editable_line(pos.line) {
+            } else if let Some(next_line) = self.find_next_editable_line(pos.line, is_source) {
                 let next_prefix = get_block_prefix_len(&self.lines[next_line]);
                 Position::new(next_line, next_prefix.min(self.line_len(next_line)))
             } else if !select
@@ -378,9 +472,9 @@ impl TextBuffer {
             }
         } else {
             let target_line = if is_down {
-                self.find_next_editable_line(pos.line)
+                self.find_next_editable_line(pos.line, is_source)
             } else {
-                self.find_prev_editable_line(pos.line)
+                self.find_prev_editable_line(pos.line, is_source)
             };
 
             if let Some(target) = target_line {

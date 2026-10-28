@@ -25,6 +25,10 @@ pub enum BlockKind {
         is_fence_start: bool,
     },
     CodeBlockContent,
+    MathBlock {
+        is_start: bool,
+    },
+    MathBlockContent,
     BlockQuote,
     BulletList,
     OrderedList {
@@ -97,7 +101,7 @@ impl ParsedLine {
         for span in &self.spans {
             if span.is_visible_for_selection(is_active, cursor_col, false, is_selection_disclosure)
             {
-                out.push_str(&span.text);
+                out.push_str(&span.rendered_text(is_active, cursor_col, false));
             }
         }
         out

@@ -366,6 +366,76 @@ fn test_scan_range_equivalence() {
 }
 
 #[test]
+fn inline_math_spans_preserve_tex_and_source_ranges() {
+    let spans = parse_inline_spans(r"Energy $E = mc^2$ and $$\frac{1}{2}$$.", 4);
+    let math_spans: Vec<_> = spans.iter().filter_map(|span| span.math.as_ref()).collect();
+
+    assert_eq!(math_spans.len(), 2);
+    assert_eq!(math_spans[0].tex, "E = mc^2");
+    assert_eq!(math_spans[0].source, "$E = mc^2$");
+    assert!(!math_spans[0].is_display);
+    assert_eq!(math_spans[1].tex, r"\frac{1}{2}");
+    assert_eq!(math_spans[1].source, r"$$\frac{1}{2}$$");
+    assert!(math_spans[1].is_display);
+    assert!(math_spans[0].rendered.asset_path.starts_with("math/"));
+    assert_eq!(
+        spans
+            .iter()
+            .find(|span| span.math.is_some())
+            .unwrap()
+            .group_range,
+        (11, 21)
+    );
+}
+
+#[test]
+fn display_math_block_spans_keep_the_full_tex_source() {
+    let lines = vec![
+        "$$".to_string(),
+        r"\frac{a}{b} = c".to_string(),
+        "$$".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    let math = parsed[0]
+        .spans
+        .iter()
+        .find_map(|span| span.math.as_ref())
+        .unwrap();
+
+    assert_eq!(math.tex, r"\frac{a}{b} = c");
+    assert!(math.is_display);
+}
+
+#[test]
+fn math_block_range_ignores_delimiters_inside_code_fences() {
+    let lines = vec![
+        "```md".to_string(),
+        "$$".to_string(),
+        "```".to_string(),
+        "$$".to_string(),
+        "x".to_string(),
+        "$$".to_string(),
+    ];
+
+    assert_eq!(math_block_range(&lines, 3), Some((3, 5)));
+    assert_eq!(math_block_range(&lines, 4), Some((3, 5)));
+    assert_eq!(math_block_range(&lines, 1), None);
+}
+
+#[test]
+fn unclosed_math_delimiter_does_not_change_incremental_scan_state() {
+    let lines = vec![
+        "Before".to_string(),
+        "$$".to_string(),
+        "unfinished formula".to_string(),
+    ];
+    let full_scan = MarkdownScanner::scan_document(&lines);
+    let partial_scan = MarkdownScanner::scan_range(&lines, 2..3, false);
+
+    assert_eq!(partial_scan, full_scan[2..3]);
+}
+
+#[test]
 fn test_nested_inline_code_inside_bold() {
     let lines = vec!["2. **创建 `app.js` 文件**:".to_string()];
     let parsed = MarkdownScanner::scan_document(&lines);

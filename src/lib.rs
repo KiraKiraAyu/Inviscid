@@ -10,6 +10,7 @@ pub mod editor;
 pub mod fs;
 pub mod http;
 pub mod markdown;
+pub(crate) mod math;
 pub mod platform;
 pub mod search;
 pub mod sync;

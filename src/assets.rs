@@ -14,6 +14,9 @@ pub struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         let clean_path = path.trim_start_matches('/');
+        if let Some(svg) = crate::math::load_math_svg(clean_path) {
+            return Ok(Some(Cow::Owned(svg)));
+        }
         Ok(Self::get(clean_path).map(|file| file.data))
     }
 

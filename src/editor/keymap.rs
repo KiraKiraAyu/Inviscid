@@ -16,7 +16,10 @@ impl Editor {
             return;
         }
         self.pixel_column_goal = None;
+        let is_source = self.render_mode == RenderMode::Source;
+        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
         self.track_buffer_change(cx, f);
+        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
         self.scroll_to_cursor();
         self.start_scroll_animation_if_needed(cx);
         self.reset_cursor_blink(cx);

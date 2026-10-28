@@ -125,6 +125,8 @@ impl EntityInputHandler for Editor {
             None
         };
 
+        let is_source = self.render_mode == RenderMode::Source;
+        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
         self.track_buffer_change(cx, |this| {
             if let Some((open, close)) = pair {
                 this.buffer.surround_selection(open, close);
@@ -132,6 +134,7 @@ impl EntityInputHandler for Editor {
                 this.buffer.insert_text(text);
             }
         });
+        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
 
         self.marked_range = None;
         self.pixel_column_goal = None;

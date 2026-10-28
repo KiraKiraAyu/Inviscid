@@ -13,6 +13,81 @@ fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
         .map(|p| p + from_idx)
 }
 
+fn is_math_delimiter(line: &str) -> bool {
+    line.trim() == "$$"
+}
+
+fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usize> {
+    let mut in_code_fence = false;
+    for (offset, line) in lines.get(from_idx..)?.iter().enumerate() {
+        if is_fence_line(line) {
+            in_code_fence = !in_code_fence;
+        } else if !in_code_fence && is_math_delimiter(line) {
+            return Some(from_idx + offset);
+        }
+    }
+    None
+}
+
+pub(crate) fn math_block_pairs(lines: &[String]) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    let mut in_code_fence = false;
+    let mut open_idx = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if is_fence_line(line) {
+            in_code_fence = !in_code_fence;
+            continue;
+        }
+        if in_code_fence || !is_math_delimiter(line) {
+            continue;
+        }
+
+        if let Some(open_idx) = open_idx.take() {
+            pairs.push((open_idx, idx));
+        } else {
+            open_idx = Some(idx);
+        }
+    }
+
+    pairs
+}
+
+pub(crate) fn math_block_range(lines: &[String], target_idx: usize) -> Option<(usize, usize)> {
+    let mut in_code_fence = false;
+    let mut open_idx = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if is_fence_line(line) {
+            in_code_fence = !in_code_fence;
+        } else if !in_code_fence && is_math_delimiter(line) {
+            if let Some(start) = open_idx.take() {
+                if start <= target_idx && target_idx <= idx {
+                    return Some((start, idx));
+                }
+                if idx >= target_idx {
+                    return None;
+                }
+            } else {
+                if idx > target_idx {
+                    return None;
+                }
+                open_idx = Some(idx);
+            }
+        }
+
+        if idx >= target_idx && open_idx.is_none() {
+            return None;
+        }
+    }
+
+    None
+}
+
+fn math_block_state_before(lines: &[String], end_idx: usize) -> bool {
+    math_block_range(lines, end_idx).is_some_and(|(start, _)| start < end_idx)
+}
+
 fn highlight_fenced_slice(
     lines: &[String],
     open_fence_idx: Option<usize>,
@@ -42,8 +117,23 @@ impl MarkdownScanner {
         range: std::ops::Range<usize>,
         initial_in_code_fence: bool,
     ) -> Vec<ParsedLine> {
+        let initial_in_math_block = if initial_in_code_fence {
+            false
+        } else {
+            math_block_state_before(lines, range.start)
+        };
+        Self::scan_range_with_state(lines, range, initial_in_code_fence, initial_in_math_block)
+    }
+
+    pub(crate) fn scan_range_with_state(
+        lines: &[String],
+        range: std::ops::Range<usize>,
+        initial_in_code_fence: bool,
+        initial_in_math_block: bool,
+    ) -> Vec<ParsedLine> {
         let mut result = Vec::with_capacity(range.len());
         let mut in_code_fence = initial_in_code_fence;
+        let mut in_math_block = initial_in_math_block;
         let mut current_table_alignments: Option<Vec<TableAlignment>> = None;
         let mut next_closing_fence: Option<usize> = None;
         let mut no_more_closing_fences = false;
@@ -65,6 +155,25 @@ impl MarkdownScanner {
             let raw_line = &lines[idx];
             let trimmed = raw_line.trim_start();
             let leading_spaces = raw_line.len() - trimmed.len();
+
+            if in_math_block {
+                current_table_alignments = None;
+                let is_close = is_math_delimiter(raw_line);
+                result.push(ParsedLine {
+                    raw_text: raw_line.clone(),
+                    kind: if is_close {
+                        in_math_block = false;
+                        BlockKind::MathBlock { is_start: false }
+                    } else {
+                        BlockKind::MathBlockContent
+                    },
+                    spans: vec![InlineSpan::plain(
+                        raw_line.clone(),
+                        (0, raw_line.chars().count()),
+                    )],
+                });
+                continue;
+            }
 
             // Code fence blocks (```)
             if let Some(stripped) = trimmed.strip_prefix("```") {
@@ -137,6 +246,50 @@ impl MarkdownScanner {
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::CodeBlockContent,
+                    spans,
+                });
+                continue;
+            }
+
+            if is_math_delimiter(raw_line)
+                && let Some(close_idx) = find_closing_math_delimiter(lines, idx + 1)
+            {
+                let tex = lines[idx + 1..close_idx].join("\n");
+                current_table_alignments = None;
+                in_math_block = true;
+                let open_start = leading_spaces;
+                let open_end = open_start + 2;
+                let mut spans = Vec::new();
+                if open_start > 0 {
+                    spans.push(InlineSpan::plain(
+                        raw_line[..open_start].to_string(),
+                        (0, open_start),
+                    ));
+                }
+                if let Some(rendered) = crate::math::prepare_latex(&tex, true) {
+                    spans.push(InlineSpan::math(
+                        "$$",
+                        tex,
+                        (open_start, open_end),
+                        rendered,
+                        true,
+                    ));
+                } else {
+                    spans.push(InlineSpan::hidden_marker(
+                        "$$",
+                        (open_start, open_end),
+                        (open_start, open_end),
+                    ));
+                }
+                if raw_line.len() > open_end {
+                    spans.push(InlineSpan::plain(
+                        raw_line[open_end..].to_string(),
+                        (open_end, raw_line.chars().count()),
+                    ));
+                }
+                result.push(ParsedLine {
+                    raw_text: raw_line.clone(),
+                    kind: BlockKind::MathBlock { is_start: true },
                     spans,
                 });
                 continue;

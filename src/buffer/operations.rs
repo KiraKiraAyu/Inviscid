@@ -544,7 +544,8 @@ impl TextBuffer {
             let left = current_line[..split_b].to_string();
             let right = current_line[split_b..].to_string();
 
-            if is_in_code_fence_lines(lines, pos.line) || (is_source && !trimmed.starts_with("```"))
+            if is_in_code_fence_lines(lines, pos.line)
+                || (is_source && !trimmed.starts_with("```") && trimmed != "$$")
             {
                 lines[pos.line] = left;
                 lines.insert(pos.line + 1, right);
@@ -563,6 +564,26 @@ impl TextBuffer {
                 }
                 *sel = Selection::cursor(Position::new(pos.line + 1, 0));
                 return;
+            }
+
+            if trimmed == "$$" && col == current_chars_len {
+                let pair = crate::markdown::math_block_pairs(lines)
+                    .into_iter()
+                    .find(|&(start, end)| start <= pos.line && pos.line <= end);
+                if pair.is_none_or(|(start, _)| start == pos.line) {
+                    if pair.is_some_and(|(start, end)| end == start + 1) {
+                        lines.insert(pos.line + 1, String::new());
+                        *sel = Selection::cursor(Position::new(pos.line + 1, 0));
+                    } else if pair.is_some() {
+                        *sel = Selection::cursor(Position::new(pos.line + 1, 0));
+                    } else {
+                        lines.insert(pos.line + 1, String::new());
+                        lines.insert(pos.line + 2, "$$".to_string());
+                        lines.insert(pos.line + 3, String::new());
+                        *sel = Selection::cursor(Position::new(pos.line + 1, 0));
+                    }
+                    return;
+                }
             }
 
             if is_thematic_break(trimmed) {
@@ -663,6 +684,23 @@ impl TextBuffer {
         });
     }
 
+    pub(crate) fn ensure_math_block_content_line(&mut self, start_line: usize) -> Option<Position> {
+        let (start, end) = crate::markdown::math_block_range(&self.lines, start_line)?;
+        if start != start_line {
+            return None;
+        }
+        if end > start + 1 {
+            return Some(Position::new(start + 1, 0));
+        }
+
+        let pos = Position::new(end, 0);
+        self.record_edit(|lines, sel| {
+            lines.insert(end, String::new());
+            *sel = Selection::cursor(pos);
+        });
+        Some(pos)
+    }
+
     pub fn backspace_mode(&mut self, is_source: bool) {
         if self.backspace_auto_pair() {
             return;
@@ -691,6 +729,31 @@ impl TextBuffer {
                     lines[pos.line - 1].push_str(&current_line);
                     *sel = Selection::cursor(Position::new(pos.line - 1, prev_len));
                 }
+                return;
+            }
+
+            if pos.col == 0
+                && (pos.line > 0
+                    && crate::markdown::math_block_range(lines, pos.line - 1)
+                        .is_some_and(|(_, end)| end == pos.line - 1)
+                    || pos.line > 1
+                        && lines[pos.line - 1].trim().is_empty()
+                        && crate::markdown::math_block_range(lines, pos.line - 2)
+                            .is_some_and(|(_, end)| end == pos.line - 2))
+            {
+                return;
+            }
+
+            if crate::markdown::math_block_range(lines, pos.line)
+                .is_some_and(|(start, end)| pos.line == start || pos.line == end)
+            {
+                return;
+            }
+
+            if pos.col == 0
+                && crate::markdown::math_block_range(lines, pos.line)
+                    .is_some_and(|(start, _)| pos.line == start + 1)
+            {
                 return;
             }
 
@@ -844,6 +907,26 @@ impl TextBuffer {
             let pos = sel.head;
             let trimmed = lines[pos.line].trim();
 
+            if !is_source
+                && crate::markdown::math_block_range(lines, pos.line)
+                    .is_some_and(|(start, end)| pos.line == start || pos.line == end)
+            {
+                return;
+            }
+
+            if !is_source
+                && pos.col >= lines[pos.line].chars().count()
+                && pos.line + 1 < lines.len()
+                && (crate::markdown::math_block_range(lines, pos.line + 1)
+                    .is_some_and(|(start, _)| start == pos.line + 1)
+                    || pos.line + 2 < lines.len()
+                        && lines[pos.line + 1].trim().is_empty()
+                        && crate::markdown::math_block_range(lines, pos.line + 2)
+                            .is_some_and(|(start, _)| start == pos.line + 2))
+            {
+                return;
+            }
+
             if !is_source && is_thematic_break(trimmed) {
                 lines[pos.line] = String::new();
                 *sel = Selection::cursor(Position::new(pos.line, 0));
@@ -853,6 +936,11 @@ impl TextBuffer {
             let line_chars_count = lines[pos.line].chars().count();
             if pos.col < line_chars_count {
                 remove_char_at_col(&mut lines[pos.line], pos.col);
+            } else if !is_source
+                && crate::markdown::math_block_range(lines, pos.line)
+                    .is_some_and(|(_, end)| pos.line + 1 == end)
+            {
+                return;
             } else if pos.line + 1 < lines.len() {
                 let next_line = lines.remove(pos.line + 1);
                 lines[pos.line].push_str(&next_line);

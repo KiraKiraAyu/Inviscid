@@ -2,6 +2,7 @@
 name = "inviscid"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99"
 license = "GPL-3.0"
 
 [lib]
@@ -18,6 +19,7 @@ anyhow = "1.0"
 dirs = "7.0.0"
 futures = "0.3"
 gpui = "0.2.2"
+latex-rust = "3.0.1"
 parking_lot = "0.12"
 rfd = "0.17.2"
 serde = { version = "1.0", features = ["derive"] }

@@ -507,6 +507,101 @@ pub fn render_live_line_content(
             row_elem.into_any_element()
         }
 
+        BlockKind::MathBlock { is_start: true } => {
+            if lrc.is_math_block_editing {
+                return div().w_full().h(px(0.0)).into_any_element();
+            }
+            let typo = crate::editor::layout::get_block_typography_with_metrics(
+                &parsed.kind,
+                lrc.font_size,
+                lrc.line_height,
+            );
+            let text_canvas = render_shaped_line(
+                line_idx,
+                parsed,
+                lrc,
+                typo.font_size,
+                typo.line_height,
+                None,
+                false,
+            );
+
+            div()
+                .w_full()
+                .pl(lrc.indent_px)
+                .py(px(8.0))
+                .child(text_canvas)
+                .into_any_element()
+        }
+
+        BlockKind::MathBlock { is_start: false } => div().w_full().h(px(0.0)).into_any_element(),
+
+        BlockKind::MathBlockContent => {
+            if !lrc.is_math_block_editing {
+                return div().w_full().h(px(0.0)).into_any_element();
+            }
+            let typo = crate::editor::layout::get_block_typography_with_metrics(
+                &parsed.kind,
+                lrc.font_size,
+                lrc.line_height,
+            );
+            let mut source_lrc = *lrc;
+            source_lrc.content_width = (lrc.content_width / 2.0 + px(40.0)).max(px(0.0));
+            source_lrc.indent_px = px(0.0);
+            let text_canvas = render_shaped_line(
+                line_idx,
+                parsed,
+                &source_lrc,
+                typo.font_size,
+                typo.line_height,
+                None,
+                true,
+            );
+
+            div()
+                .w_full()
+                .flex()
+                .flex_row()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pl(px(12.0))
+                        .py(px(4.0))
+                        .child(text_canvas),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .border_l_1()
+                        .border_color(theme.code_block_border)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .px(px(12.0))
+                        .py(px(4.0))
+                        .when_some(lrc.math_preview, |preview, math| {
+                            let available_width = (lrc.content_width / 2.0 - px(24.0)).max(px(0.0));
+                            let rendered_size =
+                                crate::editor::shaping::math_render_size(math, px(lrc.font_size));
+                            let scale = if rendered_size.width > available_width {
+                                f32::from(available_width / rendered_size.width)
+                            } else {
+                                1.0
+                            };
+                            preview.child(
+                                svg()
+                                    .path(math.asset_path.clone())
+                                    .w(rendered_size.width * scale)
+                                    .h(rendered_size.height * scale)
+                                    .text_color(theme.text_primary),
+                            )
+                        }),
+                )
+                .into_any_element()
+        }
+
         BlockKind::Paragraph => {
             if is_syntactic_separator(lines, line_idx) && !is_active {
                 // Syntactic blank separator lines between blocks: collapsed to 0 height in Live Preview

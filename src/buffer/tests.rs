@@ -154,6 +154,96 @@ fn test_code_language_header_arrow_navigation() {
 }
 
 #[test]
+fn test_enter_after_math_delimiter_creates_a_block() {
+    let mut buf = TextBuffer::from_str("$$", None);
+    buf.set_cursor(Position::new(0, 2));
+
+    buf.insert_newline_mode(false);
+
+    assert_eq!(buf.lines, vec!["$$", "", "$$", ""]);
+    assert_eq!(buf.cursor_pos(), Position::new(1, 0));
+}
+
+#[test]
+fn test_live_preview_navigation_skips_math_delimiter_lines() {
+    let mut buf = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
+    buf.set_cursor(Position::new(0, 6));
+
+    buf.move_right_mode(false, false);
+
+    assert_eq!(buf.cursor_pos(), Position::new(2, 0));
+
+    buf.set_cursor(Position::new(2, 1));
+    buf.move_right_mode(false, false);
+
+    assert_eq!(buf.cursor_pos(), Position::new(4, 0));
+
+    buf.set_cursor(Position::new(0, 6));
+    buf.move_down_mode(false, false);
+    assert_eq!(buf.cursor_pos(), Position::new(2, 1));
+    buf.move_up_mode(false, false);
+    assert_eq!(buf.cursor_pos(), Position::new(0, 6));
+}
+
+#[test]
+fn test_source_mode_can_edit_math_delimiters() {
+    let mut buf = TextBuffer::from_str("$$\nx\n$$", None);
+    buf.set_cursor(Position::new(0, 1));
+
+    buf.move_right_mode(false, true);
+
+    assert_eq!(buf.cursor_pos(), Position::new(0, 2));
+}
+
+#[test]
+fn test_empty_math_source_lines_remain_navigable_in_live_preview() {
+    let mut buf = TextBuffer::from_str("Before\n$$\n\n$$\nAfter", None);
+    buf.set_cursor(Position::new(0, 6));
+
+    buf.move_right_mode(false, false);
+
+    assert_eq!(buf.cursor_pos(), Position::new(2, 0));
+}
+
+#[test]
+fn test_cursor_is_kept_inside_math_source_when_normalized() {
+    let mut buf = TextBuffer::from_str("$$\nx + y\n$$", None);
+    buf.set_cursor(Position::new(0, 0));
+
+    buf.ensure_cursor_not_on_math_delimiter(false);
+
+    assert_eq!(buf.cursor_pos(), Position::new(1, 0));
+
+    buf.set_cursor(Position::new(2, 0));
+    buf.ensure_cursor_not_on_math_delimiter(false);
+
+    assert_eq!(buf.cursor_pos(), Position::new(1, 5));
+}
+
+#[test]
+fn test_live_preview_backspace_and_delete_do_not_merge_math_delimiters() {
+    let mut backspace = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
+    backspace.set_cursor(Position::new(2, 0));
+    backspace.backspace_mode(false);
+    assert_eq!(backspace.lines, vec!["Before", "$$", "x", "$$", "After"]);
+
+    let mut delete = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
+    delete.set_cursor(Position::new(2, 1));
+    delete.delete_forward_mode(false);
+    assert_eq!(delete.lines, vec!["Before", "$$", "x", "$$", "After"]);
+
+    let mut before_block = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
+    before_block.set_cursor(Position::new(0, 6));
+    before_block.delete_forward_mode(false);
+    assert_eq!(before_block.lines, vec!["Before", "$$", "x", "$$", "After"]);
+
+    let mut after_block = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
+    after_block.set_cursor(Position::new(4, 0));
+    after_block.backspace_mode(false);
+    assert_eq!(after_block.lines, vec!["Before", "$$", "x", "$$", "After"]);
+}
+
+#[test]
 fn test_heading_backspace_at_marker() {
     let mut buf = TextBuffer::from_str("# Welcome to Inviscid", None);
     buf.selection = Selection::cursor(Position::new(0, 2));

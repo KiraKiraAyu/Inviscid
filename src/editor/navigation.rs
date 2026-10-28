@@ -6,7 +6,7 @@ use crate::editor::shaping::{
     LineShapingContext, calculate_col_from_point, calculate_pos_from_col, compute_content_width,
     get_block_style_for_line_with_metrics,
 };
-use crate::markdown::{VisualDocument, get_block_prefix_len};
+use crate::markdown::{VisualDocument, VisualPosition, get_block_prefix_len};
 use crate::theme::Theme;
 
 impl Editor {
@@ -172,6 +172,66 @@ impl Editor {
         }
     }
 
+    fn adjacent_live_navigation_line(
+        &self,
+        vdoc: &VisualDocument,
+        vpos: VisualPosition,
+        current_line: usize,
+        is_down: bool,
+        parsed_lines: &[crate::markdown::ParsedLine],
+    ) -> Option<usize> {
+        let mut target_vpos = if is_down {
+            vdoc.next_visual_line(vpos)
+        } else {
+            vdoc.prev_visual_line(vpos)
+        };
+        let mut search_from_line = current_line;
+
+        loop {
+            let candidate_line = if let Some(target_vpos) = target_vpos {
+                let source_line = vdoc.visual_to_source(target_vpos).line;
+                if self.display_map.fold_map().is_line_folded(source_line) {
+                    if is_down {
+                        self.display_map.fold_map().next_visible_line(
+                            source_line.saturating_sub(1),
+                            self.buffer.line_count(),
+                        )
+                    } else {
+                        self.display_map
+                            .fold_map()
+                            .prev_visible_line(source_line + 1)
+                    }
+                } else {
+                    Some(source_line)
+                }
+            } else if is_down {
+                self.display_map
+                    .fold_map()
+                    .next_visible_line(search_from_line, self.buffer.line_count())
+            } else {
+                self.display_map
+                    .fold_map()
+                    .prev_visible_line(search_from_line)
+            }?;
+
+            search_from_line = candidate_line;
+            let is_math_delimiter = parsed_lines.get(candidate_line).is_some_and(|line| {
+                matches!(&line.kind, crate::markdown::BlockKind::MathBlock { .. })
+            });
+            if !is_math_delimiter {
+                return Some(candidate_line);
+            }
+
+            target_vpos = target_vpos.and_then(|target_vpos| {
+                if is_down {
+                    vdoc.next_visual_line(target_vpos)
+                } else {
+                    vdoc.prev_visual_line(target_vpos)
+                }
+            });
+        }
+    }
+
     fn move_vertical_live(&mut self, is_shift: bool, is_down: bool, window: &mut Window) {
         let pos = self.buffer.cursor_pos();
         let goal_x = match self.pixel_column_goal {
@@ -199,22 +259,13 @@ impl Editor {
             let layout = self.layout_snapshot();
             let vdoc = VisualDocument::from_parsed(self.buffer.lines(), &layout.parsed_lines);
             let vpos = vdoc.source_to_visual(pos);
-            let target_vpos = vdoc.next_visual_line(vpos);
-
-            let next_line = if let Some(target_vpos) = target_vpos {
-                let cand_line = vdoc.visual_to_source(target_vpos).line;
-                if self.display_map.fold_map().is_line_folded(cand_line) {
-                    self.display_map
-                        .fold_map()
-                        .next_visible_line(cand_line - 1, self.buffer.line_count())
-                } else {
-                    Some(cand_line)
-                }
-            } else {
-                self.display_map
-                    .fold_map()
-                    .next_visible_line(pos.line, self.buffer.line_count())
-            };
+            let next_line = self.adjacent_live_navigation_line(
+                &vdoc,
+                vpos,
+                pos.line,
+                true,
+                &layout.parsed_lines,
+            );
 
             if let Some(target_line) = next_line {
                 let target_line_str = self.buffer.line(target_line).unwrap_or("");
@@ -251,18 +302,13 @@ impl Editor {
             let layout = self.layout_snapshot();
             let vdoc = VisualDocument::from_parsed(self.buffer.lines(), &layout.parsed_lines);
             let vpos = vdoc.source_to_visual(pos);
-            let target_vpos = vdoc.prev_visual_line(vpos);
-
-            let prev_line = if let Some(target_vpos) = target_vpos {
-                let cand_line = vdoc.visual_to_source(target_vpos).line;
-                if self.display_map.fold_map().is_line_folded(cand_line) {
-                    self.display_map.fold_map().prev_visible_line(cand_line + 1)
-                } else {
-                    Some(cand_line)
-                }
-            } else {
-                self.display_map.fold_map().prev_visible_line(pos.line)
-            };
+            let prev_line = self.adjacent_live_navigation_line(
+                &vdoc,
+                vpos,
+                pos.line,
+                false,
+                &layout.parsed_lines,
+            );
 
             if let Some(target_line) = prev_line {
                 let target_line_str = self.buffer.line(target_line).unwrap_or("");

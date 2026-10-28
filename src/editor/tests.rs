@@ -4,6 +4,33 @@ use crate::markdown::{MarkdownScanner, is_syntactic_separator};
 use gpui::px;
 
 #[test]
+fn math_editing_expands_all_source_lines_and_hides_both_delimiters() {
+    let lines = vec!["$$".into(), "x +".into(), "y".into(), "$$".into()];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    let editing = LineLayoutContext::live_preview(px(800.0)).with_math_block_editing(true);
+
+    assert_eq!(
+        get_line_layout_height(&lines, 0, &parsed[0], editing.clone()),
+        px(0.0)
+    );
+    assert!(get_line_layout_height(&lines, 1, &parsed[1], editing.clone()) > px(0.0));
+    assert!(get_line_layout_height(&lines, 2, &parsed[2], editing.clone()) > px(0.0));
+    assert_eq!(
+        get_line_layout_height(&lines, 3, &parsed[3], editing),
+        px(0.0)
+    );
+    assert_eq!(
+        get_line_layout_height(
+            &lines,
+            1,
+            &parsed[1],
+            LineLayoutContext::live_preview(px(800.0)),
+        ),
+        px(0.0)
+    );
+}
+
+#[test]
 fn test_ime_preedit_occupies_inline_width_and_is_underlined() {
     use crate::editor::shaping::{LineShapingContext, build_line_runs};
     use crate::markdown::{InlineSpan, mark_ime_preedit};
@@ -1157,6 +1184,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         content_width,
         active_line: cursor_line,
         active_col: 0,
+        active_math_block: None,
         doc_path: None,
         image_cache_version: crate::http::image_cache_version(),
         syntax_cache_version: crate::syntax::syntax_cache_version(),
@@ -1280,6 +1308,7 @@ fn test_folding_layout_height_and_navigation() {
         content_width,
         active_line: 0,
         active_col: 0,
+        active_math_block: None,
         doc_path: None,
         image_cache_version: 0,
         syntax_cache_version: 0,
@@ -1333,6 +1362,7 @@ fn test_folding_layout_height_and_navigation() {
         content_width,
         active_line: 0,
         active_col: 0,
+        active_math_block: None,
         doc_path: None,
         image_cache_version: 0,
         syntax_cache_version: 0,
@@ -1670,6 +1700,208 @@ fn test_mouse_hit_testing_live_preview_offsets() {
                 ed.find_pos_for_mouse_point(click_8_mid_bottom, window),
                 Position::new(8, 8)
             );
+        });
+    });
+}
+
+#[gpui::test]
+fn test_clicking_display_math_enters_source_and_preview_editing(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::theme::ThemeManager;
+    use gpui::{Bounds, point, px, size};
+
+    let config = AppConfig::default().with_theme("Dracula");
+    let theme_manager = ThemeManager::from_config(&config);
+    cx.update(|cx| {
+        cx.set_global(theme_manager);
+        cx.set_global(config);
+    });
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        let buffer = TextBuffer::from_str("Before\n$$\nx + y\n$$\nAfter", None);
+        Editor::new_with_buffer(buffer, cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, _cx| {
+            editor.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(70.0)),
+                size: size(px(1000.0), px(800.0)),
+            };
+            editor.ensure_layout_cache();
+            let formula_bounds = editor.line_screen_bounds(1, editor.viewport_bounds);
+            let click = point(
+                formula_bounds.origin.x + px(200.0),
+                formula_bounds.origin.y + px(12.0),
+            );
+
+            assert_eq!(
+                editor.find_pos_for_mouse_point(click, window),
+                Position::new(2, 0)
+            );
+            assert_eq!(
+                editor.find_pos_for_mouse_point_mut(click, window),
+                Position::new(2, 0)
+            );
+            editor.buffer_mut().set_cursor(Position::new(2, 0));
+            editor.ensure_layout_cache();
+            assert_eq!(editor.layout_snapshot().line_heights[1], px(0.0));
+            assert!(editor.layout_snapshot().line_heights[2] > px(0.0));
+            assert_eq!(editor.layout_snapshot().line_heights[3], px(0.0));
+        });
+    });
+}
+
+#[gpui::test]
+fn editing_display_math_updates_its_layout_snapshot_and_preview(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::theme::ThemeManager;
+
+    let config = AppConfig::default().with_theme("Dracula");
+    let theme_manager = ThemeManager::from_config(&config);
+    cx.update(|cx| {
+        cx.set_global(theme_manager);
+        cx.set_global(config);
+    });
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        Editor::new_with_buffer(TextBuffer::from_str("$$\nx + y\n$$", None), cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.buffer_mut().set_cursor(Position::new(1, 5));
+            editor.ensure_layout_cache();
+            assert_eq!(
+                editor.layout_snapshot().parsed_lines[0].spans[0]
+                    .math
+                    .as_ref()
+                    .unwrap()
+                    .tex,
+                "x + y"
+            );
+
+            editor.perform_edit(cx, |editor| editor.buffer_mut().insert_text(" + z"));
+            assert_eq!(editor.buffer().line(1), Some("x + y + z"));
+            editor.ensure_layout_cache();
+
+            let layout = editor.layout_snapshot();
+            assert_eq!(layout.buffer_version, editor.buffer().version());
+            assert_eq!(layout.parsed_lines[1].raw_text, "x + y + z");
+            assert_eq!(
+                layout.parsed_lines[0].spans[0].math.as_ref().unwrap().tex,
+                "x + y + z"
+            );
+            assert!(layout.line_heights[1] > gpui::px(0.0));
+        });
+    });
+}
+
+#[gpui::test]
+fn test_live_preview_vertical_navigation_skips_math_delimiters(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::theme::ThemeManager;
+    use gpui::{Bounds, point, px, size};
+
+    let config = AppConfig::default().with_theme("Dracula");
+    let theme_manager = ThemeManager::from_config(&config);
+    cx.update(|cx| {
+        cx.set_global(theme_manager);
+        cx.set_global(config);
+    });
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        let buffer = TextBuffer::from_str("Before\n$$\nx +\ny\n$$\nAfter", None);
+        Editor::new_with_buffer(buffer, cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, _cx| {
+            editor.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(70.0)),
+                size: size(px(1000.0), px(800.0)),
+            };
+            editor.ensure_layout_cache();
+
+            let formula_bounds = editor.line_screen_bounds(1, editor.viewport_bounds);
+            let click = point(
+                formula_bounds.origin.x + px(200.0),
+                formula_bounds.origin.y + px(12.0),
+            );
+            let clicked_pos = editor.find_pos_for_mouse_point_mut(click, window);
+            editor.buffer_mut().set_cursor(clicked_pos);
+            editor.ensure_layout_cache();
+            assert_eq!(clicked_pos, Position::new(2, 0));
+
+            editor.move_up(false, window);
+            assert_eq!(editor.buffer().cursor_pos().line, 0);
+
+            editor.move_down(false, window);
+            assert_eq!(editor.buffer().cursor_pos().line, 2);
+
+            editor.move_down(false, window);
+            assert_eq!(editor.buffer().cursor_pos().line, 3);
+
+            editor.move_down(false, window);
+            assert_eq!(editor.buffer().cursor_pos().line, 5);
+
+            editor.move_up(false, window);
+            assert_eq!(editor.buffer().cursor_pos().line, 3);
+
+            editor.move_up(false, window);
+            assert_eq!(editor.buffer().cursor_pos().line, 2);
+        });
+    });
+}
+
+#[gpui::test]
+fn test_clicking_empty_display_math_creates_an_editable_source_line(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::theme::ThemeManager;
+    use gpui::{Bounds, point, px, size};
+
+    let config = AppConfig::default().with_theme("Dracula");
+    let theme_manager = ThemeManager::from_config(&config);
+    cx.update(|cx| {
+        cx.set_global(theme_manager);
+        cx.set_global(config);
+    });
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        Editor::new_with_buffer(TextBuffer::from_str("$$\n$$", None), cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, _cx| {
+            editor.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(70.0)),
+                size: size(px(1000.0), px(800.0)),
+            };
+            editor.ensure_layout_cache();
+            let formula_bounds = editor.line_screen_bounds(0, editor.viewport_bounds);
+            let click = point(
+                formula_bounds.origin.x + px(200.0),
+                formula_bounds.origin.y + px(12.0),
+            );
+
+            assert_eq!(
+                editor.find_pos_for_mouse_point_mut(click, window),
+                Position::new(1, 0)
+            );
+            assert_eq!(editor.buffer().line_count(), 3);
+            assert_eq!(editor.buffer().line(1), Some(""));
         });
     });
 }
@@ -3293,6 +3525,10 @@ fn test_nested_list_render_live_content() {
     for (idx, _line) in lines.iter().enumerate() {
         let lrc = LineRenderContext {
             is_active_line: false,
+            is_math_block_editing: false,
+            math_preview: None,
+            is_disclosure_line: false,
+            is_selection_disclosure: false,
             is_focused: false,
             cursor_col: 0,
             disclosure_col: 0,

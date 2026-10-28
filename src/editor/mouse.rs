@@ -29,7 +29,25 @@ impl Editor {
             return pos;
         }
 
-        self.find_pos_for_mouse_point(point, window)
+        let pos = self.find_pos_for_mouse_point(point, window);
+        if self.render_mode != RenderMode::Source
+            && let Some(start_line) = pos.line.checked_sub(1)
+            && self
+                .layout_snapshot()
+                .parsed_lines
+                .get(start_line)
+                .is_some_and(|line| {
+                    matches!(
+                        line.kind,
+                        crate::markdown::BlockKind::MathBlock { is_start: true }
+                    )
+                })
+            && let Some(pos) = self.buffer.ensure_math_block_content_line(start_line)
+        {
+            return pos;
+        }
+
+        pos
     }
 
     /// Computes deterministic on-screen bounds for a document line based on layout cache and viewport
@@ -118,13 +136,25 @@ impl Editor {
         }
 
         if !exact_only && self.render_mode != RenderMode::Source {
-            let vdoc = crate::markdown::VisualDocument::from_parsed(
-                self.buffer.lines(),
-                &layout.parsed_lines,
-            );
-            let vpos = vdoc.source_to_visual(Position::new(line_idx, 0));
-            let spos = vdoc.visual_to_source(vpos);
-            line_idx = spos.line;
+            let disclosure_line = self.disclosure_position().line;
+            let active_math_block =
+                crate::markdown::math_block_range(self.buffer.lines(), disclosure_line)
+                    .filter(|(start, end)| disclosure_line > *start && disclosure_line < *end);
+            if active_math_block.is_some_and(|(start, end)| (start..=end).contains(&line_idx)) {
+                // Preserve source rows while the split formula editor is open.
+            } else if let Some((start, _)) =
+                crate::markdown::math_block_range(self.buffer.lines(), line_idx)
+            {
+                line_idx = start;
+            } else {
+                let vdoc = crate::markdown::VisualDocument::from_parsed(
+                    self.buffer.lines(),
+                    &layout.parsed_lines,
+                );
+                let vpos = vdoc.source_to_visual(Position::new(line_idx, 0));
+                let spos = vdoc.visual_to_source(vpos);
+                line_idx = spos.line;
+            }
         }
 
         let line_bounds = self.line_screen_bounds(line_idx, viewport);
@@ -147,6 +177,18 @@ impl Editor {
         let layout = self.layout_snapshot();
         if let Some(parsed) = layout.parsed_lines.get(target_line) {
             let is_source = self.render_mode == RenderMode::Source;
+            if !is_source
+                && matches!(
+                    parsed.kind,
+                    crate::markdown::BlockKind::MathBlock { is_start: true }
+                )
+                && let Some((start, end)) =
+                    crate::markdown::math_block_range(self.buffer.lines(), target_line)
+                && start == target_line
+                && end > start
+            {
+                return Position::new(start + 1, 0);
+            }
 
             if let crate::markdown::BlockKind::Table {
                 cells,
@@ -233,6 +275,17 @@ impl Editor {
         Some((
             Position::new(start_line, 0),
             Position::new(end_line, self.buffer.line_len(end_line)),
+        ))
+    }
+
+    fn math_block_content_bounds(&self, line_idx: usize) -> Option<(Position, Position)> {
+        if self.render_mode == RenderMode::Source {
+            return None;
+        }
+        let (start, end) = crate::markdown::math_block_range(self.buffer.lines(), line_idx)?;
+        (start < line_idx && line_idx < end).then_some((
+            Position::new(start + 1, 0),
+            Position::new(end - 1, self.buffer.line_len(end - 1)),
         ))
     }
 
@@ -638,8 +691,9 @@ impl Editor {
             let pos = self.find_pos_for_mouse_point_mut(event.position, window);
             self.buffer.set_cursor(pos);
         }
-        self.drag_code_block_bounds =
-            self.code_block_content_bounds(self.buffer.selection().anchor.line);
+        self.drag_code_block_bounds = self
+            .code_block_content_bounds(self.buffer.selection().anchor.line)
+            .or_else(|| self.math_block_content_bounds(self.buffer.selection().anchor.line));
         if self.buffer.cursor_pos() != prev_head {
             cx.emit(EditorEvent::CursorMoved);
         }

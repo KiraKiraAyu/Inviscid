@@ -136,6 +136,10 @@ impl VisualDocument {
                 BlockKind::CodeBlockContent => {
                     idx += 1;
                 }
+                BlockKind::MathBlock { .. } | BlockKind::MathBlockContent => {
+                    blocks.push(VisualBlock::Paragraph { source_line: idx });
+                    idx += 1;
+                }
                 BlockKind::Table { is_header, .. } => {
                     if *is_header {
                         let start_line = idx;

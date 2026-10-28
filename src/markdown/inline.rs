@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SyntaxToken {
     Keyword,
@@ -28,6 +30,15 @@ pub struct InlineSpan {
     pub syntax_token: Option<SyntaxToken>,
     pub group_range: (usize, usize),
     pub span_range: (usize, usize),
+    pub(crate) math: Option<MathSpan>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MathSpan {
+    pub(crate) tex: String,
+    pub(crate) source: String,
+    pub(crate) rendered: crate::math::MathSvg,
+    pub(crate) is_display: bool,
 }
 
 impl InlineSpan {
@@ -50,6 +61,28 @@ impl InlineSpan {
             syntax_token,
             group_range: range,
             span_range: range,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn math(
+        source: impl Into<String>,
+        tex: impl Into<String>,
+        range: (usize, usize),
+        rendered: crate::math::MathSvg,
+        is_display: bool,
+    ) -> Self {
+        let source = source.into();
+        Self {
+            text: source.clone(),
+            group_range: range,
+            span_range: range,
+            math: Some(MathSpan {
+                tex: tex.into(),
+                source,
+                rendered,
+                is_display,
+            }),
             ..Default::default()
         }
     }
@@ -107,6 +140,40 @@ impl InlineSpan {
         } else {
             false
         }
+    }
+
+    pub(crate) fn rendered_text(
+        &self,
+        is_active_line: bool,
+        cursor_col: usize,
+        is_source_mode: bool,
+    ) -> Cow<'_, str> {
+        let Some(math) = &self.math else {
+            return Cow::Borrowed(&self.text);
+        };
+
+        if self.math_is_disclosed(is_active_line, cursor_col, is_source_mode) {
+            return Cow::Borrowed(&self.text);
+        }
+
+        let placeholder_count = (math.rendered.width_milli_em as f32 * crate::math::MATH_SCALE
+            / 200.0)
+            .ceil()
+            .clamp(1.0, 3072.0) as usize;
+        Cow::Owned("\u{202f}".repeat(placeholder_count))
+    }
+
+    pub(crate) fn math_is_disclosed(
+        &self,
+        is_active_line: bool,
+        cursor_col: usize,
+        is_source_mode: bool,
+    ) -> bool {
+        self.math.is_some()
+            && (is_source_mode
+                || (is_active_line
+                    && cursor_col >= self.group_range.0
+                    && cursor_col <= self.group_range.1))
     }
 }
 
@@ -187,6 +254,23 @@ impl InlineStyleContext<'_> {
         span.is_code = true;
         span
     }
+
+    fn make_math_span(
+        &self,
+        source: String,
+        tex: String,
+        range: (usize, usize),
+        rendered: crate::math::MathSvg,
+        is_display: bool,
+    ) -> InlineSpan {
+        let mut span = InlineSpan::math(source, tex, range, rendered, is_display);
+        span.is_bold = self.is_bold;
+        span.is_italic = self.is_italic;
+        span.is_strikethrough = self.is_strikethrough;
+        span.is_link = self.is_link;
+        span.link_url = self.link_url.map(str::to_string);
+        span
+    }
 }
 
 fn find_matching_code_span(chars: &[char], start: usize) -> Option<usize> {
@@ -206,6 +290,58 @@ fn find_matching_code_span(chars: &[char], start: usize) -> Option<usize> {
             return Some(j + tick_count);
         }
         j += 1;
+    }
+    None
+}
+
+fn is_escaped(chars: &[char], index: usize) -> bool {
+    let mut slash_count = 0;
+    let mut cursor = index;
+    while cursor > 0 && chars[cursor - 1] == '\\' {
+        slash_count += 1;
+        cursor -= 1;
+    }
+    slash_count % 2 == 1
+}
+
+fn find_matching_math_span(
+    chars: &[char],
+    start: usize,
+    delimiter_len: usize,
+) -> Option<(usize, usize)> {
+    let len = chars.len();
+    let mut cursor = start + delimiter_len;
+    while cursor + delimiter_len <= len {
+        if chars[cursor] == '`'
+            && let Some(next) = find_matching_code_span(chars, cursor)
+        {
+            cursor = next;
+            continue;
+        }
+
+        if chars[cursor] == '$' && is_escaped(chars, cursor) {
+            cursor += 1;
+            continue;
+        }
+
+        if delimiter_len == 2 {
+            if cursor + 1 < len
+                && chars[cursor] == '$'
+                && chars[cursor + 1] == '$'
+                && !is_escaped(chars, cursor)
+                && (cursor == 0 || chars[cursor - 1] != '$')
+                && (cursor + 2 == len || chars[cursor + 2] != '$')
+            {
+                return Some((cursor, cursor + 2));
+            }
+        } else if chars[cursor] == '$'
+            && !is_escaped(chars, cursor)
+            && (cursor == 0 || chars[cursor - 1] != '$')
+            && (cursor + 1 == len || chars[cursor + 1] != '$')
+        {
+            return Some((cursor, cursor + 1));
+        }
+        cursor += 1;
     }
     None
 }
@@ -327,6 +463,23 @@ pub fn parse_inline_spans(text: &str, base_offset: usize) -> Vec<InlineSpan> {
     parse_inline_spans_internal(text, base_offset, InlineStyleContext::default(), 0)
 }
 
+#[cfg(test)]
+mod math_placeholder_tests {
+    use super::parse_inline_spans;
+
+    #[test]
+    fn inline_math_placeholder_reserves_scaled_formula_width() {
+        let spans = parse_inline_spans(r"$\omega$", 0);
+        let span = spans.iter().find(|span| span.math.is_some()).unwrap();
+        let math = span.math.as_ref().unwrap();
+        let placeholder = span.rendered_text(false, 0, false);
+        let expected =
+            (math.rendered.width_milli_em as f32 * crate::math::MATH_SCALE / 200.0).ceil() as usize;
+
+        assert_eq!(placeholder.chars().count(), expected);
+    }
+}
+
 fn parse_inline_spans_internal(
     text: &str,
     base_offset: usize,
@@ -391,6 +544,31 @@ fn parse_inline_spans_internal(
                     normal_start = i;
                     continue;
                 }
+            }
+        }
+
+        // LaTeX math: `$...$` inline and `$$...$$` display style.
+        if chars[i] == '$' && !is_escaped(&chars, i) {
+            let delimiter_len = if i + 1 < len && chars[i + 1] == '$' {
+                2
+            } else {
+                1
+            };
+            if let Some((close_start, end_idx)) = find_matching_math_span(&chars, i, delimiter_len)
+            {
+                let tex: String = chars[i + delimiter_len..close_start].iter().collect();
+                let is_display = delimiter_len == 2;
+                let source: String = chars[i..end_idx].iter().collect();
+                flush_normal(&mut normal_buffer, normal_start, i, &mut spans);
+                let range = (base_offset + i, base_offset + end_idx);
+                if let Some(rendered) = crate::math::prepare_latex(&tex, is_display) {
+                    spans.push(ctx.make_math_span(source, tex, range, rendered, is_display));
+                } else {
+                    spans.push(ctx.make_span(source, range, range, false));
+                }
+                i = end_idx;
+                normal_start = i;
+                continue;
             }
         }
 
