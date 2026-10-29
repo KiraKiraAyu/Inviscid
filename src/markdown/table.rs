@@ -1,6 +1,7 @@
 use super::inline::parse_inline_spans;
 use super::prefix::is_fence_line;
 use super::types::{TableAlignment, TableCell};
+use crate::buffer::SourceLine;
 
 pub fn is_table_delimiter_row(line: &str) -> bool {
     let trimmed = line.trim();
@@ -113,20 +114,21 @@ pub fn get_cell_index_for_col(cells: &[TableCell], col: usize) -> usize {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TableMetadata {
-    pub header_line: usize,
-    pub delimiter_line: usize,
-    pub last_table_line: usize,
+    pub header_line: SourceLine,
+    pub delimiter_line: SourceLine,
+    pub last_table_line: SourceLine,
     pub num_columns: usize,
     pub alignments: Vec<TableAlignment>,
 }
 
-pub fn get_table_metadata(lines: &[String], target_line: usize) -> Option<TableMetadata> {
-    if target_line >= lines.len() {
+pub fn get_table_metadata(lines: &[String], target_line: SourceLine) -> Option<TableMetadata> {
+    let target_idx = target_line.index();
+    if target_idx >= lines.len() {
         return None;
     }
 
     let mut header_idx = None;
-    for cur in (0..=target_line).rev() {
+    for cur in (0..=target_idx).rev() {
         let trimmed = lines[cur].trim();
         if cur + 1 < lines.len()
             && is_table_delimiter_row(&lines[cur + 1])
@@ -159,14 +161,14 @@ pub fn get_table_metadata(lines: &[String], target_line: usize) -> Option<TableM
         last_table_line = idx;
     }
 
-    if target_line > last_table_line {
+    if target_idx > last_table_line {
         return None;
     }
 
     Some(TableMetadata {
-        header_line,
-        delimiter_line,
-        last_table_line,
+        header_line: SourceLine::new(header_line),
+        delimiter_line: SourceLine::new(delimiter_line),
+        last_table_line: SourceLine::new(last_table_line),
         num_columns,
         alignments,
     })

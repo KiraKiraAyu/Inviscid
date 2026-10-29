@@ -273,7 +273,10 @@ fn render_match_row(
 
 /// Returns the cursor position immediately after a workspace-search match.
 fn workspace_match_position(m: &WorkspaceMatch) -> Position {
-    Position::new(m.line_number.saturating_sub(1), m.char_range.1)
+    Position::new(
+        crate::buffer::SourceLine::new(m.line_number.saturating_sub(1)),
+        m.char_range.1,
+    )
 }
 
 /// Splits the matched line around the hit, dropping the leading indentation.
@@ -313,7 +316,10 @@ mod tests {
     #[test]
     fn workspace_match_position_places_cursor_at_match_end() {
         let m = hit("prefix needle suffix", (7, 13));
-        assert_eq!(workspace_match_position(&m), Position::new(0, 13));
+        assert_eq!(
+            workspace_match_position(&m),
+            Position::new(crate::buffer::SourceLine::new(0), 13)
+        );
     }
 
     #[test]

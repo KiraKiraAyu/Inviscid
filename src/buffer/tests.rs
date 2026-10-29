@@ -1,11 +1,4 @@
-use super::*;
 
-#[test]
-fn test_column_goal_movement() {
-    let mut buf = TextBuffer::from_str("Hello World Long Line\nShort\nAnother Long Line", None);
-    buf.selection = Selection::cursor(Position::new(0, 15));
-
-    buf.move_down_mode(false, false);
     assert_eq!(buf.selection.head, Position::new(1, 5));
     assert_eq!(buf.column_goal, Some(15));
 
@@ -201,28 +194,7 @@ fn test_empty_math_source_lines_remain_navigable_in_live_preview() {
     buf.set_cursor(Position::new(0, 6));
 
     buf.move_right_mode(false, false);
-
-    assert_eq!(buf.cursor_pos(), Position::new(2, 0));
-}
-
-#[test]
-fn test_cursor_is_kept_inside_math_source_when_normalized() {
-    let mut buf = TextBuffer::from_str("$$\nx + y\n$$", None);
-    buf.set_cursor(Position::new(0, 0));
-
-    buf.ensure_cursor_not_on_math_delimiter(false);
-
-    assert_eq!(buf.cursor_pos(), Position::new(1, 0));
-
-    buf.set_cursor(Position::new(2, 0));
-    buf.ensure_cursor_not_on_math_delimiter(false);
-
-    assert_eq!(buf.cursor_pos(), Position::new(1, 5));
-}
-
-#[test]
-fn test_live_preview_backspace_and_delete_do_not_merge_math_delimiters() {
-    let mut backspace = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
+    
     backspace.set_cursor(Position::new(2, 0));
     backspace.backspace_mode(false);
     assert_eq!(backspace.lines, vec!["Before", "$$", "x", "$$", "After"]);

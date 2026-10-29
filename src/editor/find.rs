@@ -237,27 +237,28 @@ impl Editor {
         }
     }
 
-    pub fn search_highlights(&self, line_idx: usize) -> Vec<LineHighlight> {
+    pub fn search_highlights(&self, source_line: crate::buffer::SourceLine) -> Vec<LineHighlight> {
         if self.find_state.is_stale(self.buffer.revision()) {
             return Vec::new();
         }
-        let line_len = self.buffer.line_len(line_idx);
+        let line_idx = source_line.index();
+        let line_len = self.buffer.line_len(source_line);
         let current = self.find_state.current_match_index();
 
         self.find_state
-            .matches_on_line(line_idx)
+            .matches_on_line(source_line)
             .filter_map(|(idx, m)| {
-                let start = if m.start.line == line_idx {
+                let start = if m.start.line.index() == line_idx {
                     m.start.col
                 } else {
                     0
                 };
-                let end = if m.end.line == line_idx {
+                let end = if m.end.line.index() == line_idx {
                     m.end.col
                 } else {
                     line_len
                 };
-                let continues = m.end.line > line_idx;
+                let continues = m.end.line.index() > line_idx;
                 if start >= end && !continues {
                     return None;
                 }
@@ -336,7 +337,11 @@ mod tests {
         ed1.read_with(cx, |ed, cx| {
             assert!(ed.is_find_bar_visible());
             assert_eq!(ed.find_state().match_count(), 2);
-            assert_eq!(ed.search_highlights(0).len(), 2);
+            assert_eq!(
+                ed.search_highlights(crate::buffer::SourceLine::new(0))
+                    .len(),
+                2
+            );
             assert_eq!(ed.find_bar().unwrap().read(cx).query_text(cx), "apple");
         });
 
@@ -347,7 +352,10 @@ mod tests {
         ed1.read_with(cx, |ed, _| {
             assert!(!ed.is_find_bar_visible());
             assert_eq!(ed.find_state().match_count(), 0);
-            assert!(ed.search_highlights(0).is_empty());
+            assert!(
+                ed.search_highlights(crate::buffer::SourceLine::new(0))
+                    .is_empty()
+            );
         });
 
         ed2.update(cx, |ed, cx| ed.attach_find_bar(bar, cx));
@@ -355,7 +363,11 @@ mod tests {
         ed2.read_with(cx, |ed, cx| {
             assert!(ed.is_find_bar_visible());
             assert_eq!(ed.find_state().match_count(), 1);
-            assert_eq!(ed.search_highlights(0).len(), 1);
+            assert_eq!(
+                ed.search_highlights(crate::buffer::SourceLine::new(0))
+                    .len(),
+                1
+            );
             assert_eq!(ed.find_bar().unwrap().read(cx).query_text(cx), "apple");
         });
 

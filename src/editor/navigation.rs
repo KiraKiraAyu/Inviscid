@@ -1,15 +1,146 @@
-use gpui::*;
-
-use super::{Editor, RenderMode};
-use crate::buffer::Position;
-use crate::editor::shaping::{
-    LineShapingContext, calculate_col_from_point, calculate_pos_from_col, compute_content_width,
-    get_block_style_for_line_with_metrics,
-};
-use crate::markdown::{VisualDocument, VisualPosition, get_block_prefix_len};
+use crate::markdown::{EditorProjection, ProjectionMode, get_block_prefix_len};
 use crate::theme::Theme;
 
 impl Editor {
+    pub(crate) fn move_horizontally<F>(&mut self, select: bool, is_right: bool, move_buffer: F)
+    where
+        F: FnOnce(&mut crate::buffer::TextBuffer, bool),
+    {
+        let is_source = self.render_mode == RenderMode::Source;
+        let start = self.buffer.cursor_pos();
+        let was_selection = !self.buffer.selection().is_empty();
+        let version = self.buffer.version();
+        let is_table = !is_source
+            && crate::markdown::table::get_table_metadata(self.buffer.lines(), start.line)
+                .is_some();
+
+        if !is_source && !is_table && !was_selection {
+            let line = self.buffer.line(start.line).unwrap_or("");
+            let prefix = get_block_prefix_len(line);
+            let at_projected_edge = if is_right {
+                start.col >= self.buffer.line_len(start.line)
+            } else {
+                start.col <= prefix
+            };
+
+            if at_projected_edge {
+                let layout = self.layout_snapshot();
+                let projection = self.current_projection(&layout.parsed_lines);
+                if let Some(target_line) =
+                    self.display_map
+                        .adjacent_caret_line(&projection, start, is_right)
+                {
+                    let target_line = target_line.index();
+                    let target_col = if is_right {
+                        get_block_prefix_len(self.buffer.line(target_line).unwrap_or(""))
+                    } else {
+                        self.buffer.line_len(target_line)
+                    };
+                    self.buffer
+                        .update_cursor(select, Position::new(target_line, target_col));
+                } else if is_right
+                    && !select
+                    && (self.buffer.is_in_code_fence(start.line)
+                        || self.buffer.is_closing_code_fence(start.line))
+                {
+                    move_buffer(&mut self.buffer, false);
+                }
+                return;
+            }
+        }
+
+        move_buffer(&mut self.buffer, is_source || !is_table);
+
+        let current = self.buffer.cursor_pos();
+        if is_source
+            || self.buffer.version() != version
+            || (!select && was_selection)
+            || current.line == start.line
+        {
+            return;
+        }
+
+        let layout = self.layout_snapshot();
+        let projection = self.current_projection(&layout.parsed_lines);
+        let target = if current.line != start.line {
+            self.display_map
+                .adjacent_caret_line(&projection, start, is_right)
+                .map(|line| {
+                    let line = line.index();
+                    let col = current
+                        .col
+                        .max(get_block_prefix_len(self.buffer.line(line).unwrap_or("")))
+                        .min(self.buffer.line_len(line));
+                    Position::new(line, col)
+                })
+        } else {
+            self.display_map.normalize_position(&projection, current)
+        };
+        if let Some(target) = target {
+            self.buffer.update_cursor(select, target);
+        }
+    }
+
+    pub(crate) fn normalize_cursor_to_projection(&mut self, select: bool) {
+        self.normalize_cursor_for_projection(self.render_mode, select);
+    }
+
+    pub(crate) fn normalize_cursor_for_projection(
+        &mut self,
+        render_mode: RenderMode,
+        select: bool,
+    ) {
+        if render_mode == RenderMode::Source || !self.buffer.selection().is_empty() {
+            return;
+        }
+
+        let current = self.buffer.cursor_pos();
+        let layout = self.layout_snapshot();
+        let projection = self.projection_for_render_mode(&layout.parsed_lines, render_mode);
+        if let Some((start, end)) = projection.math_range(current.source_line())
+            && end.index() == start.index() + 1
+        {
+            self.buffer.ensure_math_block_content_line(start.index());
+            return;
+        }
+        if let Some(target) = self.display_map.normalize_position(&projection, current)
+            && target != current
+        {
+            self.buffer.update_cursor(select, target);
+        }
+    }
+
+    pub(crate) fn current_projection(
+        &self,
+        parsed_lines: &[crate::markdown::ParsedLine],
+    ) -> EditorProjection {
+        self.projection_for_render_mode(parsed_lines, self.render_mode)
+    }
+
+    pub(crate) fn projection_for_render_mode(
+        &self,
+        parsed_lines: &[crate::markdown::ParsedLine],
+        render_mode: RenderMode,
+    ) -> EditorProjection {
+        let caret_map = self.buffer.line_index().caret_map();
+        let mode = if render_mode == RenderMode::Source {
+            ProjectionMode::Source
+        } else {
+            let line = self.disclosure_position().line;
+            let source_line = SourceLine::new(line);
+            let active_math = caret_map
+                .math_pair(source_line)
+                .filter(|(start, end)| source_line > *start && source_line < *end);
+            ProjectionMode::live_preview(active_math)
+        };
+        EditorProjection::from_parsed_with_caret_map(
+            self.buffer.lines(),
+            parsed_lines,
+            caret_map,
+            mode,
+        )
+    }
+
     #[inline]
     pub(crate) fn is_active_disclosure_line(&self, line_idx: usize, window: &Window) -> bool {
         self.focus_handle.is_focused(window) && line_idx == self.disclosure_position().line
@@ -127,15 +258,7 @@ impl Editor {
             (0, 1)
         }
     }
-
-    /// Maps a target pixel `(x, visual_line_idx)` to the closest raw buffer column on the line.
-    pub fn get_col_for_pixel_coords(
-        &self,
-        line_idx: usize,
-        goal_x: Pixels,
-        visual_line_idx: usize,
-        window: &mut Window,
-    ) -> usize {
+    let line_idx = source_line.index();
         if line_idx >= self.buffer.line_count() {
             return 0;
         }
@@ -168,73 +291,7 @@ impl Editor {
             }
             col
         } else {
-            0
-        }
-    }
-
-    fn adjacent_live_navigation_line(
-        &self,
-        vdoc: &VisualDocument,
-        vpos: VisualPosition,
-        current_line: usize,
-        is_down: bool,
-        parsed_lines: &[crate::markdown::ParsedLine],
-    ) -> Option<usize> {
-        let mut target_vpos = if is_down {
-            vdoc.next_visual_line(vpos)
-        } else {
-            vdoc.prev_visual_line(vpos)
-        };
-        let mut search_from_line = current_line;
-
-        loop {
-            let candidate_line = if let Some(target_vpos) = target_vpos {
-                let source_line = vdoc.visual_to_source(target_vpos).line;
-                if self.display_map.fold_map().is_line_folded(source_line) {
-                    if is_down {
-                        self.display_map.fold_map().next_visible_line(
-                            source_line.saturating_sub(1),
-                            self.buffer.line_count(),
-                        )
-                    } else {
-                        self.display_map
-                            .fold_map()
-                            .prev_visible_line(source_line + 1)
-                    }
-                } else {
-                    Some(source_line)
-                }
-            } else if is_down {
-                self.display_map
-                    .fold_map()
-                    .next_visible_line(search_from_line, self.buffer.line_count())
-            } else {
-                self.display_map
-                    .fold_map()
-                    .prev_visible_line(search_from_line)
-            }?;
-
-            search_from_line = candidate_line;
-            let is_math_delimiter = parsed_lines.get(candidate_line).is_some_and(|line| {
-                matches!(&line.kind, crate::markdown::BlockKind::MathBlock { .. })
-            });
-            if !is_math_delimiter {
-                return Some(candidate_line);
-            }
-
-            target_vpos = target_vpos.and_then(|target_vpos| {
-                if is_down {
-                    vdoc.next_visual_line(target_vpos)
-                } else {
-                    vdoc.prev_visual_line(target_vpos)
-                }
-            });
-        }
-    }
-
-    fn move_vertical_live(&mut self, is_shift: bool, is_down: bool, window: &mut Window) {
-        let pos = self.buffer.cursor_pos();
-        let goal_x = match self.pixel_column_goal {
+            
             Some(x) => x,
             None => {
                 let current_x = self.get_pixel_x_for_col(pos, window);
@@ -244,36 +301,21 @@ impl Editor {
         };
 
         let (current_v_idx, total_v_lines) = self.get_visual_line_info(pos, window);
-
-        if is_down {
-            // Intra-line stepping down across soft wrapped visual lines
-            if current_v_idx + 1 < total_v_lines {
-                let col =
-                    self.get_col_for_pixel_coords(pos.line, goal_x, current_v_idx + 1, window);
-                let new_pos = Position::new(pos.line, col);
-                self.buffer.update_cursor(is_shift, new_pos);
-                return;
+            
             }
 
-            // Step to next physical line, respecting folds and visual blocks
-            let layout = self.layout_snapshot();
-            let vdoc = VisualDocument::from_parsed(self.buffer.lines(), &layout.parsed_lines);
-            let vpos = vdoc.source_to_visual(pos);
-            let next_line = self.adjacent_live_navigation_line(
-                &vdoc,
-                vpos,
-                pos.line,
-                true,
-                &layout.parsed_lines,
-            );
-
-            if let Some(target_line) = next_line {
+            let target_line = target_line.index();
                 let target_line_str = self.buffer.line(target_line).unwrap_or("");
                 let prefix = get_block_prefix_len(target_line_str);
                 let col = if target_line_str.trim_start().starts_with("```") {
                     self.buffer.line_len(target_line)
                 } else {
-                    let target_col = self.get_col_for_pixel_coords(target_line, goal_x, 0, window);
+                    let target_col = self.get_col_for_pixel_coords(
+                        SourceLine::new(target_line),
+                        goal_x,
+                        0,
+                        window,
+                    );
                     target_col
                         .max(prefix)
                         .min(self.buffer.line_len(target_line))
@@ -287,43 +329,15 @@ impl Editor {
                 self.pixel_column_goal = None;
                 self.buffer.ensure_trailing_code_fence_newline();
             }
-        } else {
-            // Moving UP
-            // Intra-line stepping up across soft wrapped visual lines
-            if current_v_idx > 0 {
-                let col =
-                    self.get_col_for_pixel_coords(pos.line, goal_x, current_v_idx - 1, window);
-                let new_pos = Position::new(pos.line, col);
-                self.buffer.update_cursor(is_shift, new_pos);
-                return;
+            
             }
 
-            // Step to previous physical line, respecting folds and visual blocks
-            let layout = self.layout_snapshot();
-            let vdoc = VisualDocument::from_parsed(self.buffer.lines(), &layout.parsed_lines);
-            let vpos = vdoc.source_to_visual(pos);
-            let prev_line = self.adjacent_live_navigation_line(
-                &vdoc,
-                vpos,
-                pos.line,
-                false,
-                &layout.parsed_lines,
-            );
-
-            if let Some(target_line) = prev_line {
+            let target_line = target_line.index();
                 let target_line_str = self.buffer.line(target_line).unwrap_or("");
                 let prefix = get_block_prefix_len(target_line_str);
                 let col = if target_line_str.trim_start().starts_with("```") {
                     self.buffer.line_len(target_line)
-                } else {
-                    let (_, target_total_v) =
-                        self.get_visual_line_info(Position::new(target_line, 0), window);
-                    let target_v_idx = target_total_v.saturating_sub(1);
-                    let target_col =
-                        self.get_col_for_pixel_coords(target_line, goal_x, target_v_idx, window);
-                    target_col
-                        .max(prefix)
-                        .min(self.buffer.line_len(target_line))
+                    
                 };
                 let new_pos = Position::new(target_line, col);
                 self.buffer.update_cursor(is_shift, new_pos);
@@ -349,15 +363,7 @@ impl Editor {
         } else {
             self.move_vertical_live(is_shift, true, window);
         }
-    }
-
-    /// Automatically adjusts the scroll viewport to keep the active cursor comfortably within view (Autoscroll)
-    pub fn scroll_to_cursor(&mut self) {
-        let cursor_line = self.buffer.cursor_pos().line;
-        let (line_top, line_bottom) = self.get_line_y_range(cursor_line);
-
-        let viewport_height = self.viewport_height();
-
+        
         let margin = px(56.0); // Comfort margin in pixels (~2.5 lines)
         let scroll_top = self.scroll.target_scroll_top;
 

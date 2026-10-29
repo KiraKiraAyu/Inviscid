@@ -117,7 +117,7 @@ impl Render for StatusBar {
                     .when_some(self.meta.as_ref(), |this, meta| {
                         this.child(format!(
                             "Ln {}, Col {}",
-                            meta.cursor_pos.line + 1,
+                            meta.cursor_pos.line.index() + 1,
                             meta.cursor_pos.col + 1
                         ))
                         .child(format!("{} words", meta.word_count))
@@ -233,7 +233,10 @@ mod tests {
         // Test set_meta
         let meta = EditorStatusMeta {
             is_dirty: false,
-            cursor_pos: crate::buffer::Position { line: 10, col: 5 },
+            cursor_pos: crate::buffer::Position {
+                line: crate::buffer::SourceLine::new(10),
+                col: 5,
+            },
             word_count: 100,
             char_count: 500,
             render_mode: crate::editor::RenderMode::Source,
@@ -251,8 +254,14 @@ mod tests {
 
         // Test set_cursor_pos
         status_bar.update(cx, |sb, cx| {
-            sb.set_cursor_pos(crate::buffer::Position { line: 20, col: 1 }, cx);
-            assert_eq!(sb.meta().map(|m| m.cursor_pos.line), Some(20));
+            sb.set_cursor_pos(
+                crate::buffer::Position {
+                    line: crate::buffer::SourceLine::new(20),
+                    col: 1,
+                },
+                cx,
+            );
+            assert_eq!(sb.meta().map(|m| m.cursor_pos.line.index()), Some(20));
         });
     }
 }

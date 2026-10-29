@@ -1,14 +1,6 @@
 use gpui::*;
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use super::{Editor, RenderMode};
-use crate::editor::shaping::compute_content_width;
-use crate::markdown::prefix::is_fence_line;
-use crate::markdown::{BlockKind, MarkdownScanner, ParsedLine};
-use crate::theme::Theme;
-
-/// Width reserved for the line-number gutter in Source mode.
 pub const SOURCE_GUTTER_WIDTH: Pixels = px(52.0);
 
 /// Total horizontal padding subtracted from window width when sizing the document container.
@@ -163,58 +155,77 @@ pub fn get_block_color_override(kind: &BlockKind, theme: &Theme) -> Option<Hsla>
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct DocumentLayoutCache {
-    pub buffer_version: usize,
-    pub lines_len: usize,
-    pub render_mode: RenderMode,
-    pub content_width: Pixels,
-    pub active_line: usize,
     pub active_col: usize,
     pub active_math_block: Option<(usize, usize)>,
     pub doc_path: Option<PathBuf>,
     pub image_cache_version: usize,
     pub syntax_cache_version: usize,
     pub fold_version: usize,
-    pub font_size: f32,
-    pub line_height: f32,
-    pub soft_wrap: bool,
-    pub parsed_lines: Arc<Vec<ParsedLine>>,
-    pub line_heights: Vec<Pixels>,
-    pub line_y_offsets: Vec<Pixels>,
-    pub space_width: Pixels,
-    pub total_height: Pixels,
-    pub separators: Vec<bool>,
+    }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct LineGeometry {
+    top: Pixels,
+    height: Pixels,
+}
+
+impl LineGeometry {
+    pub(super) const fn new(top: Pixels, height: Pixels) -> Self {
+        Self { top, height }
+    }
+
+    pub(super) const fn top(self) -> Pixels {
+        self.top
+    }
+
+    #[cfg(test)]
+    pub(super) const fn height(self) -> Pixels {
+        self.height
+    }
+
+    pub(super) fn bottom(self) -> Pixels {
+        self.top + self.height
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct VisibleLayoutLine {
+    source_line: SourceLine,
+    geometry: LineGeometry,
+}
+
+impl VisibleLayoutLine {
+    pub(super) const fn source_line(self) -> SourceLine {
+        self.source_line
+    }
+
+    pub(super) const fn geometry(self) -> LineGeometry {
+        self.geometry
+    }
 }
 
 impl Default for DocumentLayoutCache {
     fn default() -> Self {
-        Self {
-            buffer_version: 0,
-            lines_len: 0,
-            render_mode: RenderMode::LivePreview,
-            content_width: px(0.0),
-            active_line: 0,
+    
             active_col: 0,
             active_math_block: None,
             doc_path: None,
             image_cache_version: 0,
             syntax_cache_version: 0,
             fold_version: 0,
-            font_size: 15.0,
-            line_height: 1.6,
-            soft_wrap: true,
-            parsed_lines: Arc::new(Vec::new()),
-            line_heights: Vec::new(),
-            line_y_offsets: Vec::new(),
-            space_width: px(0.0),
-            total_height: px(0.0),
-            separators: Vec::new(),
-        }
+            pub(super) fn source_line_count(&self) -> usize {
+        self.line_geometry.len()
     }
-}
 
-impl DocumentLayoutCache {
+    pub(super) fn line_geometry(&self, source_line: SourceLine) -> Option<LineGeometry> {
+        self.line_geometry.get(source_line.index()).copied()
+    }
+
+    #[cfg(test)]
+    pub(super) fn line_geometries(&self) -> &[LineGeometry] {
+        &self.line_geometry
+    }
+
     #[inline]
     pub fn compute_indent_px(parsed: &ParsedLine, mode: RenderMode, space_width: Pixels) -> Pixels {
         if mode != RenderMode::LivePreview {
@@ -229,13 +240,7 @@ impl DocumentLayoutCache {
     #[inline]
     pub fn indent_px(&self, line_idx: usize) -> Pixels {
         let Some(parsed) = self.parsed_lines.get(line_idx) else {
-            return px(0.0);
-        };
-        Self::compute_indent_px(parsed, self.render_mode, self.space_width)
-    }
-}
-
-#[derive(Clone)]
+        
 pub struct LineLayoutContext<'a> {
     pub is_active: bool,
     pub math_block_editing: bool,
@@ -688,14 +693,7 @@ impl Editor {
         is_active: bool,
         is_sep: bool,
         cursor_col: usize,
-        content_width: Pixels,
-        line_idx: usize,
-        active_math_block: Option<(usize, usize)>,
-    ) -> LineLayoutContext<'_> {
-        let is_folded = self.display_map.fold_map().is_line_folded(line_idx);
-        let indent_px = self.parsed_line_indent_px(parsed);
-        LineLayoutContext::new(
-            is_active,
+        
             Some(is_sep),
             cursor_col,
             self.render_mode,
@@ -712,15 +710,7 @@ impl Editor {
         .with_text_system(self.text_system.clone())
     }
 
-    fn active_math_block(&self, active_line: usize) -> Option<(usize, usize)> {
-        if self.render_mode == RenderMode::Source {
-            return None;
-        }
-        crate::markdown::math_block_range(self.buffer.lines(), active_line)
-            .filter(|(start, end)| active_line > *start && active_line < *end)
-    }
-
-    pub fn ensure_layout_cache(&self) {
+    
         let viewport = self.viewport_bounds_val();
         let content_width = compute_content_width(viewport.size.width, self.render_mode);
         let disclosure_position = self.disclosure_position();
@@ -729,14 +719,7 @@ impl Editor {
         let active_math_block = self.active_math_block(active_line);
         let current_img_v = crate::http::image_cache_version();
         let current_syntax_v = crate::syntax::syntax_cache_version();
-
-        let current_cache = self.layout_cache.borrow().clone();
-        let view_matches = self.cache_matches_view(&current_cache, content_width);
-        let buffer_matches = current_cache.buffer_version == self.buffer.version()
-            && current_cache.lines_len == self.buffer.line_count();
-
-        if buffer_matches
-            && view_matches
+        
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.active_line == active_line
@@ -749,19 +732,11 @@ impl Editor {
         // Same line, only cursor column changed in Live Preview
         if buffer_matches
             && view_matches
-            && current_cache.image_cache_version == current_img_v
-            && current_cache.syntax_cache_version == current_syntax_v
-            && current_cache.active_line == active_line
-            && !current_cache.parsed_lines.is_empty()
-            && current_cache.line_heights.len() == current_cache.parsed_lines.len()
-            && active_line < current_cache.line_heights.len()
-        {
-            let mut cache = (*current_cache).clone();
-            let is_sep = if cache.separators.len() == cache.lines_len {
-                cache.separators.get(active_line).copied().unwrap_or(false)
-            } else {
-                crate::markdown::is_syntactic_separator(self.buffer.lines(), active_line)
-            };
+            let is_sep = self
+                .buffer
+                .line_index()
+                .caret_map()
+                .is_syntactic_separator(SourceLine::new(active_line));
             let new_h = if let Some(parsed) = cache.parsed_lines.get(active_line) {
                 let lcx = self.line_layout_ctx(
                     parsed,
@@ -773,25 +748,10 @@ impl Editor {
                     active_math_block,
                 );
                 get_line_layout_height(self.buffer.lines(), active_line, parsed, lcx)
-            } else {
-                px(24.0)
-            };
-
-            let old_h = cache.line_heights[active_line];
-            if (new_h - old_h).abs() < px(0.01) {
-                cache.active_col = active_col;
-                cache.active_math_block = active_math_block;
+                
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
-            }
-
-            cache.line_heights[active_line] = new_h;
-            let mut y = cache.line_y_offsets[active_line] + new_h;
-            for idx in (active_line + 1)..cache.line_heights.len() {
-                cache.line_y_offsets[idx] = y;
-                y += cache.line_heights[idx];
-            }
-            cache.total_height = if cache.line_heights.is_empty() {
+                cache.total_height = if cache.line_geometry.is_empty() {
                 px(48.0)
             } else {
                 y + px(24.0)
@@ -804,28 +764,12 @@ impl Editor {
 
         // Only active_line changed (vertical cursor movement without buffer edit)
         if buffer_matches
-            && view_matches
-            && current_cache.image_cache_version == current_img_v
-            && current_cache.syntax_cache_version == current_syntax_v
-            && !current_cache.parsed_lines.is_empty()
-            && current_cache.line_heights.len() == current_cache.parsed_lines.len()
-            && self.active_math_block(current_cache.active_line) == active_math_block
-        {
-            let mut cache = (*current_cache).clone();
-            let old_active = cache.active_line;
-            let new_active = active_line;
-
-            let separators = if self.render_mode == RenderMode::Source {
-                Vec::new()
-            } else if cache.separators.len() == cache.lines_len {
-                cache.separators.clone()
-            } else {
-                crate::markdown::compute_syntactic_separators(self.buffer.lines())
-            };
+        let caret_map = self.buffer.line_index().caret_map();
 
             let calc_h = |line_idx: usize, is_active: bool| -> Pixels {
                 if let Some(parsed) = cache.parsed_lines.get(line_idx) {
-                    let is_sep = separators.get(line_idx).copied().unwrap_or(false);
+                    let is_sep = self.render_mode != RenderMode::Source
+                        && caret_map.is_syntactic_separator(SourceLine::new(line_idx));
                     let lcx = self.line_layout_ctx(
                         parsed,
                         is_active,
@@ -842,48 +786,30 @@ impl Editor {
             };
 
             let old_active_new_h = calc_h(old_active, false);
-            let new_active_new_h = calc_h(new_active, true);
-
-            let old_diff = old_active_new_h
-                - cache
-                    .line_heights
-                    .get(old_active)
-                    .copied()
+            .map(|geometry| geometry.height)
                     .unwrap_or(old_active_new_h);
             let new_diff = new_active_new_h
                 - cache
-                    .line_heights
+                    .line_geometry
                     .get(new_active)
-                    .copied()
+                    .map(|geometry| geometry.height)
                     .unwrap_or(new_active_new_h);
 
             if old_diff.abs() < px(0.01) && new_diff.abs() < px(0.01) {
                 cache.active_line = active_line;
                 cache.active_col = active_col;
                 cache.active_math_block = active_math_block;
-                *self.layout_cache.borrow_mut() = Arc::new(cache);
-                return;
-            }
-
-            if old_active < cache.line_heights.len() {
-                cache.line_heights[old_active] = old_active_new_h;
-            }
-            if new_active < cache.line_heights.len() {
-                cache.line_heights[new_active] = new_active_new_h;
+                if new_active < cache.source_line_count() {
+                cache.line_geometry[new_active].height = new_active_new_h;
             }
 
             let start_rebuild = old_active.min(new_active);
             let mut y = if start_rebuild == 0 {
-                px(24.0)
-            } else {
-                cache.line_y_offsets[start_rebuild]
-            };
-
-            for idx in start_rebuild..cache.line_heights.len() {
-                cache.line_y_offsets[idx] = y;
-                y += cache.line_heights[idx];
+                for geometry in &mut cache.line_geometry[start_rebuild..] {
+                geometry.top = y;
+                y += geometry.height;
             }
-            cache.total_height = if cache.line_heights.is_empty() {
+            cache.total_height = if cache.line_geometry.is_empty() {
                 px(48.0)
             } else {
                 y + px(24.0)
@@ -896,16 +822,7 @@ impl Editor {
         }
 
         // Incremental block update on intra-block edits
-        if let Some(delta) = self.buffer.last_edit_delta()
-            && view_matches
-            && current_cache.image_cache_version == current_img_v
-            && current_cache.syntax_cache_version == current_syntax_v
-            && current_cache.lines_len == current_cache.parsed_lines.len()
-            && current_cache.line_heights.len() == current_cache.lines_len
-            && current_cache.line_y_offsets.len() == current_cache.lines_len
-        {
-            let mut cache = (*current_cache).clone();
-            if self.try_incremental_layout_update(&mut cache, delta, active_line, content_width) {
+        
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
@@ -920,68 +837,33 @@ impl Editor {
             current_cache.parsed_lines.clone()
         } else {
             let mut scanned = MarkdownScanner::scan_document(self.buffer.lines());
-            self.project_ime_preedit(0, &mut scanned);
-            Arc::new(scanned)
-        };
-
-        let separators = if self.render_mode == RenderMode::Source {
-            Vec::new()
-        } else {
-            crate::markdown::compute_syntactic_separators(self.buffer.lines())
-        };
-
-        let mut line_heights = Vec::with_capacity(parsed_doc.len());
-        let mut line_y_offsets = Vec::with_capacity(parsed_doc.len());
+            let mut line_geometry = Vec::with_capacity(parsed_doc.len());
         let mut y = px(24.0);
 
         for (idx, parsed) in parsed_doc.iter().enumerate() {
             let is_active = idx == active_line;
-            let is_sep = separators.get(idx).copied().unwrap_or(false);
+            let is_sep = self.render_mode != RenderMode::Source
+                && caret_map.is_syntactic_separator(SourceLine::new(idx));
             let lcx = self.line_layout_ctx(
                 parsed,
                 is_active,
                 is_sep,
                 active_col,
                 content_width,
-                idx,
-                active_math_block,
-            );
-            let h = get_line_layout_height(self.buffer.lines(), idx, parsed, lcx);
-            line_y_offsets.push(y);
-            line_heights.push(h);
-            y += h;
-        }
-
-        let total_height = if line_heights.is_empty() {
+                let total_height = if line_geometry.is_empty() {
             px(48.0)
         } else {
             y + px(24.0)
         };
 
-        let new_cache = DocumentLayoutCache {
-            buffer_version: self.buffer.version(),
-            lines_len: self.buffer.line_count(),
-            render_mode: self.render_mode,
-            content_width,
-            active_line,
+                
             active_col,
             active_math_block,
             doc_path: self.buffer.file_path_buf(),
             image_cache_version: current_img_v,
             syntax_cache_version: current_syntax_v,
             fold_version: self.display_map.version(),
-            font_size: self.font_size,
-            line_height: self.line_height,
-            soft_wrap: self.soft_wrap,
-            parsed_lines: parsed_doc,
-            line_heights,
-            line_y_offsets,
-            space_width: self.space_width(),
-            total_height,
-            separators,
-        };
-
-        *self.layout_cache.borrow_mut() = Arc::new(new_cache);
+            
     }
 
     fn try_incremental_layout_update(
@@ -1003,17 +885,7 @@ impl Editor {
         let active_col = self.disclosure_col();
         let active_math_block = self.active_math_block(active_line);
 
-        if cache_len.saturating_sub(delta.old_line_count) + delta.new_line_count != buf_len {
-            return false;
-        }
-
-        if self.render_mode != RenderMode::Source && cache.separators.len() != cache_len {
-            return false;
-        }
-
-        for line in &cache.parsed_lines[delta.start_line..delta.start_line + delta.old_line_count] {
-            if line.raw_text.trim_start().starts_with("```")
-                || matches!(
+        
                     line.kind,
                     BlockKind::CodeBlock { .. } | BlockKind::MathBlock { .. }
                 )
@@ -1121,27 +993,11 @@ impl Editor {
             return false;
         }
 
-        let mut new_parsed = MarkdownScanner::scan_range_with_state(
-            buf_lines,
-            block_start..block_end,
-            in_code_block,
-            false,
-        );
-        if new_parsed.len() != block_end - block_start {
-            return false;
+        
         }
-        self.project_ime_preedit(block_start, &mut new_parsed);
-
-        let mut new_heights = Vec::with_capacity(new_parsed.len());
-        let mut new_height_sum = px(0.0);
-        for (i, parsed) in new_parsed.iter().enumerate() {
-            let line_idx = block_start + i;
-            let is_active = line_idx == active_line;
-            let is_sep = if in_code_block {
-                false
-            } else {
-                cache.separators.get(line_idx).copied().unwrap_or(false)
-            };
+        let is_sep = !in_code_block
+                && self.render_mode != RenderMode::Source
+                && caret_map.is_syntactic_separator(SourceLine::new(line_idx));
             let lcx = self.line_layout_ctx(
                 parsed,
                 is_active,
@@ -1152,69 +1008,45 @@ impl Editor {
                 active_math_block,
             );
             let h = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
-            new_heights.push(h);
-            new_height_sum += h;
-        }
-
-        let old_height_sum: Pixels = cache.line_heights[block_start..old_block_end]
-            .iter()
-            .copied()
-            .fold(px(0.0), |acc, h| acc + h);
+                .map(|geometry| geometry.height)
+            .fold(px(0.0), |acc, height| acc + height);
         let height_delta = new_height_sum - old_height_sum;
 
         Arc::make_mut(&mut cache.parsed_lines).splice(block_start..old_block_end, new_parsed);
-        cache
-            .line_heights
-            .splice(block_start..old_block_end, new_heights.clone());
-
         let mut y = if block_start == 0 {
             px(24.0)
         } else {
-            cache.line_y_offsets[block_start]
+            cache
+                .line_geometry
+                .get(block_start)
+                .map(|geometry| geometry.top)
+                .unwrap_or(cache.total_height - px(24.0))
         };
-        let mut new_offsets = Vec::with_capacity(new_heights.len());
-        for h in &new_heights {
-            new_offsets.push(y);
-            y += *h;
-        }
+        let new_geometry = new_heights
+            .into_iter()
+            .map(|height| {
+                let geometry = LineGeometry::new(y, height);
+                y += height;
+                geometry
+            })
+            .collect::<Vec<_>>();
         cache
-            .line_y_offsets
-            .splice(block_start..old_block_end, new_offsets);
+            .line_geometry
+            .splice(block_start..old_block_end, new_geometry);
 
         if height_delta.abs() > px(0.001) {
-            for offset in &mut cache.line_y_offsets[block_end..] {
-                *offset += height_delta;
+            for geometry in &mut cache.line_geometry[block_end..] {
+                geometry.top += height_delta;
             }
             cache.total_height += height_delta;
         }
 
-        if cache.separators.len() >= old_block_end {
-            cache.separators.splice(
-                block_start..old_block_end,
-                vec![false; block_end - block_start],
-            );
-        }
-
         cache.buffer_version = self.buffer.version();
-        cache.lines_len = buf_len;
         cache.active_line = active_line;
         cache.active_col = active_col;
         cache.active_math_block = active_math_block;
         cache.fold_version = self.display_map.version();
-
-        true
-    }
-
-    pub fn get_line_y_range(&self, target_line: usize) -> (Pixels, Pixels) {
-        let layout = self.layout_snapshot();
-        if target_line < layout.line_y_offsets.len() {
-            let top = layout.line_y_offsets[target_line];
-            let height = layout.line_heights[target_line];
-            (top, top + height)
-        } else {
-            let total = layout.total_height;
-            ((total - px(24.0)).max(px(0.0)), total)
-        }
+            layout.source_line_y_range(target_line)
     }
 
     pub fn get_total_content_height(&self) -> Pixels {

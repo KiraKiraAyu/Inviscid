@@ -115,32 +115,7 @@ impl Element for EditorElement {
             bounds.size,
             window,
             cx,
-            |_style, _scroll_offset, hitbox, window, cx| {
-                let (lines_to_prepaint, scrollbar) = {
-                    let editor = editor_entity.read(cx);
-                    let layout = editor.layout_snapshot();
-                    let total_lines = layout.parsed_lines.len();
-
-                    // Calculate visible line slice based on ScrollState with 300px overscan
-                    let scroll_top = editor.scroll.current_scroll_top;
-                    let scroll_h = bounds.size.height;
-                    let min_y = (scroll_top - px(300.0)).max(px(0.0));
-                    let max_y = scroll_top + scroll_h + px(300.0);
-
-                    let (visible_start, visible_end) = if layout.line_y_offsets.is_empty() {
-                        (0, 0)
-                    } else {
-                        let start = layout
-                            .line_y_offsets
-                            .partition_point(|&y| y < min_y)
-                            .saturating_sub(1);
-                        let end = (layout.line_y_offsets.partition_point(|&y| y <= max_y) + 1)
-                            .min(total_lines);
-                        (start, end)
-                    };
-
-                    let is_focused = editor.focus_handle.is_focused(window);
-                    let cursor_opacity = if is_focused {
+            
                         editor.cursor_opacity
                     } else {
                         0.0
@@ -153,30 +128,11 @@ impl Element for EditorElement {
                     let selection = editor.buffer.selection();
                     let is_dragging = editor.is_dragging;
                     let is_selection_disclosure = editor.is_selection_disclosure();
-                    let mode = editor.render_mode;
-                    let active_math_block = if mode == RenderMode::Source {
-                        None
-                    } else {
-                        crate::markdown::math_block_range(
-                            editor.buffer.lines(),
-                            disclosure_position.line,
-                        )
-                        .filter(|(start, end)| {
-                            disclosure_position.line > *start && disclosure_position.line < *end
-                        })
-                    };
-                    let theme = cx.theme();
-                    let content_width = compute_content_width(bounds.size.width, mode);
+                    
                     let container_x =
-                        bounds.origin.x + (bounds.size.width - content_width).max(px(0.0)) / 2.0;
-
-                    let mut lines_to_prepaint =
-                        Vec::with_capacity(visible_end.saturating_sub(visible_start));
-
-                    for line_idx in visible_start..visible_end {
-                        if editor.is_line_folded(line_idx) {
-                            continue;
-                        }
+                        for layout_line in visible_lines {
+                        let source_line = layout_line.source_line();
+                        let line_idx = source_line.index();
                         let parsed = &layout.parsed_lines[line_idx];
                         let is_active_line = line_idx == cursor_line;
                         let is_disclosure_line = line_idx == disclosure_position.line;
@@ -219,18 +175,7 @@ impl Element for EditorElement {
                             line_idx,
                             parsed,
                             editor.buffer.lines(),
-                            &lrc,
-                            &editor_entity,
-                        );
-
-                        let line_y_in_doc = layout
-                            .line_y_offsets
-                            .get(line_idx)
-                            .copied()
-                            .unwrap_or(px(24.0));
-                        let line_screen_y = bounds.origin.y + line_y_in_doc - scroll_top;
-                        let line_origin = point(container_x, line_screen_y);
-
+                            
                         let available_space = size(
                             AvailableSpace::Definite(content_width),
                             AvailableSpace::MinContent,

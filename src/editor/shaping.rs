@@ -1224,7 +1224,7 @@ pub fn calculate_table_cell_col_from_point(
 }
 
 fn find_link_at_spans(
-    line_idx: usize,
+    source_line: crate::buffer::SourceLine,
     relative_point: Point<Pixels>,
     spans: &[InlineSpan],
     lcx: SpanLayoutContext,
@@ -1300,7 +1300,7 @@ fn find_link_at_spans(
         {
             return Some(crate::editor::HoveredLink {
                 url: url.clone(),
-                line_idx,
+                line_idx: source_line,
                 col_range: span.group_range,
             });
         }
@@ -1312,7 +1312,7 @@ fn find_link_at_spans(
 }
 
 pub fn find_link_in_table_row(
-    line_idx: usize,
+    source_line: crate::buffer::SourceLine,
     rel_point: Point<Pixels>,
     table: TableLayoutInfo,
     theme: &Theme,
@@ -1349,7 +1349,7 @@ pub fn find_link_in_table_row(
     );
 
     find_link_at_spans(
-        line_idx,
+        source_line,
         point(geom.in_cell_x, rel_point.y),
         &target_cell.spans,
         lcx,
@@ -1358,13 +1358,13 @@ pub fn find_link_in_table_row(
 }
 
 pub fn find_link_at_pixel_point(
-    line_idx: usize,
+    source_line: crate::buffer::SourceLine,
     relative_point: Point<Pixels>,
     parsed: &ParsedLine,
     lcx: SpanLayoutContext,
     window: &mut Window,
 ) -> Option<crate::editor::HoveredLink> {
-    find_link_at_spans(line_idx, relative_point, &parsed.spans, lcx, window)
+    find_link_at_spans(source_line, relative_point, &parsed.spans, lcx, window)
 }
 
 use super::LineRenderContext;
@@ -1564,7 +1564,7 @@ mod math_render_geometry_tests {
 }
 
 pub fn render_shaped_line(
-    line_idx: usize,
+    source_line: crate::buffer::SourceLine,
     parsed: &ParsedLine,
     lrc: &LineRenderContext,
     font_size: Pixels,
@@ -1572,6 +1572,7 @@ pub fn render_shaped_line(
     override_color: Option<Hsla>,
     is_source: bool,
 ) -> AnyElement {
+    let line_idx = source_line.index();
     let spans = parsed.spans.clone();
     let raw_chars_count = parsed.raw_text.chars().count();
     let is_active = lrc.is_active_line;
@@ -1583,7 +1584,7 @@ pub fn render_shaped_line(
     let is_selection_disclosure = lrc.is_selection_disclosure;
     let cursor_opacity = lrc.cursor_opacity;
     let hovered_link_range = lrc.hovered_link.and_then(|hl| {
-        if hl.line_idx == line_idx {
+        if hl.line_idx == source_line {
             Some(hl.col_range)
         } else {
             None
@@ -1759,7 +1760,7 @@ pub fn render_shaped_line(
             let mut selection_quads = Vec::new();
             if !selection.is_empty() {
                 let (sel_start, sel_end) = (selection.start(), selection.end());
-                if line_idx >= sel_start.line && line_idx <= sel_end.line {
+                if line_idx >= sel_start.line.index() && line_idx <= sel_end.line.index() {
                     let total_raw_len = raw_chars_count;
 
                     let (start_raw_col, end_raw_col) = if sel_start.line == sel_end.line {
@@ -1767,15 +1768,15 @@ pub fn render_shaped_line(
                             sel_start.col.min(total_raw_len),
                             sel_end.col.min(total_raw_len),
                         )
-                    } else if line_idx == sel_start.line {
+                    } else if line_idx == sel_start.line.index() {
                         (sel_start.col.min(total_raw_len), total_raw_len)
-                    } else if line_idx == sel_end.line {
+                    } else if line_idx == sel_end.line.index() {
                         (0, sel_end.col.min(total_raw_len))
                     } else {
                         (0, total_raw_len)
                     };
 
-                    let tail = if line_idx < sel_end.line {
+                    let tail = if line_idx < sel_end.line.index() {
                         RangeTail::Continues
                     } else if end_raw_col == total_raw_len {
                         RangeTail::EndOfLine

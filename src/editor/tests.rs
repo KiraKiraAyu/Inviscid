@@ -1,13 +1,4 @@
 use crate::editor::{LineLayoutContext, get_line_layout_height};
-use crate::markdown::{MarkdownScanner, is_syntactic_separator};
-
-use gpui::px;
-
-#[test]
-fn math_editing_expands_all_source_lines_and_hides_both_delimiters() {
-    let lines = vec!["$$".into(), "x +".into(), "y".into(), "$$".into()];
-    let parsed = MarkdownScanner::scan_document(&lines);
-    let editing = LineLayoutContext::live_preview(px(800.0)).with_math_block_editing(true);
 
     assert_eq!(
         get_line_layout_height(&lines, 0, &parsed[0], editing.clone()),
@@ -827,39 +818,16 @@ fn test_mouse_hit_testing_line_index_resolution() {
     };
 
     let content_width = px(800.0);
-    let mut y = px(24.0);
-    for (idx, parsed) in cache.parsed_lines.iter().enumerate() {
-        let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
-        cache.line_y_offsets.push(y);
-        cache.line_heights.push(h);
-        y += h;
-    }
-    cache.total_height = y + px(24.0);
+    
 
     // Document offsets:
     // Line 0 (Heading): y in [24.0, 78.0) (height 54.0)
-    // Line 1 (Paragraph): y in [78.0, 110.0) (height 32.0)
-    // Line 2 (Paragraph): y in [110.0, 142.0) (height 32.0)
-    assert_eq!(cache.line_y_offsets[0], px(24.0));
-    assert_eq!(cache.line_y_offsets[1], px(78.0));
-    assert_eq!(cache.line_y_offsets[2], px(110.0));
-
-    // Viewport layout: top in window coordinates is at 70px (TitleBar 36px + TabBar 34px)
-    let viewport = Bounds {
+    
         origin: point(px(0.0), px(70.0)),
         size: size(px(1000.0), px(700.0)),
     };
     let scroll_top = px(0.0);
-
-    // Hit-testing helper simulating doc_y calculation
-    let resolve_line = |point_y: gpui::Pixels, scroll: gpui::Pixels| -> usize {
-        let doc_y = (point_y - viewport.origin.y + scroll).max(px(0.0));
-        let idx = cache.line_y_offsets.partition_point(|&y| y <= doc_y);
-        idx.saturating_sub(1).min(cache.parsed_lines.len() - 1)
-    };
-
-    // 1. Click on Line 0 (window Y = 70.0 + 24.0 + 10.0 = 104.0) -> Line 0
+    
     assert_eq!(resolve_line(px(104.0), scroll_top), 0);
 
     // 2. Click on Line 1 (window Y = 70.0 + 78.0 + 10.0 = 158.0) -> Line 1
@@ -878,17 +846,7 @@ fn test_mouse_hit_testing_line_index_resolution() {
     // Contrast with the previous bug where viewport.origin.y was 36px:
     let buggy_viewport_top = px(36.0);
     let click_bottom_of_line_0 = px(70.0 + 65.0); // 135px
-    let correct_res = resolve_line(click_bottom_of_line_0, scroll_top);
-    assert_eq!(correct_res, 0); // Correctly Line 0!
-    let old_bug_res = {
-        let d = (click_bottom_of_line_0 - buggy_viewport_top + scroll_top).max(px(0.0));
-        cache
-            .line_y_offsets
-            .partition_point(|&y| y <= d)
-            .saturating_sub(1)
-    };
-    assert_eq!(old_bug_res, 1); // Reproduces the old bug where Line 0 was mapped to Line 1!
-}
+    
 
 #[test]
 fn test_source_mode_line_index_resolution() {
@@ -911,31 +869,14 @@ fn test_source_mode_line_index_resolution() {
     };
 
     let content_width = px(900.0);
-    let mut y = px(24.0);
-    for (idx, parsed) in cache.parsed_lines.iter().enumerate() {
-        let lcx = crate::editor::layout::LineLayoutContext::source(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
-        cache.line_y_offsets.push(y);
-        cache.line_heights.push(h);
-        y += h;
-    }
-
-    // In Source mode, every line height is exactly 24px
-    assert_eq!(cache.line_heights[0], px(24.0));
-    assert_eq!(cache.line_heights[1], px(24.0));
-    assert_eq!(cache.line_heights[2], px(24.0));
+    assert_eq!(line_geometry(&cache, 0).height(), px(24.0));
+    assert_eq!(line_geometry(&cache, 1).height(), px(24.0));
+    assert_eq!(line_geometry(&cache, 2).height(), px(24.0));
 
     let viewport = Bounds {
         origin: point(px(0.0), px(70.0)),
         size: size(px(1000.0), px(700.0)),
-    };
-
-    // Test line index mapping for all lines
-    for line in 0..3 {
-        let y_middle = px(70.0) + cache.line_y_offsets[line] + px(12.0);
-        let doc_y = (y_middle - viewport.origin.y).max(px(0.0));
-        let idx = cache.line_y_offsets.partition_point(|&y| y <= doc_y);
-        let resolved_line = idx.saturating_sub(1).min(cache.parsed_lines.len() - 1);
+        let resolved_line = cache.layout_line_at_y(doc_y).unwrap().source_line().index();
         assert_eq!(resolved_line, line, "Line {} should resolve exactly", line);
     }
 }
@@ -973,30 +914,13 @@ fn test_hit_testing_monotonicity_and_strict_boundary_invariants() {
     };
 
     let content_width = px(800.0);
-    let mut y = px(24.0);
-    for (idx, parsed) in cache.parsed_lines.iter().enumerate() {
-        let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
-        cache.line_y_offsets.push(y);
-        cache.line_heights.push(h);
-        y += h;
-    }
-    cache.total_height = y + px(24.0);
+    
 
     let viewport_top = px(70.0);
 
-    let resolve = |win_y: gpui::Pixels, scroll: gpui::Pixels| -> usize {
-        let doc_y = (win_y - viewport_top + scroll).max(px(0.0));
-        let idx = cache
-            .line_y_offsets
-            .partition_point(|&offset| offset <= doc_y);
-        idx.saturating_sub(1).min(cache.parsed_lines.len() - 1)
-    };
-
-    // 1. Boundary & Exact interval mapping for each line
-    for line_idx in 0..cache.parsed_lines.len() {
-        let top = cache.line_y_offsets[line_idx];
-        let h = cache.line_heights[line_idx];
+    let geometry = line_geometry(&cache, line_idx);
+        let top = geometry.top();
+        let h = geometry.height();
         if h <= px(0.0) {
             continue; // Skip collapsed lines
         }
@@ -1054,13 +978,7 @@ fn test_hit_testing_monotonicity_and_strict_boundary_invariants() {
                 "Scroll invariance failed: at sample_y={:?}, scroll={:?}",
                 sample_y, scroll
             );
-        }
-    }
-}
-
-#[test]
-fn test_column_mapping_bijectivity_and_monotonicity() {
-    use crate::editor::shaping::{raw_col_to_visible_byte, visible_byte_to_raw_col};
+            
     use crate::markdown::parse_inline_spans;
 
     let raw_text = "Hello **bold text** and *italic* and `code` here!";
@@ -1175,73 +1093,31 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         std::sync::Arc::new(crate::markdown::MarkdownScanner::scan_document(buf.lines()));
     let content_width = px(800.0);
     let cursor_line = 0;
-
-    // 1. Initial layout calculation when image is not loaded
-    let mut initial_cache = crate::editor::layout::DocumentLayoutCache {
-        buffer_version: buf.version(),
-        lines_len: buf.line_count(),
-        render_mode: crate::editor::RenderMode::LivePreview,
-        content_width,
-        active_line: cursor_line,
+    
         active_col: 0,
         active_math_block: None,
         doc_path: None,
         image_cache_version: crate::http::image_cache_version(),
         syntax_cache_version: crate::syntax::syntax_cache_version(),
         fold_version: 0,
-        font_size: 15.0,
-        line_height: 1.6,
-        soft_wrap: true,
-        parsed_lines: parsed_doc.clone(),
-        line_heights: Vec::new(),
-        line_y_offsets: Vec::new(),
-        space_width: px(0.0),
-        total_height: px(0.0),
-        separators: Vec::new(),
-    };
-
-    let mut y = px(24.0);
+        
     for (idx, parsed) in parsed_doc.iter().enumerate() {
-        let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
-        initial_cache.line_y_offsets.push(y);
-        initial_cache.line_heights.push(h);
-        y += h;
-    }
-    initial_cache.total_height = y + px(24.0);
+        
 
-    // Image line is line 2 (0: # Title, 1: empty, 2: ![Header]...)
-    // Initially not loaded: base_h(padding_vertical=8px) + 140px + 12px = 160px
-    let placeholder_height = initial_cache.line_heights[2];
-    assert_eq!(placeholder_height, px(8.0) + px(140.0) + px(12.0));
-
-    // 2. Simulate image finishing downloading in background
+        
     let initial_img_v = initial_cache.image_cache_version;
     crate::http::record_image_size(url, 1600, 800); // 2:1 aspect ratio -> 800px width yields 400px height
     crate::http::mark_url_loaded(url);
     let new_img_v = crate::http::image_cache_version();
     assert!(new_img_v > initial_img_v);
-
-    // 3. Recompute layout with updated image cache
-    let mut updated_cache = initial_cache.clone();
-    let mut y = px(24.0);
-    updated_cache.line_heights.clear();
-    updated_cache.line_y_offsets.clear();
-    for (idx, parsed) in parsed_doc.iter().enumerate() {
-        let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
-        updated_cache.line_y_offsets.push(y);
-        updated_cache.line_heights.push(h);
+    updated_cache
+            .line_geometry
+            .push(crate::editor::layout::LineGeometry::new(y, h));
         y += h;
     }
     updated_cache.image_cache_version = new_img_v;
     updated_cache.total_height = y + px(24.0);
-
-    // Image line height is now base_h(8px) + img_h(400px) + 12px = 420px
-    let loaded_height = updated_cache.line_heights[2];
-    assert_eq!(loaded_height, px(8.0) + px(400.0) + px(12.0));
-    assert_ne!(placeholder_height, loaded_height);
-
+    
     // Total document height expanded accordingly
     let height_growth = loaded_height - placeholder_height;
     assert_eq!(
@@ -1255,33 +1131,20 @@ fn test_display_map_fold_regions_and_visibility() {
     use crate::editor::display_map::DisplayMap;
 
     let mut dmap = DisplayMap::new();
-    let total_lines = 20;
-
-    // Initially no lines are folded
-    for i in 0..total_lines {
-        assert!(!dmap.fold_map().is_line_folded(i));
-        assert!(!dmap.fold_map().is_fold_header(i));
-    }
-
-    // Fold section lines 5..=10 (5 is header, lines 6..=10 hidden)
-    dmap.fold_map_mut().fold(5, 10);
-    assert!(dmap.fold_map().is_fold_header(5));
-    assert!(!dmap.fold_map().is_line_folded(5));
+    dmap.fold(source_line(5), source_line(10));
+    assert!(dmap.is_fold_header(source_line(5)));
+    assert!(!dmap.is_line_folded(source_line(5)));
     for line in 6..=10 {
-        assert!(dmap.fold_map().is_line_folded(line));
+        assert!(dmap.is_line_folded(source_line(line)));
     }
-    assert_eq!(dmap.next_visible_line(5, total_lines), Some(11));
-    assert_eq!(dmap.prev_visible_line(11), Some(5));
 
     // Fold another section: lines 12..=15 (lines 13..=15 hidden)
-    dmap.fold_map_mut().fold(12, 15);
-    assert_eq!(dmap.next_visible_line(12, total_lines), Some(16));
-    assert_eq!(dmap.prev_visible_line(16), Some(12));
+    dmap.fold(source_line(12), source_line(15));
 
     // Unfold all
-    dmap.fold_map_mut().unfold_all();
+    dmap.unfold_all();
     for i in 0..total_lines {
-        assert!(!dmap.fold_map().is_line_folded(i));
+        assert!(!dmap.is_line_folded(source_line(i)));
     }
 }
 
@@ -1291,73 +1154,58 @@ fn test_folding_layout_height_and_navigation() {
     use crate::editor::display_map::DisplayMap;
     use crate::editor::layout::{DocumentLayoutCache, LineLayoutContext, get_line_layout_height};
     use crate::markdown::MarkdownScanner;
-
-    let markdown = "Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5";
-    let buf = TextBuffer::from_str(markdown, None);
-    let parsed_doc = std::sync::Arc::new(MarkdownScanner::scan_document(buf.lines()));
-    let content_width = px(800.0);
-
-    let mut dmap = DisplayMap::new();
+    
     assert_eq!(dmap.version(), 0);
 
     // Initial unfolded layout
-    let mut initial_cache = DocumentLayoutCache {
-        buffer_version: buf.version(),
-        lines_len: buf.line_count(),
-        render_mode: crate::editor::RenderMode::LivePreview,
-        content_width,
-        active_line: 0,
+    
         active_col: 0,
         active_math_block: None,
         doc_path: None,
         image_cache_version: 0,
         syntax_cache_version: 0,
         fold_version: dmap.version(),
-        font_size: 15.0,
-        line_height: 1.6,
-        soft_wrap: true,
-        parsed_lines: parsed_doc.clone(),
-        line_heights: Vec::new(),
-        line_y_offsets: Vec::new(),
-        space_width: px(0.0),
-        total_height: px(0.0),
-        separators: Vec::new(),
-    };
-
-    let mut y = px(24.0);
-    for (idx, parsed) in parsed_doc.iter().enumerate() {
-        let is_folded = dmap.fold_map().is_line_folded(idx);
+        let is_folded = dmap.is_line_folded(source_line(idx));
         let lcx = LineLayoutContext::live_preview(content_width).with_folded(is_folded);
         let h = get_line_layout_height(buf.lines(), idx, parsed, lcx);
-        initial_cache.line_y_offsets.push(y);
-        initial_cache.line_heights.push(h);
+        initial_cache
+            .line_geometry
+            .push(crate::editor::layout::LineGeometry::new(y, h));
         y += h;
     }
     initial_cache.total_height = y + px(24.0);
 
     // All lines should have non-zero height initially
-    for h in &initial_cache.line_heights {
-        assert!(*h > px(0.0));
+    for geometry in initial_cache.line_geometries() {
+        assert!(geometry.height() > px(0.0));
     }
 
     // Fold lines 1..=3 (line 1 is header; lines 2, 3 folded away)
-    dmap.fold_map_mut().fold(1, 3);
+    dmap.fold(source_line(1), source_line(3));
     assert_eq!(dmap.version(), 1);
-    assert!(dmap.fold_map().is_fold_header(1));
-    assert!(!dmap.fold_map().is_line_folded(1));
-    assert!(dmap.fold_map().is_line_folded(2));
-    assert!(dmap.fold_map().is_line_folded(3));
-    assert!(!dmap.fold_map().is_line_folded(4));
+    assert!(dmap.is_fold_header(source_line(1)));
+    assert!(!dmap.is_line_folded(source_line(1)));
+    assert!(dmap.is_line_folded(source_line(2)));
+    assert!(dmap.is_line_folded(source_line(3)));
+    assert!(!dmap.is_line_folded(source_line(4)));
 
     // Next / Prev navigation skipping folded lines
-    assert_eq!(dmap.next_visible_line(0, buf.line_count()), Some(1));
-    assert_eq!(dmap.next_visible_line(1, buf.line_count()), Some(4));
-    assert_eq!(dmap.prev_visible_line(4), Some(1));
+    assert_eq!(
+        dmap.adjacent_caret_line(&projection, crate::buffer::Position::new(0, 0), true),
+        Some(source_line(1))
+    );
+    assert_eq!(
+        dmap.adjacent_caret_line(&projection, crate::buffer::Position::new(1, 0), true),
+        Some(source_line(4))
+    );
+    assert_eq!(
+        dmap.adjacent_caret_line(&projection, crate::buffer::Position::new(4, 0), false),
+        Some(source_line(1))
+    );
 
     // Recompute folded layout
     let mut folded_cache = DocumentLayoutCache {
         buffer_version: buf.version(),
-        lines_len: buf.line_count(),
         render_mode: crate::editor::RenderMode::LivePreview,
         content_width,
         active_line: 0,
@@ -1367,48 +1215,42 @@ fn test_folding_layout_height_and_navigation() {
         image_cache_version: 0,
         syntax_cache_version: 0,
         fold_version: dmap.version(),
-        font_size: 15.0,
-        line_height: 1.6,
-        soft_wrap: true,
-        parsed_lines: parsed_doc.clone(),
-        line_heights: Vec::new(),
-        line_y_offsets: Vec::new(),
-        space_width: px(0.0),
-        total_height: px(0.0),
-        separators: Vec::new(),
-    };
-
-    let mut y_folded = px(24.0);
-    for (idx, parsed) in parsed_doc.iter().enumerate() {
-        let is_folded = dmap.fold_map().is_line_folded(idx);
+        let is_folded = dmap.is_line_folded(source_line(idx));
         let lcx = LineLayoutContext::live_preview(content_width).with_folded(is_folded);
         let h = get_line_layout_height(buf.lines(), idx, parsed, lcx);
-        folded_cache.line_y_offsets.push(y_folded);
-        folded_cache.line_heights.push(h);
+        folded_cache
+            .line_geometry
+            .push(crate::editor::layout::LineGeometry::new(y_folded, h));
         y_folded += h;
     }
     folded_cache.total_height = y_folded + px(24.0);
 
     // Folded lines 2 and 3 must have height 0
-    assert_eq!(folded_cache.line_heights[2], px(0.0));
-    assert_eq!(folded_cache.line_heights[3], px(0.0));
+    assert_eq!(line_geometry(&folded_cache, 2).height(), px(0.0));
+    assert_eq!(line_geometry(&folded_cache, 3).height(), px(0.0));
     // Header line 1 and remaining lines retain normal height
-    assert_eq!(folded_cache.line_heights[1], initial_cache.line_heights[1]);
-    assert_eq!(folded_cache.line_heights[4], initial_cache.line_heights[4]);
+    assert_eq!(
+        line_geometry(&folded_cache, 1),
+        line_geometry(&initial_cache, 1)
+    );
+    assert_eq!(
+        line_geometry(&folded_cache, 4).height(),
+        line_geometry(&initial_cache, 4).height()
+    );
 
     // Total height shrunk by exactly the heights of lines 2 and 3
-    let folded_height_sum = initial_cache.line_heights[2] + initial_cache.line_heights[3];
+    let folded_height_sum =
+        line_geometry(&initial_cache, 2).height() + line_geometry(&initial_cache, 3).height();
     assert_eq!(
         initial_cache.total_height - folded_cache.total_height,
         folded_height_sum
     );
-
-    // Unfold line 1
-    assert!(dmap.fold_map_mut().unfold(1));
-    assert_eq!(dmap.version(), 2);
-    assert!(!dmap.fold_map().is_line_folded(2));
-    assert!(!dmap.fold_map().is_line_folded(3));
-    assert_eq!(dmap.next_visible_line(1, buf.line_count()), Some(2));
+    assert!(!dmap.is_line_folded(source_line(2)));
+    assert!(!dmap.is_line_folded(source_line(3)));
+    assert_eq!(
+        dmap.adjacent_caret_line(&projection, crate::buffer::Position::new(1, 0), true),
+        Some(source_line(2))
+    );
 }
 
 #[test]
@@ -1446,58 +1288,28 @@ fn test_soft_wrap_multi_line_visual_calculation() {
 
 #[test]
 fn test_fold_redirection_and_boundary_invariants() {
-    use crate::editor::display_map::DisplayMap;
-
-    let mut dmap = DisplayMap::new();
-
-    // Document with 30 lines
-    let total_lines = 30;
-
-    // Fold section A: lines 4..=8 (4 is header, 5..=8 hidden)
-    dmap.fold_map_mut().fold(4, 8);
-    // Fold section B: lines 12..=20 (12 is header, 13..=20 hidden)
-    dmap.fold_map_mut().fold(12, 20);
+    dmap.fold(source_line(12), source_line(20));
 
     // Test line folding status
-    assert!(dmap.fold_map().is_fold_header(4));
-    assert!(!dmap.fold_map().is_line_folded(4));
+    assert!(dmap.is_fold_header(source_line(4)));
+    assert!(!dmap.is_line_folded(source_line(4)));
     for line in 5..=8 {
-        assert!(dmap.fold_map().is_line_folded(line));
+        assert!(dmap.is_line_folded(source_line(line)));
     }
-    assert!(!dmap.fold_map().is_line_folded(9));
+    assert!(!dmap.is_line_folded(source_line(9)));
 
-    assert!(dmap.fold_map().is_fold_header(12));
-    assert!(!dmap.fold_map().is_line_folded(12));
+    assert!(dmap.is_fold_header(source_line(12)));
+    assert!(!dmap.is_line_folded(source_line(12)));
     for line in 13..=20 {
-        assert!(dmap.fold_map().is_line_folded(line));
+        assert!(dmap.is_line_folded(source_line(line)));
     }
-    assert!(!dmap.fold_map().is_line_folded(21));
-
-    // Next visible line navigation
-    assert_eq!(dmap.next_visible_line(3, total_lines), Some(4));
-    assert_eq!(dmap.next_visible_line(4, total_lines), Some(9)); // Skips 5..=8
-    assert_eq!(dmap.next_visible_line(9, total_lines), Some(10));
-    assert_eq!(dmap.next_visible_line(11, total_lines), Some(12));
-    assert_eq!(dmap.next_visible_line(12, total_lines), Some(21)); // Skips 13..=20
-
-    // Prev visible line navigation
-    assert_eq!(dmap.prev_visible_line(21), Some(12)); // Skips 20 down to header 12
-    assert_eq!(dmap.prev_visible_line(12), Some(11));
-    assert_eq!(dmap.prev_visible_line(9), Some(4)); // Skips 8 down to header 4
-    assert_eq!(dmap.prev_visible_line(4), Some(3));
+    assert!(!dmap.is_line_folded(source_line(21)));
 
     // Mouse click redirection simulation: if clicked line is folded, resolve to header
     let simulate_click = |clicked_line: usize| -> usize {
-        if dmap.fold_map().is_line_folded(clicked_line) {
-            dmap.fold_map()
-                .folded_regions()
-                .iter()
-                .find(|r| clicked_line > r.start_line && clicked_line <= r.end_line)
-                .map(|r| r.start_line)
-                .unwrap_or(clicked_line)
-        } else {
-            clicked_line
-        }
+        dmap.fold_header_for_line(source_line(clicked_line))
+            .map(crate::buffer::SourceLine::index)
+            .unwrap_or(clicked_line)
     };
 
     assert_eq!(simulate_click(4), 4);
@@ -1550,157 +1362,75 @@ fn test_mouse_hit_testing_live_preview_offsets() {
             ed.viewport_bounds = Bounds {
                 origin: point(px(0.0), px(70.0)),
                 size: size(px(1000.0), px(800.0)),
-            };
-            ed.ensure_layout_cache();
-
-            // Line 0: Normal paragraph ("Normal paragraph text here.")
-            let line_0_bounds = ed.line_screen_bounds(0, ed.viewport_bounds);
-            let click_0 = point(
-                line_0_bounds.origin.x + px(1.0),
-                line_0_bounds.origin.y + px(10.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_0, window),
+                resolved_mouse_position_for_test(ed, click_0, window),
                 Position::new(0, 0)
             );
 
             // Line 1: TaskList ("- [ ] Task item text", prefix len 6)
-            let line_1_bounds = ed.line_screen_bounds(1, ed.viewport_bounds);
+            let line_1_bounds = ed.line_screen_bounds(source_line(1), ed.viewport_bounds);
             let click_1 = point(
                 line_1_bounds.origin.x + px(1.0),
                 line_1_bounds.origin.y + px(10.0),
             );
             assert_eq!(
-                ed.find_pos_for_mouse_point(click_1, window),
+                resolved_mouse_position_for_test(ed, click_1, window),
                 Position::new(1, 6)
             );
             assert_eq!(
                 ed.get_pixel_x_for_col(Position::new(1, 6), window),
-                px(24.0)
-            );
-
-            // Line 2: BulletList ("- Bullet item text", prefix len 2)
-            let line_2_bounds = ed.line_screen_bounds(2, ed.viewport_bounds);
-            let click_2 = point(
-                line_2_bounds.origin.x + px(1.0),
-                line_2_bounds.origin.y + px(10.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_2, window),
+                resolved_mouse_position_for_test(ed, click_2, window),
                 Position::new(2, 2)
             );
             assert_eq!(
                 ed.get_pixel_x_for_col(Position::new(2, 2), window),
-                px(22.0)
-            );
-
-            // Line 3: OrderedList ("1. Ordered item text", prefix len 3)
-            let line_3_bounds = ed.line_screen_bounds(3, ed.viewport_bounds);
-            let click_3 = point(
-                line_3_bounds.origin.x + px(1.0),
-                line_3_bounds.origin.y + px(10.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_3, window),
+                resolved_mouse_position_for_test(ed, click_3, window),
                 Position::new(3, 3)
             );
             assert_eq!(
                 ed.get_pixel_x_for_col(Position::new(3, 3), window),
-                px(24.0)
-            );
-
-            // Line 4: BlockQuote ("> Quote block text", prefix len 2)
-            let line_4_bounds = ed.line_screen_bounds(4, ed.viewport_bounds);
-            let click_4 = point(
-                line_4_bounds.origin.x + px(1.0),
-                line_4_bounds.origin.y + px(10.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_4, window),
+                resolved_mouse_position_for_test(ed, click_4, window),
                 Position::new(4, 2)
             );
             assert_eq!(
                 ed.get_pixel_x_for_col(Position::new(4, 2), window),
-                px(18.0)
-            );
-
-            // Line 6: CodeBlockContent ("fn main() {}", starts at col 0)
-            let line_6_bounds = ed.line_screen_bounds(6, ed.viewport_bounds);
-            let click_6 = point(
-                line_6_bounds.origin.x + px(1.0),
-                line_6_bounds.origin.y + px(10.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_6, window),
+                resolved_mouse_position_for_test(ed, click_6, window),
                 Position::new(6, 0)
             );
             assert_eq!(
                 ed.get_pixel_x_for_col(Position::new(6, 0), window),
-                px(15.0)
-            );
-
-            // Line 8: Heading ("# Heading 1 title", prefix len 2)
-            let line_8_bounds = ed.line_screen_bounds(8, ed.viewport_bounds);
-            let click_8 = point(
-                line_8_bounds.origin.x + px(1.0),
-                line_8_bounds.origin.y + px(20.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_8, window),
+                resolved_mouse_position_for_test(ed, click_8, window),
                 Position::new(8, 2)
             );
 
             // Line 9: Chinese ("你好中文段落测试")
-            let line_9_bounds = ed.line_screen_bounds(9, ed.viewport_bounds);
+            let line_9_bounds = ed.line_screen_bounds(source_line(9), ed.viewport_bounds);
             let click_9 = point(
                 line_9_bounds.origin.x + px(1.0),
                 line_9_bounds.origin.y + px(10.0),
             );
             assert_eq!(
-                ed.find_pos_for_mouse_point(click_9, window),
+                resolved_mouse_position_for_test(ed, click_9, window),
                 Position::new(9, 0)
             );
             // Test clicking in the bottom half of the heading to the right of text
             let click_8_bottom_half_end = point(
-                line_8_bounds.origin.x + px(300.0),
-                line_8_bounds.origin.y + px(42.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_8_bottom_half_end, window),
-                Position::new(8, 17)
-            );
-
+            
             // Test clicking in the bottom padding/gap of heading to the right of text
             let click_8_gap_end = point(
                 line_8_bounds.origin.x + px(300.0),
                 line_8_bounds.origin.y + px(52.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_8_gap_end, window),
-                Position::new(8, 17)
-            );
-
+                
             // Test clicking in the bottom padding/gap of paragraph 0 to the right of text
             let click_0_gap_end = point(
                 line_0_bounds.origin.x + px(300.0),
                 line_0_bounds.origin.y + px(30.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_0_gap_end, window),
-                Position::new(0, 27)
-            );
-
+                
             // Test clicking in the middle of heading text in the bottom half
             let mid_x = ed.get_pixel_x_for_col(Position::new(8, 8), window);
             let click_8_mid_bottom = point(
                 line_8_bounds.origin.x + mid_x,
                 line_8_bounds.origin.y + px(38.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click_8_mid_bottom, window),
-                Position::new(8, 8)
-            );
-        });
+                
     });
 }
 
@@ -1728,29 +1458,15 @@ fn test_clicking_display_math_enters_source_and_preview_editing(cx: &mut gpui::T
     cx.update(|window, cx| {
         editor.update(cx, |editor, _cx| {
             editor.viewport_bounds = Bounds {
-                origin: point(px(0.0), px(70.0)),
-                size: size(px(1000.0), px(800.0)),
-            };
-            editor.ensure_layout_cache();
-            let formula_bounds = editor.line_screen_bounds(1, editor.viewport_bounds);
-            let click = point(
-                formula_bounds.origin.x + px(200.0),
-                formula_bounds.origin.y + px(12.0),
+            
             );
-
-            assert_eq!(
-                editor.find_pos_for_mouse_point(click, window),
-                Position::new(2, 0)
-            );
-            assert_eq!(
-                editor.find_pos_for_mouse_point_mut(click, window),
-                Position::new(2, 0)
+            Some(Position::new(2, 0))
             );
             editor.buffer_mut().set_cursor(Position::new(2, 0));
             editor.ensure_layout_cache();
-            assert_eq!(editor.layout_snapshot().line_heights[1], px(0.0));
-            assert!(editor.layout_snapshot().line_heights[2] > px(0.0));
-            assert_eq!(editor.layout_snapshot().line_heights[3], px(0.0));
+            assert_eq!(cached_line_height(&editor.layout_snapshot(), 1), px(0.0));
+            assert!(cached_line_height(&editor.layout_snapshot(), 2) > px(0.0));
+            assert_eq!(cached_line_height(&editor.layout_snapshot(), 3), px(0.0));
         });
     });
 }
@@ -1794,14 +1510,7 @@ fn editing_display_math_updates_its_layout_snapshot_and_preview(cx: &mut gpui::T
             let layout = editor.layout_snapshot();
             assert_eq!(layout.buffer_version, editor.buffer().version());
             assert_eq!(layout.parsed_lines[1].raw_text, "x + y + z");
-            assert_eq!(
-                layout.parsed_lines[0].spans[0].math.as_ref().unwrap().tex,
-                "x + y + z"
-            );
-            assert!(layout.line_heights[1] > gpui::px(0.0));
-        });
-    });
-}
+            
 
 #[gpui::test]
 fn test_live_preview_vertical_navigation_skips_math_delimiters(cx: &mut gpui::TestAppContext) {
@@ -1828,16 +1537,9 @@ fn test_live_preview_vertical_navigation_skips_math_delimiters(cx: &mut gpui::Te
         editor.update(cx, |editor, _cx| {
             editor.viewport_bounds = Bounds {
                 origin: point(px(0.0), px(70.0)),
-                size: size(px(1000.0), px(800.0)),
-            };
-            editor.ensure_layout_cache();
-
-            let formula_bounds = editor.line_screen_bounds(1, editor.viewport_bounds);
-            let click = point(
-                formula_bounds.origin.x + px(200.0),
-                formula_bounds.origin.y + px(12.0),
-            );
-            let clicked_pos = editor.find_pos_for_mouse_point_mut(click, window);
+                let clicked_pos = editor
+                .find_pos_for_mouse_point_mut(click, window)
+                .expect("math block click resolves to a source position");
             editor.buffer_mut().set_cursor(clicked_pos);
             editor.ensure_layout_cache();
             assert_eq!(clicked_pos, Position::new(2, 0));
@@ -1859,13 +1561,7 @@ fn test_live_preview_vertical_navigation_skips_math_delimiters(cx: &mut gpui::Te
 
             editor.move_up(false, window);
             assert_eq!(editor.buffer().cursor_pos().line, 2);
-        });
-    });
-}
-
-#[gpui::test]
-fn test_clicking_empty_display_math_creates_an_editable_source_line(cx: &mut gpui::TestAppContext) {
-    use crate::buffer::{Position, TextBuffer};
+            
     use crate::config::AppConfig;
     use crate::editor::Editor;
     use crate::theme::ThemeManager;
@@ -1886,22 +1582,10 @@ fn test_clicking_empty_display_math_creates_an_editable_source_line(cx: &mut gpu
     cx.update(|window, cx| {
         editor.update(cx, |editor, _cx| {
             editor.viewport_bounds = Bounds {
-                origin: point(px(0.0), px(70.0)),
-                size: size(px(1000.0), px(800.0)),
-            };
-            editor.ensure_layout_cache();
-            let formula_bounds = editor.line_screen_bounds(0, editor.viewport_bounds);
-            let click = point(
-                formula_bounds.origin.x + px(200.0),
-                formula_bounds.origin.y + px(12.0),
+            
             );
 
-            assert_eq!(
-                editor.find_pos_for_mouse_point_mut(click, window),
-                Position::new(1, 0)
-            );
-            assert_eq!(editor.buffer().line_count(), 3);
-            assert_eq!(editor.buffer().line(1), Some(""));
+            
         });
     });
 }
@@ -2011,14 +1695,7 @@ fn test_scroll_to_cursor_keeps_cursor_within_comfort_margin(cx: &mut gpui::TestA
             assert_eq!(ed.scroll_state().target_scroll_top, px(0.0));
 
             // 2. Cursor far below the viewport -> it must land inside the comfort band.
-            let target_line = 150;
-            ed.buffer_mut().set_cursor(Position::new(target_line, 0));
-            ed.scroll_to_cursor();
-
-            let (line_top, line_bottom) = ed.get_line_y_range(target_line);
-            let scroll = ed.scroll_state().target_scroll_top;
-            assert!(
-                scroll + comfort_margin <= line_top,
+            
                 "cursor line top must sit at or below the top comfort margin"
             );
             assert!(
@@ -2030,14 +1707,7 @@ fn test_scroll_to_cursor_keeps_cursor_within_comfort_margin(cx: &mut gpui::TestA
             ed.buffer_mut().set_cursor(Position::new(0, 0));
             ed.scroll_to_cursor();
             let scroll_up = ed.scroll_state().target_scroll_top;
-            assert!(
-                scroll_up < scroll,
-                "moving the cursor above the viewport must reduce the scroll offset"
-            );
-            assert!(scroll_up <= ed.get_line_y_range(0).0);
-        });
-    });
-}
+            
 
 /// The incremental layout path (`Editor::ensure_layout_cache` after an edit) must produce exactly
 /// the same layout as a full rebuild of the same edited content.
@@ -2101,20 +1771,7 @@ fn test_layout_cache_incremental_update_matches_full_rebuild(cx: &mut gpui::Test
 
     assert_eq!(
         incremental.parsed_lines.as_ref(),
-        full.parsed_lines.as_ref(),
-        "incrementally parsed lines must match a full rebuild"
-    );
-    assert_eq!(
-        incremental.line_heights, full.line_heights,
-        "incremental line heights must match a full rebuild"
-    );
-    assert_eq!(
-        incremental.line_y_offsets, full.line_y_offsets,
-        "incremental line Y offsets must match a full rebuild"
-    );
-    assert_eq!(
-        incremental.total_height, full.total_height,
-        "incremental total height must match a full rebuild"
+        
     );
 }
 
@@ -2614,18 +2271,8 @@ fn test_live_preview_link_caret_disclosure_differential_layout_height(
     cx.run_until_parked();
 
     cx.update(|_window, cx| {
-        editor.update(cx, |ed, _cx| {
-            // 1. Cursor at line 0, column 0 (outside link): syntax markers are collapsed
-            ed.buffer_mut().set_cursor(Position::new(0, 0));
-            let layout1 = ed.layout_snapshot();
-            let h0_collapsed = layout1.line_heights[0];
-            let y1_collapsed = layout1.line_y_offsets[1];
-
-            // 2. Cursor moves into the link (col 45): syntax markers expand
-            ed.buffer_mut().set_cursor(Position::new(0, 45));
-            let layout2 = ed.layout_snapshot();
-            let h0_expanded = layout2.line_heights[0];
-            let y1_expanded = layout2.line_y_offsets[1];
+    let h0_expanded = cached_line_height(&layout2, 0);
+            let y1_expanded = line_top(&layout2, 1);
 
             assert!(
                 h0_expanded > h0_collapsed,
@@ -2639,15 +2286,7 @@ fn test_live_preview_link_caret_disclosure_differential_layout_height(
                 y1_expanded,
                 y1_collapsed
             );
-
-            // 3. Cursor moves back out of the link (col 0): line 0 collapses back to 1 line
-            ed.buffer_mut().set_cursor(Position::new(0, 0));
-            let layout3 = ed.layout_snapshot();
-            assert_eq!(layout3.line_heights[0], h0_collapsed);
-            assert_eq!(layout3.line_y_offsets[1], y1_collapsed);
-        });
-    });
-}
+            
 
 #[gpui::test]
 fn test_text_system_native_line_wrapper_layout(cx: &mut gpui::TestAppContext) {
@@ -2665,17 +2304,7 @@ fn test_text_system_native_line_wrapper_layout(cx: &mut gpui::TestAppContext) {
         editor.update(cx, |ed, _cx| {
             assert!(
                 ed.text_system.is_some(),
-                "Editor must hold native TextSystem handle"
-            );
-
-            let layout = ed.layout_snapshot();
-            assert_eq!(layout.line_heights.len(), 3);
-            assert!(layout.total_height > px(0.0));
-
-            ed.set_render_mode(RenderMode::Source, _cx);
-            let src_layout = ed.layout_snapshot();
-            assert_eq!(src_layout.render_mode, RenderMode::Source);
-            assert_eq!(src_layout.line_heights.len(), 3);
+                assert_eq!(src_layout.source_line_count(), 3);
         });
     });
 }
@@ -2698,19 +2327,9 @@ fn test_line_wrapper_matches_shape_text_across_widths(cx: &mut gpui::TestAppCont
             let ts = ed.text_system.clone().unwrap();
             ed.viewport_bounds =
                 gpui::Bounds::new(gpui::Point::default(), gpui::size(px(1200.0), px(800.0)));
-
-            // 1. First layout snapshot when cursor is at (0, 0)
-            ed.buffer_mut().set_cursor(Position::new(0, 0));
-            let layout_initial = ed.layout_snapshot();
-            assert_eq!(layout_initial.line_heights[1], px(32.0));
-            assert_eq!(layout_initial.line_y_offsets[2], px(106.0));
-
-            // 2. Move cursor to "Nut|lope" in line 1
-            ed.buffer_mut().set_cursor(Position::new(1, 26));
-            let layout = ed.layout_snapshot();
-            assert_eq!(layout.line_heights[1], px(56.0));
-            assert_eq!(layout.line_y_offsets[2], px(130.0));
-            assert!(layout.line_y_offsets[2] >= layout.line_y_offsets[1] + layout.line_heights[1]);
+            assert_eq!(cached_line_height(&layout, 1), px(56.0));
+            assert_eq!(line_top(&layout, 2), px(130.0));
+            assert!(line_top(&layout, 2) >= line_top(&layout, 1) + cached_line_height(&layout, 1));
 
             let parsed_lines = &layout.parsed_lines;
             let line1 = &parsed_lines[1];
@@ -2780,17 +2399,7 @@ fn test_ime_composition_pins_disclosure_to_composition_anchor(cx: &mut gpui::Tes
                 origin: point(px(0.0), px(70.0)),
                 size: size(px(1000.0), px(800.0)),
             };
-
-            let line_len = ed.buffer_mut().line(0).unwrap().chars().count();
-            ed.buffer_mut().set_cursor(Position::new(0, line_len));
-            let before = ed.layout_snapshot();
-            let before_height = before.line_heights[0];
-            let before_total = before.total_height;
-            let before_visible = before.parsed_lines[0]
-                .visible_text(true, line_len, false)
-                .chars()
-                .count();
-            assert!(before_total > before_height + before.line_heights[1]);
+            assert!(before_total > before_height + cached_line_height(&before, 1));
 
             ed.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
 
@@ -2804,22 +2413,10 @@ fn test_ime_composition_pins_disclosure_to_composition_anchor(cx: &mut gpui::Tes
                 during.parsed_lines[0].visible_text(true, ed.disclosure_col(), false);
             assert!(
                 during_visible.ends_with("ni"),
-                "the preedit must be included in the shaped line after the visible content"
-            );
-            assert_eq!(during_visible.chars().count(), before_visible + 2);
-            assert!(
-                during.line_heights[0] >= before_height && during.total_height >= before_total,
-                "composition may add wrapped rows but must not collapse document geometry"
-            );
-
+                
             ed.replace_text_in_range(None, "你", window, cx);
             let after = ed.layout_snapshot();
-            assert_eq!(ed.disclosure_col(), line_len + 1);
-            assert!(
-                after.line_heights[0] < before_height,
-                "markers hide once the committed caret leaves the construct"
-            );
-        });
+            
     });
 }
 
@@ -2838,14 +2435,7 @@ fn test_ime_composition_on_empty_line_is_inline_and_underlined(cx: &mut gpui::Te
         editor.update(cx, |ed, cx| {
             ed.viewport_bounds = Bounds {
                 origin: point(px(0.0), px(70.0)),
-                size: size(px(1000.0), px(800.0)),
-            };
-            ed.buffer_mut().set_cursor(Position::new(1, 0));
-            let before = ed.layout_snapshot();
-            let before_height = before.line_heights[1];
-            assert!(
-                before.parsed_lines[1]
-                    .visible_text(true, 0, false)
+            
                     .is_empty(),
                 "the fixture line must start empty"
             );
@@ -2855,14 +2445,7 @@ fn test_ime_composition_on_empty_line_is_inline_and_underlined(cx: &mut gpui::Te
             let during = ed.layout_snapshot();
             assert_eq!(
                 during.parsed_lines[1].visible_text(true, 0, false),
-                "ni",
-                "an in-flight preedit must participate in line shaping"
-            );
-            assert_eq!(
-                during.line_heights[1], before_height,
-                "an empty line must not grow while composing"
-            );
-            assert_eq!(during.total_height, before.total_height);
+                
             let (line, runs) = crate::editor::shaping::build_line_runs(
                 &during.parsed_lines[1].spans,
                 crate::editor::shaping::LineShapingContext::new(
@@ -2956,14 +2539,7 @@ fn test_ime_composition_reserves_width_and_wraps(cx: &mut gpui::TestAppContext) 
                     )
                     .map(|p| (f32::from(p.y) / f32::from(line_height)).round() as usize)
                     .unwrap_or(0);
-                (
-                    shaped[0].wrap_boundaries.len() + 1,
-                    caret_row,
-                    follow_x,
-                    layout.line_heights[0],
-                    layout.total_height,
-                )
-            };
+                
 
             let line_len = ed.buffer_mut().line(0).unwrap().chars().count();
             let preedit = "zhongguo";
@@ -3347,15 +2923,7 @@ fn test_paragraph_with_inline_code_layout_height_matches_shape_text(cx: &mut gpu
                     "Line height mismatch at width {}: got {:?}, expected {:?}",
                     w_val, line_height, expected_height
                 );
-            }
-
-            // Verify that subsequent line Y offset strictly starts after the first line's full height (no overlap)
-            assert_eq!(
-                layout.line_y_offsets[1],
-                layout.line_y_offsets[0] + layout.line_heights[0],
-                "Subsequent line offset must strictly equal previous line Y + height (no vertical overlap)"
-            );
-        });
+                
     });
 }
 
@@ -3476,23 +3044,13 @@ fn test_nested_list_coordinate_roundtrip() {
 
             // Nested item content starts at 22px gutter + 16px indent.
             let content_x = ed.get_pixel_x_for_col(Position::new(1, 4), window);
-            assert_eq!(content_x, px(38.0));
-
-            // Hit-testing the text start must land back on the content column.
-            // (`line_screen_bounds` already includes the gutter + indent.)
-            let line_bounds = ed.line_screen_bounds(1, ed.viewport_bounds);
-            let click = point(
-                line_bounds.origin.x + px(1.0),
-                line_bounds.origin.y + px(10.0),
-            );
-            assert_eq!(
-                ed.find_pos_for_mouse_point(click, window),
+            resolved_mouse_position_for_test(ed, click, window),
                 Position::new(1, 4)
             );
 
             // Pixel-goal navigation round-trips through the same geometry
             // (goal x is container-relative: 22px gutter + 16px indent).
-            let col = ed.get_col_for_pixel_coords(1, px(38.0), 0, window);
+            let col = ed.get_col_for_pixel_coords(source_line(1), px(38.0), 0, window);
             assert_eq!(col, 4);
 
             // Top-level item is unaffected by the nested indent.

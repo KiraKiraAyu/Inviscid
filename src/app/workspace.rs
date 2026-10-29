@@ -1376,14 +1376,21 @@ mod tests {
         let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(None, cx));
 
         ws.update(cx, |ws, cx| {
-            ws.open_file_at(file.clone(), Position::new(1, 7), cx);
+            ws.open_file_at(
+                file.clone(),
+                Position::new(crate::buffer::SourceLine::new(1), 7),
+                cx,
+            );
         });
 
         ws.read_with(cx, |ws, cx| {
             let active = ws.active_editor().expect("active editor");
             let ed = active.read(cx);
             assert_eq!(ed.file_path(), Some(file.as_path()));
-            assert_eq!(ed.buffer().cursor_pos(), Position::new(1, 7));
+            assert_eq!(
+                ed.buffer().cursor_pos(),
+                Position::new(crate::buffer::SourceLine::new(1), 7)
+            );
         });
     }
 

@@ -11,12 +11,13 @@ use super::shaping::render_shaped_line;
 
 /// Renders a line in Live Preview mode.
 pub fn render_live_line_content(
-    line_idx: usize,
+    source_line: crate::buffer::SourceLine,
     parsed: &ParsedLine,
     lines: &[String],
     lrc: &LineRenderContext,
     editor: Option<&Entity<Editor>>,
 ) -> AnyElement {
+    let line_idx = source_line.index();
     let theme = lrc.theme;
     let is_active = lrc.is_active_line;
     let is_focused = lrc.is_focused;
@@ -33,7 +34,7 @@ pub fn render_live_line_content(
             let color = crate::editor::layout::get_block_color_override(&parsed.kind, theme);
 
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 lrc,
                 typo.font_size,
@@ -59,7 +60,7 @@ pub fn render_live_line_content(
             );
             if *is_fence_start {
                 let lang_canvas = render_shaped_line(
-                    line_idx,
+                    source_line,
                     parsed,
                     lrc,
                     typo.font_size,
@@ -123,7 +124,7 @@ pub fn render_live_line_content(
                 lrc.line_height,
             );
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 lrc,
                 typo.font_size,
@@ -171,7 +172,7 @@ pub fn render_live_line_content(
                 lrc.line_height,
             );
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 lrc,
                 typo.font_size,
@@ -211,7 +212,7 @@ pub fn render_live_line_content(
                     let ed = ed.clone();
                     this.on_mouse_down(MouseButton::Left, move |_, _window, cx| {
                         ed.update(cx, |this, cx| {
-                            this.toggle_task_checkbox(line_idx, cx);
+                            this.toggle_task_checkbox(crate::buffer::SourceLine::new(line_idx), cx);
                         });
                     })
                 })
@@ -240,7 +241,7 @@ pub fn render_live_line_content(
                 lrc.line_height,
             );
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 lrc,
                 typo.font_size,
@@ -272,7 +273,7 @@ pub fn render_live_line_content(
                 lrc.line_height,
             );
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 lrc,
                 typo.font_size,
@@ -313,7 +314,7 @@ pub fn render_live_line_content(
                 lrc.line_height,
             );
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 lrc,
                 typo.font_size,
@@ -347,7 +348,7 @@ pub fn render_live_line_content(
         BlockKind::Image { alt, url } => {
             let is_selected_line = if !selection.is_empty() {
                 let (start, end) = selection.range();
-                line_idx >= start.line && line_idx <= end.line
+                line_idx >= start.line.index() && line_idx <= end.line.index()
             } else {
                 false
             };
@@ -365,7 +366,7 @@ pub fn render_live_line_content(
                 lrc.line_height,
             );
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 &img_lrc,
                 typo.font_size,
@@ -434,7 +435,7 @@ pub fn render_live_line_content(
             );
 
             let hovered_link_range = lrc.hovered_link.and_then(|hl| {
-                if hl.line_idx == line_idx {
+                if hl.line_idx.index() == line_idx {
                     Some(hl.col_range)
                 } else {
                     None
@@ -517,7 +518,7 @@ pub fn render_live_line_content(
                 lrc.line_height,
             );
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 lrc,
                 typo.font_size,
@@ -549,7 +550,7 @@ pub fn render_live_line_content(
             source_lrc.content_width = (lrc.content_width / 2.0 + px(40.0)).max(px(0.0));
             source_lrc.indent_px = px(0.0);
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 &source_lrc,
                 typo.font_size,
@@ -603,7 +604,8 @@ pub fn render_live_line_content(
         }
 
         BlockKind::Paragraph => {
-            if is_syntactic_separator(lines, line_idx) && !is_active {
+            if is_syntactic_separator(lines, crate::buffer::SourceLine::new(line_idx)) && !is_active
+            {
                 // Syntactic blank separator lines between blocks: collapsed to 0 height in Live Preview
                 return div().h(px(0.0)).into_any_element();
             }
@@ -614,7 +616,7 @@ pub fn render_live_line_content(
                 lrc.line_height,
             );
             let text_canvas = render_shaped_line(
-                line_idx,
+                source_line,
                 parsed,
                 lrc,
                 typo.font_size,
@@ -854,16 +856,17 @@ pub fn render_loading_metaball_animation(
 
 /// Renders a line in Source mode with a line-number gutter.
 pub fn render_source_line(
-    line_idx: usize,
+    source_line: crate::buffer::SourceLine,
     parsed: &ParsedLine,
     lrc: &LineRenderContext,
     editor: Option<&Entity<Editor>>,
 ) -> AnyElement {
+    let line_idx = source_line.index();
     let font_size = px(lrc.font_size);
     let line_height = px((lrc.font_size * lrc.line_height).round());
     let line_num_str = format!("{:>4} ", line_idx + 1);
     let content_element =
-        render_shaped_line(line_idx, parsed, lrc, font_size, line_height, None, true);
+        render_shaped_line(source_line, parsed, lrc, font_size, line_height, None, true);
 
     div()
         .id(ElementId::NamedInteger("src_line".into(), line_idx as u64))
@@ -901,7 +904,8 @@ pub fn render_source_line(
                     let ed = ed.clone();
                     this.on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         ed.update(cx, |this, cx| {
-                            this.buffer.select_line_at(line_idx);
+                            this.buffer
+                                .select_line_at(crate::buffer::SourceLine::new(line_idx));
                             window.focus(&this.focus_handle);
                             cx.notify();
                         });

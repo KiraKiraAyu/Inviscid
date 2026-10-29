@@ -1,4 +1,4 @@
-use crate::buffer::Position;
+use crate::buffer::{Position, SourceLine};
 use crate::search::{SearchMatch, SearchQuery};
 
 #[derive(Clone, Debug, Default)]
@@ -67,12 +67,13 @@ impl FindState {
         self.current_idx.and_then(|idx| self.matches.get(idx))
     }
 
-    pub fn matches_on_line(&self, line: usize) -> impl Iterator<Item = (usize, &SearchMatch)> {
+    pub fn matches_on_line(&self, line: SourceLine) -> impl Iterator<Item = (usize, &SearchMatch)> {
+        let line_idx = line.index();
         let first = self.matches.partition_point(|m| m.end.line < line);
         self.matches[first..]
             .iter()
             .enumerate()
-            .take_while(move |(_, m)| m.start.line <= line)
+            .take_while(move |(_, m)| m.start.line.index() <= line_idx)
             .map(move |(offset, m)| (first + offset, m))
     }
 
@@ -111,7 +112,10 @@ mod tests {
     use crate::search::SearchOptions;
 
     fn m(start: (usize, usize), end: (usize, usize)) -> SearchMatch {
-        SearchMatch::new(Position::new(start.0, start.1), Position::new(end.0, end.1))
+        SearchMatch::new(
+            Position::new(crate::buffer::SourceLine::new(start.0), start.1),
+            Position::new(crate::buffer::SourceLine::new(end.0), end.1),
+        )
     }
 
     fn state_with(matches: Vec<SearchMatch>) -> FindState {
@@ -135,10 +139,18 @@ mod tests {
         state.set_query(SearchQuery::new("x", SearchOptions::default()).unwrap());
         let matches = vec![m((0, 0), (0, 1)), m((2, 4), (2, 5)), m((5, 0), (5, 1))];
 
-        state.set_matches(matches.clone(), 1, Position::new(2, 4));
+        state.set_matches(
+            matches.clone(),
+            1,
+            Position::new(crate::buffer::SourceLine::new(2), 4),
+        );
         assert_eq!(state.current_match_index(), Some(1));
 
-        state.set_matches(matches.clone(), 1, Position::new(3, 0));
+        state.set_matches(
+            matches.clone(),
+            1,
+            Position::new(crate::buffer::SourceLine::new(3), 0),
+        );
         assert_eq!(state.current_match_index(), Some(2));
     }
 
@@ -146,7 +158,11 @@ mod tests {
     fn test_set_matches_wraps_to_first_when_anchor_is_past_last_match() {
         let mut state = FindState::new();
         state.set_query(SearchQuery::new("x", SearchOptions::default()).unwrap());
-        state.set_matches(vec![m((0, 0), (0, 1))], 1, Position::new(9, 0));
+        state.set_matches(
+            vec![m((0, 0), (0, 1))],
+            1,
+            Position::new(crate::buffer::SourceLine::new(9), 0),
+        );
         assert_eq!(state.current_match_index(), Some(0));
     }
 
@@ -187,12 +203,12 @@ mod tests {
                 .map(|(i, _)| i)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(0), vec![0]);
-        assert_eq!(ids(1), vec![1, 2]);
-        assert_eq!(ids(2), vec![2]);
-        assert_eq!(ids(3), vec![2]);
-        assert_eq!(ids(4), vec![3]);
-        assert!(ids(5).is_empty());
+        assert_eq!(ids(SourceLine::new(0)), vec![0]);
+        assert_eq!(ids(SourceLine::new(1)), vec![1, 2]);
+        assert_eq!(ids(SourceLine::new(2)), vec![2]);
+        assert_eq!(ids(SourceLine::new(3)), vec![2]);
+        assert_eq!(ids(SourceLine::new(4)), vec![3]);
+        assert!(ids(SourceLine::new(5)).is_empty());
     }
 
     #[test]

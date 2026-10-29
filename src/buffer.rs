@@ -41,7 +41,7 @@ impl LineEnding {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EditDelta {
-    pub start_line: usize,
+    pub start_line: SourceLine,
     pub old_line_count: usize,
     pub new_line_count: usize,
 }
@@ -122,7 +122,7 @@ impl TextBuffer {
 
         Self {
             lines,
-            selection: Selection::cursor(Position::new(0, 0)),
+            selection: Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0)),
             file_path,
             line_ending,
             last_saved_mtime: None,
@@ -154,8 +154,16 @@ impl TextBuffer {
     }
 
     #[inline]
-    pub fn line(&self, line_idx: usize) -> Option<&str> {
-        self.lines.get(line_idx).map(|s| s.as_str())
+    /// Returns the text at a source-document line.
+    ///
+    /// ```compile_fail
+    /// use inviscid::buffer::TextBuffer;
+    ///
+    /// let buffer = TextBuffer::from_str("text", None);
+    /// buffer.line(0usize);
+    /// ```
+    pub fn line(&self, source_line: SourceLine) -> Option<&str> {
+        self.lines.get(source_line.index()).map(|s| s.as_str())
     }
 
     #[inline]
@@ -240,21 +248,21 @@ impl TextBuffer {
         self.last_edit_delta
     }
 
-    pub fn line_len(&self, line_idx: usize) -> usize {
+    pub fn line_len(&self, source_line: SourceLine) -> usize {
         self.lines
-            .get(line_idx)
+            .get(source_line.index())
             .map(|l| l.chars().count())
             .unwrap_or(0)
     }
 
     pub fn clamp_position(&self, pos: Position) -> Position {
         if self.lines.is_empty() {
-            return Position::new(0, 0);
+            return Position::new(crate::buffer::SourceLine::new(0), 0);
         }
-        let line = pos.line.min(self.lines.len() - 1);
-        let max_col = self.line_len(line);
+        let line = pos.line.index().min(self.lines.len() - 1);
+        let max_col = self.line_len(SourceLine::new(line));
         let col = pos.col.min(max_col);
-        Position::new(line, col)
+        Position::new(crate::buffer::SourceLine::new(line), col)
     }
 
     pub fn to_string_content(&self) -> String {
@@ -321,8 +329,10 @@ impl TextBuffer {
         if self.lines.is_empty() {
             return 0;
         }
-        let line_idx = pos.line.min(self.lines.len() - 1);
-        let line_start = self.line_index().line_utf16_offset(line_idx);
+        let line_idx = pos.line.index().min(self.lines.len() - 1);
+        let line_start = self
+            .line_index()
+            .line_utf16_offset(crate::buffer::SourceLine::new(line_idx));
 
         if let Some(line) = self.lines.get(line_idx) {
             let col_offset: usize = line.chars().take(pos.col).map(|c| c.len_utf16()).sum();
@@ -334,13 +344,14 @@ impl TextBuffer {
 
     pub fn utf16_offset_to_pos(&self, offset: usize) -> Position {
         if self.lines.is_empty() {
-            return Position::new(0, 0);
+            return Position::new(crate::buffer::SourceLine::new(0), 0);
         }
         let target_line = self.line_index().utf16_offset_to_line(offset);
         let line_start = self.line_index().line_utf16_offset(target_line);
         let rel_offset = offset.saturating_sub(line_start);
+        let target_line_idx = target_line.index();
 
-        if let Some(line) = self.lines.get(target_line) {
+        if let Some(line) = self.lines.get(target_line_idx) {
             let line_utf16_len: usize = line.chars().map(|c| c.len_utf16()).sum();
             if rel_offset <= line_utf16_len {
                 let mut char_count = 0;
@@ -355,7 +366,7 @@ impl TextBuffer {
                 }
                 return Position::new(target_line, char_count);
             }
-            if target_line == self.lines.len() - 1 {
+            if target_line_idx == self.lines.len() - 1 {
                 return Position::new(target_line, line.chars().count());
             }
         }
@@ -384,7 +395,7 @@ impl TextBuffer {
         let adjusted = actual_start_utf16..actual_end_utf16;
 
         if start_pos.line == end_pos.line {
-            if start_pos.line >= self.lines.len() {
+            if start_pos.line.index() >= self.lines.len() {
                 return (String::new(), adjusted);
             }
             let line = self.line(start_pos.line).unwrap_or("");
@@ -393,12 +404,13 @@ impl TextBuffer {
             (text, adjusted)
         } else {
             let mut result = Vec::new();
-            let end_line = end_pos.line.min(self.lines.len().saturating_sub(1));
-            for idx in start_pos.line..=end_line {
-                let line = self.line(idx).unwrap_or("");
-                if idx == start_pos.line {
+            let start_line = start_pos.line.index();
+            let end_line = end_pos.line.index().min(self.lines.len().saturating_sub(1));
+            for idx in start_line..=end_line {
+                let line = self.line(crate::buffer::SourceLine::new(idx)).unwrap_or("");
+                if idx == start_line {
                     result.push(line.chars().skip(start_pos.col).collect::<String>());
-                } else if idx == end_pos.line {
+                } else if idx == end_pos.line.index() {
                     result.push(line.chars().take(end_pos.col).collect::<String>());
                 } else {
                     result.push(line.to_string());
@@ -502,7 +514,7 @@ impl TextBuffer {
         self.revision = self.revision.wrapping_add(1);
         *self.line_index_cache.borrow_mut() = None;
         self.last_edit_delta = Some(EditDelta {
-            start_line,
+            start_line: crate::buffer::SourceLine::new(start_line),
             old_line_count: replaced_lines.len(),
             new_line_count: inserted_lines.len(),
         });
@@ -549,10 +561,11 @@ impl TextBuffer {
         self.update_dirty_state();
     }
 
-    pub fn record_single_line_edit<F>(&mut self, line_idx: usize, f: F)
+    pub fn record_single_line_edit<F>(&mut self, source_line: SourceLine, f: F)
     where
         F: FnOnce(&mut String, &mut Selection),
     {
+        let line_idx = source_line.index();
         if line_idx >= self.lines.len() {
             return;
         }
@@ -589,7 +602,7 @@ impl TextBuffer {
                 && !new_lines[0].ends_with('\t');
 
             let step = UndoStep {
-                start_line: line_idx,
+                start_line: source_line,
                 old_lines,
                 new_lines,
                 cursor_before,
@@ -656,7 +669,7 @@ impl TextBuffer {
                 && !new_lines[0].ends_with('\t');
 
             let step = UndoStep {
-                start_line: prefix,
+                start_line: SourceLine::new(prefix),
                 old_lines,
                 new_lines,
                 cursor_before,
@@ -700,24 +713,26 @@ impl TextBuffer {
             (end, start)
         };
         let mut res = String::new();
-        for line_idx in start.line..=end.line {
+        let start_line = start.line.index();
+        let end_line = end.line.index();
+        for line_idx in start_line..=end_line {
             let line = match self.lines.get(line_idx) {
                 Some(l) => l,
                 None => continue,
             };
-            if line_idx > start.line {
+            if line_idx > start_line {
                 res.push('\n');
             }
-            if line_idx == start.line && line_idx == end.line {
+            if line_idx == start_line && line_idx == end_line {
                 let char_count = line.chars().count();
                 let start_col = start.col.min(char_count);
                 let end_col = end.col.min(char_count);
                 if start_col < end_col {
                     res.extend(line.chars().skip(start_col).take(end_col - start_col));
                 }
-            } else if line_idx == start.line {
+            } else if line_idx == start_line {
                 res.extend(line.chars().skip(start.col));
-            } else if line_idx == end.line {
+            } else if line_idx == end_line {
                 res.extend(line.chars().take(end.col));
             } else {
                 res.push_str(line);
@@ -739,13 +754,14 @@ impl TextBuffer {
         self.last_edit_time = None;
         if let Some(step) = self.undo_stack.pop_back() {
             let replace_len = step.new_lines.len();
+            let start_line = step.start_line.index();
             self.lines.splice(
-                step.start_line..(step.start_line + replace_len),
+                start_line..(start_line + replace_len),
                 step.old_lines.iter().cloned(),
             );
             self.selection = step.cursor_before;
             self.version = step.version_before;
-            self.apply_content_metrics(step.start_line, &step.new_lines, &step.old_lines);
+            self.apply_content_metrics(start_line, &step.new_lines, &step.old_lines);
 
             self.redo_stack.push_back(step);
             self.update_empty_doc_state();
@@ -758,13 +774,14 @@ impl TextBuffer {
         self.last_edit_time = None;
         if let Some(step) = self.redo_stack.pop_back() {
             let replace_len = step.old_lines.len();
+            let start_line = step.start_line.index();
             self.lines.splice(
-                step.start_line..(step.start_line + replace_len),
+                start_line..(start_line + replace_len),
                 step.new_lines.iter().cloned(),
             );
             self.selection = step.cursor_after;
             self.version = step.version_after;
-            self.apply_content_metrics(step.start_line, &step.old_lines, &step.new_lines);
+            self.apply_content_metrics(start_line, &step.old_lines, &step.new_lines);
 
             self.undo_stack.push_back(step);
             self.update_empty_doc_state();

@@ -2527,7 +2527,7 @@ fn test_read_only_blocks_mutations_and_updates_tab_meta() {
 
         // 3f. Task checkbox toggle
         ed_entity.update(cx, |ed, cx| {
-            ed.toggle_task_checkbox(1, cx);
+            ed.toggle_task_checkbox(inviscid::buffer::SourceLine::new(1), cx);
         });
         assert_eq!(
             ed_entity.read(cx).buffer().to_string_content(),
@@ -2924,13 +2924,19 @@ async fn test_inline_input_drag_selection_forward_and_backward(cx: &mut TestAppC
             this.input_mut().start_drag(2);
             assert!(this.input().is_dragging());
             assert_eq!(this.input().drag_anchor(), Some(2));
-            assert_eq!(this.buffer().selection().anchor, Position::new(0, 2));
-            assert_eq!(this.buffer().selection().head, Position::new(0, 2));
+            assert_eq!(
+                this.buffer().selection().anchor,
+                Position::new(inviscid::buffer::SourceLine::new(0), 2)
+            );
+            assert_eq!(
+                this.buffer().selection().head,
+                Position::new(inviscid::buffer::SourceLine::new(0), 2)
+            );
 
             // 2. Drag forward: anchor 2, head 7 ("mpone")
             this.buffer_mut().set_selection(Selection {
-                anchor: Position::new(0, 2),
-                head: Position::new(0, 7),
+                anchor: Position::new(inviscid::buffer::SourceLine::new(0), 2),
+                head: Position::new(inviscid::buffer::SourceLine::new(0), 7),
             });
             assert_eq!(this.buffer().selected_text(), Some("mpone".to_string()));
             let fwd_sel = this
@@ -2941,8 +2947,8 @@ async fn test_inline_input_drag_selection_forward_and_backward(cx: &mut TestAppC
 
             // 3. Drag backward: anchor 7, head 0 ("compone")
             this.buffer_mut().set_selection(Selection {
-                anchor: Position::new(0, 7),
-                head: Position::new(0, 0),
+                anchor: Position::new(inviscid::buffer::SourceLine::new(0), 7),
+                head: Position::new(inviscid::buffer::SourceLine::new(0), 0),
             });
             assert_eq!(this.buffer().selected_text(), Some("compone".to_string()));
             let rev_sel = this
@@ -2952,7 +2958,8 @@ async fn test_inline_input_drag_selection_forward_and_backward(cx: &mut TestAppC
             assert!(rev_sel.reversed);
 
             // 4. Double-click selects word:
-            this.buffer_mut().select_word_at(Position::new(0, 15)); // inside "rs"
+            this.buffer_mut()
+                .select_word_at(Position::new(inviscid::buffer::SourceLine::new(0), 15)); // inside "rs"
             assert_eq!(this.buffer().selected_text(), Some("rs".to_string()));
 
             // 5. Triple-click selects all:
@@ -3537,7 +3544,10 @@ fn test_panel_shortcuts_dispatch_to_the_selection() {
                 input.buffer_mut().insert_text(text);
                 input
                     .buffer_mut()
-                    .set_cursor(inviscid::buffer::Position::new(0, 0));
+                    .set_cursor(inviscid::buffer::Position::new(
+                        inviscid::buffer::SourceLine::new(0),
+                        0,
+                    ));
                 cx.notify();
             });
         });

@@ -69,7 +69,7 @@ fn test_find_shortcut_opens_the_bar_and_typing_searches() {
     let highlighted = cx.update(|_window, cx| {
         editor
             .read(cx)
-            .search_highlights(1)
+            .search_highlights(inviscid::buffer::SourceLine::new(1))
             .into_iter()
             .map(|h| h.cols)
             .collect::<Vec<_>>()
@@ -92,7 +92,7 @@ fn test_enter_and_shift_enter_step_through_matches_from_the_bar() {
     assert_eq!(current_match(&editor, cx), Some((3, 3)));
     assert_eq!(
         cx.update(|_window, cx| editor.read(cx).cursor_pos()),
-        Position::new(0, 4),
+        Position::new(inviscid::buffer::SourceLine::new(0), 4),
         "the caret follows the current match"
     );
 
@@ -111,7 +111,12 @@ fn test_escape_closes_the_bar_and_returns_focus_to_the_document() {
     cx.simulate_keystrokes(FIND);
     cx.simulate_input("me");
     cx.run_until_parked();
-    assert!(cx.update(|_window, cx| !editor.read(cx).search_highlights(0).is_empty()));
+    assert!(cx.update(|_window, cx| {
+        !editor
+            .read(cx)
+            .search_highlights(inviscid::buffer::SourceLine::new(0))
+            .is_empty()
+    }));
 
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
@@ -120,7 +125,8 @@ fn test_escape_closes_the_bar_and_returns_focus_to_the_document() {
         let ed = editor.read(cx);
         assert!(!ed.is_find_bar_visible());
         assert!(
-            ed.search_highlights(0).is_empty(),
+            ed.search_highlights(inviscid::buffer::SourceLine::new(0))
+                .is_empty(),
             "closing drops the highlights"
         );
         assert!(ed.focus_handle(cx).is_focused(window));
@@ -133,8 +139,10 @@ fn test_find_seeds_the_query_from_a_single_line_selection() {
     let (editor, cx) = mount_editor(&mut tcx, "one two\nthree two");
     cx.update(|_window, cx| {
         editor.update(cx, |ed, _| {
-            ed.buffer_mut()
-                .set_selection(Selection::new(Position::new(0, 4), Position::new(0, 7)));
+            ed.buffer_mut().set_selection(Selection::new(
+                Position::new(inviscid::buffer::SourceLine::new(0), 4),
+                Position::new(inviscid::buffer::SourceLine::new(0), 7),
+            ));
         })
     });
 
@@ -157,7 +165,10 @@ fn test_typing_in_the_bar_does_not_edit_the_document() {
 
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
-        assert_eq!(ed.buffer().line(0), Some("keep me"));
+        assert_eq!(
+            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            Some("keep me")
+        );
         assert!(!ed.is_dirty());
     });
 }
@@ -175,7 +186,7 @@ fn test_match_highlight_tracks_the_active_match() {
     let kinds = cx.update(|_window, cx| {
         editor
             .read(cx)
-            .search_highlights(0)
+            .search_highlights(inviscid::buffer::SourceLine::new(0))
             .into_iter()
             .map(|h| h.kind)
             .collect::<Vec<_>>()
@@ -207,7 +218,10 @@ fn test_replace_shortcut_opens_replace_mode() {
 
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
-        assert_eq!(ed.buffer().line(0), Some("qux bar"));
+        assert_eq!(
+            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            Some("qux bar")
+        );
     });
 }
 
@@ -228,7 +242,10 @@ fn test_replace_next_replaces_and_advances() {
 
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
-        assert_eq!(ed.buffer().line(0), Some("qux bar foo baz foo"));
+        assert_eq!(
+            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            Some("qux bar foo baz foo")
+        );
         assert_eq!(ed.find_state().match_count(), 2);
     });
 
@@ -237,7 +254,10 @@ fn test_replace_next_replaces_and_advances() {
 
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
-        assert_eq!(ed.buffer().line(0), Some("qux bar qux baz foo"));
+        assert_eq!(
+            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            Some("qux bar qux baz foo")
+        );
         assert_eq!(ed.find_state().match_count(), 1);
     });
 }
@@ -265,7 +285,7 @@ fn test_replace_all_replaces_all_and_atomic_undo() {
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
         assert_eq!(
-            ed.buffer().line(0),
+            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
             Some("orange banana orange cherry orange")
         );
         assert_eq!(ed.find_state().match_count(), 0);
@@ -291,6 +311,9 @@ fn test_replace_all_replaces_all_and_atomic_undo() {
 
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
-        assert_eq!(ed.buffer().line(0), Some("apple banana apple cherry apple"));
+        assert_eq!(
+            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            Some("apple banana apple cherry apple")
+        );
     });
 }

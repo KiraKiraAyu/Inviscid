@@ -1,7 +1,3 @@
-use super::TextBuffer;
-use super::primitives::{Position, Selection};
-use crate::markdown::{compute_syntactic_separators, get_block_prefix_len};
-use std::cell::Ref;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CharKind {
@@ -18,104 +14,24 @@ fn char_kind(c: char) -> CharKind {
     } else {
         CharKind::Punctuation
     }
-}
-
-fn code_fence_status(lines: &[String], target_idx: usize) -> (bool, bool) {
-    if target_idx >= lines.len() {
-        return (false, false);
-    }
-    let mut open_idx: Option<usize> = None;
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("```") {
-            match open_idx {
-                Some(open) => {
-                    if target_idx == open {
-                        return (true, false);
-                    } else if target_idx == i {
-                        return (false, true);
-                    } else if target_idx > open && target_idx < i {
-                        return (true, false);
-                    }
-                    open_idx = None;
-                }
-                None => open_idx = Some(i),
-            }
-        }
-    }
-    (false, false)
-}
-
-/// Returns the range `(start_line, end_line)` of the code fence containing
-/// `target_idx`, or `None` if the line is not inside a code fence.
-/// The range includes the opening and closing fence lines.
-pub fn code_fence_range(lines: &[String], target_idx: usize) -> Option<(usize, usize)> {
-    if target_idx >= lines.len() {
-        return None;
-    }
-    let mut open_idx: Option<usize> = None;
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("```") {
-            match open_idx {
-                Some(open) => {
-                    if (target_idx >= open && target_idx <= i) || target_idx == open {
-                        return Some((open, i));
-                    }
-                    open_idx = None;
-                }
-                None => open_idx = Some(i),
-            }
-        }
-    }
-    None
-}
-
-pub fn is_closing_code_fence_lines(lines: &[String], target_idx: usize) -> bool {
-    code_fence_status(lines, target_idx).1
-}
-
+    
 pub fn is_in_code_fence_lines(lines: &[String], target_idx: usize) -> bool {
     code_fence_status(lines, target_idx).0
 }
+let caret_map = Arc::new(CaretMap::from_lines(lines));
 
-#[derive(Clone, Debug)]
-pub(crate) struct LineIndex {
-    version: usize,
-    syntactic_separators: Vec<bool>,
-    fence_pairs: Vec<(usize, usize)>,
-    math_pairs: Vec<(usize, usize)>,
-    pub(crate) line_utf16_offsets: Vec<usize>,
-}
-
-impl LineIndex {
-    fn build(version: usize, lines: &[String]) -> Self {
-        let syntactic_separators = compute_syntactic_separators(lines);
-
-        let mut fence_pairs = Vec::new();
-        let mut open: Option<usize> = None;
         let mut line_utf16_offsets = Vec::with_capacity(lines.len());
         let mut current_offset = 0;
 
-        for (i, line) in lines.iter().enumerate() {
+        for line in lines {
             line_utf16_offsets.push(current_offset);
             let line_len: usize = line.chars().map(|c| c.len_utf16()).sum();
             current_offset += line_len + 1;
-
-            if line.trim_start().starts_with("```") {
-                match open {
-                    Some(open_idx) => {
-                        fence_pairs.push((open_idx, i));
-                        open = None;
-                    }
-                    None => open = Some(i),
-                }
-            }
         }
 
         Self {
             version,
-            syntactic_separators,
-            fence_pairs,
-            math_pairs: crate::markdown::math_block_pairs(lines),
+            caret_map,
             line_utf16_offsets,
         }
     }
@@ -130,69 +46,19 @@ impl LineIndex {
         }
         self.line_utf16_offsets
             .partition_point(|&o| o <= offset)
-            .saturating_sub(1)
-            .min(self.line_utf16_offsets.len() - 1)
-    }
-
-    fn fence_state(&self, target_idx: usize) -> (bool, bool) {
-        for &(open_idx, close_idx) in &self.fence_pairs {
-            if target_idx == open_idx {
-                return (true, false);
-            } else if target_idx == close_idx {
-                return (false, true);
-            } else if target_idx > open_idx && target_idx < close_idx {
-                return (true, false);
-            }
-        }
-        (false, false)
-    }
-
-    fn is_in_fence(&self, target_idx: usize) -> bool {
-        self.fence_state(target_idx).0
+            self.caret_map.fence_state(target_idx).0
     }
 
     fn is_closing_fence(&self, target_idx: usize) -> bool {
-        self.fence_state(target_idx).1
+        self.caret_map.fence_state(target_idx).1
     }
 
-    fn math_pair(&self, target_idx: usize) -> Option<(usize, usize)> {
-        self.math_pairs
-            .iter()
-            .copied()
-            .find(|&(start, end)| (start..=end).contains(&target_idx))
-    }
-
-    fn is_math_delimiter(&self, target_idx: usize) -> bool {
-        self.math_pairs
-            .iter()
-            .any(|&(start, end)| target_idx == start || target_idx == end)
+    fn math_pair(&self, line: SourceLine) -> Option<(SourceLine, SourceLine)> {
+        self.caret_map.math_pair(line)
     }
 }
 
 impl TextBuffer {
-    pub(crate) fn ensure_cursor_not_on_math_delimiter(&mut self, is_source: bool) {
-        if is_source || !self.selection.is_empty() {
-            return;
-        }
-
-        let pos = self.selection.head;
-        let index = self.line_index();
-        let Some((start, end)) = index.math_pair(pos.line) else {
-            return;
-        };
-        if end == start + 1 || (pos.line != start && pos.line != end) {
-            return;
-        }
-
-        let target = if pos.line == start {
-            Position::new(start + 1, 0)
-        } else {
-            Position::new(end - 1, self.line_len(end - 1))
-        };
-        drop(index);
-        self.update_cursor(false, target);
-    }
-
     pub(crate) fn line_index(&self) -> Ref<'_, LineIndex> {
         {
             let cache = self.line_index_cache.borrow();
@@ -213,36 +79,13 @@ impl TextBuffer {
         self.line_index().is_closing_fence(target_idx)
     }
 
-    pub fn is_in_code_fence(&self, target_idx: usize) -> bool {
-        self.line_index().is_in_fence(target_idx)
-    }
-
-    fn is_line_editable(&self, index: &LineIndex, line: usize, is_source: bool) -> bool {
-        let is_math_content = index
-            .math_pair(line)
-            .is_some_and(|(start, end)| line > start && line < end);
-        let is_separator = index
-            .syntactic_separators
-            .get(line)
-            .copied()
-            .unwrap_or(false);
-        !crate::markdown::table::is_table_delimiter_row(&self.lines[line])
-            && (!is_separator || is_math_content)
-            && !index.is_closing_fence(line)
-            && (is_source || !index.is_math_delimiter(line))
-    }
-
-    pub fn find_next_editable_line(&self, from_line: usize, is_source: bool) -> Option<usize> {
-        let index = self.line_index();
-        ((from_line + 1)..self.lines.len())
-            .find(|&line| self.is_line_editable(&index, line, is_source))
+    self.find_next_editable_source_line(SourceLine::new(from_line), is_source)
+            .map(SourceLine::index)
     }
 
     pub fn find_prev_editable_line(&self, from_line: usize, is_source: bool) -> Option<usize> {
-        let index = self.line_index();
-        (0..from_line)
-            .rev()
-            .find(|&line| self.is_line_editable(&index, line, is_source))
+        self.find_prev_editable_source_line(SourceLine::new(from_line), is_source)
+            .map(SourceLine::index)
     }
 
     pub fn move_left_mode(&mut self, select: bool, is_source: bool) {
@@ -252,23 +95,17 @@ impl TextBuffer {
             self.selection = Selection::cursor(self.selection.start());
             return;
         }
-
-        let pos = self.selection.head;
-        if !is_source {
-            let index = self.line_index();
-            if let Some((start, end)) = index.math_pair(pos.line)
-                && (pos.line == start || pos.line == end)
-            {
-                let target = if pos.line == start {
-                    self.find_prev_editable_line(start, false)
-                        .map(|line| Position::new(line, self.line_len(line)))
-                        .unwrap_or(Position::new(start + 1, 0))
-                } else if end > start + 1 {
-                    Position::new(end - 1, self.line_len(end - 1))
+        let (start_idx, end_idx) = (start.index(), end.index());
+                let target = if pos_line == start {
+                    self.find_prev_editable_source_line(start, false)
+                        .map(|line| Position::new(line.index(), self.line_len(line.index())))
+                        .unwrap_or(Position::new(start_idx + 1, 0))
+                } else if end_idx > start_idx + 1 {
+                    Position::new(end_idx - 1, self.line_len(end_idx - 1))
                 } else {
-                    self.find_prev_editable_line(start, false)
-                        .map(|line| Position::new(line, self.line_len(line)))
-                        .unwrap_or(Position::new(start, 0))
+                    self.find_prev_editable_source_line(start, false)
+                        .map(|line| Position::new(line.index(), self.line_len(line.index())))
+                        .unwrap_or(Position::new(start_idx, 0))
                 };
                 drop(index);
                 self.update_cursor(select, target);
@@ -302,14 +139,7 @@ impl TextBuffer {
                     Position::new(meta.header_line, col)
                 } else if pos.line > meta.delimiter_line + 1 {
                     let prev_row = pos.line - 1;
-                    let prev_cells =
-                        crate::markdown::table::parse_table_row_cells(&self.lines[prev_row]);
-                    let col = prev_cells.last().map(|c| c.col_range.1).unwrap_or(2);
-                    Position::new(prev_row, col)
-                } else if let Some(prev_line) =
-                    self.find_prev_editable_line(meta.header_line, is_source)
-                {
-                    Position::new(prev_line, self.line_len(prev_line))
+                    Position::new(prev_line.index(), self.line_len(prev_line.index()))
                 } else {
                     pos
                 }
@@ -317,19 +147,10 @@ impl TextBuffer {
                 pos
             }
         } else {
-            let line = &self.lines[pos.line];
-            let prefix_len = get_block_prefix_len(line);
-
-            if pos.col <= prefix_len {
-                if let Some(prev_line) = self.find_prev_editable_line(pos.line, is_source) {
-                    Position::new(prev_line, self.line_len(prev_line))
-                } else {
-                    Position::new(pos.line, prefix_len)
-                }
-            } else if pos.col > 0 {
-                Position::new(pos.line, pos.col - 1)
-            } else if let Some(prev_line) = self.find_prev_editable_line(pos.line, is_source) {
-                Position::new(prev_line, self.line_len(prev_line))
+        } else if let Some(prev_line) =
+                self.find_prev_editable_source_line(pos.source_line(), is_source)
+            {
+                Position::new(prev_line.index(), self.line_len(prev_line.index()))
             } else {
                 pos
             }
@@ -345,27 +166,25 @@ impl TextBuffer {
             self.selection = Selection::cursor(self.selection.end());
             return;
         }
-
-        let pos = self.selection.head;
-        if !is_source {
-            let index = self.line_index();
-            if let Some((start, end)) = index.math_pair(pos.line)
-                && (pos.line == start || pos.line == end)
-            {
-                let target = if pos.line == start {
-                    if end > start + 1 {
-                        Position::new(start + 1, 0)
+        let (start_idx, end_idx) = (start.index(), end.index());
+                let target = if pos_line == start {
+                    if end_idx > start_idx + 1 {
+                        Position::new(start_idx + 1, 0)
                     } else {
-                        self.find_next_editable_line(end, false)
+                        self.find_next_editable_source_line(end, false)
                             .map(|line| {
-                                Position::new(line, get_block_prefix_len(&self.lines[line]))
+                                let line_idx = line.index();
+                                Position::new(line_idx, get_block_prefix_len(&self.lines[line_idx]))
                             })
-                            .unwrap_or(Position::new(end, 0))
+                            .unwrap_or(Position::new(end_idx, 0))
                     }
                 } else {
-                    self.find_next_editable_line(end, false)
-                        .map(|line| Position::new(line, get_block_prefix_len(&self.lines[line])))
-                        .unwrap_or(Position::new(end, 0))
+                    self.find_next_editable_source_line(end, false)
+                        .map(|line| {
+                            let line_idx = line.index();
+                            Position::new(line_idx, get_block_prefix_len(&self.lines[line_idx]))
+                        })
+                        .unwrap_or(Position::new(end_idx, 0))
                 };
                 drop(index);
                 self.update_cursor(select, target);
@@ -406,17 +225,7 @@ impl TextBuffer {
                     }
                 } else if pos.line < meta.last_table_line {
                     let next_row = pos.line + 1;
-                    let next_cells =
-                        crate::markdown::table::parse_table_row_cells(&self.lines[next_row]);
-                    let col = next_cells.first().map(|c| c.col_range.0).unwrap_or(2);
-                    Position::new(next_row, col)
-                } else if let Some(next_line) =
-                    self.find_next_editable_line(meta.last_table_line, is_source)
-                {
-                    Position::new(next_line, get_block_prefix_len(&self.lines[next_line]))
-                } else {
-                    pos
-                }
+                    
             } else {
                 pos
             }
@@ -425,16 +234,7 @@ impl TextBuffer {
             let prefix_len = get_block_prefix_len(line);
 
             if pos.col < prefix_len {
-                // Step over hidden prefix directly to right of first visible character
-                Position::new(pos.line, (prefix_len + 1).min(line_len))
-            } else if pos.col < line_len {
-                Position::new(pos.line, pos.col + 1)
-            } else if let Some(next_line) = self.find_next_editable_line(pos.line, is_source) {
-                let next_prefix = get_block_prefix_len(&self.lines[next_line]);
-                Position::new(next_line, next_prefix.min(self.line_len(next_line)))
-            } else if !select
-                && (self.is_in_code_fence(pos.line) || self.is_closing_code_fence(pos.line))
-                && self.ensure_trailing_code_fence_newline().is_some()
+                
             {
                 return;
             } else {
@@ -468,23 +268,18 @@ impl TextBuffer {
                 let prev_line = pos.line - 1;
                 Position::new(prev_line, goal.min(self.line_len(prev_line)))
             } else {
-                Position::new(0, 0)
-            }
-        } else {
-            let target_line = if is_down {
-                self.find_next_editable_line(pos.line, is_source)
-            } else {
-                self.find_prev_editable_line(pos.line, is_source)
+                self.find_prev_editable_source_line(pos.source_line(), is_source)
             };
 
             if let Some(target) = target_line {
-                let prefix = get_block_prefix_len(&self.lines[target]);
-                let col = if self.lines[target].trim_start().starts_with("```") {
-                    self.line_len(target)
+                let target_idx = target.index();
+                let prefix = get_block_prefix_len(&self.lines[target_idx]);
+                let col = if self.lines[target_idx].trim_start().starts_with("```") {
+                    self.line_len(target_idx)
                 } else {
-                    goal.max(prefix).min(self.line_len(target))
+                    goal.max(prefix).min(self.line_len(target_idx))
                 };
-                Position::new(target, col)
+                Position::new(target_idx, col)
             } else if is_down
                 && !select
                 && (self.is_in_code_fence(pos.line) || self.is_closing_code_fence(pos.line))

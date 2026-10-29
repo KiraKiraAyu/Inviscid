@@ -1,96 +1,10 @@
-use super::inline::{InlineSpan, parse_inline_spans};
-use super::prefix::{
-    BlockPrefix, fence_info, is_fence_line, is_thematic_break, parse_block_prefix,
 };
-use super::table::{is_table_delimiter_row, parse_table_alignments, parse_table_row_cells};
-use super::types::{BlockKind, ParsedLine, TableAlignment};
 
-fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
-    lines
         .get(from_idx..)?
         .iter()
         .position(|l| is_fence_line(l))
         .map(|p| p + from_idx)
-}
-
-fn is_math_delimiter(line: &str) -> bool {
-    line.trim() == "$$"
-}
-
-fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usize> {
-    let mut in_code_fence = false;
-    for (offset, line) in lines.get(from_idx..)?.iter().enumerate() {
-        if is_fence_line(line) {
-            in_code_fence = !in_code_fence;
-        } else if !in_code_fence && is_math_delimiter(line) {
-            return Some(from_idx + offset);
-        }
-    }
-    None
-}
-
-pub(crate) fn math_block_pairs(lines: &[String]) -> Vec<(usize, usize)> {
-    let mut pairs = Vec::new();
-    let mut in_code_fence = false;
-    let mut open_idx = None;
-
-    for (idx, line) in lines.iter().enumerate() {
-        if is_fence_line(line) {
-            in_code_fence = !in_code_fence;
-            continue;
-        }
-        if in_code_fence || !is_math_delimiter(line) {
-            continue;
-        }
-
-        if let Some(open_idx) = open_idx.take() {
-            pairs.push((open_idx, idx));
-        } else {
-            open_idx = Some(idx);
-        }
-    }
-
-    pairs
-}
-
-pub(crate) fn math_block_range(lines: &[String], target_idx: usize) -> Option<(usize, usize)> {
-    let mut in_code_fence = false;
-    let mut open_idx = None;
-
-    for (idx, line) in lines.iter().enumerate() {
-        if is_fence_line(line) {
-            in_code_fence = !in_code_fence;
-        } else if !in_code_fence && is_math_delimiter(line) {
-            if let Some(start) = open_idx.take() {
-                if start <= target_idx && target_idx <= idx {
-                    return Some((start, idx));
-                }
-                if idx >= target_idx {
-                    return None;
-                }
-            } else {
-                if idx > target_idx {
-                    return None;
-                }
-                open_idx = Some(idx);
-            }
-        }
-
-        if idx >= target_idx && open_idx.is_none() {
-            return None;
-        }
-    }
-
-    None
-}
-
-fn math_block_state_before(lines: &[String], end_idx: usize) -> bool {
-    math_block_range(lines, end_idx).is_some_and(|(start, _)| start < end_idx)
-}
-
-fn highlight_fenced_slice(
-    lines: &[String],
-    open_fence_idx: Option<usize>,
+        
     close_fence_idx: usize,
 ) -> (usize, Vec<Vec<InlineSpan>>) {
     let content_start = open_fence_idx.map(|i| i + 1).unwrap_or(0);
@@ -113,30 +27,9 @@ impl MarkdownScanner {
     }
 
     pub fn scan_range(
+    
         lines: &[String],
-        range: std::ops::Range<usize>,
-        initial_in_code_fence: bool,
-    ) -> Vec<ParsedLine> {
-        let initial_in_math_block = if initial_in_code_fence {
-            false
-        } else {
-            math_block_state_before(lines, range.start)
-        };
-        Self::scan_range_with_state(lines, range, initial_in_code_fence, initial_in_math_block)
-    }
-
-    pub(crate) fn scan_range_with_state(
-        lines: &[String],
-        range: std::ops::Range<usize>,
-        initial_in_code_fence: bool,
-        initial_in_math_block: bool,
-    ) -> Vec<ParsedLine> {
-        let mut result = Vec::with_capacity(range.len());
-        let mut in_code_fence = initial_in_code_fence;
-        let mut in_math_block = initial_in_math_block;
-        let mut current_table_alignments: Option<Vec<TableAlignment>> = None;
-        let mut next_closing_fence: Option<usize> = None;
-        let mut no_more_closing_fences = false;
+        
         let mut current_code_block_highlights: Option<(usize, Vec<Vec<InlineSpan>>)> =
             if initial_in_code_fence && range.start < lines.len() {
                 let open_fence_idx = (0..range.start).rev().find(|&i| is_fence_line(&lines[i]));
@@ -152,17 +45,11 @@ impl MarkdownScanner {
             };
 
         for idx in range {
-            let raw_line = &lines[idx];
-            let trimmed = raw_line.trim_start();
-            let leading_spaces = raw_line.len() - trimmed.len();
-
-            if in_math_block {
-                current_table_alignments = None;
-                let is_close = is_math_delimiter(raw_line);
+            let is_close = idx == end_line;
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
                     kind: if is_close {
-                        in_math_block = false;
+                        active_math_block = None;
                         BlockKind::MathBlock { is_start: false }
                     } else {
                         BlockKind::MathBlockContent
@@ -247,16 +134,8 @@ impl MarkdownScanner {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::CodeBlockContent,
                     spans,
-                });
-                continue;
-            }
-
-            if is_math_delimiter(raw_line)
-                && let Some(close_idx) = find_closing_math_delimiter(lines, idx + 1)
-            {
-                let tex = lines[idx + 1..close_idx].join("\n");
-                current_table_alignments = None;
-                in_math_block = true;
+                    active_math_block = Some((start_line, close_idx));
+                next_math_block = math_blocks.next();
                 let open_start = leading_spaces;
                 let open_end = open_start + 2;
                 let mut spans = Vec::new();
@@ -423,59 +302,5 @@ impl MarkdownScanner {
         }
 
         result
-    }
-}
-
-pub fn compute_syntactic_separators(lines: &[String]) -> Vec<bool> {
-    let mut separators = vec![false; lines.len()];
-    if lines.is_empty() {
-        return separators;
-    }
-
-    let mut in_fence = false;
-    let mut prev_is_separator = false;
-
-    for (i, line) in lines.iter().enumerate() {
-        if is_fence_line(line) {
-            in_fence = !in_fence;
-        }
-
-        let is_sep = if i == 0 || !line.trim().is_empty() || in_fence {
-            false
-        } else if !lines[i - 1].trim().is_empty() {
-            true
-        } else {
-            !prev_is_separator
-        };
-
-        separators[i] = is_sep;
-        prev_is_separator = is_sep;
-    }
-
-    separators
-}
-
-pub fn is_syntactic_separator(lines: &[String], idx: usize) -> bool {
-    if idx == 0 || idx >= lines.len() || !lines[idx].trim().is_empty() {
-        return false;
-    }
-
-    let mut in_fence = false;
-    let mut prev_is_separator = false;
-
-    for (i, line) in lines.iter().enumerate().take(idx + 1) {
-        if is_fence_line(line) {
-            in_fence = !in_fence;
-        }
-
-        prev_is_separator = if i == 0 || !line.trim().is_empty() || in_fence {
-            false
-        } else if !lines[i - 1].trim().is_empty() {
-            true
-        } else {
-            !prev_is_separator
-        };
-    }
-
-    prev_is_separator
+        CaretMap::from_lines(lines).is_syntactic_separator(SourceLine::new(idx))
 }

@@ -6,6 +6,7 @@
 //! needs 3 columns, so a 2-space tab would silently keep the item a loose
 //! sibling. Indentation targets are therefore derived from the surrounding
 //! lines, falling back to a plain `tab_size` step when no list parent exists.
+
 //!
 //! All columns are character columns. A list line's indent region starts at
 //! its marker column (`  - x` → 2), looking through one level of blockquote
@@ -13,6 +14,7 @@
 
 use super::ParsedLine;
 use super::prefix::{BlockPrefix, parse_block_prefix, parse_quote_prefix};
+use crate::buffer::SourceLine;
 
 /// Count of leading ASCII indent characters (`' '` or `'\t'`).
 /// Because both characters are single-byte ASCII, byte count equals character column count.
@@ -148,7 +150,8 @@ fn prev_indent_target(lines: &[String], line_idx: usize, tab_size: usize) -> usi
 
 /// Tab plan for `lines[line_idx]`: `(col, insert_len)` — insert `insert_len`
 /// spaces at character column `col`.
-pub fn tab_plan(lines: &[String], line_idx: usize, tab_size: usize) -> (usize, usize) {
+pub fn tab_plan(lines: &[String], source_line: SourceLine, tab_size: usize) -> (usize, usize) {
+    let line_idx = source_line.index();
     let tab_size = tab_size.max(1);
     let line = &lines[line_idx];
     let col = indent_col(line);
@@ -158,7 +161,12 @@ pub fn tab_plan(lines: &[String], line_idx: usize, tab_size: usize) -> (usize, u
 
 /// Shift+Tab plan for `lines[line_idx]`: `(col, remove_len)` — remove
 /// `remove_len` characters starting at character column `col`.
-pub fn shift_tab_plan(lines: &[String], line_idx: usize, tab_size: usize) -> (usize, usize) {
+pub fn shift_tab_plan(
+    lines: &[String],
+    source_line: SourceLine,
+    tab_size: usize,
+) -> (usize, usize) {
+    let line_idx = source_line.index();
     let tab_size = tab_size.max(1);
     let line = &lines[line_idx];
     let target = prev_indent_target(lines, line_idx, tab_size);
@@ -172,7 +180,13 @@ pub fn shift_tab_plan(lines: &[String], line_idx: usize, tab_size: usize) -> (us
 /// Scans up to 50 lines looking for leading spaces that are multiples of
 /// 2 or 4. The style with more occurrences wins. Empty lines and lines
 /// without indentation are ignored.
-pub fn detect_code_block_indent(lines: &[String], start_line: usize, end_line: usize) -> usize {
+pub fn detect_code_block_indent(
+    lines: &[String],
+    start_line: SourceLine,
+    end_line: SourceLine,
+) -> usize {
+    let start_line = start_line.index();
+    let end_line = end_line.index();
     let mut indent_2_count = 0;
     let mut indent_4_count = 0;
     let scan_limit = 50;

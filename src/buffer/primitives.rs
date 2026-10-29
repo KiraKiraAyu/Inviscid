@@ -1,12 +1,17 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
-pub struct Position {
-    pub line: usize,
     pub col: usize,
 }
 
-impl Position {
-    pub fn new(line: usize, col: usize) -> Self {
+impl SourcePosition {
+    pub const fn new(line: SourceLine, col: usize) -> Self {
         Self { line, col }
+    }
+
+    pub const fn from_position(position: Position) -> Self {
+        Self::new(position.source_line(), position.col)
+    }
+
+    pub const fn to_position(self) -> Position {
+        Position::new(self.line.index(), self.col)
     }
 }
 

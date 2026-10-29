@@ -27,7 +27,9 @@ impl PositionCursor {
         let gap = &text[self.byte..byte];
         match memchr::memrchr(b'\n', gap.as_bytes()) {
             Some(last_newline) => {
-                self.pos.line += memchr::memchr_iter(b'\n', gap.as_bytes()).count();
+                self.pos.line = crate::buffer::SourceLine::new(
+                    self.pos.line.index() + memchr::memchr_iter(b'\n', gap.as_bytes()).count(),
+                );
                 self.pos.col = gap[last_newline + 1..].chars().count();
             }
             None => self.pos.col += gap.chars().count(),
@@ -56,9 +58,18 @@ mod tests {
 
         let matches = find_matches(text, &query, 100);
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].start, Position::new(0, 0));
-        assert_eq!(matches[0].end, Position::new(0, 5));
-        assert_eq!(matches[1].start, Position::new(1, 0));
+        assert_eq!(
+            matches[0].start,
+            Position::new(crate::buffer::SourceLine::new(0), 0)
+        );
+        assert_eq!(
+            matches[0].end,
+            Position::new(crate::buffer::SourceLine::new(0), 5)
+        );
+        assert_eq!(
+            matches[1].start,
+            Position::new(crate::buffer::SourceLine::new(1), 0)
+        );
     }
 
     #[test]
@@ -84,8 +95,14 @@ mod tests {
 
         let matches = find_matches(text, &query, 100);
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].start, Position::new(0, 0));
-        assert_eq!(matches[1].start, Position::new(1, 0));
+        assert_eq!(
+            matches[0].start,
+            Position::new(crate::buffer::SourceLine::new(0), 0)
+        );
+        assert_eq!(
+            matches[1].start,
+            Position::new(crate::buffer::SourceLine::new(1), 0)
+        );
     }
 
     #[test]
@@ -102,8 +119,14 @@ mod tests {
 
         let matches = find_matches(text, &query, 100);
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].start, Position::new(0, 0));
-        assert_eq!(matches[0].end, Position::new(1, 6));
+        assert_eq!(
+            matches[0].start,
+            Position::new(crate::buffer::SourceLine::new(0), 0)
+        );
+        assert_eq!(
+            matches[0].end,
+            Position::new(crate::buffer::SourceLine::new(1), 6)
+        );
     }
 
     #[test]
@@ -139,13 +162,19 @@ mod tests {
         let matches = find_matches(text, &query("世界", SearchOptions::default()), 100);
         assert_eq!(
             matches,
-            vec![SearchMatch::new(Position::new(0, 6), Position::new(0, 8))]
+            vec![SearchMatch::new(
+                Position::new(crate::buffer::SourceLine::new(0), 6),
+                Position::new(crate::buffer::SourceLine::new(0), 8)
+            )]
         );
 
         let matches = find_matches(text, &query("world", SearchOptions::default()), 100);
         assert_eq!(
             matches,
-            vec![SearchMatch::new(Position::new(1, 3), Position::new(1, 8))]
+            vec![SearchMatch::new(
+                Position::new(crate::buffer::SourceLine::new(1), 3),
+                Position::new(crate::buffer::SourceLine::new(1), 8)
+            )]
         );
     }
 
@@ -161,7 +190,10 @@ mod tests {
         let matches = find_matches(text, &query("HELLO", SearchOptions::default()), 100);
         assert_eq!(
             matches,
-            vec![SearchMatch::new(Position::new(0, 3), Position::new(0, 8))]
+            vec![SearchMatch::new(
+                Position::new(crate::buffer::SourceLine::new(0), 3),
+                Position::new(crate::buffer::SourceLine::new(0), 8)
+            )]
         );
     }
 
@@ -174,7 +206,10 @@ mod tests {
         };
         let matches = find_matches(text, &query("cat", options), 100);
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[1].start, Position::new(0, 12));
+        assert_eq!(
+            matches[1].start,
+            Position::new(crate::buffer::SourceLine::new(0), 12)
+        );
     }
 
     #[test]
@@ -194,8 +229,14 @@ mod tests {
         assert_eq!(
             matches,
             vec![
-                SearchMatch::new(Position::new(0, 0), Position::new(0, 2)),
-                SearchMatch::new(Position::new(0, 2), Position::new(0, 4)),
+                SearchMatch::new(
+                    Position::new(crate::buffer::SourceLine::new(0), 0),
+                    Position::new(crate::buffer::SourceLine::new(0), 2)
+                ),
+                SearchMatch::new(
+                    Position::new(crate::buffer::SourceLine::new(0), 2),
+                    Position::new(crate::buffer::SourceLine::new(0), 4)
+                ),
             ]
         );
     }
@@ -209,7 +250,10 @@ mod tests {
         let matches = find_matches("axb", &query("x*", options), 100);
         assert_eq!(
             matches,
-            vec![SearchMatch::new(Position::new(0, 1), Position::new(0, 2))]
+            vec![SearchMatch::new(
+                Position::new(crate::buffer::SourceLine::new(0), 1),
+                Position::new(crate::buffer::SourceLine::new(0), 2)
+            )]
         );
     }
 
@@ -221,7 +265,10 @@ mod tests {
         };
         let matches = find_matches("foo\nbar\nfoo", &query("^foo", options), 100);
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[1].start, Position::new(2, 0));
+        assert_eq!(
+            matches[1].start,
+            Position::new(crate::buffer::SourceLine::new(2), 0)
+        );
     }
 
     #[test]
@@ -231,7 +278,10 @@ mod tests {
         assert_eq!(matches.len(), 100_000);
         assert_eq!(
             matches[99_999],
-            SearchMatch::new(Position::new(99_999, 6), Position::new(99_999, 11))
+            SearchMatch::new(
+                Position::new(crate::buffer::SourceLine::new(99_999), 6),
+                Position::new(crate::buffer::SourceLine::new(99_999), 11)
+            )
         );
     }
 }

@@ -6,15 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder;
-
-use crate::app::actions::{
-    CloseFindBar, FindInDocument, FindNext, FindPrevious, ReplaceInDocument,
-};
-use crate::buffer::{Position, Selection, TextBuffer};
-use crate::markdown::{VisualDocument, get_block_prefix_len, toggle_task_checkbox};
-use crate::search::FindState;
-use crate::theme::{ActiveTheme, Theme};
-
+    
 pub mod actions;
 pub mod display_map;
 pub mod element;
@@ -499,61 +491,42 @@ impl Editor {
 
     #[inline]
     pub fn display_map(&self) -> &DisplayMap {
-        &self.display_map
-    }
-
-    /// Folds `start_line..=end_line`, moving the cursor to `start_line` if it was inside the folded region.
-    pub fn fold_internal(&mut self, start_line: usize, end_line: usize) {
-        self.display_map.fold_map_mut().fold(start_line, end_line);
-        let cursor = self.buffer.cursor_pos();
-        if cursor.line > start_line && cursor.line <= end_line {
-            self.buffer.update_cursor(
-                false,
-                Position::new(start_line, self.buffer.line_len(start_line)),
-            );
+        let layout = self.layout_snapshot();
+        let projection = self.current_projection(&layout.parsed_lines);
+        let mut display_map = self.display_map.clone();
+        display_map.fold(start_line, end_line);
+        let Some(normalized) = display_map.normalize_position(&projection, cursor) else {
+            return;
+        };
+        self.display_map = display_map;
+        if normalized != cursor {
+            self.buffer.update_cursor(false, normalized);
         }
         self.ensure_layout_cache();
     }
 
-    pub fn fold(&mut self, start_line: usize, end_line: usize, cx: &mut Context<Self>) {
+    pub fn fold(&mut self, start_line: SourceLine, end_line: SourceLine, cx: &mut Context<Self>) {
         self.fold_internal(start_line, end_line);
         cx.notify();
     }
 
-    pub fn unfold_internal(&mut self, start_line: usize) -> bool {
-        let changed = self.display_map.fold_map_mut().unfold(start_line);
+    pub fn unfold_internal(&mut self, start_line: SourceLine) -> bool {
+        let changed = self.display_map.unfold(start_line);
         if changed {
             self.ensure_layout_cache();
         }
         changed
-    }
-
-    pub fn unfold(&mut self, start_line: usize, cx: &mut Context<Self>) -> bool {
-        let changed = self.unfold_internal(start_line);
-        if changed {
-            cx.notify();
+        
         }
         changed
     }
-
-    pub fn unfold_all_internal(&mut self) {
-        self.display_map.fold_map_mut().unfold_all();
-        self.ensure_layout_cache();
-    }
-
+    
     pub fn unfold_all(&mut self, cx: &mut Context<Self>) {
         self.unfold_all_internal();
         cx.notify();
     }
-
-    #[inline]
-    pub fn is_line_folded(&self, line: usize) -> bool {
-        self.display_map.fold_map().is_line_folded(line)
-    }
-
-    #[inline]
-    pub fn is_fold_header(&self, line: usize) -> bool {
-        self.display_map.fold_map().is_fold_header(line)
+    pub fn is_fold_header(&self, line: SourceLine) -> bool {
+        self.display_map.is_fold_header(line)
     }
 
     pub fn status_meta(&self) -> Option<EditorStatusMeta> {
@@ -567,30 +540,7 @@ impl Editor {
             char_count: self.buffer.char_count(),
             render_mode: self.render_mode,
         })
-    }
-
-    /// Clamps cursor out of hidden markdown prefixes when switching into Live Preview.
-    pub fn normalize_cursor_for_mode(&mut self, new_mode: RenderMode) {
-        if new_mode != RenderMode::LivePreview {
-            return;
-        }
-
-        let layout = self.layout_snapshot();
-        let pos = self.buffer.cursor_pos();
-        let vdoc = VisualDocument::from_parsed(self.buffer.lines(), &layout.parsed_lines);
-        let vpos = vdoc.source_to_visual(pos);
-        let mut target_pos = vdoc.visual_to_source(vpos);
-
-        let current_line_str = &self.buffer.lines()[target_pos.line];
-        let prefix_len = get_block_prefix_len(current_line_str);
-        if prefix_len > 0 && target_pos.col < prefix_len {
-            target_pos.col = prefix_len.min(self.buffer.line_len(target_pos.line));
-        }
-
-        self.buffer.set_cursor(target_pos);
-        self.pixel_column_goal = None;
-    }
-
+        
     pub(crate) fn start_scroll_animation(&mut self, cx: &mut Context<Self>) {
         crate::ui::start_scroll_animation(
             self,

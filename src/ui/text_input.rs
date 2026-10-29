@@ -132,7 +132,10 @@ impl TextInput {
     pub fn new_unstarted(initial_text: &str, focus_handle: FocusHandle) -> Self {
         let mut buffer = TextBuffer::from_str(initial_text, None);
         let char_count = initial_text.chars().count();
-        buffer.set_selection(Selection::cursor(Position::new(0, char_count)));
+        buffer.set_selection(Selection::cursor(Position::new(
+            crate::buffer::SourceLine::new(0),
+            char_count,
+        )));
         let reported_revision = buffer.revision();
 
         Self {
@@ -187,8 +190,8 @@ impl TextInput {
 
     pub fn selection(mut self, range: Range<usize>) -> Self {
         self.buffer.set_selection(Selection {
-            anchor: Position::new(0, range.start),
-            head: Position::new(0, range.end),
+            anchor: Position::new(crate::buffer::SourceLine::new(0), range.start),
+            head: Position::new(crate::buffer::SourceLine::new(0), range.end),
         });
         self
     }
@@ -215,7 +218,10 @@ impl TextInput {
 
     #[inline]
     pub fn text(&self) -> String {
-        self.buffer.line(0).unwrap_or("").to_string()
+        self.buffer
+            .line(crate::buffer::SourceLine::new(0))
+            .unwrap_or("")
+            .to_string()
     }
 
     #[inline]
@@ -421,8 +427,10 @@ impl TextInput {
     }
 
     pub fn start_drag(&mut self, col: usize) {
-        self.buffer
-            .set_selection(Selection::cursor(Position::new(0, col)));
+        self.buffer.set_selection(Selection::cursor(Position::new(
+            crate::buffer::SourceLine::new(0),
+            col,
+        )));
         self.is_dragging = true;
         self.drag_anchor = Some(col);
     }
@@ -434,8 +442,8 @@ impl TextInput {
         let col = self.col_for_point(self.rel_x_for_point(point), window);
         if let Some(anchor) = self.drag_anchor {
             self.buffer.set_selection(Selection {
-                anchor: Position::new(0, anchor),
-                head: Position::new(0, col),
+                anchor: Position::new(crate::buffer::SourceLine::new(0), anchor),
+                head: Position::new(crate::buffer::SourceLine::new(0), col),
             });
         }
     }
@@ -455,7 +463,10 @@ impl TextInput {
 
     /// Resolves character column from a relative X pixel coordinate using text shaping.
     pub fn col_for_point(&self, rel_x: Pixels, window: &mut Window) -> usize {
-        let line_str = self.buffer.line(0).unwrap_or("");
+        let line_str = self
+            .buffer
+            .line(crate::buffer::SourceLine::new(0))
+            .unwrap_or("");
         if line_str.is_empty() {
             return 0;
         }
@@ -538,7 +549,10 @@ impl TextInput {
         } else {
             self.buffer.utf16_offset_to_pos(range_utf16.start).col
         };
-        let line_str = self.buffer.line(0).unwrap_or("");
+        let line_str = self
+            .buffer
+            .line(crate::buffer::SourceLine::new(0))
+            .unwrap_or("");
         let font_size = FontSize::SM.to_pixels(window.rem_size());
         let line_height = LineHeight::SM.to_pixels(window.rem_size());
         let (caret_w, _) = calculate_caret_size(font_size, line_height);
@@ -570,7 +584,10 @@ impl TextInput {
         window: &mut Window,
     ) -> Option<usize> {
         let col = self.col_for_point(self.rel_x_for_point(point), window);
-        Some(self.buffer.pos_to_utf16_offset(Position::new(0, col)))
+        Some(
+            self.buffer
+                .pos_to_utf16_offset(Position::new(crate::buffer::SourceLine::new(0), col)),
+        )
     }
 }
 
@@ -1189,7 +1206,9 @@ impl TextInput {
                         .col_for_point(this.text_input().rel_x_for_point(event.position), window);
                     let input = this.text_input_mut();
                     if event.click_count == 2 {
-                        input.buffer.select_word_at(Position::new(0, col));
+                        input
+                            .buffer
+                            .select_word_at(Position::new(crate::buffer::SourceLine::new(0), col));
                         input.is_dragging = false;
                         input.drag_anchor = None;
                     } else if event.click_count == 3 {

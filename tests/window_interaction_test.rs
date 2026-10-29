@@ -76,24 +76,42 @@ fn test_gpui_window_action_dispatch_and_buffer_mutation() {
         (ed.buffer().char_count(), ed.cursor_pos())
     });
     assert_eq!(chars, 11);
-    assert_eq!(cursor, Position::new(0, 0));
+    assert_eq!(
+        cursor,
+        Position::new(inviscid::buffer::SourceLine::new(0), 0)
+    );
 
     cx.dispatch_action(MoveRight);
     let cursor = cx.update(|_window, cx| editor.read(cx).cursor_pos());
-    assert_eq!(cursor, Position::new(0, 1));
+    assert_eq!(
+        cursor,
+        Position::new(inviscid::buffer::SourceLine::new(0), 1)
+    );
 
     cx.dispatch_action(MoveToEndOfLine);
     let cursor = cx.update(|_window, cx| editor.read(cx).cursor_pos());
-    assert_eq!(cursor, Position::new(0, 11));
+    assert_eq!(
+        cursor,
+        Position::new(inviscid::buffer::SourceLine::new(0), 11)
+    );
 
     cx.dispatch_action(MoveToBeginningOfLine);
     let cursor = cx.update(|_window, cx| editor.read(cx).cursor_pos());
-    assert_eq!(cursor, Position::new(0, 0));
+    assert_eq!(
+        cursor,
+        Position::new(inviscid::buffer::SourceLine::new(0), 0)
+    );
 
     cx.dispatch_action(SelectAll);
     let sel = cx.update(|_window, cx| editor.read(cx).buffer().selection());
-    assert_eq!(sel.anchor, Position::new(0, 0));
-    assert_eq!(sel.head, Position::new(0, 11));
+    assert_eq!(
+        sel.anchor,
+        Position::new(inviscid::buffer::SourceLine::new(0), 0)
+    );
+    assert_eq!(
+        sel.head,
+        Position::new(inviscid::buffer::SourceLine::new(0), 11)
+    );
 
     cx.dispatch_action(Backspace);
     let (empty, is_dirty) = cx.update(|_window, cx| {
@@ -104,8 +122,14 @@ fn test_gpui_window_action_dispatch_and_buffer_mutation() {
     assert!(is_dirty);
 
     cx.dispatch_action(UndoAction);
-    let restored_text =
-        cx.update(|_window, cx| editor.read(cx).buffer().line(0).unwrap_or("").to_string());
+    let restored_text = cx.update(|_window, cx| {
+        editor
+            .read(cx)
+            .buffer()
+            .line(inviscid::buffer::SourceLine::new(0))
+            .unwrap_or("")
+            .to_string()
+    });
     assert_eq!(restored_text, "Hello World");
 }
 
@@ -230,7 +254,10 @@ fn test_gpui_ime_input_handler_lifecycle_contract() {
     cx.update(|window, cx| {
         editor.update(cx, |ed, cx| {
             assert_eq!(ed.marked_text_range(window, cx), Some(0..6));
-            assert_eq!(ed.buffer().line(0), Some("pinyin"));
+            assert_eq!(
+                ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+                Some("pinyin")
+            );
             let mut adj = None;
             assert_eq!(
                 ed.text_for_range(0..6, &mut adj, window, cx),
@@ -250,10 +277,23 @@ fn test_gpui_ime_input_handler_lifecycle_contract() {
     cx.update(|window, cx| {
         editor.update(cx, |ed, cx| {
             assert_eq!(ed.marked_text_range(window, cx), None);
-            assert_eq!(ed.buffer().line(0), Some("拼音"));
-            assert_eq!(ed.buffer().line(0).unwrap().chars().count(), 2);
+            assert_eq!(
+                ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+                Some("拼音")
+            );
+            assert_eq!(
+                ed.buffer()
+                    .line(inviscid::buffer::SourceLine::new(0))
+                    .unwrap()
+                    .chars()
+                    .count(),
+                2
+            );
             assert_eq!(ed.buffer().char_count(), 3);
-            assert_eq!(ed.cursor_pos(), Position::new(0, 2));
+            assert_eq!(
+                ed.cursor_pos(),
+                Position::new(inviscid::buffer::SourceLine::new(0), 2)
+            );
         });
     });
 
@@ -281,7 +321,10 @@ fn test_gpui_ime_input_handler_lifecycle_contract() {
         editor.update(cx, |ed, cx| {
             assert_eq!(ed.marked_text_range(window, cx), None);
             ed.replace_text_in_range(Some(2..7), "", window, cx);
-            assert_eq!(ed.buffer().line(0), Some("拼音"));
+            assert_eq!(
+                ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+                Some("拼音")
+            );
         });
     });
     cx.run_until_parked();
@@ -289,8 +332,8 @@ fn test_gpui_ime_input_handler_lifecycle_contract() {
     cx.update(|_window, cx| {
         editor.update(cx, |ed, _cx| {
             ed.buffer_mut().set_selection(Selection {
-                anchor: Position::new(0, 0),
-                head: Position::new(0, 2),
+                anchor: Position::new(inviscid::buffer::SourceLine::new(0), 0),
+                head: Position::new(inviscid::buffer::SourceLine::new(0), 2),
             });
         });
     });
@@ -305,8 +348,14 @@ fn test_gpui_ime_input_handler_lifecycle_contract() {
 
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
-        assert_eq!(ed.buffer().line(0), Some("(拼音)"));
-        assert_eq!(ed.cursor_pos(), Position::new(0, 4));
+        assert_eq!(
+            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            Some("(拼音)")
+        );
+        assert_eq!(
+            ed.cursor_pos(),
+            Position::new(inviscid::buffer::SourceLine::new(0), 4)
+        );
     });
 }
 

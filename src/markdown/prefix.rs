@@ -78,6 +78,11 @@ pub fn is_fence_line(line: &str) -> bool {
     fence_info(line).is_some()
 }
 
+#[inline]
+pub fn is_math_delimiter_line(line: &str) -> bool {
+    line.trim() == "$$"
+}
+
 pub fn parse_fence_prefix(trimmed: &str) -> Option<(Option<String>, usize)> {
     let info = fence_info(trimmed)?;
     let lang_str = (!info.is_empty()).then(|| info.to_string());

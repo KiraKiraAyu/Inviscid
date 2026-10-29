@@ -121,23 +121,10 @@ impl EntityInputHandler for Editor {
                 "（" | "）" => Some(("（", "）")),
                 _ => None,
             }
-        } else {
-            None
-        };
-
-        let is_source = self.render_mode == RenderMode::Source;
-        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
-        self.track_buffer_change(cx, |this| {
-            if let Some((open, close)) = pair {
-                this.buffer.surround_selection(open, close);
+            
             } else {
                 this.buffer.insert_text(text);
-            }
-        });
-        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
-
-        self.marked_range = None;
-        self.pixel_column_goal = None;
+                
         self.last_cursor_action = std::time::Instant::now();
         self.scroll_to_cursor();
         self.start_scroll_animation_if_needed(cx);
@@ -191,14 +178,7 @@ impl EntityInputHandler for Editor {
             self.buffer.cursor_pos()
         } else {
             self.buffer.utf16_offset_to_pos(range_utf16.start)
-        };
-
-        let layout = self.layout_snapshot();
-        if let Some(parsed) = layout.parsed_lines.get(start_pos.line) {
-            let line_bounds = self.line_screen_bounds(start_pos.line, element_bounds);
-            let is_active_caret = true;
-            let theme = cx
-                .try_global::<crate::theme::ThemeManager>()
+                
                 .map(|m| m.theme())
                 .unwrap_or(&crate::theme::DEFAULT_THEME);
             let (font_size, line_height, wrap_width, scx) =
@@ -266,11 +246,4 @@ impl EntityInputHandler for Editor {
 
     fn character_index_for_point(
         &mut self,
-        point: Point<Pixels>,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        let pos = self.find_pos_for_mouse_point(point, window);
-        Some(self.buffer.pos_to_utf16_offset(pos))
-    }
-}
+        
