@@ -161,6 +161,41 @@ impl Add<ProjectedLine> for ProjectedLine {
     }
 }
 
+/// Number of lines in a projected visual block.
+///
+/// Use `contains` or `last_line` when converting a count into a position boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProjectedLineCount(usize);
+
+impl ProjectedLineCount {
+    pub const fn new(count: usize) -> Self {
+        Self(count)
+    }
+
+    pub const fn count(self) -> usize {
+        self.0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub const fn contains(self, line: ProjectedLine) -> bool {
+        line.index() < self.0
+    }
+
+    pub const fn last_line(self) -> Option<ProjectedLine> {
+        match self.0.checked_sub(1) {
+            Some(index) => Some(ProjectedLine::new(index)),
+            None => None,
+        }
+    }
+
+    pub fn increment(&mut self) {
+        self.0 += 1;
+    }
+}
+
 /// Position expressed in the editable source document's coordinate space.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourcePosition {

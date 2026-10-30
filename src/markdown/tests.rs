@@ -338,12 +338,24 @@ fn test_visual_document_ast_and_position_projection() {
         end_line,
     } = &doc.blocks[crate::buffer::ProjectedBlockIndex::new(2)]
     {
-        assert_eq!(*code_line_count, crate::buffer::ProjectedLine::new(3));
+        assert_eq!(*code_line_count, crate::buffer::ProjectedLineCount::new(3));
         assert_eq!(*start_line, SourceLine::new(4));
         assert_eq!(*end_line, SourceLine::new(8));
     } else {
         panic!("Block 2 must be CodeBlock");
     }
+
+    let code_block_count = doc.block_line_count(ProjectedBlockIndex::new(2));
+    assert_eq!(code_block_count.count(), 4);
+    assert!(code_block_count.contains(ProjectedLine::new(3)));
+    assert!(!code_block_count.contains(ProjectedLine::new(4)));
+    assert_eq!(code_block_count.last_line(), Some(ProjectedLine::new(3)));
+    assert_eq!(
+        VisualDocument::default()
+            .block_line_count(ProjectedBlockIndex::new(0))
+            .last_line(),
+        None
+    );
 
     let vpos_code = doc.source_to_visual(source(6, 4));
     assert_eq!(vpos_code, visual(2, 2, 4));

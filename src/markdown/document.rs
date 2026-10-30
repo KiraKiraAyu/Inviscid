@@ -1,6 +1,8 @@
 use super::scanner::compute_syntactic_separators;
 use super::types::{BlockKind, ParsedLine};
-use crate::buffer::{ProjectedBlockIndex, ProjectedLine, SourceLine, SourcePosition};
+use crate::buffer::{
+    ProjectedBlockIndex, ProjectedLine, ProjectedLineCount, SourceLine, SourcePosition,
+};
 use std::ops::Index;
 
 /// Projected blocks can only be addressed with a projected block coordinate.
@@ -55,12 +57,12 @@ pub enum VisualBlock {
         source_line: SourceLine,
     },
     CodeBlock {
-        code_line_count: ProjectedLine,
+        code_line_count: ProjectedLineCount,
         start_line: SourceLine,
         end_line: SourceLine,
     },
     Table {
-        row_count: ProjectedLine,
+        row_count: ProjectedLineCount,
         start_line: SourceLine,
         end_line: SourceLine,
     },
@@ -152,13 +154,13 @@ impl VisualDocument {
                 BlockKind::CodeBlock { is_fence_start } => {
                     if *is_fence_start {
                         let start_line = idx;
-                        let mut code_line_count = ProjectedLine::new(0);
+                        let mut code_line_count = ProjectedLineCount::new(0);
                         let mut end_line = start_line;
                         idx += 1;
                         while idx < parsed_lines.len() {
                             match &parsed_lines[idx].kind {
                                 BlockKind::CodeBlockContent => {
-                                    code_line_count += 1;
+                                    code_line_count.increment();
                                     end_line = idx;
                                     idx += 1;
                                 }
@@ -193,7 +195,7 @@ impl VisualDocument {
                 BlockKind::Table { is_header, .. } => {
                     if *is_header {
                         let start_line = idx;
-                        let mut row_count = ProjectedLine::new(0);
+                        let mut row_count = ProjectedLineCount::new(0);
                         let mut end_line = idx;
                         idx += 1;
                         while idx < parsed_lines.len() {
@@ -204,7 +206,7 @@ impl VisualDocument {
                             } = &parsed_lines[idx].kind
                             {
                                 if !is_delimiter {
-                                    row_count += 1;
+                                    row_count.increment();
                                 }
                                 end_line = idx;
                                 idx += 1;
@@ -329,16 +331,16 @@ impl VisualDocument {
         )
     }
 
-    pub fn block_line_count(&self, b_idx: ProjectedBlockIndex) -> ProjectedLine {
+    pub fn block_line_count(&self, b_idx: ProjectedBlockIndex) -> ProjectedLineCount {
         if b_idx.index() >= self.blocks.len() {
-            return ProjectedLine::new(0);
+            return ProjectedLineCount::new(0);
         }
         match &self.blocks[b_idx] {
             VisualBlock::CodeBlock {
                 code_line_count, ..
-            } => ProjectedLine::new(1) + *code_line_count,
-            VisualBlock::Table { row_count, .. } => ProjectedLine::new(1) + *row_count,
-            _ => ProjectedLine::new(1),
+            } => ProjectedLineCount::new(1 + code_line_count.count()),
+            VisualBlock::Table { row_count, .. } => ProjectedLineCount::new(1 + row_count.count()),
+            _ => ProjectedLineCount::new(1),
         }
     }
 
@@ -347,7 +349,7 @@ impl VisualDocument {
             return None;
         }
         let b_count = self.block_line_count(vpos.block_idx);
-        if vpos.line_in_block + 1 < b_count {
+        if b_count.contains(vpos.line_in_block + 1) {
             Some(VisualPosition::new(
                 vpos.block_idx,
                 vpos.line_in_block + 1,
@@ -377,7 +379,7 @@ impl VisualDocument {
         } else if vpos.block_idx.index() > 0 {
             let prev_idx = vpos.block_idx - 1;
             let prev_count = self.block_line_count(prev_idx);
-            let prev_line = prev_count.saturating_sub(1);
+            let prev_line = prev_count.last_line()?;
             Some(VisualPosition::new(prev_idx, prev_line, vpos.col))
         } else {
             None
