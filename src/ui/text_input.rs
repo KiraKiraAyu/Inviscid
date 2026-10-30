@@ -586,7 +586,10 @@ impl TextInput {
         let col = self.col_for_point(self.rel_x_for_point(point), window);
         Some(
             self.buffer
-                .pos_to_utf16_offset(Position::new(crate::buffer::SourceLine::new(0), col)),
+                .pos_to_utf16_offset(crate::buffer::SourcePosition::new(
+                    crate::buffer::SourceLine::new(0),
+                    col,
+                )),
         )
     }
 }

@@ -27,9 +27,7 @@ impl PositionCursor {
         let gap = &text[self.byte..byte];
         match memchr::memrchr(b'\n', gap.as_bytes()) {
             Some(last_newline) => {
-                self.pos.line = crate::buffer::SourceLine::new(
-                    self.pos.line.index() + memchr::memchr_iter(b'\n', gap.as_bytes()).count(),
-                );
+                self.pos.line += memchr::memchr_iter(b'\n', gap.as_bytes()).count();
                 self.pos.col = gap[last_newline + 1..].chars().count();
             }
             None => self.pos.col += gap.chars().count(),
@@ -280,7 +278,7 @@ mod tests {
             matches[99_999],
             SearchMatch::new(
                 Position::new(crate::buffer::SourceLine::new(99_999), 6),
-                Position::new(crate::buffer::SourceLine::new(99_999), 11)
+                Position::new(crate::buffer::SourceLine::new(99_999), 11),
             )
         );
     }

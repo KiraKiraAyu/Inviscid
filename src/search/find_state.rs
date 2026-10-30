@@ -1,4 +1,4 @@
-use crate::buffer::{Position, SourceLine};
+use crate::buffer::Position;
 use crate::search::{SearchMatch, SearchQuery};
 
 #[derive(Clone, Debug, Default)]
@@ -67,13 +67,15 @@ impl FindState {
         self.current_idx.and_then(|idx| self.matches.get(idx))
     }
 
-    pub fn matches_on_line(&self, line: SourceLine) -> impl Iterator<Item = (usize, &SearchMatch)> {
-        let line_idx = line.index();
+    pub fn matches_on_line(
+        &self,
+        line: crate::buffer::SourceLine,
+    ) -> impl Iterator<Item = (usize, &SearchMatch)> {
         let first = self.matches.partition_point(|m| m.end.line < line);
         self.matches[first..]
             .iter()
             .enumerate()
-            .take_while(move |(_, m)| m.start.line.index() <= line_idx)
+            .take_while(move |(_, m)| m.start.line <= line)
             .map(move |(offset, m)| (first + offset, m))
     }
 
@@ -203,12 +205,12 @@ mod tests {
                 .map(|(i, _)| i)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(SourceLine::new(0)), vec![0]);
-        assert_eq!(ids(SourceLine::new(1)), vec![1, 2]);
-        assert_eq!(ids(SourceLine::new(2)), vec![2]);
-        assert_eq!(ids(SourceLine::new(3)), vec![2]);
-        assert_eq!(ids(SourceLine::new(4)), vec![3]);
-        assert!(ids(SourceLine::new(5)).is_empty());
+        assert_eq!(ids(crate::buffer::SourceLine::new(0)), vec![0]);
+        assert_eq!(ids(crate::buffer::SourceLine::new(1)), vec![1, 2]);
+        assert_eq!(ids(crate::buffer::SourceLine::new(2)), vec![2]);
+        assert_eq!(ids(crate::buffer::SourceLine::new(3)), vec![2]);
+        assert_eq!(ids(crate::buffer::SourceLine::new(4)), vec![3]);
+        assert!(ids(crate::buffer::SourceLine::new(5)).is_empty());
     }
 
     #[test]

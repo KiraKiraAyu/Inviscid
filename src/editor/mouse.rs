@@ -1,9 +1,20 @@
+use gpui::*;
+
+use crate::buffer::{Position, SourceLine};
+use crate::editor::EditorEvent;
+use crate::editor::element::EditorElement;
 
 use super::{Editor, RenderMode};
 
 impl Editor {
     /// Resolves target line and buffer column, and if clicking in empty bottom area after a trailing code block, appends a new paragraph
-    return Some(Position::new(0, 0));
+    pub fn find_pos_for_mouse_point_mut(
+        &mut self,
+        point: Point<Pixels>,
+        window: &mut Window,
+    ) -> Position {
+        if self.buffer.line_count() == 0 {
+            return Position::new(crate::buffer::SourceLine::new(0), 0);
         }
 
         let total_h = self.layout_snapshot().total_height;
@@ -11,12 +22,41 @@ impl Editor {
         let scroll_top = self.scroll.current_scroll_top;
         let doc_y = point.y - viewport.origin.y + scroll_top;
 
-        self.resolve_mouse_position(point, window)
+        if self.can_edit()
+            && doc_y > total_h - px(16.0)
+            && let Some(pos) = self.buffer.ensure_trailing_code_fence_newline()
+        {
+            return pos;
+        }
+
+        let pos = self.find_pos_for_mouse_point(point, window);
+        if self.render_mode != RenderMode::Source
+            && let Some(start_line) = pos.line.checked_sub(1)
+            && self
+                .layout_snapshot()
+                .parsed_lines
+                .get(start_line.index())
+                .is_some_and(|line| {
+                    matches!(
+                        line.kind,
+                        crate::markdown::BlockKind::MathBlock { is_start: true }
+                    )
+                })
+            && let Some(pos) = self.buffer.ensure_math_block_content_line(start_line)
+        {
+            return pos;
+        }
+
+        pos
     }
 
     /// Computes deterministic on-screen bounds for a document line based on layout cache and viewport
     #[inline]
-    let line_idx = source_line.index();
+    pub(crate) fn line_screen_bounds(
+        &self,
+        source_line: SourceLine,
+        viewport: Bounds<Pixels>,
+    ) -> Bounds<Pixels> {
         let layout = self.layout_snapshot();
         let content_width =
             crate::editor::shaping::compute_content_width(viewport.size.width, self.render_mode);
@@ -24,90 +64,121 @@ impl Editor {
             viewport.origin.x + (viewport.size.width - content_width).max(px(0.0)) / 2.0;
         let left_offset = if self.render_mode == RenderMode::Source {
             crate::editor::layout::SOURCE_GUTTER_WIDTH
-        } else if let Some(parsed) = layout.parsed_lines.get(line_idx) {
+        } else if let Some(parsed) = layout.parsed_lines.get(source_line.index()) {
             crate::editor::shaping::get_block_left_offset_with_indent(
                 &parsed.kind,
                 self.render_mode,
-                layout.indent_px(line_idx),
-                
+                layout.indent_px(source_line),
+            )
+        } else {
+            px(0.0)
+        };
+        let (line_doc_top, line_doc_bottom) = layout
+            .source_line_y_range(source_line)
+            .unwrap_or((px(24.0), px(48.0)));
+        let line_top = viewport.origin.y + line_doc_top - self.scroll.current_scroll_top;
+        let line_h = line_doc_bottom - line_doc_top;
+        Bounds {
+            origin: gpui::point(container_x + left_offset, line_top),
+            size: size((content_width - left_offset).max(px(0.0)), line_h),
         }
     }
 
     /// Helper to find target line and relative coordinates for a mouse point
-    let layout_line = layout.layout_line_at_y(doc_y)?;
-        let mut source_line = layout_line.source_line();
+    pub(crate) fn find_line_at_point(
+        &self,
+        point: Point<Pixels>,
+        exact_only: bool,
+    ) -> Option<(SourceLine, Point<Pixels>, Bounds<Pixels>)> {
+        if self.buffer.line_count() == 0 {
+            return None;
+        }
+
+        let layout = self.layout_snapshot();
+        let viewport = self.viewport_bounds_val();
+        let scroll_top = self.scroll.current_scroll_top;
+
+        let doc_y = (point.y - viewport.origin.y + scroll_top).max(px(0.0));
+        let mut source_line = layout.source_line_at_y(doc_y)?;
+        source_line = source_line.min(SourceLine::new(self.buffer.line_count() - 1));
+
+        if self.is_line_folded(source_line)
+            && let Some(header) = self
+                .display_map
+                .fold_map()
+                .folded_regions()
+                .iter()
+                .find(|r| source_line > r.start_line && source_line <= r.end_line)
+                .map(|r| r.start_line)
+        {
+            source_line = header;
+        }
 
         if exact_only {
-            let geometry = layout_line.geometry();
-            let (top, bottom) = (geometry.top(), geometry.bottom());
+            let (top, bottom) = layout.source_line_y_range(source_line)?;
             if doc_y < top || doc_y > bottom {
                 return None;
             }
         }
+
+        if !exact_only && self.render_mode != RenderMode::Source {
+            let disclosure_line = self.disclosure_position().line;
+            let active_math_block =
+                crate::markdown::math_block_range(self.buffer.lines(), disclosure_line);
+            if active_math_block
+                .is_some_and(|(start, end)| source_line >= start && source_line <= end)
+            {
+                // Preserve source rows while the split formula editor is open.
+            } else if let Some((start, _)) =
+                crate::markdown::math_block_range(self.buffer.lines(), source_line)
+            {
+                source_line = start;
+            } else {
+                let vdoc = crate::markdown::VisualDocument::from_parsed(
+                    self.buffer.lines(),
+                    &layout.parsed_lines,
+                );
+                let vpos =
+                    vdoc.source_to_visual(crate::buffer::SourcePosition::new(source_line, 0));
+                let spos = vdoc.visual_to_source(vpos);
+                source_line = spos.line;
+            }
+        }
+
         let line_bounds = self.line_screen_bounds(source_line, viewport);
 
         let rel_point = gpui::point(
             (point.x - line_bounds.origin.x).max(px(0.0)),
             (point.y - line_bounds.origin.y).max(px(0.0)),
-            fn resolve_mouse_position(
-        &mut self,
-        point: Point<Pixels>,
-        window: &mut Window,
-    ) -> Option<Position> {
-        match self.resolve_mouse_target(point, window)? {
-            CaretTarget::Position(position) => Some(position.to_position()),
-            CaretTarget::CreateMathContent { start_line } => self
-                .buffer
-                .ensure_math_block_content_line(start_line.index()),
-        }
+        );
+
+        Some((source_line, rel_point, line_bounds))
     }
 
-    pub(crate) fn utf16_offset_for_mouse_target(&self, target: CaretTarget) -> usize {
-        match target {
-            CaretTarget::Position(position) => {
-                self.buffer.pos_to_utf16_offset(position.to_position())
-            }
-            CaretTarget::CreateMathContent { start_line } => {
-                let layout = self.layout_snapshot();
-                let end_line = self
-                    .current_projection(&layout.parsed_lines)
-                    .math_range(start_line)
-                    .map(|(_, end)| end.index())
-                    .unwrap_or(start_line.index() + 1);
-                self.buffer.pos_to_utf16_offset(Position::new(end_line, 0))
-            }
-        }
-    }
-
-    pub(crate) fn resolve_mouse_target(
-        &self,
-        point: Point<Pixels>,
-        window: &mut Window,
-    ) -> Option<CaretTarget> {
+    /// Resolves target line and buffer column from a mouse point.
+    pub fn find_pos_for_mouse_point(&self, point: Point<Pixels>, window: &mut Window) -> Position {
         let (target_line, rel_point, line_bounds) = match self.find_line_at_point(point, false) {
             Some(res) => res,
-            None => return None,
+            None => return Position::new(crate::buffer::SourceLine::new(0), 0),
         };
-        let target_line_index = target_line.index();
+        let target_line_idx = target_line.index();
 
         let layout = self.layout_snapshot();
-        if self.render_mode != RenderMode::Source {
-            let projection = self.current_projection(&layout.parsed_lines);
-            let target = self
-                .display_map
-                .resolve_hit_target(&projection, target_line)?;
-            match target {
-                CaretTarget::CreateMathContent { start_line } => {
-                    return Some(CaretTarget::CreateMathContent { start_line });
-                }
-                CaretTarget::Position(position) if position.line.index() != target_line_index => {
-                    return Some(CaretTarget::Position(SourcePosition::new(position.line, 0)));
-                }
-                CaretTarget::Position(_) => {}
-            }
-        }
-        if let Some(parsed) = layout.parsed_lines.get(target_line_index) {
+        if let Some(parsed) = layout.parsed_lines.get(target_line_idx) {
             let is_source = self.render_mode == RenderMode::Source;
+            if !is_source
+                && matches!(
+                    parsed.kind,
+                    crate::markdown::BlockKind::MathBlock { is_start: true }
+                )
+                && let Some((start, end)) =
+                    crate::markdown::math_block_range(self.buffer.lines(), target_line)
+                && start == target_line
+                && end > start
+            {
+                return Position::new(start + 1, 0);
+            }
+
             if let crate::markdown::BlockKind::Table {
                 cells,
                 is_delimiter,
@@ -126,7 +197,14 @@ impl Editor {
                 };
                 let col = super::shaping::calculate_table_cell_col_from_point(
                     rel_point,
-                    let is_active_caret = self.is_active_disclosure_line(target_line_index, window);
+                    table,
+                    &crate::theme::DEFAULT_THEME,
+                    window,
+                );
+                return Position::new(target_line, col);
+            }
+
+            let is_active_caret = self.is_active_disclosure_line(target_line, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
 
@@ -144,11 +222,21 @@ impl Editor {
             );
             if !is_source {
                 let prefix_len = parsed.syntax_prefix_len();
-                Some(CaretTarget::Position(SourcePosition::new(target_line, 0)))
+                if col < prefix_len {
+                    col = prefix_len.min(parsed.raw_text.chars().count());
+                }
+            }
+            Position::new(target_line, col)
+        } else {
+            Position::new(target_line, 0)
         }
     }
 
-    fn code_block_content_bounds(&self, line_idx: usize) -> Option<(Position, Position)> {
+    fn code_block_content_bounds(
+        &self,
+        source_line: crate::buffer::SourceLine,
+    ) -> Option<(Position, Position)> {
+        let line_idx = source_line.index();
         let layout = self.layout_snapshot();
         if !matches!(
             &layout.parsed_lines.get(line_idx)?.kind,
@@ -178,12 +266,30 @@ impl Editor {
         }
 
         Some((
-            Position::new(start_line, 0),
-            Position::new(end_line, self.buffer.line_len(end_line)),
+            Position::new(crate::buffer::SourceLine::new(start_line), 0),
+            Position::new(
+                crate::buffer::SourceLine::new(end_line),
+                self.buffer
+                    .line_len(crate::buffer::SourceLine::new(end_line)),
+            ),
         ))
     }
 
-    
+    fn math_block_content_bounds(
+        &self,
+        source_line: crate::buffer::SourceLine,
+    ) -> Option<(Position, Position)> {
+        if self.render_mode == RenderMode::Source {
+            return None;
+        }
+        let (start, end) = crate::markdown::math_block_range(self.buffer.lines(), source_line)?;
+        (start < source_line && source_line < end).then_some((
+            Position::new(start + 1, 0),
+            Position::new(
+                end - 1,
+                self.buffer
+                    .line_len(crate::buffer::SourceLine::new(end.index() - 1)),
+            ),
         ))
     }
 
@@ -194,14 +300,21 @@ impl Editor {
         pos.max(start).min(end)
     }
 
-    fn is_within_drag_code_block(&self, line_idx: usize) -> bool {
+    fn is_within_drag_code_block(&self, source_line: crate::buffer::SourceLine) -> bool {
         let Some((start, end)) = self.drag_code_block_bounds else {
             return true;
         };
-        (start.line..=end.line).contains(&line_idx)
+        source_line >= start.line && source_line <= end.line
     }
 
-    
+    fn drag_mouse_is_within_code_block(&self, mouse_pos: Point<Pixels>) -> bool {
+        let Some((line_idx, _, _)) = self.find_line_at_point(mouse_pos, false) else {
+            return false;
+        };
+        self.is_within_drag_code_block(line_idx)
+    }
+
+    pub fn stop_drag(&mut self, cx: &mut Context<Self>) {
         if self.is_dragging || self.scroll.is_scrollbar_dragging {
             self.is_dragging = false;
             self.drag_code_block_bounds = None;
@@ -244,7 +357,14 @@ impl Editor {
             return;
         }
 
-        
+        if self.is_dragging {
+            let prev_head = self.buffer.cursor_pos();
+            self.last_mouse_pos = Some(mouse_pos);
+            self.last_cursor_action = std::time::Instant::now();
+            let pos = self.find_pos_for_mouse_point(mouse_pos, window);
+            let within_code_block = self.is_within_drag_code_block(pos.line);
+            let pos = self.clamp_drag_position(pos);
+            self.buffer.drag_selection_to(pos);
             if within_code_block {
                 self.handle_drag_scroll(window);
                 self.check_start_drag_scroll(cx);
@@ -295,7 +415,14 @@ impl Editor {
             return;
         };
         if !self.drag_mouse_is_within_code_block(mouse_pos) {
-            
+            self.drag_scroll_task = None;
+            return;
+        }
+        if self.apply_drag_edge_scroll(mouse_pos.y) {
+            let pos = self.clamp_drag_position(self.find_pos_for_mouse_point(mouse_pos, window));
+            self.buffer.drag_selection_to(pos);
+        }
+    }
 
     /// Starts a background task to auto-scroll when dragging near or outside viewport edges.
     pub(crate) fn check_start_drag_scroll(&mut self, cx: &mut Context<Self>) {
@@ -359,7 +486,17 @@ impl Editor {
         };
         if !self.drag_mouse_is_within_code_block(mouse_pos) {
             return false;
-                .drag_selection_to(self.clamp_drag_position(position));
+        }
+
+        let scrolled = self.apply_drag_edge_scroll(mouse_pos.y);
+        if scrolled && let Some((target_line, _, _)) = self.find_line_at_point(mouse_pos, false) {
+            let col = self
+                .buffer
+                .cursor_pos()
+                .col
+                .min(self.buffer.line_len(target_line));
+            self.buffer
+                .drag_selection_to(self.clamp_drag_position(Position::new(target_line, col)));
         }
 
         scrolled
@@ -369,7 +506,13 @@ impl Editor {
     pub fn get_link_at_point(
         &self,
         point: Point<Pixels>,
-        
+        window: &mut Window,
+    ) -> Option<super::HoveredLink> {
+        let (line_idx, rel_point, line_bounds) = self.find_line_at_point(point, true)?;
+        let layout = self.layout_snapshot();
+        let parsed = layout.parsed_lines.get(line_idx.index())?;
+
+        let is_source = self.render_mode == RenderMode::Source;
 
         if let crate::markdown::BlockKind::Table {
             cells,
@@ -539,14 +682,17 @@ impl Editor {
 
         // Text selection
         let prev_head = self.buffer.cursor_pos();
-        let Some(pos) = self.resolve_mouse_position(event.position, window) else {
-                return;
-            };
+        self.is_dragging = true;
+        self.last_mouse_pos = Some(event.position);
+        self.pixel_column_goal = None;
+        if event.click_count == 2 {
+            let pos = self.find_pos_for_mouse_point(event.position, window);
+            self.buffer.select_word_at(pos);
+        } else if event.click_count >= 3 {
+            let pos = self.find_pos_for_mouse_point(event.position, window);
             self.buffer.select_line_at(pos.line);
         } else {
-            let Some(pos) = self.find_pos_for_mouse_point_mut(event.position, window) else {
-                return;
-            };
+            let pos = self.find_pos_for_mouse_point_mut(event.position, window);
             self.buffer.set_cursor(pos);
         }
         self.drag_code_block_bounds = self

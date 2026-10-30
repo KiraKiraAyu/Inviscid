@@ -241,24 +241,23 @@ impl Editor {
         if self.find_state.is_stale(self.buffer.revision()) {
             return Vec::new();
         }
-        let line_idx = source_line.index();
         let line_len = self.buffer.line_len(source_line);
         let current = self.find_state.current_match_index();
 
         self.find_state
             .matches_on_line(source_line)
             .filter_map(|(idx, m)| {
-                let start = if m.start.line.index() == line_idx {
+                let start = if m.start.line == source_line {
                     m.start.col
                 } else {
                     0
                 };
-                let end = if m.end.line.index() == line_idx {
+                let end = if m.end.line == source_line {
                     m.end.col
                 } else {
                     line_len
                 };
-                let continues = m.end.line.index() > line_idx;
+                let continues = m.end.line > source_line;
                 if start >= end && !continues {
                     return None;
                 }

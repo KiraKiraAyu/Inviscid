@@ -1,13 +1,17 @@
-BlockPrefix, CaretMap, detect_code_block_indent, get_smart_continuation_prefix,
-    is_thematic_break, list_marker, parse_block_prefix, parse_heading_prefix, shift_tab_plan,
-    tab_plan,
+use super::char_col_to_byte_offset;
+use super::movement::{code_fence_range, is_closing_code_fence_lines, is_in_code_fence_lines};
+use super::primitives::{Position, Selection};
+use super::{SourceLines, TextBuffer};
+use crate::markdown::{
+    BlockPrefix, detect_code_block_indent, get_smart_continuation_prefix, is_thematic_break,
+    list_marker, parse_block_prefix, parse_heading_prefix, shift_tab_plan, tab_plan,
 };
 
-fn ensure_min_empty_lines(lines: &mut Vec<String>) {
+fn ensure_min_empty_lines(lines: &mut SourceLines) {
     if lines.is_empty() {
         lines.push(String::new());
         lines.push(String::new());
-    } else if lines.len() == 1 && lines[0].is_empty() {
+    } else if lines.len() == 1 && lines[crate::buffer::SourceLine::new(0)].is_empty() {
         lines.push(String::new());
     }
 }
@@ -19,7 +23,7 @@ fn remove_char_at_col(line: &mut String, col: usize) {
     }
 }
 
-fn delete_range_internal(lines: &mut Vec<String>, (start, end): (Position, Position)) {
+fn delete_range_internal(lines: &mut SourceLines, (start, end): (Position, Position)) {
     if start == end {
         return;
     }
@@ -37,14 +41,14 @@ fn delete_range_internal(lines: &mut Vec<String>, (start, end): (Position, Posit
         lines[start.line].push_str(&suffix);
 
         if end.line > start.line {
-            lines.drain((start.line + 1)..=end.line);
+            lines.drain_source_lines((start.line + 1)..=end.line);
         }
     }
 
     ensure_min_empty_lines(lines);
 }
 
-fn insert_text_internal(lines: &mut Vec<String>, pos: Position, text: &str) -> Position {
+fn insert_text_internal(lines: &mut SourceLines, pos: Position, text: &str) -> Position {
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let text_lines: Vec<&str> = normalized.split('\n').collect();
     if text_lines.len() == 1 {
@@ -74,22 +78,27 @@ fn insert_text_internal(lines: &mut Vec<String>, pos: Position, text: &str) -> P
 
         let end_line = pos.line + text_lines.len() - 1;
         let end_col = text_lines.last().map(|l| l.chars().count()).unwrap_or(0);
-        lines.splice(pos.line..=pos.line, new_lines);
+        lines.replace_source_lines(pos.line..=pos.line, new_lines);
         Position::new(end_line, end_col)
     }
 }
 
-fn append_block_below(lines: &mut Vec<String>, current_line_idx: usize) -> usize {
-    if current_line_idx + 1 < lines.len() && lines[current_line_idx + 1].trim().is_empty() {
-        lines.insert(current_line_idx + 2, String::new());
-        if current_line_idx + 3 >= lines.len() || !lines[current_line_idx + 3].trim().is_empty() {
-            lines.insert(current_line_idx + 3, String::new());
+fn append_block_below(
+    lines: &mut SourceLines,
+    current_line: crate::buffer::SourceLine,
+) -> crate::buffer::SourceLine {
+    if current_line + 1 < crate::buffer::SourceLine::new(lines.len())
+        && lines[current_line + 1].trim().is_empty()
+    {
+        lines.insert_source_line(current_line + 2, String::new());
+        if (current_line + 3).index() >= lines.len() || !lines[current_line + 3].trim().is_empty() {
+            lines.insert_source_line(current_line + 3, String::new());
         }
-        current_line_idx + 2
+        current_line + 2
     } else {
-        lines.insert(current_line_idx + 1, String::new());
-        lines.insert(current_line_idx + 2, String::new());
-        current_line_idx + 2
+        lines.insert_source_line(current_line + 1, String::new());
+        lines.insert_source_line(current_line + 2, String::new());
+        current_line + 2
     }
 }
 
@@ -143,7 +152,7 @@ impl TextBuffer {
         }
 
         let pos = self.selection.head;
-        if pos.line >= self.lines.len() || pos.col == 0 {
+        if pos.line.index() >= self.lines.len() || pos.col == 0 {
             return false;
         }
         let line = &self.lines[pos.line];
@@ -175,13 +184,13 @@ impl TextBuffer {
 
     pub fn move_lines_up(&mut self) {
         let (start, end) = self.selection.range();
-        if start.line == 0 {
+        if start.line.index() == 0 {
             return;
         }
 
         self.record_edit(|lines, sel| {
-            let line_above = lines.remove(start.line - 1);
-            lines.insert(end.line, line_above);
+            let line_above = lines.remove_source_line(start.line - 1);
+            lines.insert_source_line(end.line, line_above);
 
             sel.anchor.line -= 1;
             sel.head.line -= 1;
@@ -190,13 +199,13 @@ impl TextBuffer {
 
     pub fn move_lines_down(&mut self) {
         let (start, end) = self.selection.range();
-        if end.line + 1 >= self.lines.len() {
+        if (end.line + 1).index() >= self.lines.len() {
             return;
         }
 
         self.record_edit(|lines, sel| {
-            let line_below = lines.remove(end.line + 1);
-            lines.insert(start.line, line_below);
+            let line_below = lines.remove_source_line(end.line + 1);
+            lines.insert_source_line(start.line, line_below);
 
             sel.anchor.line += 1;
             sel.head.line += 1;
@@ -209,7 +218,7 @@ impl TextBuffer {
             let block: Vec<String> = lines[start.line..=end.line].to_vec();
             let count = block.len();
             for (idx, line) in block.into_iter().enumerate() {
-                lines.insert(end.line + 1 + idx, line);
+                lines.insert_source_line(end.line + 1 + idx, line);
             }
             sel.anchor.line += count;
             sel.head.line += count;
@@ -221,7 +230,7 @@ impl TextBuffer {
         self.record_edit(|lines, _sel| {
             let block: Vec<String> = lines[start.line..=end.line].to_vec();
             for (idx, line) in block.into_iter().enumerate() {
-                lines.insert(start.line + idx, line);
+                lines.insert_source_line(start.line + idx, line);
             }
         });
     }
@@ -230,16 +239,23 @@ impl TextBuffer {
         let (start, end) = self.selection.range();
         self.record_edit(|lines, sel| {
             if lines.len() <= (end.line - start.line + 1) {
-                *lines = vec![String::new(), String::new()];
-                *sel = Selection::cursor(Position::new(0, 0));
+                *lines = SourceLines::from(vec![String::new(), String::new()]);
+                *sel = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
                 return;
             }
 
-            lines.drain(start.line..=end.line);
+            lines.drain_source_lines(start.line..=end.line);
             ensure_min_empty_lines(lines);
-            let new_line = start.line.min(lines.len() - 1);
-            let new_col = sel.head.col.min(lines[new_line].chars().count());
-            *sel = Selection::cursor(Position::new(new_line, new_col));
+            let new_line = start.line.index().min(lines.len() - 1);
+            let new_col = sel.head.col.min(
+                lines[crate::buffer::SourceLine::new(new_line)]
+                    .chars()
+                    .count(),
+            );
+            *sel = Selection::cursor(Position::new(
+                crate::buffer::SourceLine::new(new_line),
+                new_col,
+            ));
         });
     }
 
@@ -256,7 +272,7 @@ impl TextBuffer {
                 (String::new(), 0)
             };
 
-            lines.insert(line_idx + 1, new_content);
+            lines.insert_source_line(line_idx + 1, new_content);
             *sel = Selection::cursor(Position::new(line_idx + 1, new_col));
         });
     }
@@ -264,7 +280,7 @@ impl TextBuffer {
     pub fn insert_newline_above(&mut self) {
         self.record_edit(|lines, sel| {
             let line_idx = sel.head.line;
-            lines.insert(line_idx, String::new());
+            lines.insert_source_line(line_idx, String::new());
             *sel = Selection::cursor(Position::new(line_idx, 0));
         });
     }
@@ -290,7 +306,7 @@ impl TextBuffer {
 
         let is_list = self
             .lines
-            .get(start.line)
+            .get_source_line(start.line)
             .is_some_and(|l| list_marker(l).is_some());
 
         if start == end && self.selection.head.col > 0 && !is_list {
@@ -298,19 +314,27 @@ impl TextBuffer {
             return;
         }
 
-        let last = end.line.min(self.lines.len().saturating_sub(1));
+        let last = end.line.min(crate::buffer::SourceLine::new(
+            self.lines.len().saturating_sub(1),
+        ));
         if start.line > last {
             return;
         }
 
-        let plans: Vec<(usize, usize)> = (start.line..=last)
-            .map(|idx| tab_plan(&self.lines, idx, tab_size))
+        let plans: Vec<(usize, usize)> = (start.line.index()..=last.index())
+            .map(|idx| {
+                tab_plan(
+                    self.lines.as_slice(),
+                    crate::buffer::SourceLine::new(idx),
+                    tab_size,
+                )
+            })
             .collect();
 
         let step = plans
             .iter()
             .enumerate()
-            .filter(|(offset, _)| !self.lines[start.line + offset].trim().is_empty())
+            .filter(|(offset, _)| !self.lines[start.line + *offset].trim().is_empty())
             .map(|(_, (_, len))| *len)
             .min()
             .or_else(|| plans.first().map(|(_, len)| *len))
@@ -323,7 +347,7 @@ impl TextBuffer {
             let spaces = " ".repeat(step);
             for (offset, (col, _)) in plans.iter().enumerate() {
                 let line_idx = start.line + offset;
-                if let Some(line) = lines.get_mut(line_idx) {
+                if let Some(line) = lines.get_source_line_mut(line_idx) {
                     if start.line != last && line.is_empty() {
                         continue;
                     }
@@ -358,20 +382,28 @@ impl TextBuffer {
         let tab_size = tab_size.max(1);
         let (start, end) = self.selection.range();
 
-        let last = end.line.min(self.lines.len().saturating_sub(1));
+        let last = end.line.min(crate::buffer::SourceLine::new(
+            self.lines.len().saturating_sub(1),
+        ));
         if start.line > last {
             return;
         }
 
-        let plans: Vec<(usize, usize)> = (start.line..=last)
-            .map(|idx| shift_tab_plan(&self.lines, idx, tab_size))
+        let plans: Vec<(usize, usize)> = (start.line.index()..=last.index())
+            .map(|idx| {
+                shift_tab_plan(
+                    self.lines.as_slice(),
+                    crate::buffer::SourceLine::new(idx),
+                    tab_size,
+                )
+            })
             .collect();
 
         self.record_edit(|lines, sel| {
             for (offset, &(col, len)) in plans.iter().enumerate() {
                 let line_idx = start.line + offset;
                 let mut removed_chars = 0;
-                if let Some(line) = lines.get_mut(line_idx) {
+                if let Some(line) = lines.get_source_line_mut(line_idx) {
                     let start_byte = char_col_to_byte_offset(line, col);
                     let max_end_byte = char_col_to_byte_offset(line, col + len);
                     let safe_len = line[start_byte..max_end_byte]
@@ -401,11 +433,17 @@ impl TextBuffer {
         let cursor_line = self.selection.head.line;
 
         // Check if we're in a code block
-        if let Some((start, end)) = code_fence_range(&self.lines, cursor_line) {
+        if let Some((start, end)) = code_fence_range(self.lines.as_slice(), cursor_line) {
+            let start = start.index();
+            let end = end.index();
             // Skip the opening fence line for detection
             let detect_start = start + 1;
             if detect_start < end {
-                return detect_code_block_indent(&self.lines, detect_start, end);
+                return detect_code_block_indent(
+                    self.lines.as_slice(),
+                    crate::buffer::SourceLine::new(detect_start),
+                    crate::buffer::SourceLine::new(end),
+                );
             }
         }
 
@@ -416,7 +454,11 @@ impl TextBuffer {
     pub fn toggle_comment(&mut self) {
         let (start, end) = self.selection.range();
         self.record_edit(|lines, sel| {
-            for line in lines.iter_mut().take(end.line + 1).skip(start.line) {
+            for line in lines
+                .iter_mut()
+                .take(end.line.index() + 1)
+                .skip(start.line.index())
+            {
                 let leading_len = line.chars().take_while(|c| c.is_whitespace()).count();
                 let leading: String = line.chars().take(leading_len).collect();
                 let trimmed = line.trim();
@@ -445,7 +487,7 @@ impl TextBuffer {
         let is_single_line = self.selection.is_empty()
             && !text.contains('\n')
             && !text.contains('\r')
-            && self.selection.head.line < self.lines.len();
+            && self.selection.head.line.index() < self.lines.len();
 
         if is_single_line {
             let line_idx = self.selection.head.line;
@@ -525,9 +567,10 @@ impl TextBuffer {
 
             if current_line.is_empty() {
                 if is_source
-                    || (pos.line + 1 < lines.len() && !lines[pos.line + 1].trim().is_empty())
+                    || ((pos.line + 1).index() < lines.len()
+                        && !lines[pos.line + 1].trim().is_empty())
                 {
-                    lines.insert(pos.line + 1, String::new());
+                    lines.insert_source_line(pos.line + 1, String::new());
                     *sel = Selection::cursor(Position::new(pos.line + 1, 0));
                 } else {
                     let target = append_block_below(lines, pos.line);
@@ -536,7 +579,50 @@ impl TextBuffer {
                 return;
             }
 
-            
+            let split_b = char_col_to_byte_offset(current_line, col);
+            let left = current_line[..split_b].to_string();
+            let right = current_line[split_b..].to_string();
+
+            if is_in_code_fence_lines(lines.as_slice(), pos.line)
+                || (is_source && !trimmed.starts_with("```") && trimmed != "$$")
+            {
+                lines[pos.line] = left;
+                lines.insert_source_line(pos.line + 1, right);
+                *sel = Selection::cursor(Position::new(pos.line + 1, 0));
+                return;
+            }
+
+            if trimmed.starts_with("```") {
+                let has_closing = lines.as_slice()[(pos.line + 1).index()..]
+                    .iter()
+                    .any(|l| l.trim().starts_with("```"));
+                if !has_closing {
+                    lines.insert_source_line(pos.line + 1, String::new());
+                    lines.insert_source_line(pos.line + 2, "```".to_string());
+                    lines.insert_source_line(pos.line + 3, String::new());
+                }
+                *sel = Selection::cursor(Position::new(pos.line + 1, 0));
+                return;
+            }
+
+            if trimmed == "$$" && col == current_chars_len {
+                let pair = crate::markdown::math_block_pairs(lines.as_slice())
+                    .into_iter()
+                    .find(|&(start, end)| start <= pos.line && pos.line <= end);
+                if pair.is_none_or(|(start, _)| start == pos.line) {
+                    if pair.is_some_and(|(start, end)| end.index() == start.index() + 1) {
+                        lines.insert_source_line(pos.line + 1, String::new());
+                        *sel = Selection::cursor(Position::new(pos.line + 1, 0));
+                    } else if pair.is_some() {
+                        *sel = Selection::cursor(Position::new(pos.line + 1, 0));
+                    } else {
+                        lines.insert_source_line(pos.line + 1, String::new());
+                        lines.insert_source_line(pos.line + 2, "$$".to_string());
+                        lines.insert_source_line(pos.line + 3, String::new());
+                        *sel = Selection::cursor(Position::new(pos.line + 1, 0));
+                    }
+                    return;
+                }
             }
 
             if is_thematic_break(trimmed) {
@@ -549,15 +635,15 @@ impl TextBuffer {
                 let actual_prefix_len = leading_spaces + prefix_len;
 
                 if col <= actual_prefix_len {
-                    lines.insert(pos.line, String::new());
+                    lines.insert_source_line(pos.line, String::new());
                     *sel = Selection::cursor(Position::new(pos.line + 1, actual_prefix_len));
                 } else if col >= current_chars_len {
                     let target = append_block_below(lines, pos.line);
                     *sel = Selection::cursor(Position::new(target, 0));
                 } else {
                     lines[pos.line] = left;
-                    lines.insert(pos.line + 1, String::new());
-                    lines.insert(pos.line + 2, right);
+                    lines.insert_source_line(pos.line + 1, String::new());
+                    lines.insert_source_line(pos.line + 2, right);
                     *sel = Selection::cursor(Position::new(pos.line + 2, 0));
                 }
                 return;
@@ -571,11 +657,12 @@ impl TextBuffer {
                 && current_chars_len <= parsed.total_len
             {
                 lines[pos.line] = String::new();
-                lines.insert(pos.line + 1, String::new());
+                lines.insert_source_line(pos.line + 1, String::new());
                 if !is_source
-                    && (pos.line + 2 >= lines.len() || !lines[pos.line + 2].trim().is_empty())
+                    && ((pos.line + 2).index() >= lines.len()
+                        || !lines[pos.line + 2].trim().is_empty())
                 {
-                    lines.insert(pos.line + 2, String::new());
+                    lines.insert_source_line(pos.line + 2, String::new());
                 }
                 *sel = Selection::cursor(Position::new(pos.line + 1, 0));
                 return;
@@ -584,23 +671,23 @@ impl TextBuffer {
             if let Some(prefix) = get_smart_continuation_prefix(current_line) {
                 let p_len = prefix.chars().count();
                 lines[pos.line] = left;
-                lines.insert(pos.line + 1, format!("{}{}", prefix, right));
+                lines.insert_source_line(pos.line + 1, format!("{}{}", prefix, right));
                 *sel = Selection::cursor(Position::new(pos.line + 1, p_len));
             } else if is_source {
                 lines[pos.line] = left;
-                lines.insert(pos.line + 1, right);
+                lines.insert_source_line(pos.line + 1, right);
                 *sel = Selection::cursor(Position::new(pos.line + 1, 0));
             } else if col == 0 {
-                lines.insert(pos.line, String::new());
-                lines.insert(pos.line + 1, String::new());
+                lines.insert_source_line(pos.line, String::new());
+                lines.insert_source_line(pos.line + 1, String::new());
                 *sel = Selection::cursor(Position::new(pos.line, 0));
             } else if col >= current_chars_len {
                 let target = append_block_below(lines, pos.line);
                 *sel = Selection::cursor(Position::new(target, 0));
             } else {
                 lines[pos.line] = left;
-                lines.insert(pos.line + 1, String::new());
-                lines.insert(pos.line + 2, right);
+                lines.insert_source_line(pos.line + 1, String::new());
+                lines.insert_source_line(pos.line + 2, right);
                 *sel = Selection::cursor(Position::new(pos.line + 2, 0));
             }
         });
@@ -609,18 +696,51 @@ impl TextBuffer {
     pub fn insert_line_below_block(&mut self) {
         self.record_edit(|lines, sel| {
             let pos = sel.head;
-            if pos.line >= lines.len() {
+            if pos.line.index() >= lines.len() {
                 lines.push(String::new());
                 let last = lines.len() - 1;
-                
+                *sel = Selection::cursor(Position::new(crate::buffer::SourceLine::new(last), 0));
+                return;
+            }
+
+            let mut open_idx = None;
+            let mut closing_idx = None;
+            for (idx, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("```") {
+                    if let Some(open) = open_idx.take() {
+                        if open <= pos.line.index() && pos.line.index() <= idx {
+                            closing_idx = Some(idx);
+                            break;
+                        }
+                    } else {
+                        open_idx = Some(idx);
+                    }
+                }
+            }
+
+            let anchor_line = closing_idx
+                .map(crate::buffer::SourceLine::new)
+                .unwrap_or(pos.line);
+            let target = append_block_below(lines, anchor_line);
+            *sel = Selection::cursor(Position::new(target, 0));
+        });
     }
-    if end.index() > start.index() + 1 {
-            return Some(Position::new(start.index() + 1, 0));
+
+    pub(crate) fn ensure_math_block_content_line(
+        &mut self,
+        start_line: crate::buffer::SourceLine,
+    ) -> Option<Position> {
+        let (start, end) = crate::markdown::math_block_range(self.lines.as_slice(), start_line)?;
+        if start != start_line {
+            return None;
+        }
+        if end.index() > start.index() + 1 {
+            return Some(Position::new(start + 1, 0));
         }
 
-        let pos = Position::new(end.index(), 0);
+        let pos = Position::new(end, 0);
         self.record_edit(|lines, sel| {
-            lines.insert(end.index(), String::new());
+            lines.insert_source_line(end, String::new());
             *sel = Selection::cursor(pos);
         });
         Some(pos)
@@ -636,42 +756,63 @@ impl TextBuffer {
                 delete_range_internal(lines, sel.range());
                 let (start, _) = sel.range();
                 *sel = Selection::cursor(start);
-                && caret_map
-                        .math_pair(SourceLine::new(pos.line - 1))
-                        .is_some_and(|(_, end)| end.index() == pos.line - 1)
-                    || pos.line > 1
+                return;
+            }
+
+            let pos = sel.head;
+            let line_str = lines[pos.line].clone();
+            let trimmed = line_str.trim_start();
+            let leading_spaces = line_str.chars().take_while(|c| *c == ' ').count();
+
+            if is_source {
+                if pos.col > 0 {
+                    remove_char_at_col(&mut lines[pos.line], pos.col - 1);
+                    *sel = Selection::cursor(Position::new(pos.line, pos.col - 1));
+                } else if pos.line.index() > 0 {
+                    let current_line = lines.remove_source_line(pos.line);
+                    let prev_len = lines[pos.line - 1].chars().count();
+                    lines[pos.line - 1].push_str(&current_line);
+                    *sel = Selection::cursor(Position::new(pos.line - 1, prev_len));
+                }
+                return;
+            }
+
+            if pos.col == 0
+                && (pos.line.index() > 0
+                    && crate::markdown::math_block_range(lines.as_slice(), pos.line - 1)
+                        .is_some_and(|(_, end)| end == pos.line - 1)
+                    || pos.line.index() > 1
                         && lines[pos.line - 1].trim().is_empty()
-                        && caret_map
-                            .math_pair(SourceLine::new(pos.line - 2))
-                            .is_some_and(|(_, end)| end.index() == pos.line - 2))
+                        && crate::markdown::math_block_range(lines.as_slice(), pos.line - 2)
+                            .is_some_and(|(_, end)| end == pos.line - 2))
             {
                 return;
             }
 
-            if caret_map
-                .math_pair(pos_line)
-                .is_some_and(|(start, end)| pos_line == start || pos_line == end)
+            if crate::markdown::math_block_range(lines.as_slice(), pos.line)
+                .is_some_and(|(start, end)| pos.line == start || pos.line == end)
             {
                 return;
             }
 
             if pos.col == 0
-                && caret_map
-                    .math_pair(pos_line)
-                    .is_some_and(|(start, _)| pos_line.index() == start.index() + 1)
+                && crate::markdown::math_block_range(lines.as_slice(), pos.line)
+                    .is_some_and(|(start, _)| pos.line == start + 1)
             {
                 return;
             }
 
             if is_thematic_break(trimmed) {
-                if pos.line > 0 && lines[pos.line - 1].trim().is_empty() {
-                    lines.remove(pos.line);
-                    if pos.line < lines.len() && lines[pos.line].trim().is_empty() {
-                        lines.remove(pos.line);
+                if pos.line.index() > 0 && lines[pos.line - 1].trim().is_empty() {
+                    lines.remove_source_line(pos.line);
+                    if pos.line.index() < lines.len() && lines[pos.line].trim().is_empty() {
+                        lines.remove_source_line(pos.line);
                     }
                     *sel = Selection::cursor(Position::new(pos.line - 1, 0));
-                } else if pos.line + 1 < lines.len() && lines[pos.line + 1].trim().is_empty() {
-                    lines.remove(pos.line + 1);
+                } else if (pos.line + 1).index() < lines.len()
+                    && lines[pos.line + 1].trim().is_empty()
+                {
+                    lines.remove_source_line(pos.line + 1);
                     lines[pos.line] = String::new();
                     *sel = Selection::cursor(Position::new(pos.line, 0));
                 } else {
@@ -682,7 +823,7 @@ impl TextBuffer {
             }
 
             if trimmed.starts_with("```") {
-                let has_closing = lines[(pos.line + 1)..]
+                let has_closing = lines.as_slice()[(pos.line + 1).index()..]
                     .iter()
                     .any(|l| l.trim().starts_with("```"));
                 if has_closing {
@@ -702,26 +843,47 @@ impl TextBuffer {
                 return;
             }
 
-            if pos.line > 0
+            if pos.line.index() > 0
                 && lines[pos.line].is_empty()
                 && lines[pos.line - 1].trim().starts_with("```")
-                && pos.line + 1 < lines.len()
+                && (pos.line + 1).index() < lines.len()
                 && lines[pos.line + 1].trim().starts_with("```")
             {
-                let start_fence = pos.line - 1;
-                let end_fence = pos.line + 1;
+                let start_fence = (pos.line - 1).index();
+                let end_fence = (pos.line + 1).index();
                 let mut remove_end = end_fence;
-                if remove_end + 1 < lines.len() && lines[remove_end + 1].trim().is_empty() {
+                if remove_end + 1 < lines.len()
+                    && lines[crate::buffer::SourceLine::new(remove_end + 1)]
+                        .trim()
+                        .is_empty()
+                {
                     remove_end += 1;
                 }
-                lines.drain(start_fence..=remove_end);
-                lines.insert(start_fence, String::new());
-                lines.insert(start_fence + 1, String::new());
-                if start_fence > 0 && lines[start_fence - 1].trim().is_empty() {
-                    lines.remove(start_fence);
-                    *sel = Selection::cursor(Position::new(start_fence - 1, 0));
+                lines.drain_source_lines(
+                    crate::buffer::SourceLine::new(start_fence)
+                        ..=crate::buffer::SourceLine::new(remove_end),
+                );
+                lines
+                    .insert_source_line(crate::buffer::SourceLine::new(start_fence), String::new());
+                lines.insert_source_line(
+                    crate::buffer::SourceLine::new(start_fence + 1),
+                    String::new(),
+                );
+                if start_fence > 0
+                    && lines[crate::buffer::SourceLine::new(start_fence - 1)]
+                        .trim()
+                        .is_empty()
+                {
+                    lines.remove_source_line(crate::buffer::SourceLine::new(start_fence));
+                    *sel = Selection::cursor(Position::new(
+                        crate::buffer::SourceLine::new(start_fence - 1),
+                        0,
+                    ));
                 } else {
-                    *sel = Selection::cursor(Position::new(start_fence, 0));
+                    *sel = Selection::cursor(Position::new(
+                        crate::buffer::SourceLine::new(start_fence),
+                        0,
+                    ));
                 }
                 return;
             }
@@ -744,13 +906,15 @@ impl TextBuffer {
 
                 if !is_source
                     && is_list_or_quote
-                    && pos.line > 0
+                    && pos.line.index() > 0
                     && !lines[pos.line - 1].trim().is_empty()
                 {
-                    lines.insert(pos.line, String::new());
+                    lines.insert_source_line(pos.line, String::new());
                     lines[pos.line + 1] = format!("{}{}", leading, content);
-                    if pos.line + 2 >= lines.len() || !lines[pos.line + 2].trim().is_empty() {
-                        lines.insert(pos.line + 2, String::new());
+                    if (pos.line + 2).index() >= lines.len()
+                        || !lines[pos.line + 2].trim().is_empty()
+                    {
+                        lines.insert_source_line(pos.line + 2, String::new());
                     }
                     *sel = Selection::cursor(Position::new(pos.line + 1, prefix.leading_spaces));
                 } else {
@@ -763,32 +927,35 @@ impl TextBuffer {
             if pos.col > 0 {
                 remove_char_at_col(&mut lines[pos.line], pos.col - 1);
                 *sel = Selection::cursor(Position::new(pos.line, pos.col - 1));
-            } else if pos.line > 0 {
-                if is_closing_code_fence_lines(lines, pos.line - 1) {
+            } else if pos.line > crate::buffer::SourceLine::new(0) {
+                if is_closing_code_fence_lines(lines.as_slice(), pos.line - 1) {
                     let target_line = pos.line.saturating_sub(2);
                     let target_col = lines[target_line].chars().count();
                     if lines[pos.line].is_empty() {
-                        lines.remove(pos.line);
+                        lines.remove_source_line(pos.line);
                     }
                     *sel = Selection::cursor(Position::new(target_line, target_col));
-                } else if pos.line >= 2
+                } else if pos.line >= crate::buffer::SourceLine::new(2)
                     && lines[pos.line - 1].trim().is_empty()
-                    && is_closing_code_fence_lines(lines, pos.line - 2)
+                    && is_closing_code_fence_lines(lines.as_slice(), pos.line - 2)
                 {
-                    lines.remove(pos.line - 1);
+                    lines.remove_source_line(pos.line - 1);
                     let target_line = pos.line - 2;
                     let content_line = target_line.saturating_sub(1);
                     let target_col = lines[content_line].chars().count();
                     *sel = Selection::cursor(Position::new(content_line, target_col));
-                } else if !is_source && pos.line >= 2 && lines[pos.line - 1].trim().is_empty() {
-                    lines.remove(pos.line - 1);
-                    let current_line = lines.remove(pos.line - 1);
+                } else if !is_source
+                    && pos.line >= crate::buffer::SourceLine::new(2)
+                    && lines[pos.line - 1].trim().is_empty()
+                {
+                    lines.remove_source_line(pos.line - 1);
+                    let current_line = lines.remove_source_line(pos.line - 1);
                     let prev_line_idx = pos.line - 2;
                     let prev_line_chars = lines[prev_line_idx].chars().count();
                     lines[prev_line_idx].push_str(&current_line);
                     *sel = Selection::cursor(Position::new(prev_line_idx, prev_line_chars));
                 } else {
-                    let current_line = lines.remove(pos.line);
+                    let current_line = lines.remove_source_line(pos.line);
                     let prev_line_idx = pos.line - 1;
                     let prev_line_chars = lines[prev_line_idx].chars().count();
                     lines[prev_line_idx].push_str(&current_line);
@@ -807,24 +974,28 @@ impl TextBuffer {
                 delete_range_internal(lines, sel.range());
                 let (start, _) = sel.range();
                 *sel = Selection::cursor(start);
-                && caret_map
-                    .math_pair(pos_line)
-                    .is_some_and(|(start, end)| pos_line == start || pos_line == end)
+                return;
+            }
+
+            let pos = sel.head;
+            let trimmed = lines[pos.line].trim();
+
+            if !is_source
+                && crate::markdown::math_block_range(lines.as_slice(), pos.line)
+                    .is_some_and(|(start, end)| pos.line == start || pos.line == end)
             {
                 return;
             }
 
             if !is_source
                 && pos.col >= lines[pos.line].chars().count()
-                && pos.line + 1 < lines.len()
-                && (caret_map
-                    .math_pair(SourceLine::new(pos.line + 1))
-                    .is_some_and(|(start, _)| start.index() == pos.line + 1)
-                    || pos.line + 2 < lines.len()
+                && (pos.line + 1).index() < lines.len()
+                && (crate::markdown::math_block_range(lines.as_slice(), pos.line + 1)
+                    .is_some_and(|(start, _)| start == pos.line + 1)
+                    || (pos.line + 2).index() < lines.len()
                         && lines[pos.line + 1].trim().is_empty()
-                        && caret_map
-                            .math_pair(SourceLine::new(pos.line + 2))
-                            .is_some_and(|(start, _)| start.index() == pos.line + 2))
+                        && crate::markdown::math_block_range(lines.as_slice(), pos.line + 2)
+                            .is_some_and(|(start, _)| start == pos.line + 2))
             {
                 return;
             }
@@ -839,13 +1010,12 @@ impl TextBuffer {
             if pos.col < line_chars_count {
                 remove_char_at_col(&mut lines[pos.line], pos.col);
             } else if !is_source
-                && caret_map
-                    .math_pair(pos_line)
-                    .is_some_and(|(_, end)| pos_line.index() + 1 == end.index())
+                && crate::markdown::math_block_range(lines.as_slice(), pos.line)
+                    .is_some_and(|(_, end)| pos.line + 1 == end)
             {
                 return;
-            } else if pos.line + 1 < lines.len() {
-                let next_line = lines.remove(pos.line + 1);
+            } else if (pos.line + 1).index() < lines.len() {
+                let next_line = lines.remove_source_line(pos.line + 1);
                 lines[pos.line].push_str(&next_line);
             }
 
@@ -891,17 +1061,21 @@ impl TextBuffer {
         };
 
         if pos.line == meta.header_line {
-            let next_row = meta.delimiter_line + 1;
-            if next_row < self.lines.len() && next_row <= meta.last_table_line {
-                let next_cells =
-                    crate::markdown::table::parse_table_row_cells(&self.lines[next_row]);
+            let next_row = meta.delimiter_line.index() + 1;
+            if next_row < self.lines.len() && next_row <= meta.last_table_line.index() {
+                let next_cells = crate::markdown::table::parse_table_row_cells(
+                    &self.lines[crate::buffer::SourceLine::new(next_row)],
+                );
                 let target_col = resolve_col(&next_cells);
-                self.selection = Selection::cursor(Position::new(next_row, target_col));
+                self.selection = Selection::cursor(Position::new(
+                    crate::buffer::SourceLine::new(next_row),
+                    target_col,
+                ));
                 return;
             }
             let new_row = crate::markdown::table::build_empty_table_row(meta.num_columns);
             self.record_edit(|lines, sel| {
-                lines.insert(meta.delimiter_line + 1, new_row);
+                lines.insert_source_line(meta.delimiter_line + 1, new_row);
                 let cells =
                     crate::markdown::table::parse_table_row_cells(&lines[meta.delimiter_line + 1]);
                 let col = resolve_col(&cells);
@@ -919,18 +1093,24 @@ impl TextBuffer {
         }
 
         let new_row = crate::markdown::table::build_empty_table_row(meta.num_columns);
-        let insert_idx = meta.last_table_line + 1;
+        let insert_idx = meta.last_table_line.index() + 1;
         self.record_edit(|lines, sel| {
-            lines.insert(insert_idx, new_row);
-            let cells = crate::markdown::table::parse_table_row_cells(&lines[insert_idx]);
+            lines.insert_source_line(crate::buffer::SourceLine::new(insert_idx), new_row);
+            let cells = crate::markdown::table::parse_table_row_cells(
+                &lines[crate::buffer::SourceLine::new(insert_idx)],
+            );
             let col = resolve_col(&cells);
-            *sel = Selection::cursor(Position::new(insert_idx, col));
+            *sel = Selection::cursor(Position::new(
+                crate::buffer::SourceLine::new(insert_idx),
+                col,
+            ));
         });
     }
 
     pub fn table_tab_forward(&mut self) -> bool {
         let pos = self.selection.head;
-        let meta = match crate::markdown::table::get_table_metadata(&self.lines, pos.line) {
+        let meta = match crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line)
+        {
             Some(m) => m,
             None => return false,
         };
@@ -950,7 +1130,8 @@ impl TextBuffer {
 
     pub fn table_tab_backward(&mut self) -> bool {
         let pos = self.selection.head;
-        let meta = match crate::markdown::table::get_table_metadata(&self.lines, pos.line) {
+        let meta = match crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line)
+        {
             Some(m) => m,
             None => return false,
         };
@@ -985,7 +1166,8 @@ impl TextBuffer {
 
     pub fn table_enter_next_row(&mut self) -> bool {
         let pos = self.selection.head;
-        let meta = match crate::markdown::table::get_table_metadata(&self.lines, pos.line) {
+        let meta = match crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line)
+        {
             Some(m) => m,
             None => return false,
         };
@@ -999,7 +1181,7 @@ impl TextBuffer {
 
     pub fn table_backspace(&mut self) -> bool {
         let pos = self.selection.head;
-        if crate::markdown::table::get_table_metadata(&self.lines, pos.line).is_none() {
+        if crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line).is_none() {
             return false;
         }
 
@@ -1029,26 +1211,40 @@ impl TextBuffer {
 
     pub fn ensure_trailing_code_fence_newline(&mut self) -> Option<Position> {
         let last_idx = self.lines.len().saturating_sub(1);
-        if self.is_in_code_fence(last_idx) || self.is_closing_code_fence(last_idx) {
+        if self.is_in_code_fence(crate::buffer::SourceLine::new(last_idx))
+            || self.is_closing_code_fence(crate::buffer::SourceLine::new(last_idx))
+        {
             self.record_edit(|lines, sel| {
                 let last = lines.len().saturating_sub(1);
-                if is_closing_code_fence_lines(lines, last) {
+                if is_closing_code_fence_lines(
+                    lines.as_slice(),
+                    crate::buffer::SourceLine::new(last),
+                ) {
                     lines.push(String::new());
                     lines.push(String::new());
                 } else {
                     lines.push("```".to_string());
                     lines.push(String::new());
                 }
-                *sel = Selection::cursor(Position::new(lines.len() - 1, 0));
+                *sel = Selection::cursor(Position::new(
+                    crate::buffer::SourceLine::new(lines.len() - 1),
+                    0,
+                ));
             });
             Some(self.selection.head)
         } else if last_idx > 0
-            && (self.is_in_code_fence(last_idx - 1) || self.is_closing_code_fence(last_idx - 1))
-            && self.lines[last_idx].trim().is_empty()
+            && (self.is_in_code_fence(crate::buffer::SourceLine::new(last_idx - 1))
+                || self.is_closing_code_fence(crate::buffer::SourceLine::new(last_idx - 1)))
+            && self.lines[crate::buffer::SourceLine::new(last_idx)]
+                .trim()
+                .is_empty()
         {
             self.record_edit(|lines, sel| {
                 lines.push(String::new());
-                *sel = Selection::cursor(Position::new(lines.len() - 1, 0));
+                *sel = Selection::cursor(Position::new(
+                    crate::buffer::SourceLine::new(lines.len() - 1),
+                    0,
+                ));
             });
             Some(self.selection.head)
         } else {

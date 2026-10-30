@@ -117,7 +117,7 @@ impl Render for StatusBar {
                     .when_some(self.meta.as_ref(), |this, meta| {
                         this.child(format!(
                             "Ln {}, Col {}",
-                            meta.cursor_pos.line.index() + 1,
+                            meta.cursor_pos.line + 1,
                             meta.cursor_pos.col + 1
                         ))
                         .child(format!("{} words", meta.word_count))
@@ -261,7 +261,10 @@ mod tests {
                 },
                 cx,
             );
-            assert_eq!(sb.meta().map(|m| m.cursor_pos.line.index()), Some(20));
+            assert_eq!(
+                sb.meta().map(|m| m.cursor_pos.line),
+                Some(crate::buffer::SourceLine::new(20))
+            );
         });
     }
 }

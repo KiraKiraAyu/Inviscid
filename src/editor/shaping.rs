@@ -1,4 +1,4 @@
-use gpui::*;
+﻿use gpui::*;
 use std::sync::Arc;
 
 use crate::editor::RenderMode;
@@ -1300,7 +1300,7 @@ fn find_link_at_spans(
         {
             return Some(crate::editor::HoveredLink {
                 url: url.clone(),
-                line_idx: source_line,
+                line: source_line,
                 col_range: span.group_range,
             });
         }
@@ -1572,7 +1572,6 @@ pub fn render_shaped_line(
     override_color: Option<Hsla>,
     is_source: bool,
 ) -> AnyElement {
-    let line_idx = source_line.index();
     let spans = parsed.spans.clone();
     let raw_chars_count = parsed.raw_text.chars().count();
     let is_active = lrc.is_active_line;
@@ -1584,7 +1583,7 @@ pub fn render_shaped_line(
     let is_selection_disclosure = lrc.is_selection_disclosure;
     let cursor_opacity = lrc.cursor_opacity;
     let hovered_link_range = lrc.hovered_link.and_then(|hl| {
-        if hl.line_idx == source_line {
+        if hl.line == source_line {
             Some(hl.col_range)
         } else {
             None
@@ -1760,7 +1759,7 @@ pub fn render_shaped_line(
             let mut selection_quads = Vec::new();
             if !selection.is_empty() {
                 let (sel_start, sel_end) = (selection.start(), selection.end());
-                if line_idx >= sel_start.line.index() && line_idx <= sel_end.line.index() {
+                if source_line >= sel_start.line && source_line <= sel_end.line {
                     let total_raw_len = raw_chars_count;
 
                     let (start_raw_col, end_raw_col) = if sel_start.line == sel_end.line {
@@ -1768,15 +1767,15 @@ pub fn render_shaped_line(
                             sel_start.col.min(total_raw_len),
                             sel_end.col.min(total_raw_len),
                         )
-                    } else if line_idx == sel_start.line.index() {
+                    } else if source_line == sel_start.line {
                         (sel_start.col.min(total_raw_len), total_raw_len)
-                    } else if line_idx == sel_end.line.index() {
+                    } else if source_line == sel_end.line {
                         (0, sel_end.col.min(total_raw_len))
                     } else {
                         (0, total_raw_len)
                     };
 
-                    let tail = if line_idx < sel_end.line.index() {
+                    let tail = if source_line < sel_end.line {
                         RangeTail::Continues
                     } else if end_raw_col == total_raw_len {
                         RangeTail::EndOfLine

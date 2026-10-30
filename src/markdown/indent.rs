@@ -6,15 +6,15 @@
 //! needs 3 columns, so a 2-space tab would silently keep the item a loose
 //! sibling. Indentation targets are therefore derived from the surrounding
 //! lines, falling back to a plain `tab_size` step when no list parent exists.
-
 //!
 //! All columns are character columns. A list line's indent region starts at
 //! its marker column (`  - x` → 2), looking through one level of blockquote
 //! marker (`> - x` → 2). Plain lines indent at column 0.
 
+use crate::buffer::SourceLine;
+
 use super::ParsedLine;
 use super::prefix::{BlockPrefix, parse_block_prefix, parse_quote_prefix};
-use crate::buffer::SourceLine;
 
 /// Count of leading ASCII indent characters (`' '` or `'\t'`).
 /// Because both characters are single-byte ASCII, byte count equals character column count.

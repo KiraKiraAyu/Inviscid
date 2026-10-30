@@ -1204,9 +1204,11 @@ fn test_inline_input_rich_navigation_and_ime(cx: &mut TestAppContext) {
             assert_eq!(this.marked_text_range(window, cx), None);
 
             // Append ".md" via replace_text_in_range at end
-            let end_utf16 = this
-                .buffer()
-                .pos_to_utf16_offset(this.buffer().cursor_pos());
+            let end_utf16 =
+                this.buffer()
+                    .pos_to_utf16_offset(inviscid::buffer::SourcePosition::from_position(
+                        this.buffer().cursor_pos(),
+                    ));
             this.replace_text_in_range(Some(end_utf16..end_utf16), ".md", window, cx);
             assert_eq!(this.text(), "文档.md");
 

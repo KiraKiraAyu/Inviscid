@@ -6,7 +6,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder;
-    
+
+use crate::app::actions::{
+    CloseFindBar, FindInDocument, FindNext, FindPrevious, ReplaceInDocument,
+};
+use crate::buffer::{Position, Selection, TextBuffer};
+use crate::markdown::{VisualDocument, get_block_prefix_len, toggle_task_checkbox};
+use crate::search::FindState;
+use crate::theme::{ActiveTheme, Theme};
+
 pub mod actions;
 pub mod display_map;
 pub mod element;
@@ -125,7 +133,7 @@ impl RenderMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HoveredLink {
     pub url: String,
-    pub line_idx: usize,
+    pub line: crate::buffer::SourceLine,
     pub col_range: (usize, usize),
 }
 
@@ -491,42 +499,74 @@ impl Editor {
 
     #[inline]
     pub fn display_map(&self) -> &DisplayMap {
-        let layout = self.layout_snapshot();
-        let projection = self.current_projection(&layout.parsed_lines);
-        let mut display_map = self.display_map.clone();
-        display_map.fold(start_line, end_line);
-        let Some(normalized) = display_map.normalize_position(&projection, cursor) else {
-            return;
-        };
-        self.display_map = display_map;
-        if normalized != cursor {
-            self.buffer.update_cursor(false, normalized);
+        &self.display_map
+    }
+
+    /// Folds `start_line..=end_line`, moving the cursor to `start_line` if it was inside the folded region.
+    pub fn fold_internal(
+        &mut self,
+        start_line: crate::buffer::SourceLine,
+        end_line: crate::buffer::SourceLine,
+    ) {
+        self.display_map.fold_map_mut().fold(start_line, end_line);
+        let cursor = self.buffer.cursor_pos();
+        if cursor.line > start_line && cursor.line <= end_line {
+            self.buffer.update_cursor(
+                false,
+                Position::new(start_line, self.buffer.line_len(start_line)),
+            );
         }
         self.ensure_layout_cache();
     }
 
-    pub fn fold(&mut self, start_line: SourceLine, end_line: SourceLine, cx: &mut Context<Self>) {
+    pub fn fold(
+        &mut self,
+        start_line: crate::buffer::SourceLine,
+        end_line: crate::buffer::SourceLine,
+        cx: &mut Context<Self>,
+    ) {
         self.fold_internal(start_line, end_line);
         cx.notify();
     }
 
-    pub fn unfold_internal(&mut self, start_line: SourceLine) -> bool {
-        let changed = self.display_map.unfold(start_line);
+    pub fn unfold_internal(&mut self, start_line: crate::buffer::SourceLine) -> bool {
+        let changed = self.display_map.fold_map_mut().unfold(start_line);
         if changed {
             self.ensure_layout_cache();
         }
         changed
-        
+    }
+
+    pub fn unfold(
+        &mut self,
+        start_line: crate::buffer::SourceLine,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let changed = self.unfold_internal(start_line);
+        if changed {
+            cx.notify();
         }
         changed
     }
-    
+
+    pub fn unfold_all_internal(&mut self) {
+        self.display_map.fold_map_mut().unfold_all();
+        self.ensure_layout_cache();
+    }
+
     pub fn unfold_all(&mut self, cx: &mut Context<Self>) {
         self.unfold_all_internal();
         cx.notify();
     }
-    pub fn is_fold_header(&self, line: SourceLine) -> bool {
-        self.display_map.is_fold_header(line)
+
+    #[inline]
+    pub fn is_line_folded(&self, line: crate::buffer::SourceLine) -> bool {
+        self.display_map.fold_map().is_line_folded(line)
+    }
+
+    #[inline]
+    pub fn is_fold_header(&self, line: crate::buffer::SourceLine) -> bool {
+        self.display_map.fold_map().is_fold_header(line)
     }
 
     pub fn status_meta(&self) -> Option<EditorStatusMeta> {
@@ -540,7 +580,30 @@ impl Editor {
             char_count: self.buffer.char_count(),
             render_mode: self.render_mode,
         })
-        
+    }
+
+    /// Clamps cursor out of hidden markdown prefixes when switching into Live Preview.
+    pub fn normalize_cursor_for_mode(&mut self, new_mode: RenderMode) {
+        if new_mode != RenderMode::LivePreview {
+            return;
+        }
+
+        let layout = self.layout_snapshot();
+        let pos = self.buffer.cursor_pos();
+        let vdoc = VisualDocument::from_parsed(self.buffer.lines(), &layout.parsed_lines);
+        let vpos = vdoc.source_to_visual(crate::buffer::SourcePosition::from_position(pos));
+        let mut target_pos = vdoc.visual_to_source(vpos).to_position();
+
+        let current_line_str = &self.buffer.lines()[target_pos.line.index()];
+        let prefix_len = get_block_prefix_len(current_line_str);
+        if prefix_len > 0 && target_pos.col < prefix_len {
+            target_pos.col = prefix_len.min(self.buffer.line_len(target_pos.line));
+        }
+
+        self.buffer.set_cursor(target_pos);
+        self.pixel_column_goal = None;
+    }
+
     pub(crate) fn start_scroll_animation(&mut self, cx: &mut Context<Self>) {
         crate::ui::start_scroll_animation(
             self,
@@ -690,9 +753,9 @@ impl Editor {
                 }
             } else {
                 let mut res = Vec::with_capacity(end.line - start.line + 1);
-                for line_idx in start.line..=end.line {
-                    if let Some(line) = buffer.line(line_idx) {
-                        if line_idx == start.line {
+                for line_idx in start.line.index()..=end.line.index() {
+                    if let Some(line) = buffer.line(crate::buffer::SourceLine::new(line_idx)) {
+                        if line_idx == start.line.index() {
                             let prefix_len = crate::markdown::get_block_prefix_len(line);
                             let actual_start_col = if start.col <= prefix_len {
                                 0
@@ -700,7 +763,7 @@ impl Editor {
                                 start.col
                             };
                             res.push(line.chars().skip(actual_start_col).collect::<String>());
-                        } else if line_idx == end.line {
+                        } else if line_idx == end.line.index() {
                             res.push(line.chars().take(end.col).collect::<String>());
                         } else {
                             res.push(line.to_string());
@@ -725,15 +788,21 @@ impl Editor {
         }
     }
 
-    pub fn toggle_task_checkbox(&mut self, line_idx: usize, cx: &mut Context<Self>) {
-        if !self.can_edit() || line_idx >= self.buffer.line_count() {
+    pub fn toggle_task_checkbox(
+        &mut self,
+        source_line: crate::buffer::SourceLine,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_edit() || source_line.index() >= self.buffer.line_count() {
             return;
         }
-        let line = &self.buffer.lines()[line_idx];
+        let Some(line) = self.buffer.line(source_line) else {
+            return;
+        };
         if let Some(new_line) = toggle_task_checkbox(line) {
             self.track_buffer_change(cx, |this| {
                 this.buffer.record_edit(|lines, _| {
-                    lines[line_idx] = new_line;
+                    lines[source_line] = new_line;
                 });
             });
             self.last_cursor_action = std::time::Instant::now();

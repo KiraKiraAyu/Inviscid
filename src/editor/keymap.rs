@@ -12,15 +12,30 @@ impl Editor {
     where
         F: FnOnce(&mut Editor),
     {
-        self.normalize_cursor_to_projection(false);
+        if !self.can_edit() {
+            return;
+        }
+        self.pixel_column_goal = None;
+        let is_source = self.render_mode == RenderMode::Source;
+        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
+        self.track_buffer_change(cx, f);
+        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
         self.scroll_to_cursor();
         self.start_scroll_animation_if_needed(cx);
         self.reset_cursor_blink(cx);
         cx.notify();
-        let target_line = target_line.index();
-        let col = self.buffer.line_len(target_line).min(pos.col).max(
-            crate::markdown::get_block_prefix_len(self.buffer.line(target_line).unwrap_or("")),
-        );
+    }
+
+    fn move_by_page(&mut self, select: bool, down: bool) {
+        let pos = self.buffer.cursor_pos();
+        let target_line = if down {
+            (pos.line + PAGE_SCROLL_LINES).min(crate::buffer::SourceLine::new(
+                self.buffer.line_count().saturating_sub(1),
+            ))
+        } else {
+            pos.line.saturating_sub(PAGE_SCROLL_LINES)
+        };
+        let col = self.buffer.line_len(target_line).min(pos.col);
         self.buffer
             .update_cursor(select, Position::new(target_line, col));
     }
@@ -55,25 +70,24 @@ impl Editor {
             .on_action(cx.listener(|this, _: &UndoAction, _, cx| this.undo(cx)))
             .on_action(cx.listener(|this, _: &RedoAction, _, cx| this.redo(cx)))
             .on_action(cx.listener(|this, _: &CutAction, _, cx| this.cut(cx)))
-            this.perform_edit(cx, |this| {
-                    this.move_horizontally(true, false, |buffer, is_source| {
-                        buffer.move_left_mode(true, is_source)
-                    });
-                });
+            .on_action(cx.listener(|this, _: &CopyAction, _, cx| this.copy(cx)))
+            .on_action(cx.listener(|this, _: &PasteAction, _, cx| this.paste(cx)))
+            .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &MoveLeft, _, cx| {
+                let is_source = this.render_mode == RenderMode::Source;
+                this.perform_edit(cx, |this| this.buffer.move_left_mode(false, is_source));
+            }))
+            .on_action(cx.listener(|this, _: &SelectLeft, _, cx| {
+                let is_source = this.render_mode == RenderMode::Source;
+                this.perform_edit(cx, |this| this.buffer.move_left_mode(true, is_source));
             }))
             .on_action(cx.listener(|this, _: &MoveRight, _, cx| {
-                this.perform_edit(cx, |this| {
-                    this.move_horizontally(false, true, |buffer, is_source| {
-                        buffer.move_right_mode(false, is_source)
-                    });
-                });
+                let is_source = this.render_mode == RenderMode::Source;
+                this.perform_edit(cx, |this| this.buffer.move_right_mode(false, is_source));
             }))
             .on_action(cx.listener(|this, _: &SelectRight, _, cx| {
-                this.perform_edit(cx, |this| {
-                    this.move_horizontally(true, true, |buffer, is_source| {
-                        buffer.move_right_mode(true, is_source)
-                    });
-                });
+                let is_source = this.render_mode == RenderMode::Source;
+                this.perform_edit(cx, |this| this.buffer.move_right_mode(true, is_source));
             }))
             .on_action(cx.listener(|this, _: &MoveUp, window, cx| {
                 this.navigate_vertical(true, false, window, cx);
@@ -84,23 +98,20 @@ impl Editor {
             .on_action(cx.listener(|this, _: &MoveDown, window, cx| {
                 this.navigate_vertical(false, false, window, cx);
             }))
-            this.perform_edit(cx, |this| {
-                    this.move_horizontally(true, false, |buffer, _| {
-                        buffer.move_to_previous_word(true)
-                    });
-                });
+            .on_action(cx.listener(|this, _: &SelectDown, window, cx| {
+                this.navigate_vertical(false, true, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveToPreviousWord, _, cx| {
+                this.perform_edit(cx, |this| this.buffer.move_to_previous_word(false));
+            }))
+            .on_action(cx.listener(|this, _: &SelectToPreviousWord, _, cx| {
+                this.perform_edit(cx, |this| this.buffer.move_to_previous_word(true));
             }))
             .on_action(cx.listener(|this, _: &MoveToNextWord, _, cx| {
-                this.perform_edit(cx, |this| {
-                    this.move_horizontally(false, true, |buffer, _| {
-                        buffer.move_to_next_word(false)
-                    });
-                });
+                this.perform_edit(cx, |this| this.buffer.move_to_next_word(false));
             }))
             .on_action(cx.listener(|this, _: &SelectToNextWord, _, cx| {
-                this.perform_edit(cx, |this| {
-                    this.move_horizontally(true, true, |buffer, _| buffer.move_to_next_word(true));
-                });
+                this.perform_edit(cx, |this| this.buffer.move_to_next_word(true));
             }))
             .on_action(cx.listener(|this, _: &MoveToBeginningOfLine, _, cx| {
                 let is_source = this.render_mode == RenderMode::Source;
@@ -117,22 +128,20 @@ impl Editor {
             .on_action(cx.listener(|this, _: &MoveToEndOfLine, _, cx| {
                 this.perform_edit(cx, |this| this.buffer.move_to_line_end(false));
             }))
-            this.perform_edit(cx, |this| {
-                    this.buffer.move_to_doc_start(true);
-                    this.normalize_cursor_to_projection(true);
-                });
+            .on_action(cx.listener(|this, _: &SelectToEndOfLine, _, cx| {
+                this.perform_edit(cx, |this| this.buffer.move_to_line_end(true));
+            }))
+            .on_action(cx.listener(|this, _: &MoveToBeginningOfDocument, _, cx| {
+                this.perform_edit(cx, |this| this.buffer.move_to_doc_start(false));
+            }))
+            .on_action(cx.listener(|this, _: &SelectToBeginningOfDocument, _, cx| {
+                this.perform_edit(cx, |this| this.buffer.move_to_doc_start(true));
             }))
             .on_action(cx.listener(|this, _: &MoveToEndOfDocument, _, cx| {
-                this.perform_edit(cx, |this| {
-                    this.buffer.move_to_doc_end(false);
-                    this.normalize_cursor_to_projection(false);
-                });
+                this.perform_edit(cx, |this| this.buffer.move_to_doc_end(false));
             }))
             .on_action(cx.listener(|this, _: &SelectToEndOfDocument, _, cx| {
-                this.perform_edit(cx, |this| {
-                    this.buffer.move_to_doc_end(true);
-                    this.normalize_cursor_to_projection(true);
-                });
+                this.perform_edit(cx, |this| this.buffer.move_to_doc_end(true));
             }))
             .on_action(cx.listener(|this, _: &PageUp, _, cx| {
                 this.perform_edit(cx, |this| this.move_by_page(false, false));

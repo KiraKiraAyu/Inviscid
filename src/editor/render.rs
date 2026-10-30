@@ -212,7 +212,7 @@ pub fn render_live_line_content(
                     let ed = ed.clone();
                     this.on_mouse_down(MouseButton::Left, move |_, _window, cx| {
                         ed.update(cx, |this, cx| {
-                            this.toggle_task_checkbox(crate::buffer::SourceLine::new(line_idx), cx);
+                            this.toggle_task_checkbox(source_line, cx);
                         });
                     })
                 })
@@ -348,7 +348,7 @@ pub fn render_live_line_content(
         BlockKind::Image { alt, url } => {
             let is_selected_line = if !selection.is_empty() {
                 let (start, end) = selection.range();
-                line_idx >= start.line.index() && line_idx <= end.line.index()
+                source_line >= start.line && source_line <= end.line
             } else {
                 false
             };
@@ -375,8 +375,14 @@ pub fn render_live_line_content(
                 false,
             );
 
-            let preview_card =
-                render_image_preview_card(line_idx, alt, url, lrc.doc_path, theme, content_width);
+            let preview_card = render_image_preview_card(
+                source_line,
+                alt,
+                url,
+                lrc.doc_path,
+                theme,
+                content_width,
+            );
 
             if should_show_source {
                 div()
@@ -435,7 +441,7 @@ pub fn render_live_line_content(
             );
 
             let hovered_link_range = lrc.hovered_link.and_then(|hl| {
-                if hl.line_idx.index() == line_idx {
+                if hl.line == source_line {
                     Some(hl.col_range)
                 } else {
                     None
@@ -604,8 +610,7 @@ pub fn render_live_line_content(
         }
 
         BlockKind::Paragraph => {
-            if is_syntactic_separator(lines, crate::buffer::SourceLine::new(line_idx)) && !is_active
-            {
+            if is_syntactic_separator(lines, source_line) && !is_active {
                 // Syntactic blank separator lines between blocks: collapsed to 0 height in Live Preview
                 return div().h(px(0.0)).into_any_element();
             }
@@ -701,13 +706,14 @@ pub fn resolve_image_source(url: &str, doc_path: Option<&std::path::Path>) -> Im
 }
 
 fn render_image_preview_card(
-    line_idx: usize,
+    source_line: crate::buffer::SourceLine,
     alt: &str,
     url: &str,
     doc_path: Option<&std::path::Path>,
     theme: &Theme,
     content_width: Pixels,
 ) -> impl IntoElement {
+    let line_idx = source_line.index();
     let alt_string = if alt.is_empty() {
         "Image".to_string()
     } else {
@@ -904,8 +910,7 @@ pub fn render_source_line(
                     let ed = ed.clone();
                     this.on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         ed.update(cx, |this, cx| {
-                            this.buffer
-                                .select_line_at(crate::buffer::SourceLine::new(line_idx));
+                            this.buffer.select_line_at(source_line);
                             window.focus(&this.focus_handle);
                             cx.notify();
                         });

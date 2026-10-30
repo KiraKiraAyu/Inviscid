@@ -1,4 +1,4 @@
-#[derive(Clone, Debug, PartialEq, Eq)]
+﻿#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockPrefix {
     Heading { level: u8 },
     Task { checked: bool, marker: char },
@@ -76,11 +76,6 @@ pub fn fence_info(line: &str) -> Option<&str> {
 #[inline]
 pub fn is_fence_line(line: &str) -> bool {
     fence_info(line).is_some()
-}
-
-#[inline]
-pub fn is_math_delimiter_line(line: &str) -> bool {
-    line.trim() == "$$"
 }
 
 pub fn parse_fence_prefix(trimmed: &str) -> Option<(Option<String>, usize)> {

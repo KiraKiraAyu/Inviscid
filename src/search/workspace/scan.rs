@@ -121,7 +121,7 @@ impl<'a> WorkspaceScan<'a> {
         let max = self.limits.max_total_matches;
         let previous = self
             .total_matches
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
                 Some(total + wanted.min(max.saturating_sub(total)))
             })
             .unwrap_or_else(|total| total);

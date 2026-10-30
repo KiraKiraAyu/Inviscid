@@ -1,4 +1,4 @@
-use super::inline::parse_inline_spans;
+﻿use super::inline::parse_inline_spans;
 use super::prefix::is_fence_line;
 use super::types::{TableAlignment, TableCell};
 use crate::buffer::SourceLine;
@@ -122,13 +122,13 @@ pub struct TableMetadata {
 }
 
 pub fn get_table_metadata(lines: &[String], target_line: SourceLine) -> Option<TableMetadata> {
-    let target_idx = target_line.index();
-    if target_idx >= lines.len() {
+    let target_line = target_line.index();
+    if target_line >= lines.len() {
         return None;
     }
 
     let mut header_idx = None;
-    for cur in (0..=target_idx).rev() {
+    for cur in (0..=target_line).rev() {
         let trimmed = lines[cur].trim();
         if cur + 1 < lines.len()
             && is_table_delimiter_row(&lines[cur + 1])
@@ -161,7 +161,7 @@ pub fn get_table_metadata(lines: &[String], target_line: SourceLine) -> Option<T
         last_table_line = idx;
     }
 
-    if target_idx > last_table_line {
+    if target_line > last_table_line {
         return None;
     }
 

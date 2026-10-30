@@ -1,68 +1,105 @@
+use super::*;
 
-    assert_eq!(buf.selection.head, Position::new(1, 5));
+#[test]
+fn test_column_goal_movement() {
+    let mut buf = TextBuffer::from_str("Hello World Long Line\nShort\nAnother Long Line", None);
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 15));
+
+    buf.move_down_mode(false, false);
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 5)
+    );
     assert_eq!(buf.column_goal, Some(15));
 
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(2, 15));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 15)
+    );
 }
 
 #[test]
 fn test_selection_collapse() {
     let mut buf = TextBuffer::from_str("Hello World", None);
     buf.selection = Selection {
-        anchor: Position::new(0, 2),
-        head: Position::new(0, 7),
+        anchor: Position::new(crate::buffer::SourceLine::new(0), 2),
+        head: Position::new(crate::buffer::SourceLine::new(0), 7),
     };
 
     buf.move_left_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 2));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 2)
+    );
     assert!(buf.selection.is_empty());
 
     buf.selection = Selection {
-        anchor: Position::new(0, 2),
-        head: Position::new(0, 7),
+        anchor: Position::new(crate::buffer::SourceLine::new(0), 2),
+        head: Position::new(crate::buffer::SourceLine::new(0), 7),
     };
     buf.move_right_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 7));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 7)
+    );
     assert!(buf.selection.is_empty());
 }
 
 #[test]
 fn test_word_navigation() {
     let mut buf = TextBuffer::from_str("fn hello_world() {", None);
-    buf.selection = Selection::cursor(Position::new(0, 18));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 18));
 
     buf.move_to_previous_word(false);
-    assert_eq!(buf.selection.head, Position::new(0, 17));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 17)
+    );
 
     buf.move_to_previous_word(false);
-    assert_eq!(buf.selection.head, Position::new(0, 14));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 14)
+    );
 
     buf.move_to_previous_word(false);
-    assert_eq!(buf.selection.head, Position::new(0, 3));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 3)
+    );
 
     buf.move_to_previous_word(false);
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 }
 
 #[test]
 fn test_surround_selection() {
     let mut buf = TextBuffer::from_str("Hello World", None);
     buf.selection = Selection {
-        anchor: Position::new(0, 6),
-        head: Position::new(0, 11),
+        anchor: Position::new(crate::buffer::SourceLine::new(0), 6),
+        head: Position::new(crate::buffer::SourceLine::new(0), 11),
     };
 
     buf.surround_selection("**", "**");
-    assert_eq!(buf.lines[0], "Hello **World**");
-    assert_eq!(buf.selection.start(), Position::new(0, 6));
-    assert_eq!(buf.selection.end(), Position::new(0, 15));
+    assert_eq!(buf.lines.as_slice()[0], "Hello **World**");
+    assert_eq!(
+        buf.selection.start(),
+        Position::new(crate::buffer::SourceLine::new(0), 6)
+    );
+    assert_eq!(
+        buf.selection.end(),
+        Position::new(crate::buffer::SourceLine::new(0), 15)
+    );
 }
 
 #[test]
 fn test_move_and_duplicate_lines() {
     let mut buf = TextBuffer::from_str("Line 1\nLine 2\nLine 3", None);
-    buf.selection = Selection::cursor(Position::new(1, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
 
     buf.move_lines_up();
     assert_eq!(buf.lines, vec!["Line 2", "Line 1", "Line 3"]);
@@ -78,8 +115,8 @@ fn test_move_and_duplicate_lines() {
 fn test_indent_outdent_lines() {
     let mut buf = TextBuffer::from_str("Line 1\nLine 2", None);
     buf.selection = Selection {
-        anchor: Position::new(0, 0),
-        head: Position::new(1, 6),
+        anchor: Position::new(crate::buffer::SourceLine::new(0), 0),
+        head: Position::new(crate::buffer::SourceLine::new(1), 6),
     };
 
     buf.indent_lines_with_tab_size(4);
@@ -92,125 +129,203 @@ fn test_indent_outdent_lines() {
 #[test]
 fn test_empty_code_block_backspace() {
     let mut buf = TextBuffer::from_str("Paragraph 1\n```rust\n\n```\nParagraph 2", None);
-    buf.selection = Selection::cursor(Position::new(2, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(2), 0));
     buf.backspace_mode(false);
     assert_eq!(buf.lines, vec!["Paragraph 1", "", "", "Paragraph 2"]);
-    assert_eq!(buf.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 }
 
 #[test]
 fn test_move_into_code_language_header() {
     let mut buf = TextBuffer::from_str("Paragraph 1\n```rust\ncode\n```\nParagraph 2", None);
-    buf.selection = Selection::cursor(Position::new(0, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(1, 7));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 7)
+    );
 
-    buf.selection = Selection::cursor(Position::new(2, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(2), 0));
     buf.move_up_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(1, 7));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 7)
+    );
 }
 
 #[test]
 fn test_code_language_header_backspace() {
     let mut buf = TextBuffer::from_str("Paragraph 1\n```rust\ncode\n```\nParagraph 2", None);
 
-    buf.selection = Selection::cursor(Position::new(1, 3));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 3));
     buf.backspace_mode(false);
-    assert_eq!(buf.lines[1], "```rust");
-    assert_eq!(buf.selection.head, Position::new(1, 3));
+    assert_eq!(buf.lines.as_slice()[1], "```rust");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 3)
+    );
 
-    buf.selection = Selection::cursor(Position::new(1, 7));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 7));
     buf.backspace_mode(false);
-    assert_eq!(buf.lines[1], "```rus");
-    assert_eq!(buf.selection.head, Position::new(1, 6));
+    assert_eq!(buf.lines.as_slice()[1], "```rus");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 6)
+    );
 }
 
 #[test]
 fn test_code_language_header_arrow_navigation() {
     let mut buf = TextBuffer::from_str("```rust\nfn main() {}\n```", None);
-    buf.selection = Selection::cursor(Position::new(0, 7));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 7));
 
     buf.move_left_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 6));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 6)
+    );
 
     buf.move_left_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 5));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 5)
+    );
 
     buf.move_left_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 4));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 4)
+    );
 
     buf.move_left_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 3));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 3)
+    );
 
     buf.move_right_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 4));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 4)
+    );
 }
 
 #[test]
 fn test_enter_after_math_delimiter_creates_a_block() {
     let mut buf = TextBuffer::from_str("$$", None);
-    buf.set_cursor(Position::new(0, 2));
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
 
     buf.insert_newline_mode(false);
 
     assert_eq!(buf.lines, vec!["$$", "", "$$", ""]);
-    assert_eq!(buf.cursor_pos(), Position::new(1, 0));
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 }
 
 #[test]
 fn test_live_preview_navigation_skips_math_delimiter_lines() {
     let mut buf = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
-    buf.set_cursor(Position::new(0, 6));
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 6));
 
     buf.move_right_mode(false, false);
 
-    assert_eq!(buf.cursor_pos(), Position::new(2, 0));
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 
-    buf.set_cursor(Position::new(2, 1));
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(2), 1));
     buf.move_right_mode(false, false);
 
-    assert_eq!(buf.cursor_pos(), Position::new(4, 0));
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(4), 0)
+    );
 
-    buf.set_cursor(Position::new(0, 6));
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 6));
     buf.move_down_mode(false, false);
-    assert_eq!(buf.cursor_pos(), Position::new(2, 1));
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(2), 1)
+    );
     buf.move_up_mode(false, false);
-    assert_eq!(buf.cursor_pos(), Position::new(0, 6));
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(0), 6)
+    );
 }
 
 #[test]
 fn test_source_mode_can_edit_math_delimiters() {
     let mut buf = TextBuffer::from_str("$$\nx\n$$", None);
-    buf.set_cursor(Position::new(0, 1));
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 1));
 
     buf.move_right_mode(false, true);
 
-    assert_eq!(buf.cursor_pos(), Position::new(0, 2));
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(0), 2)
+    );
 }
 
 #[test]
 fn test_empty_math_source_lines_remain_navigable_in_live_preview() {
     let mut buf = TextBuffer::from_str("Before\n$$\n\n$$\nAfter", None);
-    buf.set_cursor(Position::new(0, 6));
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 6));
 
     buf.move_right_mode(false, false);
-    
-    backspace.set_cursor(Position::new(2, 0));
+
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
+}
+
+#[test]
+fn test_cursor_is_kept_inside_math_source_when_normalized() {
+    let mut buf = TextBuffer::from_str("$$\nx + y\n$$", None);
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
+
+    buf.ensure_cursor_not_on_math_delimiter(false);
+
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
+
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(2), 0));
+    buf.ensure_cursor_not_on_math_delimiter(false);
+
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(1), 5)
+    );
+}
+
+#[test]
+fn test_live_preview_backspace_and_delete_do_not_merge_math_delimiters() {
+    let mut backspace = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
+    backspace.set_cursor(Position::new(crate::buffer::SourceLine::new(2), 0));
     backspace.backspace_mode(false);
     assert_eq!(backspace.lines, vec!["Before", "$$", "x", "$$", "After"]);
 
     let mut delete = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
-    delete.set_cursor(Position::new(2, 1));
+    delete.set_cursor(Position::new(crate::buffer::SourceLine::new(2), 1));
     delete.delete_forward_mode(false);
     assert_eq!(delete.lines, vec!["Before", "$$", "x", "$$", "After"]);
 
     let mut before_block = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
-    before_block.set_cursor(Position::new(0, 6));
+    before_block.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 6));
     before_block.delete_forward_mode(false);
     assert_eq!(before_block.lines, vec!["Before", "$$", "x", "$$", "After"]);
 
     let mut after_block = TextBuffer::from_str("Before\n$$\nx\n$$\nAfter", None);
-    after_block.set_cursor(Position::new(4, 0));
+    after_block.set_cursor(Position::new(crate::buffer::SourceLine::new(4), 0));
     after_block.backspace_mode(false);
     assert_eq!(after_block.lines, vec!["Before", "$$", "x", "$$", "After"]);
 }
@@ -218,179 +333,266 @@ fn test_empty_math_source_lines_remain_navigable_in_live_preview() {
 #[test]
 fn test_heading_backspace_at_marker() {
     let mut buf = TextBuffer::from_str("# Welcome to Inviscid", None);
-    buf.selection = Selection::cursor(Position::new(0, 2));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
     buf.backspace_mode(false);
-    assert_eq!(buf.lines[0], "Welcome to Inviscid");
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(buf.lines.as_slice()[0], "Welcome to Inviscid");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
     let mut buf2 = TextBuffer::from_str("## Core Features", None);
-    buf2.selection = Selection::cursor(Position::new(0, 3));
+    buf2.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 3));
     buf2.backspace_mode(false);
-    assert_eq!(buf2.lines[0], "Core Features");
-    assert_eq!(buf2.selection.head, Position::new(0, 0));
+    assert_eq!(buf2.lines.as_slice()[0], "Core Features");
+    assert_eq!(
+        buf2.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 }
 
 #[test]
 fn test_heading_enter() {
     let mut buf = TextBuffer::from_str("# Welcome to Inviscid", None);
-    buf.selection = Selection::cursor(Position::new(0, 2));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["", "# Welcome to Inviscid"]);
-    assert_eq!(buf.selection.head, Position::new(1, 2));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 2)
+    );
 
     let mut buf2 = TextBuffer::from_str("# Welcome to Inviscid", None);
-    buf2.selection = Selection::cursor(Position::new(0, 21));
+    buf2.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 21));
     buf2.insert_newline();
     assert_eq!(buf2.lines, vec!["# Welcome to Inviscid", "", ""]);
-    assert_eq!(buf2.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf2.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 }
 
 #[test]
 fn test_list_item_arrow_navigation() {
     let mut buf = TextBuffer::from_str("## Core Features\n- Native GPU Text", None);
-    buf.selection = Selection::cursor(Position::new(0, 16));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 16));
     buf.move_right_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(1, 2));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 2)
+    );
 
     buf.move_right_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(1, 3));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 3)
+    );
 
     buf.move_left_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(1, 2));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 2)
+    );
 
     buf.move_left_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 16));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 16)
+    );
 }
 
 #[test]
 fn test_thematic_break_backspace_and_delete() {
     let mut buf = TextBuffer::from_str("Paragraph 1\n---\nParagraph 2", None);
-    buf.selection = Selection::cursor(Position::new(1, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
     buf.backspace_mode(false);
     assert_eq!(buf.lines, vec!["Paragraph 1", "", "Paragraph 2"]);
-    assert_eq!(buf.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 
     let mut buf2 = TextBuffer::from_str("Paragraph 1\n---\nParagraph 2", None);
-    buf2.selection = Selection::cursor(Position::new(1, 0));
+    buf2.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
     buf2.delete_forward_mode(false);
     assert_eq!(buf2.lines, vec!["Paragraph 1", "", "Paragraph 2"]);
-    assert_eq!(buf2.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf2.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 }
 
 #[test]
 fn test_paragraph_enter_live_vs_source() {
     let mut buf = TextBuffer::from_str("Hello World", None);
-    buf.selection = Selection::cursor(Position::new(0, 11));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 11));
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["Hello World", "", ""]);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 
     let mut buf_src = TextBuffer::from_str("Hello World", None);
-    buf_src.selection = Selection::cursor(Position::new(0, 11));
+    buf_src.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 11));
     buf_src.insert_newline_mode(true);
     assert_eq!(buf_src.lines, vec!["Hello World", ""]);
-    assert_eq!(buf_src.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf_src.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 }
 
 #[test]
 fn test_arrow_navigation_across_code_block_and_thematic_break() {
     let mut buf = TextBuffer::from_str("```rust\nfn main() {\n}\n```\n\n---\n\nParagraph", None);
-    buf.selection = Selection::cursor(Position::new(5, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(5), 0));
     buf.move_up_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 
     buf.move_up_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 
-    buf.selection = Selection::cursor(Position::new(2, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(2), 0));
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(5, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(5), 0)
+    );
 
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(7, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(7), 0)
+    );
 }
 
 #[test]
 fn test_trailing_empty_line_navigation_live_vs_source() {
     let mut buf = TextBuffer::from_str("Paragraph 1\n", None);
-    buf.selection = Selection::cursor(Position::new(0, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 11));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 11)
+    );
     buf.move_down_mode(false, true);
-    assert_eq!(buf.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 }
 
 #[test]
 fn test_fence_enter_and_backspace() {
     let mut buf = TextBuffer::from_str("```rust", None);
-    buf.selection = Selection::cursor(Position::new(0, 7));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 7));
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["```rust", "", "```", ""]);
-    assert_eq!(buf.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 
     buf.backspace_mode(false);
     assert_eq!(buf.lines, vec!["", ""]);
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 }
 
 #[test]
 fn test_navigate_and_backspace_into_empty_code_block() {
     let mut buf = TextBuffer::from_str("Paragraph 1\n```rust\n\n```\nParagraph 2", None);
-    buf.selection = Selection::cursor(Position::new(0, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(1, 7));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 7)
+    );
 
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(4, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(4), 0)
+    );
 
     buf.move_up_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 
-    buf.selection = Selection::cursor(Position::new(4, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(4), 0));
     buf.backspace_mode(false);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 }
 
 #[test]
 fn test_move_at_document_end_code_block() {
     let mut buf = TextBuffer::from_str("```rust\nfn main() {}\n```", None);
-    buf.selection = Selection::cursor(Position::new(1, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
     buf.move_down_mode(false, false);
     assert_eq!(buf.lines, vec!["```rust", "fn main() {}", "```", "", ""]);
-    assert_eq!(buf.selection.head, Position::new(4, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(4), 0)
+    );
 
     let mut buf2 = TextBuffer::from_str("```rust\nfn main() {}\n```", None);
-    buf2.selection = Selection::cursor(Position::new(1, 12));
+    buf2.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 12));
     buf2.move_right_mode(false, false);
     assert_eq!(buf2.lines, vec!["```rust", "fn main() {}", "```", "", ""]);
-    assert_eq!(buf2.selection.head, Position::new(4, 0));
+    assert_eq!(
+        buf2.selection.head,
+        Position::new(crate::buffer::SourceLine::new(4), 0)
+    );
 }
 
 #[test]
 fn test_insert_line_below_block_from_code_block() {
     let mut buf = TextBuffer::from_str("```rust\nline 1\nline 2\n```", None);
-    buf.selection = Selection::cursor(Position::new(1, 3));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 3));
     buf.insert_line_below_block();
     assert_eq!(
         buf.lines,
         vec!["```rust", "line 1", "line 2", "```", "", ""]
     );
-    assert_eq!(buf.selection.head, Position::new(5, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(5), 0)
+    );
 }
 
 #[test]
 fn test_backspace_on_thematic_break_with_empty_lines() {
     let mut buf = TextBuffer::from_str("```rust\nfn main() {}\n```\n\n---\n\nParagraph", None);
-    buf.selection = Selection::cursor(Position::new(4, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(4), 0));
     buf.backspace_mode(false);
     assert_eq!(
         buf.lines,
         vec!["```rust", "fn main() {}", "```", "", "Paragraph"]
     );
-    assert_eq!(buf.selection.head, Position::new(3, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(3), 0)
+    );
 }
 
 #[test]
@@ -400,36 +602,63 @@ fn test_source_mode_linear_movement_and_editing() {
         None,
     );
 
-    buf.selection = Selection::cursor(Position::new(0, 3));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 3));
     buf.move_left_mode(false, true);
-    assert_eq!(buf.selection.head, Position::new(0, 2));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 2)
+    );
 
     buf.move_left_mode(false, true);
-    assert_eq!(buf.selection.head, Position::new(0, 1));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 1)
+    );
 
     buf.move_left_mode(false, true);
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
-    buf.selection = Selection::cursor(Position::new(0, 2));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
     buf.backspace_mode(true);
-    assert_eq!(buf.lines[0], "# Heading 2");
-    assert_eq!(buf.selection.head, Position::new(0, 1));
+    assert_eq!(buf.lines.as_slice()[0], "# Heading 2");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 1)
+    );
 
-    buf.selection = Selection::cursor(Position::new(0, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
     buf.move_down_mode(false, true);
-    assert_eq!(buf.selection.head, Position::new(1, 0));
-
-    buf.move_down_mode(false, true);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
-
-    buf.move_down_mode(false, true);
-    assert_eq!(buf.selection.head, Position::new(3, 0));
-
-    buf.move_down_mode(false, true);
-    assert_eq!(buf.selection.head, Position::new(4, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 
     buf.move_down_mode(false, true);
-    assert_eq!(buf.selection.head, Position::new(5, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
+
+    buf.move_down_mode(false, true);
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(3), 0)
+    );
+
+    buf.move_down_mode(false, true);
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(4), 0)
+    );
+
+    buf.move_down_mode(false, true);
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(5), 0)
+    );
 }
 
 #[test]
@@ -437,22 +666,22 @@ fn test_selected_text() {
     let mut buf = TextBuffer::from_str("# Main Heading\nParagraph content\n- List Item", None);
 
     buf.selection = Selection {
-        anchor: Position::new(0, 2),
-        head: Position::new(1, 9),
+        anchor: Position::new(crate::buffer::SourceLine::new(0), 2),
+        head: Position::new(crate::buffer::SourceLine::new(1), 9),
     };
     let copied = buf.selected_text().unwrap();
     assert_eq!(copied, "Main Heading\nParagraph");
 
     buf.selection = Selection {
-        anchor: Position::new(0, 2),
-        head: Position::new(0, 14),
+        anchor: Position::new(crate::buffer::SourceLine::new(0), 2),
+        head: Position::new(crate::buffer::SourceLine::new(0), 14),
     };
     let copied_single = buf.selected_text().unwrap();
     assert_eq!(copied_single, "Main Heading");
 
     buf.selection = Selection {
-        anchor: Position::new(0, 7),
-        head: Position::new(0, 14),
+        anchor: Position::new(crate::buffer::SourceLine::new(0), 7),
+        head: Position::new(crate::buffer::SourceLine::new(0), 14),
     };
     let copied_sub = buf.selected_text().unwrap();
     assert_eq!(copied_sub, "Heading");
@@ -461,33 +690,33 @@ fn test_selected_text() {
 #[test]
 fn test_toggle_comment() {
     let mut buf = TextBuffer::from_str("<!-->", None);
-    buf.selection = Selection::cursor(Position::new(0, 5));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 5));
     buf.toggle_comment();
-    assert_eq!(buf.lines[0], "<!-- <!--> -->");
+    assert_eq!(buf.lines.as_slice()[0], "<!-- <!--> -->");
 
     let mut buf2 = TextBuffer::from_str("<!--->", None);
-    buf2.selection = Selection::cursor(Position::new(0, 6));
+    buf2.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 6));
     buf2.toggle_comment();
-    assert_eq!(buf2.lines[0], "<!-- <!---> -->");
+    assert_eq!(buf2.lines.as_slice()[0], "<!-- <!---> -->");
 
     let mut buf3 = TextBuffer::from_str("<!-- -->", None);
-    buf3.selection = Selection::cursor(Position::new(0, 4));
+    buf3.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 4));
     buf3.toggle_comment();
-    assert_eq!(buf3.lines[0], "");
+    assert_eq!(buf3.lines.as_slice()[0], "");
 
     let mut buf4 = TextBuffer::from_str("Hello World", None);
-    buf4.selection = Selection::cursor(Position::new(0, 5));
+    buf4.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 5));
     buf4.toggle_comment();
-    assert_eq!(buf4.lines[0], "<!-- Hello World -->");
+    assert_eq!(buf4.lines.as_slice()[0], "<!-- Hello World -->");
     buf4.toggle_comment();
-    assert_eq!(buf4.lines[0], "Hello World");
+    assert_eq!(buf4.lines.as_slice()[0], "Hello World");
 
     let mut buf5 = TextBuffer::from_str("    let x = 42;", None);
-    buf5.selection = Selection::cursor(Position::new(0, 8));
+    buf5.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 8));
     buf5.toggle_comment();
-    assert_eq!(buf5.lines[0], "    <!-- let x = 42; -->");
+    assert_eq!(buf5.lines.as_slice()[0], "    <!-- let x = 42; -->");
     buf5.toggle_comment();
-    assert_eq!(buf5.lines[0], "    let x = 42;");
+    assert_eq!(buf5.lines.as_slice()[0], "    let x = 42;");
 }
 
 #[test]
@@ -497,34 +726,34 @@ fn test_saved_baseline_dirty_tracking_with_undo_redo() {
 
     buf.insert_text("X");
     assert!(buf.is_dirty);
-    assert_eq!(buf.lines[0], "XOriginal Content");
+    assert_eq!(buf.lines.as_slice()[0], "XOriginal Content");
 
     buf.undo();
     assert!(!buf.is_dirty);
-    assert_eq!(buf.lines[0], "Original Content");
+    assert_eq!(buf.lines.as_slice()[0], "Original Content");
 
     buf.redo();
     assert!(buf.is_dirty);
-    assert_eq!(buf.lines[0], "XOriginal Content");
+    assert_eq!(buf.lines.as_slice()[0], "XOriginal Content");
 
     buf.mark_as_saved();
     assert!(!buf.is_dirty);
 
     buf.insert_text("Y");
     assert!(buf.is_dirty);
-    assert_eq!(buf.lines[0], "XYOriginal Content");
+    assert_eq!(buf.lines.as_slice()[0], "XYOriginal Content");
 
     buf.undo();
     assert!(!buf.is_dirty);
-    assert_eq!(buf.lines[0], "XOriginal Content");
+    assert_eq!(buf.lines.as_slice()[0], "XOriginal Content");
 
     buf.undo();
     assert!(buf.is_dirty);
-    assert_eq!(buf.lines[0], "Original Content");
+    assert_eq!(buf.lines.as_slice()[0], "Original Content");
 
     buf.redo();
     assert!(!buf.is_dirty);
-    assert_eq!(buf.lines[0], "XOriginal Content");
+    assert_eq!(buf.lines.as_slice()[0], "XOriginal Content");
 }
 
 #[test]
@@ -532,36 +761,39 @@ fn test_manual_delete_back_to_saved_state() {
     let mut buf = TextBuffer::from_str("Hello World", None);
     assert!(!buf.is_dirty);
 
-    buf.selection = Selection::cursor(Position::new(0, 11));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 11));
     buf.insert_text("!");
-    assert_eq!(buf.lines[0], "Hello World!");
+    assert_eq!(buf.lines.as_slice()[0], "Hello World!");
     assert!(buf.is_dirty);
 
     buf.backspace_mode(false);
-    assert_eq!(buf.lines[0], "Hello World");
+    assert_eq!(buf.lines.as_slice()[0], "Hello World");
     assert!(!buf.is_dirty);
 
-    buf.selection = Selection::cursor(Position::new(0, 5));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 5));
     buf.insert_text(" Beautiful");
-    assert_eq!(buf.lines[0], "Hello Beautiful World");
+    assert_eq!(buf.lines.as_slice()[0], "Hello Beautiful World");
     assert!(buf.is_dirty);
 
     buf.selection = Selection {
-        anchor: Position::new(0, 5),
-        head: Position::new(0, 15),
+        anchor: Position::new(crate::buffer::SourceLine::new(0), 5),
+        head: Position::new(crate::buffer::SourceLine::new(0), 15),
     };
     buf.insert_text("");
-    assert_eq!(buf.lines[0], "Hello World");
+    assert_eq!(buf.lines.as_slice()[0], "Hello World");
     assert!(!buf.is_dirty);
 }
 
 #[test]
 fn test_insert_text_crlf_normalization() {
     let mut buf = TextBuffer::from_str("line 1", None);
-    buf.selection = Selection::cursor(Position::new(0, 6));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 6));
     buf.insert_text("\r\nline 2\r\nline 3");
     assert_eq!(buf.lines, vec!["line 1", "line 2", "line 3"]);
-    assert_eq!(buf.selection.head, Position::new(2, 6));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 6)
+    );
 
     let mut buf2 = TextBuffer::from_str("", None);
     buf2.insert_text("first\rsecond");
@@ -571,41 +803,56 @@ fn test_insert_text_crlf_normalization() {
 #[test]
 fn test_outdent_partial_spaces_cursor() {
     let mut buf = TextBuffer::from_str("  indented text", None);
-    buf.selection = Selection::cursor(Position::new(0, 10));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 10));
     buf.outdent_lines_with_tab_size(4);
-    assert_eq!(buf.lines[0], "indented text");
-    assert_eq!(buf.selection.head, Position::new(0, 8));
+    assert_eq!(buf.lines.as_slice()[0], "indented text");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 8)
+    );
 }
 
 #[test]
 fn test_semantic_indent_nests_bullet_under_parent() {
     let mut buf = TextBuffer::from_str("- a\n- b", None);
-    buf.selection = Selection::cursor(Position::new(1, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
 
     // tab_size 4 indents by 4 spaces
     buf.indent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["- a", "    - b"]);
-    assert_eq!(buf.selection.head, Position::new(1, 4));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 4)
+    );
 
     buf.outdent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["- a", "- b"]);
-    assert_eq!(buf.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 
     // tab_size 2 indents by 2 spaces
     buf.indent_lines_with_tab_size(2);
     assert_eq!(buf.lines, vec!["- a", "  - b"]);
-    assert_eq!(buf.selection.head, Position::new(1, 2));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 2)
+    );
 
     buf.outdent_lines_with_tab_size(2);
     assert_eq!(buf.lines, vec!["- a", "- b"]);
-    assert_eq!(buf.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 }
 
 #[test]
 fn test_semantic_indent_ordered_uses_marker_width() {
     // tab_size 2 must still produce valid nesting for `1. ` parents (needs at least 3).
     let mut buf = TextBuffer::from_str("1. a\n2. b", None);
-    buf.selection = Selection::cursor(Position::new(1, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
 
     buf.indent_lines_with_tab_size(2);
     assert_eq!(buf.lines, vec!["1. a", "   2. b"]);
@@ -624,7 +871,7 @@ fn test_semantic_indent_ordered_uses_marker_width() {
 #[test]
 fn test_semantic_indent_task_list_and_roundtrip() {
     let mut buf = TextBuffer::from_str("- [ ] a\n- [ ] b", None);
-    buf.selection = Selection::cursor(Position::new(1, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
 
     buf.indent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["- [ ] a", "    - [ ] b"]);
@@ -642,7 +889,7 @@ fn test_semantic_indent_task_list_and_roundtrip() {
 #[test]
 fn test_semantic_indent_inside_blockquote() {
     let mut buf = TextBuffer::from_str("> - a\n> - b", None);
-    buf.selection = Selection::cursor(Position::new(1, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
 
     buf.indent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["> - a", ">     - b"]);
@@ -655,12 +902,21 @@ fn test_semantic_indent_inside_blockquote() {
 fn test_semantic_indent_multi_line_uniform_shift() {
     // Siblings indent together by tab_size (4).
     let mut buf = TextBuffer::from_str("- a\n- b\n- c", None);
-    buf.set_selection(Selection::new(Position::new(0, 0), Position::new(2, 3)));
+    buf.set_selection(Selection::new(
+        Position::new(crate::buffer::SourceLine::new(0), 0),
+        Position::new(crate::buffer::SourceLine::new(2), 3),
+    ));
 
     buf.indent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["    - a", "    - b", "    - c"]);
-    assert_eq!(buf.selection.anchor, Position::new(0, 4));
-    assert_eq!(buf.selection.head, Position::new(2, 7));
+    assert_eq!(
+        buf.selection.anchor,
+        Position::new(crate::buffer::SourceLine::new(0), 4)
+    );
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 7)
+    );
 
     buf.outdent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["- a", "- b", "- c"]);
@@ -669,7 +925,7 @@ fn test_semantic_indent_multi_line_uniform_shift() {
 #[test]
 fn test_semantic_indent_generic_fallback_and_undo() {
     let mut buf = TextBuffer::from_str("plain\n- b", None);
-    buf.selection = Selection::cursor(Position::new(0, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
 
     buf.indent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["    plain", "- b"]);
@@ -681,17 +937,23 @@ fn test_semantic_indent_generic_fallback_and_undo() {
 #[test]
 fn test_semantic_indent_mid_line_cursor_inserts_spaces() {
     let mut buf = TextBuffer::from_str("ab", None);
-    buf.selection = Selection::cursor(Position::new(0, 1));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 1));
 
     buf.indent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["a    b"]);
-    assert_eq!(buf.selection.head, Position::new(0, 5));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 5)
+    );
 }
 
 #[test]
 fn test_indent_multi_line_with_empty_lines() {
     let mut buf = TextBuffer::from_str("- a\n\n- b", None);
-    buf.set_selection(Selection::new(Position::new(0, 0), Position::new(2, 3)));
+    buf.set_selection(Selection::new(
+        Position::new(crate::buffer::SourceLine::new(0), 0),
+        Position::new(crate::buffer::SourceLine::new(2), 3),
+    ));
     buf.indent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["    - a", "", "    - b"]);
 
@@ -703,14 +965,20 @@ fn test_indent_multi_line_with_empty_lines() {
 fn test_indent_cursor_before_insert_col_in_blockquote() {
     let mut buf = TextBuffer::from_str("> - a", None);
     // Cursor at col 0 (before '> ')
-    buf.selection = Selection::cursor(Position::new(0, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
     buf.indent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec![">     - a"]);
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
     buf.outdent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["> - a"]);
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 }
 
 #[test]
@@ -718,16 +986,22 @@ fn test_outdent_unicode_fullwidth_space_does_not_swallow_cjk() {
     // Full-width space '\u{3000}' is 3 UTF-8 bytes, 1 char.
     // Outdent must only strip ASCII indent characters (' ' or '\t') and never swallow CJK text.
     let mut buf = TextBuffer::from_str("\u{3000}中文测试", None);
-    buf.selection = Selection::cursor(Position::new(0, 3));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 3));
     buf.outdent_lines_with_tab_size(4);
     assert_eq!(buf.lines, vec!["\u{3000}中文测试"]);
-    assert_eq!(buf.selection.head, Position::new(0, 3));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 3)
+    );
 
     let mut buf2 = TextBuffer::from_str("  \u{3000}中文测试", None);
-    buf2.selection = Selection::cursor(Position::new(0, 5));
+    buf2.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 5));
     buf2.outdent_lines_with_tab_size(4);
     assert_eq!(buf2.lines, vec!["\u{3000}中文测试"]);
-    assert_eq!(buf2.selection.head, Position::new(0, 3));
+    assert_eq!(
+        buf2.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 3)
+    );
 }
 
 #[test]
@@ -735,35 +1009,35 @@ fn test_table_keyboard_navigation() {
     let initial_table = "| Col 1 | Col 2 |\n| :--- | :---: |\n| A | B |";
     let mut buf = TextBuffer::from_str(initial_table, None);
 
-    buf.selection = Selection::cursor(Position::new(0, 2));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
 
     assert!(buf.table_tab_forward());
-    assert_eq!(buf.selection.head.line, 0);
+    assert_eq!(buf.selection.head.line, SourceLine::new(0));
     assert_eq!(buf.selection.head.col, 15);
 
     assert!(buf.table_tab_forward());
-    assert_eq!(buf.selection.head.line, 2);
+    assert_eq!(buf.selection.head.line, SourceLine::new(2));
     assert_eq!(buf.selection.head.col, 3);
 
     assert!(buf.table_tab_forward());
-    assert_eq!(buf.selection.head.line, 2);
+    assert_eq!(buf.selection.head.line, SourceLine::new(2));
     assert_eq!(buf.selection.head.col, 7);
 
     assert!(buf.table_tab_forward());
     assert_eq!(buf.lines.len(), 4);
-    assert_eq!(buf.lines[3], "|  |  |");
-    assert_eq!(buf.selection.head.line, 3);
+    assert_eq!(buf.lines.as_slice()[3], "|  |  |");
+    assert_eq!(buf.selection.head.line, SourceLine::new(3));
 
     assert!(buf.table_tab_backward());
-    assert_eq!(buf.selection.head.line, 2);
+    assert_eq!(buf.selection.head.line, SourceLine::new(2));
     assert_eq!(buf.selection.head.col, 7);
 
     assert!(buf.table_enter_next_row());
-    assert_eq!(buf.selection.head.line, 3);
+    assert_eq!(buf.selection.head.line, SourceLine::new(3));
 
     assert!(buf.table_enter_next_row());
     assert_eq!(buf.lines.len(), 5);
-    assert_eq!(buf.selection.head.line, 4);
+    assert_eq!(buf.selection.head.line, SourceLine::new(4));
 }
 
 #[test]
@@ -771,15 +1045,21 @@ fn test_table_backspace_at_cell_start() {
     let initial_table = "|  | World |\n| --- | --- |\n| A | B |";
     let mut buf = TextBuffer::from_str(initial_table, None);
 
-    buf.selection = Selection::cursor(Position::new(0, 2));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
     assert!(buf.table_backspace());
-    assert_eq!(buf.lines[0], "|  | World |");
-    assert_eq!(buf.selection.head, Position::new(0, 2));
+    assert_eq!(buf.lines.as_slice()[0], "|  | World |");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 2)
+    );
 
-    buf.selection = Selection::cursor(Position::new(0, 6));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 6));
     assert!(buf.table_backspace());
-    assert_eq!(buf.lines[0], "|  | orld |");
-    assert_eq!(buf.selection.head, Position::new(0, 5));
+    assert_eq!(buf.lines.as_slice()[0], "|  | orld |");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 5)
+    );
 }
 
 #[test]
@@ -787,18 +1067,27 @@ fn test_table_arrow_key_cell_navigation() {
     let initial_table = "| Col 1 | Col 2 |\n| --- | --- |\n| A | B |";
     let mut buf = TextBuffer::from_str(initial_table, None);
 
-    buf.selection = Selection::cursor(Position::new(0, 2));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
 
     for _ in 0..5 {
         buf.move_right_mode(false, false);
     }
-    assert_eq!(buf.selection.head, Position::new(0, 7));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 7)
+    );
 
     buf.move_right_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 10));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 10)
+    );
 
     buf.move_left_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 7));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 7)
+    );
 }
 
 #[test]
@@ -806,27 +1095,42 @@ fn test_cjk_table_navigation_and_editing() {
     let initial_table = "| 特性 | 说明 |\n| --- | --- |\n| 高性能 | GPUI |";
     let mut buf = TextBuffer::from_str(initial_table, None);
 
-    let cells = crate::markdown::table::parse_table_row_cells(&buf.lines[0]);
+    let cells = crate::markdown::table::parse_table_row_cells(&buf.lines.as_slice()[0]);
     assert_eq!(cells[0].col_range, (2, 4));
     assert_eq!(cells[1].col_range, (7, 9));
 
-    buf.selection = Selection::cursor(Position::new(0, 2));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
 
     buf.move_right_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 3));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 3)
+    );
 
     buf.move_right_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 4));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 4)
+    );
 
     buf.move_right_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 7));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 7)
+    );
 
     buf.move_left_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(0, 4));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 4)
+    );
 
     buf.insert_text("列表");
-    assert_eq!(buf.lines[0], "| 特性列表 | 说明 |");
-    assert_eq!(buf.selection.head, Position::new(0, 6));
+    assert_eq!(buf.lines.as_slice()[0], "| 特性列表 | 说明 |");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 6)
+    );
 }
 
 #[test]
@@ -836,12 +1140,18 @@ fn test_block_elements_separated_by_empty_lines() {
     buf.insert_text("# The title");
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["# The title", "", "", ""]);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 
     buf.insert_text("something");
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["# The title", "", "something", "", "", ""]);
-    assert_eq!(buf.selection.head, Position::new(4, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(4), 0)
+    );
 
     buf.insert_text("```rust");
     buf.insert_newline();
@@ -859,7 +1169,10 @@ fn test_block_elements_separated_by_empty_lines() {
             ""
         ]
     );
-    assert_eq!(buf.selection.head, Position::new(5, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(5), 0)
+    );
 
     buf.insert_text("fn main() {");
     buf.insert_newline();
@@ -882,7 +1195,10 @@ fn test_block_elements_separated_by_empty_lines() {
             ""
         ]
     );
-    assert_eq!(buf.selection.head, Position::new(7, 1));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(7), 1)
+    );
 
     buf.insert_line_below_block();
     assert_eq!(
@@ -902,24 +1218,36 @@ fn test_block_elements_separated_by_empty_lines() {
             ""
         ]
     );
-    assert_eq!(buf.selection.head, Position::new(10, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(10), 0)
+    );
 
     buf.insert_text("1. i1");
     buf.insert_newline();
-    assert_eq!(buf.lines[11], "2. ");
-    assert_eq!(buf.selection.head, Position::new(11, 3));
+    assert_eq!(buf.lines.as_slice()[11], "2. ");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(11), 3)
+    );
     buf.insert_text("i2");
     buf.insert_newline();
-    assert_eq!(buf.lines[12], "3. ");
-    assert_eq!(buf.selection.head, Position::new(12, 3));
+    assert_eq!(buf.lines.as_slice()[12], "3. ");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(12), 3)
+    );
     buf.insert_text("i3");
     buf.insert_newline();
-    assert_eq!(buf.lines[13], "4. ");
+    assert_eq!(buf.lines.as_slice()[13], "4. ");
 
     buf.insert_newline();
-    assert_eq!(buf.lines[13], "");
-    assert_eq!(buf.lines[14], "");
-    assert_eq!(buf.selection.head, Position::new(14, 0));
+    assert_eq!(buf.lines.as_slice()[13], "");
+    assert_eq!(buf.lines.as_slice()[14], "");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(14), 0)
+    );
 
     buf.insert_text("w");
     buf.insert_newline();
@@ -941,21 +1269,33 @@ fn test_list_item_continuation_and_exit() {
     let mut buf = TextBuffer::new();
     buf.insert_text("- item1");
     assert_eq!(buf.lines, vec!["- item1", ""]);
-    assert_eq!(buf.selection.head, Position::new(0, 7));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 7)
+    );
 
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["- item1", "- ", ""]);
-    assert_eq!(buf.selection.head, Position::new(1, 2));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 2)
+    );
 
     buf.insert_text("item2");
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["- item1", "- item2", "- ", ""]);
-    assert_eq!(buf.selection.head, Position::new(2, 2));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 2)
+    );
 
     let mut buf_backspace = buf.clone();
     buf_backspace.backspace_mode(false);
     assert_eq!(buf_backspace.lines, vec!["- item1", "- item2", "", "", ""]);
-    assert_eq!(buf_backspace.selection.head, Position::new(3, 0));
+    assert_eq!(
+        buf_backspace.selection.head,
+        Position::new(crate::buffer::SourceLine::new(3), 0)
+    );
     buf_backspace.insert_text("paragraph via backspace");
     assert_eq!(
         buf_backspace.to_string_content(),
@@ -965,7 +1305,10 @@ fn test_list_item_continuation_and_exit() {
     let mut buf_enter = buf.clone();
     buf_enter.insert_newline();
     assert_eq!(buf_enter.lines, vec!["- item1", "- item2", "", "", ""]);
-    assert_eq!(buf_enter.selection.head, Position::new(3, 0));
+    assert_eq!(
+        buf_enter.selection.head,
+        Position::new(crate::buffer::SourceLine::new(3), 0)
+    );
     buf_enter.insert_text("paragraph via enter");
     assert_eq!(
         buf_enter.to_string_content(),
@@ -981,49 +1324,76 @@ fn test_enter_on_empty_separator_line_and_document_end() {
     buf.insert_text("1. a");
     assert_eq!(buf.lines, vec!["a", "", "1. a", ""]);
 
-    buf.selection = Selection::cursor(Position::new(1, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["a", "", "", "1. a", ""]);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 
-    buf.selection = Selection::cursor(Position::new(3, 4));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(3), 4));
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["a", "", "", "1. a", "2. ", ""]);
-    assert_eq!(buf.selection.head, Position::new(4, 3));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(4), 3)
+    );
 
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["a", "", "", "1. a", "", "", ""]);
-    assert_eq!(buf.selection.head, Position::new(5, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(5), 0)
+    );
 
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["a", "", "", "1. a", "", "", "", "", ""]);
-    assert_eq!(buf.selection.head, Position::new(7, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(7), 0)
+    );
 }
 
 #[test]
 fn test_empty_document_enter() {
     let mut buf = TextBuffer::new();
     assert_eq!(buf.lines, vec!["", ""]);
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["", "", "", ""]);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 
     buf.insert_newline();
     assert_eq!(buf.lines, vec!["", "", "", "", "", ""]);
-    assert_eq!(buf.selection.head, Position::new(4, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(4), 0)
+    );
 
     let mut buf_nav = TextBuffer::new();
     assert_eq!(buf_nav.lines, vec!["", ""]);
     buf_nav.move_down_mode(false, false);
-    assert_eq!(buf_nav.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf_nav.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
     let mut buf_src = TextBuffer::new();
     assert_eq!(buf_src.lines, vec!["", ""]);
     buf_src.insert_newline_mode(true);
     assert_eq!(buf_src.lines, vec!["", "", ""]);
-    assert_eq!(buf_src.selection.head, Position::new(1, 0));
+    assert_eq!(
+        buf_src.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 0)
+    );
 }
 
 #[test]
@@ -1039,33 +1409,48 @@ fn test_select_all_delete_preserves_sentinel_lines() {
 
     buf.backspace_mode(false);
     assert_eq!(buf.lines, vec!["", ""]);
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
     buf.insert_text("# Heading 1");
     buf.select_all();
     buf.delete_forward_mode(false);
     assert_eq!(buf.lines, vec!["", ""]);
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
     buf.insert_text("1. Item 1\n2. Item 2");
     buf.select_all();
     buf.delete_lines();
     assert_eq!(buf.lines, vec!["", ""]);
-    assert_eq!(buf.selection.head, Position::new(0, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 }
 
 #[test]
 fn test_list_middle_enter_splits_list() {
     let mut buf = TextBuffer::from_str("1. a\n2. b\n3. c", None);
-    buf.selection = Selection::cursor(Position::new(0, 4));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 4));
 
     buf.insert_newline_mode(false);
     assert_eq!(buf.lines, vec!["1. a", "2. ", "2. b", "3. c"]);
-    assert_eq!(buf.selection.head, Position::new(1, 3));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 3)
+    );
 
     buf.insert_newline_mode(false);
     assert_eq!(buf.lines, vec!["1. a", "", "", "", "2. b", "3. c"]);
-    assert_eq!(buf.selection.head, Position::new(2, 0));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 0)
+    );
 
     buf.insert_text("x");
     assert_eq!(buf.lines, vec!["1. a", "", "x", "", "2. b", "3. c"]);
@@ -1074,9 +1459,9 @@ fn test_list_middle_enter_splits_list() {
 #[test]
 fn test_typing_on_list_item_after_prefix() {
     let mut buf = TextBuffer::from_str("1. a\n2. a\n3. a\n4. b\n5. ", None);
-    buf.selection = Selection::cursor(Position::new(4, 3));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(4), 3));
     buf.insert_text("c");
-    assert_eq!(buf.lines[4], "5. c");
+    assert_eq!(buf.lines.as_slice()[4], "5. c");
 }
 
 #[test]
@@ -1087,25 +1472,25 @@ fn test_undo_stack_max_bound_and_delta_efficiency() {
         .join("\n");
     let mut buf = TextBuffer::from_str(&initial, None);
 
-    buf.selection = Selection::cursor(Position::new(50, 6));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(50), 6));
     buf.insert_text(" MODIFIED");
-    assert_eq!(buf.lines[50], "Line 5 MODIFIED0");
+    assert_eq!(buf.lines.as_slice()[50], "Line 5 MODIFIED0");
 
     let last_step = buf.undo_stack.back().expect("expected undo step");
-    assert_eq!(last_step.start_line, 50);
+    assert_eq!(last_step.start_line, crate::buffer::SourceLine::new(50));
     assert_eq!(last_step.old_lines, vec!["Line 50"]);
     assert_eq!(last_step.new_lines, vec!["Line 5 MODIFIED0"]);
 
     buf.undo();
-    assert_eq!(buf.lines[50], "Line 50");
+    assert_eq!(buf.lines.as_slice()[50], "Line 50");
     assert!(!buf.is_dirty);
 
     buf.redo();
-    assert_eq!(buf.lines[50], "Line 5 MODIFIED0");
+    assert_eq!(buf.lines.as_slice()[50], "Line 5 MODIFIED0");
     assert!(buf.is_dirty);
 
     for i in 0..1050 {
-        buf.selection = Selection::cursor(Position::new(0, 0));
+        buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
         buf.insert_text(&format!("{}", i % 10));
     }
     assert!(buf.undo_stack.len() <= MAX_UNDO_STEPS);
@@ -1118,10 +1503,11 @@ fn test_utf16_offset_mapping_roundtrip() {
 
     for (line_idx, line) in buf.lines.iter().enumerate() {
         for col in 0..=line.chars().count() {
-            let pos = Position::new(line_idx, col);
-            let offset = buf.pos_to_utf16_offset(pos);
+            let pos = Position::new(SourceLine::new(line_idx), col);
+            let source_pos = crate::buffer::SourcePosition::from_position(pos);
+            let offset = buf.pos_to_utf16_offset(source_pos);
             let recovered_pos = buf.utf16_offset_to_pos(offset);
-            assert_eq!(pos, recovered_pos);
+            assert_eq!(source_pos, recovered_pos);
         }
     }
 }
@@ -1161,17 +1547,23 @@ fn test_incremental_char_count() {
 #[test]
 fn test_set_cursor_clears_column_goal() {
     let mut buf = TextBuffer::from_str("Hello World Long Line\nShort\nAnother Long Line", None);
-    buf.selection = Selection::cursor(Position::new(0, 15));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 15));
 
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(1, 5));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(1), 5)
+    );
     assert_eq!(buf.column_goal, Some(15));
 
-    buf.set_cursor(Position::new(1, 2));
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(1), 2));
     assert_eq!(buf.column_goal, None);
 
     buf.move_down_mode(false, false);
-    assert_eq!(buf.selection.head, Position::new(2, 2));
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(2), 2)
+    );
     assert_eq!(buf.column_goal, Some(2));
 }
 
@@ -1195,66 +1587,84 @@ fn test_undo_coalescing() {
     buf.insert_text("c");
 
     assert_eq!(buf.undo_stack.len(), 1);
-    assert_eq!(buf.lines[0], "abc");
+    assert_eq!(buf.lines.as_slice()[0], "abc");
 
     buf.undo();
-    assert_eq!(buf.lines[0], "");
+    assert_eq!(buf.lines.as_slice()[0], "");
     assert_eq!(buf.undo_stack.len(), 0);
 
     buf.redo();
-    assert_eq!(buf.lines[0], "abc");
+    assert_eq!(buf.lines.as_slice()[0], "abc");
 
     buf.insert_text(" ");
     buf.insert_text("d");
     assert_eq!(buf.undo_stack.len(), 2);
-    assert_eq!(buf.lines[0], "abc d");
+    assert_eq!(buf.lines.as_slice()[0], "abc d");
 
     buf.undo();
-    assert_eq!(buf.lines[0], "abc");
+    assert_eq!(buf.lines.as_slice()[0], "abc");
     assert_eq!(buf.undo_stack.len(), 1);
 
     buf.undo();
-    assert_eq!(buf.lines[0], "");
+    assert_eq!(buf.lines.as_slice()[0], "");
     assert_eq!(buf.undo_stack.len(), 0);
 }
 
 #[test]
 fn test_backspace_with_cjk_characters() {
     let mut buf = TextBuffer::from_str("  哈哈", None);
-    buf.selection = Selection::cursor(Position::new(0, 4));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 4));
     buf.backspace_mode(false);
-    assert_eq!(buf.lines[0], "  哈");
-    assert_eq!(buf.selection.head, Position::new(0, 3));
+    assert_eq!(buf.lines.as_slice()[0], "  哈");
+    assert_eq!(
+        buf.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 3)
+    );
 
     let mut buf2 = TextBuffer::from_str("    哈", None);
-    buf2.selection = Selection::cursor(Position::new(0, 4));
+    buf2.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 4));
     buf2.backspace_mode(false);
-    assert_eq!(buf2.lines[0], "哈");
-    assert_eq!(buf2.selection.head, Position::new(0, 0));
+    assert_eq!(buf2.lines.as_slice()[0], "哈");
+    assert_eq!(
+        buf2.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
     let mut buf3 = TextBuffer::from_str("    哈", None);
-    buf3.selection = Selection::cursor(Position::new(0, 5));
+    buf3.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 5));
     buf3.backspace_mode(false);
-    assert_eq!(buf3.lines[0], "    ");
-    assert_eq!(buf3.selection.head, Position::new(0, 4));
+    assert_eq!(buf3.lines.as_slice()[0], "    ");
+    assert_eq!(
+        buf3.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 4)
+    );
 
     let mut buf4 = TextBuffer::from_str("# 哈", None);
-    buf4.selection = Selection::cursor(Position::new(0, 1));
+    buf4.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 1));
     buf4.backspace_mode(false);
-    assert_eq!(buf4.lines[0], "哈");
-    assert_eq!(buf4.selection.head, Position::new(0, 0));
+    assert_eq!(buf4.lines.as_slice()[0], "哈");
+    assert_eq!(
+        buf4.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
     let mut buf5 = TextBuffer::from_str("- [ ] 任务", None);
-    buf5.selection = Selection::cursor(Position::new(0, 6));
+    buf5.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 6));
     buf5.backspace_mode(false);
-    assert_eq!(buf5.lines[0], "任务");
-    assert_eq!(buf5.selection.head, Position::new(0, 0));
+    assert_eq!(buf5.lines.as_slice()[0], "任务");
+    assert_eq!(
+        buf5.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
 
     let mut buf6 = TextBuffer::from_str("\u{3000}哈哈", None);
-    buf6.selection = Selection::cursor(Position::new(0, 3));
+    buf6.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 3));
     buf6.backspace_mode(false);
-    assert_eq!(buf6.lines[0], "\u{3000}哈");
-    assert_eq!(buf6.selection.head, Position::new(0, 2));
+    assert_eq!(buf6.lines.as_slice()[0], "\u{3000}哈");
+    assert_eq!(
+        buf6.selection.head,
+        Position::new(crate::buffer::SourceLine::new(0), 2)
+    );
 }
 
 #[test]
@@ -1263,7 +1673,7 @@ fn test_memoized_word_count() {
     assert_eq!(buf.word_count(), 5);
     assert_eq!(buf.word_count(), 5);
 
-    buf.selection = Selection::cursor(Position::new(1, 9));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 9));
     buf.insert_text(" six seven");
     assert_eq!(buf.word_count(), 7);
 
@@ -1281,22 +1691,22 @@ fn test_edit_delta_tracking() {
     let mut buf = TextBuffer::from_str("line 0\nline 1\nline 2", None);
     assert_eq!(buf.last_edit_delta, None);
 
-    buf.record_single_line_edit(1, |line, _| {
+    buf.record_single_line_edit(crate::buffer::SourceLine::new(1), |line, _| {
         line.push_str(" modified");
     });
     assert_eq!(
         buf.last_edit_delta,
         Some(EditDelta {
-            start_line: 1,
+            start_line: crate::buffer::SourceLine::new(1),
             old_line_count: 1,
             new_line_count: 1,
         })
     );
 
-    buf.selection = Selection::cursor(Position::new(1, 0));
+    buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
     buf.insert_text("split\nacross\n");
     let delta = buf.last_edit_delta.unwrap();
-    assert_eq!(delta.start_line, 1);
+    assert_eq!(delta.start_line, crate::buffer::SourceLine::new(1));
 
     buf.undo();
     assert!(buf.last_edit_delta.is_some());
@@ -1316,14 +1726,23 @@ fn test_buffer_accessors() {
     );
     assert!(!buf.is_dirty());
     assert_eq!(buf.version(), 0);
-    assert_eq!(buf.cursor_pos(), Position::new(0, 0));
-    assert_eq!(buf.selection(), Selection::cursor(Position::new(0, 0)));
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(0), 0)
+    );
+    assert_eq!(
+        buf.selection(),
+        Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0))
+    );
     assert_eq!(buf.last_edit_delta(), None);
 
     buf.insert_text("foo ");
     assert!(buf.is_dirty());
     assert!(buf.version() > 0);
-    assert_eq!(buf.cursor_pos(), Position::new(0, 4));
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(0), 4)
+    );
     assert!(buf.last_edit_delta().is_some());
 
     buf.set_file_path(Some(std::path::PathBuf::from("renamed.md")));
@@ -1332,18 +1751,27 @@ fn test_buffer_accessors() {
     assert_eq!(buf.file_path(), None);
 
     buf.column_goal = Some(99);
-    buf.set_cursor(Position::new(100, 500));
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(100), 500));
     assert_eq!(buf.column_goal, None);
-    assert_eq!(buf.cursor_pos(), Position::new(0, 15));
+    assert_eq!(
+        buf.cursor_pos(),
+        Position::new(crate::buffer::SourceLine::new(0), 15)
+    );
 
     buf.column_goal = Some(50);
     buf.set_selection(Selection {
-        anchor: Position::new(100, 200),
-        head: Position::new(200, 300),
+        anchor: Position::new(crate::buffer::SourceLine::new(100), 200),
+        head: Position::new(crate::buffer::SourceLine::new(200), 300),
     });
     assert_eq!(buf.column_goal, None);
-    assert_eq!(buf.selection().anchor, Position::new(0, 15));
-    assert_eq!(buf.selection().head, Position::new(0, 15));
+    assert_eq!(
+        buf.selection().anchor,
+        Position::new(crate::buffer::SourceLine::new(0), 15)
+    );
+    assert_eq!(
+        buf.selection().head,
+        Position::new(crate::buffer::SourceLine::new(0), 15)
+    );
 }
 
 #[test]
@@ -1371,7 +1799,7 @@ fn test_dirty_state_after_undo_and_new_edit() {
 #[test]
 fn test_word_count_cache_after_undo_and_edit() {
     let mut buf = TextBuffer::from_str("initial", None);
-    buf.set_cursor(Position::new(0, 7));
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 7));
     let v0 = buf.version();
     assert_eq!(buf.word_count(), 1);
 
@@ -1424,8 +1852,8 @@ fn test_utf16_selection_and_ime_mark_helpers() {
     // "a😀b\ncd" -> 'a'(1), '😀'(2), 'b'(1), '\n'(1), 'c'(1), 'd'(1)
     let mut buf = TextBuffer::from_str("a😀b\ncd", None);
     buf.set_selection(Selection {
-        anchor: Position::new(1, 1), // offset 6 ('c'|'d')
-        head: Position::new(0, 1),   // offset 1 ('a'|'😀')
+        anchor: Position::new(crate::buffer::SourceLine::new(1), 1), // offset 6 ('c'|'d')
+        head: Position::new(crate::buffer::SourceLine::new(0), 1),   // offset 1 ('a'|'😀')
     });
 
     let (range, reversed) = buf.selected_utf16_range();
@@ -1444,8 +1872,8 @@ fn test_utf16_selection_and_ime_mark_helpers() {
     assert_eq!(
         buf.selection(),
         Selection {
-            anchor: Position::new(0, 1),
-            head: Position::new(0, 3),
+            anchor: Position::new(crate::buffer::SourceLine::new(0), 1),
+            head: Position::new(crate::buffer::SourceLine::new(0), 3),
         }
     );
 
@@ -1497,11 +1925,17 @@ fn test_chunks_with_line_ending_streaming() {
 fn test_text_in_range() {
     let buf = TextBuffer::from_str("hello world\nsecond line", None);
     assert_eq!(
-        buf.text_in_range((Position::new(0, 0), Position::new(0, 5))),
+        buf.text_in_range((
+            Position::new(crate::buffer::SourceLine::new(0), 0),
+            Position::new(crate::buffer::SourceLine::new(0), 5)
+        )),
         "hello"
     );
     assert_eq!(
-        buf.text_in_range((Position::new(0, 6), Position::new(1, 6))),
+        buf.text_in_range((
+            Position::new(crate::buffer::SourceLine::new(0), 6),
+            Position::new(crate::buffer::SourceLine::new(1), 6)
+        )),
         "world\nsecond"
     );
 }
@@ -1509,9 +1943,15 @@ fn test_text_in_range() {
 #[test]
 fn test_replace_range_single_line_and_undo() {
     let mut buf = TextBuffer::from_str("hello world", None);
-    let new_pos = buf.replace_range((Position::new(0, 0), Position::new(0, 5)), "goodbye");
+    let new_pos = buf.replace_range(
+        (
+            Position::new(crate::buffer::SourceLine::new(0), 0),
+            Position::new(crate::buffer::SourceLine::new(0), 5),
+        ),
+        "goodbye",
+    );
     assert_eq!(buf.to_string_content(), "goodbye world");
-    assert_eq!(new_pos, Position::new(0, 7));
+    assert_eq!(new_pos, Position::new(crate::buffer::SourceLine::new(0), 7));
 
     buf.undo();
     assert_eq!(buf.to_string_content(), "hello world");
@@ -1521,11 +1961,14 @@ fn test_replace_range_single_line_and_undo() {
 fn test_replace_range_multi_line_and_undo() {
     let mut buf = TextBuffer::from_str("line 1\nline 2\nline 3", None);
     let new_pos = buf.replace_range(
-        (Position::new(0, 4), Position::new(2, 4)),
+        (
+            Position::new(crate::buffer::SourceLine::new(0), 4),
+            Position::new(crate::buffer::SourceLine::new(2), 4),
+        ),
         " A\nline B\nline C",
     );
     assert_eq!(buf.to_string_content(), "line A\nline B\nline C 3");
-    assert_eq!(new_pos, Position::new(2, 6));
+    assert_eq!(new_pos, Position::new(crate::buffer::SourceLine::new(2), 6));
 
     buf.undo();
     assert_eq!(buf.to_string_content(), "line 1\nline 2\nline 3");

@@ -249,19 +249,35 @@ fn test_bold_italic_parsing_and_combinations() {
     let italic_span = spans4.iter().find(|s| s.text == "Italic").unwrap();
     assert!(!italic_span.is_bold && italic_span.is_italic);
     let bi_span = spans4.iter().find(|s| s.text == "Bold Italic").unwrap();
-    let doc0 = EditorProjection::from_lines(&empty_lines);
-    assert_eq!(doc0.blocks().len(), 1);
-    match &doc0.blocks()[0] {
+    assert!(bi_span.is_bold && bi_span.is_italic);
+}
+
+#[test]
+fn test_visual_document_ast_and_position_projection() {
+    use crate::buffer::{Position, ProjectedBlockIndex, ProjectedLine, SourceLine, SourcePosition};
+    let source = |line, col| SourcePosition::new(SourceLine::new(line), col);
+    let visual = |block, line, col| {
+        VisualPosition::new(
+            ProjectedBlockIndex::new(block),
+            ProjectedLine::new(line),
+            col,
+        )
+    };
+
+    let empty_lines = vec!["".to_string(), "".to_string()];
+    let doc0 = VisualDocument::from_lines(&empty_lines);
+    assert_eq!(doc0.blocks.len(), 1);
+    match &doc0.blocks[crate::buffer::ProjectedBlockIndex::new(0)] {
         VisualBlock::Paragraph { source_line } => {
-            assert_eq!(*source_line, crate::buffer::SourceLine::new(0));
+            assert_eq!(*source_line, SourceLine::new(0));
         }
         _ => panic!("Expected Paragraph block"),
     }
 
-    let vpos0 = doc0.source_to_projected(Position::new(0, 0));
-    assert_eq!(vpos0, ProjectedPosition::new(0, 0, 0));
-    let vpos1 = doc0.source_to_projected(Position::new(1, 0));
-    assert_eq!(vpos1, ProjectedPosition::new(0, 0, 0));
+    let vpos0 = doc0.source_to_visual(source(0, 0));
+    assert_eq!(vpos0, visual(0, 0, 0));
+    let vpos1 = doc0.source_to_visual(source(1, 0));
+    assert_eq!(vpos1, visual(0, 0, 0));
 
     let doc_lines = vec![
         "# Heading 1".to_string(),
@@ -280,291 +296,78 @@ fn test_bold_italic_parsing_and_combinations() {
         "".to_string(),
         "1. List item 1".to_string(),
         "2. List item 2".to_string(),
-        assert!(matches!(doc.blocks()[0], VisualBlock::Heading { .. }));
-    assert!(matches!(doc.blocks()[1], VisualBlock::Paragraph { .. }));
-    assert!(matches!(doc.blocks()[2], VisualBlock::CodeBlock { .. }));
-    assert!(matches!(doc.blocks()[3], VisualBlock::Table { .. }));
-    assert!(matches!(doc.blocks()[4], VisualBlock::ListItem { .. }));
-    assert!(matches!(doc.blocks()[5], VisualBlock::ListItem { .. }));
-    assert!(matches!(doc.blocks()[6], VisualBlock::ThematicBreak { .. }));
+        "".to_string(),
+        "---".to_string(),
+    ];
+
+    let doc = VisualDocument::from_lines(&doc_lines);
+    assert_eq!(doc.blocks.len(), 7);
+
+    assert!(matches!(
+        doc.blocks[crate::buffer::ProjectedBlockIndex::new(0)],
+        VisualBlock::Heading { .. }
+    ));
+    assert!(matches!(
+        doc.blocks[crate::buffer::ProjectedBlockIndex::new(1)],
+        VisualBlock::Paragraph { .. }
+    ));
+    assert!(matches!(
+        doc.blocks[crate::buffer::ProjectedBlockIndex::new(2)],
+        VisualBlock::CodeBlock { .. }
+    ));
+    assert!(matches!(
+        doc.blocks[crate::buffer::ProjectedBlockIndex::new(3)],
+        VisualBlock::Table { .. }
+    ));
+    assert!(matches!(
+        doc.blocks[crate::buffer::ProjectedBlockIndex::new(4)],
+        VisualBlock::ListItem { .. }
+    ));
+    assert!(matches!(
+        doc.blocks[crate::buffer::ProjectedBlockIndex::new(5)],
+        VisualBlock::ListItem { .. }
+    ));
+    assert!(matches!(
+        doc.blocks[crate::buffer::ProjectedBlockIndex::new(6)],
+        VisualBlock::ThematicBreak { .. }
+    ));
 
     if let VisualBlock::CodeBlock {
         code_line_count,
         start_line,
         end_line,
-    } = &doc.blocks()[2]
+    } = &doc.blocks[crate::buffer::ProjectedBlockIndex::new(2)]
     {
-        assert_eq!(*code_line_count, 3);
-        assert_eq!(*start_line, crate::buffer::SourceLine::new(4));
-        assert_eq!(*end_line, crate::buffer::SourceLine::new(8));
+        assert_eq!(*code_line_count, crate::buffer::ProjectedLine::new(3));
+        assert_eq!(*start_line, SourceLine::new(4));
+        assert_eq!(*end_line, SourceLine::new(8));
     } else {
         panic!("Block 2 must be CodeBlock");
     }
 
-    let vpos_code = doc.source_to_projected(Position::new(6, 4));
-    assert_eq!(vpos_code, ProjectedPosition::new(2, 2, 4));
-    let spos_code = doc.projected_to_source(vpos_code);
-    assert_eq!(spos_code, Position::new(6, 4));
-
-    let vpos_sep = doc.source_to_projected(Position::new(9, 0));
-    assert_eq!(vpos_sep.block_idx, 2);
-
-    let vpos_tbl_hdr = doc.source_to_projected(Position::new(10, 2));
-    assert_eq!(vpos_tbl_hdr, ProjectedPosition::new(3, 0, 2));
-    assert_eq!(doc.projected_to_source(vpos_tbl_hdr), Position::new(10, 2));
-
-    let vpos_tbl_row = doc.source_to_projected(Position::new(12, 3));
-    assert_eq!(vpos_tbl_row, ProjectedPosition::new(3, 1, 3));
-    assert_eq!(doc.projected_to_source(vpos_tbl_row), Position::new(12, 3));
-}
-
-#[test]
-fn test_caret_map_uses_paired_code_fences_for_navigation_state() {
-    use crate::markdown::CaretMap;
-
-    let lines = vec![
-        "before".to_string(),
-        "```rust".to_string(),
-        "fn main() {}".to_string(),
-        "```".to_string(),
-        "after".to_string(),
-        "```unclosed".to_string(),
-    ];
-    let map = CaretMap::from_lines(&lines);
-
-    assert_eq!(map.fence_state(1), (true, false));
-    assert_eq!(map.fence_state(2), (true, false));
-    assert_eq!(map.fence_state(3), (false, true));
-    assert_eq!(map.fence_state(4), (false, false));
-    assert_eq!(map.fence_state(5), (false, false));
-}
-
-#[test]
-fn caret_map_exposes_syntactic_separator_by_source_line() {
-    use crate::buffer::SourceLine;
-    use crate::markdown::CaretMap;
-
-    let lines = vec![
-        "text".to_string(),
-        String::new(),
-        String::new(),
-        "```".to_string(),
-        String::new(),
-        "```".to_string(),
-        String::new(),
-    ];
-    let map = CaretMap::from_lines(&lines);
-
-    assert!(map.is_syntactic_separator(SourceLine::new(1)));
-    assert!(!map.is_syntactic_separator(SourceLine::new(2)));
-    assert!(!map.is_syntactic_separator(SourceLine::new(4)));
-    assert!(map.is_syntactic_separator(SourceLine::new(6)));
-    assert!(!map.is_syntactic_separator(SourceLine::new(7)));
-}
-
-#[test]
-fn caret_map_resolves_only_complete_code_fence_ranges() {
-    use crate::buffer::SourceLine;
-    use crate::markdown::CaretMap;
-
-    let lines = vec![
-        "before".to_string(),
-        "```rust".to_string(),
-        "fn main() {}".to_string(),
-        "```".to_string(),
-        "after".to_string(),
-        "```unclosed".to_string(),
-    ];
-    let map = CaretMap::from_lines(&lines);
-    let expected = Some((SourceLine::new(1), SourceLine::new(3)));
-
-    assert_eq!(map.fence_range(SourceLine::new(1)), expected);
-    assert_eq!(map.fence_range(SourceLine::new(2)), expected);
-    assert_eq!(map.fence_range(SourceLine::new(3)), expected);
-    assert_eq!(map.fence_range(SourceLine::new(5)), None);
+    let vpos_code = doc.source_to_visual(source(6, 4));
+    assert_eq!(vpos_code, visual(2, 2, 4));
+    let spos_code = doc.visual_to_source(vpos_code);
     assert_eq!(
-        crate::buffer::movement::code_fence_range(&lines, 2),
-        Some((1, 3))
-    );
-    assert!(crate::buffer::movement::is_in_code_fence_lines(&lines, 2));
-    assert!(crate::buffer::movement::is_closing_code_fence_lines(
-        &lines, 3
-    ));
-}
-
-#[test]
-fn caret_map_preserves_structure_when_fences_and_math_are_interleaved() {
-    use crate::buffer::SourceLine;
-    use crate::markdown::CaretMap;
-
-    let lines = vec![
-        "before".to_string(),
-        "```rust".to_string(),
-        "$$".to_string(),
-        String::new(),
-        "$$".to_string(),
-        "```".to_string(),
-        String::new(),
-        String::new(),
-        "$$".to_string(),
-        "x".to_string(),
-        "$$".to_string(),
-        "```unclosed".to_string(),
-        String::new(),
-    ];
-    let map = CaretMap::from_lines(&lines);
-
-    assert_eq!(
-        map.syntactic_separators(),
-        &[
-            false, false, false, false, false, false, true, false, false, false, false, false,
-            false,
-        ]
-    );
-    assert_eq!(
-        map.math_pair(SourceLine::new(9)),
-        Some((SourceLine::new(8), SourceLine::new(10)))
-    );
-    assert_eq!(map.math_pair(SourceLine::new(2)), None);
-    assert!(map.is_caret_line(SourceLine::new(9)));
-    assert!(!map.is_caret_line(SourceLine::new(10)));
-    assert_eq!(map.fence_state(12), (false, false));
-}
-
-#[test]
-fn editor_projection_owns_live_math_caret_and_navigation_mapping() {
-    use crate::buffer::{Position, SourceLine, SourcePosition};
-    use crate::markdown::{CaretTarget, EditorProjection, ProjectionMode};
-
-    let lines = vec![
-        "Before".to_string(),
-        "$$".to_string(),
-        "x +".to_string(),
-        "y".to_string(),
-        "$$".to_string(),
-        "After".to_string(),
-    ];
-    let parsed = MarkdownScanner::scan_document(&lines);
-    let preview = EditorProjection::from_parsed_with_mode(
-        &lines,
-        &parsed,
-        ProjectionMode::live_preview(None),
+        spos_code.to_position(),
+        Position::new(crate::buffer::SourceLine::new(6), 4)
     );
 
-    assert!(!preview.is_caret_line(SourceLine::new(1)));
-    assert!(preview.is_caret_line(SourceLine::new(2)));
-    assert!(preview.is_caret_line(SourceLine::new(3)));
-    assert!(!preview.is_caret_line(SourceLine::new(4)));
+    let vpos_sep = doc.source_to_visual(source(9, 0));
+    assert_eq!(vpos_sep.block_idx.index(), 2);
+
+    let vpos_tbl_hdr = doc.source_to_visual(source(10, 2));
+    assert_eq!(vpos_tbl_hdr, visual(3, 0, 2));
     assert_eq!(
-        preview.adjacent_caret_line(Position::new(0, 6), true, |_| true),
-        Some(SourceLine::new(2))
-    );
-    assert_eq!(
-        preview.adjacent_caret_line(Position::new(2, 0), true, |_| true),
-        Some(SourceLine::new(5))
-    );
-    assert_eq!(
-        preview.hit_test_target(SourceLine::new(1)),
-        Some(CaretTarget::Position(SourcePosition::new(SourceLine::new(2), 0)))
-    );
-    assert_eq!(
-        preview.normalize_position(Position::new(4, 0)),
-        Position::new(3, 1)
-    );
-    assert_eq!(
-        preview
-            .normalize_position(Position::new(4, 0))
-            .source_line(),
-        SourceLine::new(3)
+        doc.visual_to_source(vpos_tbl_hdr).to_position(),
+        Position::new(crate::buffer::SourceLine::new(10), 2)
     );
 
-    let active = EditorProjection::from_parsed_with_mode(
-        &lines,
-        &parsed,
-        ProjectionMode::live_preview(Some((SourceLine::new(1), SourceLine::new(4)))),
-    );
+    let vpos_tbl_row = doc.source_to_visual(source(12, 3));
+    assert_eq!(vpos_tbl_row, visual(3, 1, 3));
     assert_eq!(
-        active.adjacent_caret_line(Position::new(2, 0), true, |_| true),
-        Some(SourceLine::new(3))
-    );
-    assert_eq!(
-        active.adjacent_caret_line(Position::new(3, 1), true, |_| true),
-        Some(SourceLine::new(5))
-    );
-
-    let source = EditorProjection::from_parsed_with_mode(&lines, &parsed, ProjectionMode::Source);
-    assert!(source.is_caret_line(SourceLine::new(1)));
-    assert_eq!(
-        source.hit_test_target(SourceLine::new(4)),
-        Some(CaretTarget::Position(SourcePosition::new(SourceLine::new(4), 0)))
-    );
-
-    let empty_lines = vec!["$$".to_string(), "$$".to_string()];
-    let empty_parsed = MarkdownScanner::scan_document(&empty_lines);
-    let empty_preview = EditorProjection::from_parsed_with_mode(
-        &empty_lines,
-        &empty_parsed,
-        ProjectionMode::live_preview(None),
-    );
-    assert_eq!(
-        empty_preview.hit_test_target(SourceLine::new(0)),
-        Some(CaretTarget::CreateMathContent {
-            start_line: SourceLine::new(0),
-        })
-    );
-
-    let surrounded_empty_lines = vec![
-        "Before".to_string(),
-        "$$".to_string(),
-        "$$".to_string(),
-        "After".to_string(),
-    ];
-    let surrounded_empty_parsed = MarkdownScanner::scan_document(&surrounded_empty_lines);
-    let surrounded_empty_preview = EditorProjection::from_parsed_with_mode(
-        &surrounded_empty_lines,
-        &surrounded_empty_parsed,
-        ProjectionMode::live_preview(None),
-    );
-    assert_eq!(
-        surrounded_empty_preview.hit_test_target(SourceLine::new(1)),
-        Some(CaretTarget::CreateMathContent {
-            start_line: SourceLine::new(1),
-        })
-    );
-    assert_eq!(
-        surrounded_empty_preview.hit_test_target(SourceLine::new(2)),
-        Some(CaretTarget::CreateMathContent {
-            start_line: SourceLine::new(1),
-        })
-    );
-    assert_eq!(
-        surrounded_empty_preview.hit_test_target(SourceLine::new(0)),
-        Some(CaretTarget::Position(SourcePosition::new(SourceLine::new(0), 0)))
-    );
-}
-
-#[test]
-fn editor_projection_uses_source_line_types_for_line_mapping() {
-    use crate::buffer::SourceLine;
-    use crate::markdown::{CaretTarget, EditorProjection, ProjectionMode};
-
-    let lines = vec!["$$".to_string(), "$$".to_string()];
-    let parsed = MarkdownScanner::scan_document(&lines);
-    let projection = EditorProjection::from_parsed_with_mode(
-        &lines,
-        &parsed,
-        ProjectionMode::live_preview(None),
-    );
-
-    assert_eq!(
-        projection.math_range(SourceLine::new(0)),
-        Some((SourceLine::new(0), SourceLine::new(1)))
-    );
-    assert_eq!(
-        projection.hit_test_target(SourceLine::new(1)),
-        Some(CaretTarget::CreateMathContent {
-            start_line: SourceLine::new(0),
-        })
+        doc.visual_to_source(vpos_tbl_row).to_position(),
+        Position::new(crate::buffer::SourceLine::new(12), 3)
     );
 }
 
@@ -637,12 +440,42 @@ fn display_math_block_spans_keep_the_full_tex_source() {
         .find_map(|span| span.math.as_ref())
         .unwrap();
 
-        
+    assert_eq!(math.tex, r"\frac{a}{b} = c");
+    assert!(math.is_display);
+}
+
+#[test]
+fn math_block_range_ignores_delimiters_inside_code_fences() {
+    let lines = vec![
+        "```md".to_string(),
+        "$$".to_string(),
         "```".to_string(),
         "$$".to_string(),
         "x".to_string(),
         "$$".to_string(),
-        
+    ];
+
+    assert_eq!(
+        math_block_range(&lines, crate::buffer::SourceLine::new(3)),
+        Some((
+            crate::buffer::SourceLine::new(3),
+            crate::buffer::SourceLine::new(5)
+        ))
+    );
+    assert_eq!(
+        math_block_range(&lines, crate::buffer::SourceLine::new(4)),
+        Some((
+            crate::buffer::SourceLine::new(3),
+            crate::buffer::SourceLine::new(5)
+        ))
+    );
+    assert_eq!(
+        math_block_range(&lines, crate::buffer::SourceLine::new(1)),
+        None
+    );
+}
+
+#[test]
 fn unclosed_math_delimiter_does_not_change_incremental_scan_state() {
     let lines = vec![
         "Before".to_string(),
