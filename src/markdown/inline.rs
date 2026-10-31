@@ -31,6 +31,7 @@ pub struct InlineSpan {
     pub group_range: (usize, usize),
     pub span_range: (usize, usize),
     pub(crate) math: Option<MathSpan>,
+    pub(crate) mermaid: Option<MermaidSpan>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +40,11 @@ pub(crate) struct MathSpan {
     pub(crate) source: String,
     pub(crate) rendered: crate::math::MathSvg,
     pub(crate) is_display: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MermaidSpan {
+    pub(crate) rendered: crate::mermaid::MermaidSvg,
 }
 
 impl InlineSpan {
@@ -83,6 +89,13 @@ impl InlineSpan {
                 rendered,
                 is_display,
             }),
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn mermaid_diagram(rendered: crate::mermaid::MermaidSvg) -> Self {
+        Self {
+            mermaid: Some(MermaidSpan { rendered }),
             ..Default::default()
         }
     }

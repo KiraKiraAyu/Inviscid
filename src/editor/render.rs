@@ -52,7 +52,29 @@ pub fn render_live_line_content(
                 .into_any_element()
         }
 
-        BlockKind::CodeBlock { is_fence_start } => {
+        BlockKind::CodeBlock { is_fence_start } | BlockKind::MermaidBlock { is_fence_start } => {
+            if matches!(parsed.kind, BlockKind::MermaidBlock { .. })
+                && !lrc.is_mermaid_block_editing
+            {
+                if *is_fence_start {
+                    if let Some(preview) = lrc.mermaid_preview {
+                        let (width, height) =
+                            crate::mermaid::display_size(preview, lrc.content_width, lrc.indent_px);
+                        return div()
+                            .w_full()
+                            .mt(px(6.0))
+                            .pl(lrc.indent_px)
+                            .py(px(10.0))
+                            .flex()
+                            .justify_center()
+                            .child(img(preview.asset_path.clone()).w(width).h(height))
+                            .into_any_element();
+                    }
+                } else {
+                    return div().w_full().h(px(0.0)).into_any_element();
+                }
+            }
+
             let typo = crate::editor::layout::get_block_typography_with_metrics(
                 &parsed.kind,
                 lrc.font_size,
@@ -117,7 +139,12 @@ pub fn render_live_line_content(
             }
         }
 
-        BlockKind::CodeBlockContent => {
+        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => {
+            if matches!(parsed.kind, BlockKind::MermaidBlockContent)
+                && !lrc.is_mermaid_block_editing
+            {
+                return div().w_full().h(px(0.0)).into_any_element();
+            }
             let typo = crate::editor::layout::get_block_typography_with_metrics(
                 &parsed.kind,
                 lrc.font_size,

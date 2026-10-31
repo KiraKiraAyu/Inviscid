@@ -733,3 +733,102 @@ fn test_fenced_code_block_wasm_syntax_highlighting_and_incremental_scan() {
     assert_eq!(mid_scan[0].kind, BlockKind::CodeBlockContent);
     assert_eq!(mid_scan[0].spans, parsed[3].spans);
 }
+
+#[test]
+fn mermaid_fences_render_valid_diagrams_and_preserve_their_source() {
+    let lines = [
+        "Before".to_string(),
+        "``` Mermaid ".to_string(),
+        "flowchart LR".to_string(),
+        "    A[Start] --> B[Done]".to_string(),
+        "```".to_string(),
+        "After".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+
+    assert!(matches!(
+        parsed[1].kind,
+        BlockKind::MermaidBlock {
+            is_fence_start: true
+        }
+    ));
+    assert_eq!(parsed[2].kind, BlockKind::MermaidBlockContent);
+    assert_eq!(parsed[3].kind, BlockKind::MermaidBlockContent);
+    assert!(matches!(
+        parsed[4].kind,
+        BlockKind::MermaidBlock {
+            is_fence_start: false
+        }
+    ));
+    assert!(parsed[1].spans.iter().any(|span| span.mermaid.is_some()));
+    assert_eq!(
+        parsed.iter().map(|line| &line.raw_text).collect::<Vec<_>>(),
+        lines.iter().collect::<Vec<_>>()
+    );
+    let mid_scan = MarkdownScanner::scan_range(&lines, 2..3, true);
+    assert_eq!(mid_scan[0].kind, BlockKind::MermaidBlockContent);
+    assert_eq!(mid_scan[0].spans, parsed[2].spans);
+
+    let visual = VisualDocument::from_parsed(&lines, &parsed);
+    assert!(matches!(
+        &visual.blocks[crate::buffer::ProjectedBlockIndex::new(1)],
+        VisualBlock::CodeBlock {
+            start_line,
+            end_line,
+            ..
+        } if *start_line == crate::buffer::SourceLine::new(1)
+            && *end_line == crate::buffer::SourceLine::new(4)
+    ));
+}
+
+#[test]
+fn invalid_mermaid_and_other_fenced_languages_remain_code_blocks() {
+    let lines = [
+        "```mermaid".to_string(),
+        "not a diagram".to_string(),
+        "```".to_string(),
+        "```rust".to_string(),
+        "fn main() {}".to_string(),
+        "```".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+
+    assert!(matches!(
+        parsed[0].kind,
+        BlockKind::CodeBlock {
+            is_fence_start: true
+        }
+    ));
+    assert_eq!(parsed[1].kind, BlockKind::CodeBlockContent);
+    assert!(matches!(
+        parsed[3].kind,
+        BlockKind::CodeBlock {
+            is_fence_start: true
+        }
+    ));
+    assert_eq!(parsed[4].kind, BlockKind::CodeBlockContent);
+}
+
+#[test]
+fn mermaid_block_range_includes_both_fences_but_excludes_neighboring_lines() {
+    let lines = [
+        "before".to_string(),
+        "```mermaid".to_string(),
+        "flowchart TD".to_string(),
+        "A --> B".to_string(),
+        "```".to_string(),
+        "after".to_string(),
+    ];
+
+    assert_eq!(
+        mermaid_block_range(&lines, crate::buffer::SourceLine::new(3)),
+        Some((
+            crate::buffer::SourceLine::new(1),
+            crate::buffer::SourceLine::new(4)
+        ))
+    );
+    assert_eq!(
+        mermaid_block_range(&lines, crate::buffer::SourceLine::new(5)),
+        None
+    );
+}

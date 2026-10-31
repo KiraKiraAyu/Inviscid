@@ -78,7 +78,7 @@ pub fn get_block_typography_with_metrics(
                 px((18.0 * scale).round()),
             ),
         },
-        BlockKind::CodeBlock { is_fence_start } => {
+        BlockKind::CodeBlock { is_fence_start } | BlockKind::MermaidBlock { is_fence_start } => {
             if *is_fence_start {
                 BlockTypography::new(
                     px((12.0 * scale).round()),
@@ -93,7 +93,7 @@ pub fn get_block_typography_with_metrics(
                 )
             }
         }
-        BlockKind::CodeBlockContent => BlockTypography::new(
+        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => BlockTypography::new(
             px((13.5 * scale).round()),
             px((22.0 * scale * lh_ratio).round()),
             px(2.0),
@@ -157,8 +157,11 @@ pub fn get_block_color_override(kind: &BlockKind, theme: &Theme) -> Option<Hsla>
         BlockKind::BlockQuote => Some(theme.quote_text),
         BlockKind::CodeBlock {
             is_fence_start: true,
+        }
+        | BlockKind::MermaidBlock {
+            is_fence_start: true,
         } => Some(theme.code_block_header_fg),
-        BlockKind::CodeBlockContent => Some(theme.code_block_text),
+        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => Some(theme.code_block_text),
         BlockKind::Image { .. } => Some(theme.text_secondary),
         _ => None,
     }
@@ -258,6 +261,7 @@ impl DocumentLayoutCache {
 pub struct LineLayoutContext<'a> {
     pub is_active: bool,
     pub math_block_editing: bool,
+    pub mermaid_block_editing: bool,
     pub is_separator: Option<bool>,
     pub cursor_col: usize,
     pub is_selection_disclosure: bool,
@@ -277,6 +281,7 @@ impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
         f.debug_struct("LineLayoutContext")
             .field("is_active", &self.is_active)
             .field("math_block_editing", &self.math_block_editing)
+            .field("mermaid_block_editing", &self.mermaid_block_editing)
             .field("is_separator", &self.is_separator)
             .field("cursor_col", &self.cursor_col)
             .field("is_selection_disclosure", &self.is_selection_disclosure)
@@ -298,6 +303,7 @@ impl<'a> Default for LineLayoutContext<'a> {
         Self {
             is_active: false,
             math_block_editing: false,
+            mermaid_block_editing: false,
             is_separator: None,
             cursor_col: 0,
             is_selection_disclosure: false,
@@ -326,6 +332,7 @@ impl<'a> LineLayoutContext<'a> {
         Self {
             is_active,
             math_block_editing: false,
+            mermaid_block_editing: false,
             is_separator,
             cursor_col,
             is_selection_disclosure: false,
@@ -348,6 +355,11 @@ impl<'a> LineLayoutContext<'a> {
 
     pub fn with_math_block_editing(mut self, math_block_editing: bool) -> Self {
         self.math_block_editing = math_block_editing;
+        self
+    }
+
+    pub fn with_mermaid_block_editing(mut self, mermaid_block_editing: bool) -> Self {
+        self.mermaid_block_editing = mermaid_block_editing;
         self
     }
 
@@ -491,6 +503,37 @@ pub fn get_line_layout_height(
         }
         BlockKind::CodeBlock { .. } | BlockKind::CodeBlockContent | BlockKind::ThematicBreak => {
             typo.base_layout_height
+        }
+        BlockKind::MermaidBlock {
+            is_fence_start: true,
+        } => {
+            if lcx.mermaid_block_editing {
+                typo.base_layout_height
+            } else {
+                parsed
+                    .spans
+                    .iter()
+                    .find_map(|span| span.mermaid.as_ref())
+                    .map(|diagram| {
+                        crate::mermaid::display_size(
+                            &diagram.rendered,
+                            lcx.content_width,
+                            lcx.indent_px,
+                        )
+                        .1 + px(26.0)
+                    })
+                    .unwrap_or(typo.base_layout_height)
+            }
+        }
+        BlockKind::MermaidBlock {
+            is_fence_start: false,
+        }
+        | BlockKind::MermaidBlockContent => {
+            if lcx.mermaid_block_editing {
+                typo.base_layout_height
+            } else {
+                px(0.0)
+            }
         }
         BlockKind::MathBlock { is_start: true } => {
             if lcx.math_block_editing {
@@ -710,6 +753,7 @@ impl Editor {
         content_width: Pixels,
         source_line: SourceLine,
         active_math_block: Option<(SourceLine, SourceLine)>,
+        active_mermaid_block: Option<(SourceLine, SourceLine)>,
     ) -> LineLayoutContext<'_> {
         let is_folded = self.display_map.fold_map().is_line_folded(source_line);
         let indent_px = self.parsed_line_indent_px(parsed);
@@ -725,6 +769,9 @@ impl Editor {
         .with_math_block_editing(
             active_math_block.is_some_and(|(start, end)| (start..=end).contains(&source_line)),
         )
+        .with_mermaid_block_editing(
+            active_mermaid_block.is_some_and(|(start, end)| (start..=end).contains(&source_line)),
+        )
         .with_selection_disclosure(self.is_selection_disclosure())
         .with_metrics(self.font_size, self.line_height, self.soft_wrap)
         .with_indent(indent_px)
@@ -739,6 +786,13 @@ impl Editor {
             .filter(|(start, end)| active_line > *start && active_line < *end)
     }
 
+    fn active_mermaid_block(&self, active_line: SourceLine) -> Option<(SourceLine, SourceLine)> {
+        if self.render_mode == RenderMode::Source {
+            return None;
+        }
+        crate::markdown::mermaid_block_range(self.buffer.lines(), active_line)
+    }
+
     pub fn ensure_layout_cache(&self) {
         let viewport = self.viewport_bounds_val();
         let content_width = compute_content_width(viewport.size.width, self.render_mode);
@@ -750,6 +804,8 @@ impl Editor {
         let current_syntax_v = crate::syntax::syntax_cache_version();
 
         let current_cache = self.layout_cache.borrow().clone();
+        let active_mermaid_block = self.active_mermaid_block(active_line);
+        let cached_active_mermaid_block = self.active_mermaid_block(current_cache.active_line);
         let view_matches = self.cache_matches_view(&current_cache, content_width);
         let buffer_matches = current_cache.buffer_version == self.buffer.version()
             && current_cache.lines_len == self.buffer.line_count();
@@ -795,6 +851,7 @@ impl Editor {
                     content_width,
                     active_line,
                     active_math_block,
+                    active_mermaid_block,
                 );
                 get_line_layout_height(self.buffer.lines(), active_line_idx, parsed, lcx)
             } else {
@@ -834,6 +891,7 @@ impl Editor {
             && !current_cache.parsed_lines.is_empty()
             && current_cache.line_heights.len() == current_cache.parsed_lines.len()
             && self.active_math_block(current_cache.active_line) == active_math_block
+            && cached_active_mermaid_block == active_mermaid_block
         {
             let mut cache = (*current_cache).clone();
             let old_active = cache.active_line;
@@ -859,6 +917,7 @@ impl Editor {
                         content_width,
                         source_line,
                         active_math_block,
+                        active_mermaid_block,
                     );
                     get_line_layout_height(self.buffer.lines(), line_idx, parsed, lcx)
                 } else {
@@ -973,6 +1032,7 @@ impl Editor {
                 content_width,
                 source_line,
                 active_math_block,
+                active_mermaid_block,
             );
             let h = get_line_layout_height(self.buffer.lines(), idx, parsed, lcx);
             line_y_offsets.push(y);
@@ -1029,8 +1089,17 @@ impl Editor {
         {
             return false;
         }
+        if cache.parsed_lines.get(edit_start_idx).is_some_and(|line| {
+            matches!(
+                line.kind,
+                BlockKind::MermaidBlockContent | BlockKind::MermaidBlock { .. }
+            )
+        }) {
+            return false;
+        }
         let active_col = self.disclosure_col();
         let active_math_block = self.active_math_block(active_line);
+        let active_mermaid_block = self.active_mermaid_block(active_line);
 
         if cache_len.saturating_sub(delta.old_line_count) + delta.new_line_count != buf_len {
             return false;
@@ -1044,7 +1113,9 @@ impl Editor {
             if line.raw_text.trim_start().starts_with("```")
                 || matches!(
                     line.kind,
-                    BlockKind::CodeBlock { .. } | BlockKind::MathBlock { .. }
+                    BlockKind::CodeBlock { .. }
+                        | BlockKind::MermaidBlock { .. }
+                        | BlockKind::MathBlock { .. }
                 )
             {
                 return false;
@@ -1059,7 +1130,7 @@ impl Editor {
         let in_code_block = edit_start_idx < cache_len
             && matches!(
                 cache.parsed_lines[edit_start_idx].kind,
-                BlockKind::CodeBlockContent
+                BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent
             );
         let in_math_block = edit_start_idx < cache_len
             && matches!(
@@ -1179,6 +1250,7 @@ impl Editor {
                 content_width,
                 source_line,
                 active_math_block,
+                active_mermaid_block,
             );
             let h = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
             new_heights.push(h);

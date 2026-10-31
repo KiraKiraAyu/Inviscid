@@ -165,6 +165,14 @@ impl Element for EditorElement {
                             disclosure_position.line > *start && disclosure_position.line < *end
                         })
                     };
+                    let active_mermaid_block = if mode == RenderMode::Source {
+                        None
+                    } else {
+                        crate::markdown::mermaid_block_range(
+                            editor.buffer.lines(),
+                            disclosure_position.line,
+                        )
+                    };
                     let theme = cx.theme();
                     let content_width = compute_content_width(bounds.size.width, mode);
                     let container_x =
@@ -183,6 +191,8 @@ impl Element for EditorElement {
                         let is_disclosure_line = source_line == disclosure_position.line;
                         let is_math_block_editing = active_math_block
                             .is_some_and(|(start, end)| source_line >= start && source_line <= end);
+                        let is_mermaid_block_editing = active_mermaid_block
+                            .is_some_and(|(start, end)| source_line >= start && source_line <= end);
                         let math_preview = active_math_block
                             .filter(|(start, _)| source_line == *start + 1)
                             .and_then(|(start, _)| layout.parsed_lines.get(start.index()))
@@ -190,11 +200,18 @@ impl Element for EditorElement {
                                 start_line.spans.iter().find_map(|span| span.math.as_ref())
                             })
                             .map(|math| &math.rendered);
+                        let mermaid_preview = parsed
+                            .spans
+                            .iter()
+                            .find_map(|span| span.mermaid.as_ref())
+                            .map(|mermaid| &mermaid.rendered);
                         let highlights = editor.search_highlights(source_line);
                         let lrc = LineRenderContext {
                             is_active_line,
                             is_math_block_editing,
                             math_preview,
+                            is_mermaid_block_editing,
+                            mermaid_preview,
                             is_disclosure_line,
                             is_selection_disclosure,
                             is_focused,

@@ -32,7 +32,9 @@ pub fn compute_available_line_width_with_mode(
             (content_width - px(24.0)).max(px(100.0))
         }
         BlockKind::BulletList => (content_width - px(22.0)).max(px(100.0)),
-        BlockKind::CodeBlockContent => (content_width - px(28.0)).max(px(100.0)),
+        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => {
+            (content_width - px(28.0)).max(px(100.0))
+        }
         _ => content_width.max(px(100.0)),
     }
 }
@@ -71,8 +73,11 @@ pub fn get_block_left_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
         BlockKind::BulletList => px(22.0),
         BlockKind::OrderedList { .. } => px(24.0),
         BlockKind::BlockQuote => px(18.0),
-        BlockKind::CodeBlockContent => px(15.0),
+        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => px(15.0),
         BlockKind::CodeBlock {
+            is_fence_start: true,
+        }
+        | BlockKind::MermaidBlock {
             is_fence_start: true,
         } => px(15.0),
         _ => px(0.0),
@@ -88,8 +93,11 @@ pub fn get_block_top_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
         BlockKind::Heading { .. } => px(14.0),
         BlockKind::CodeBlock {
             is_fence_start: true,
+        }
+        | BlockKind::MermaidBlock {
+            is_fence_start: true,
         } => px(10.0),
-        BlockKind::CodeBlockContent => px(1.0),
+        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => px(1.0),
         BlockKind::Table {
             is_header: true, ..
         } => px(8.0),
@@ -301,6 +309,9 @@ pub fn get_block_style_for_line_with_metrics(
         BlockKind::CodeBlock {
             is_fence_start: false,
         }
+        | BlockKind::MermaidBlock {
+            is_fence_start: false,
+        }
         | BlockKind::ThematicBreak => (px(0.0), px(0.0), None),
         _ => {
             let typo =
@@ -496,7 +507,12 @@ pub fn build_line_runs(
 }
 
 pub fn line_font_for(kind: &BlockKind, is_source: bool) -> Font {
-    if is_source || *kind == BlockKind::CodeBlockContent {
+    if is_source
+        || matches!(
+            kind,
+            BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent
+        )
+    {
         font(crate::platform::platform_monospace_font())
     } else if matches!(kind, BlockKind::Heading { .. }) {
         font(crate::platform::platform_ui_font()).bold()
@@ -1614,7 +1630,11 @@ pub fn render_shaped_line(
         lrc.indent_px,
     );
 
-    let is_monospace = is_source || parsed.kind == BlockKind::CodeBlockContent;
+    let is_monospace = is_source
+        || matches!(
+            parsed.kind,
+            BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent
+        );
     let is_heading = matches!(parsed.kind, BlockKind::Heading { .. });
     let font = line_font_for(&parsed.kind, is_source);
 

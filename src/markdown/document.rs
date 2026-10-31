@@ -151,7 +151,8 @@ impl VisualDocument {
             let parsed = &parsed_lines[idx];
 
             match &parsed.kind {
-                BlockKind::CodeBlock { is_fence_start } => {
+                BlockKind::CodeBlock { is_fence_start }
+                | BlockKind::MermaidBlock { is_fence_start } => {
                     if *is_fence_start {
                         let start_line = idx;
                         let mut code_line_count = ProjectedLineCount::new(0);
@@ -159,12 +160,15 @@ impl VisualDocument {
                         idx += 1;
                         while idx < parsed_lines.len() {
                             match &parsed_lines[idx].kind {
-                                BlockKind::CodeBlockContent => {
+                                BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => {
                                     code_line_count.increment();
                                     end_line = idx;
                                     idx += 1;
                                 }
                                 BlockKind::CodeBlock {
+                                    is_fence_start: false,
+                                }
+                                | BlockKind::MermaidBlock {
                                     is_fence_start: false,
                                 } => {
                                     end_line = idx;
@@ -183,7 +187,7 @@ impl VisualDocument {
                         idx += 1;
                     }
                 }
-                BlockKind::CodeBlockContent => {
+                BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => {
                     idx += 1;
                 }
                 BlockKind::MathBlock { .. } | BlockKind::MathBlockContent => {

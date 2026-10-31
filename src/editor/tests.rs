@@ -32,6 +32,31 @@ fn math_editing_expands_all_source_lines_and_hides_both_delimiters() {
 }
 
 #[test]
+fn mermaid_preview_hides_fenced_source_until_the_block_is_active() {
+    let lines = vec![
+        "```mermaid".into(),
+        "flowchart LR".into(),
+        "A --> B".into(),
+        "```".into(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    let preview = LineLayoutContext::live_preview(px(800.0));
+
+    assert!(get_line_layout_height(&lines, 0, &parsed[0], preview.clone()) > px(40.0));
+    for idx in 1..=3 {
+        assert_eq!(
+            get_line_layout_height(&lines, idx, &parsed[idx], preview.clone()),
+            px(0.0)
+        );
+    }
+
+    let editing = preview.with_mermaid_block_editing(true);
+    for idx in 0..lines.len() {
+        assert!(get_line_layout_height(&lines, idx, &parsed[idx], editing.clone()) > px(0.0));
+    }
+}
+
+#[test]
 fn test_ime_preedit_occupies_inline_width_and_is_underlined() {
     use crate::editor::shaping::{LineShapingContext, build_line_runs};
     use crate::markdown::{InlineSpan, mark_ime_preedit};
@@ -3769,6 +3794,8 @@ fn test_nested_list_render_live_content() {
             is_active_line: false,
             is_math_block_editing: false,
             math_preview: None,
+            is_mermaid_block_editing: false,
+            mermaid_preview: None,
             is_disclosure_line: false,
             is_selection_disclosure: false,
             is_focused: false,

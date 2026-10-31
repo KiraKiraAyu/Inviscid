@@ -17,6 +17,9 @@ impl AssetSource for Assets {
         if let Some(svg) = crate::math::load_math_svg(clean_path) {
             return Ok(Some(Cow::Owned(svg)));
         }
+        if let Some(svg) = crate::mermaid::load_mermaid_svg(clean_path) {
+            return Ok(Some(Cow::Owned(svg)));
+        }
         Ok(Self::get(clean_path).map(|file| file.data))
     }
 

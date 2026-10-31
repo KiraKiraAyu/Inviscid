@@ -1,4 +1,4 @@
-﻿use super::inline::{InlineSpan, parse_inline_spans};
+use super::inline::{InlineSpan, parse_inline_spans};
 use super::prefix::{
     BlockPrefix, fence_info, is_fence_line, is_thematic_break, parse_block_prefix,
 };
@@ -16,6 +16,16 @@ fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
 
 fn is_math_delimiter(line: &str) -> bool {
     line.trim() == "$$"
+}
+
+fn is_mermaid_info(info: &str) -> bool {
+    info.split_whitespace()
+        .next()
+        .is_some_and(|language| language.eq_ignore_ascii_case("mermaid"))
+}
+
+fn is_mermaid_fence(line: &str) -> bool {
+    fence_info(line).is_some_and(is_mermaid_info)
 }
 
 fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usize> {
@@ -89,6 +99,28 @@ pub(crate) fn math_block_range(
     None
 }
 
+pub(crate) fn mermaid_block_range(
+    lines: &[String],
+    target_line: SourceLine,
+) -> Option<(SourceLine, SourceLine)> {
+    let target_idx = target_line.index();
+    let mut open_fence: Option<(usize, bool)> = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if let Some(info) = fence_info(line) {
+            if let Some((start, is_mermaid)) = open_fence.take() {
+                if is_mermaid && (start..=idx).contains(&target_idx) {
+                    return Some((SourceLine::new(start), SourceLine::new(idx)));
+                }
+            } else {
+                open_fence = Some((idx, is_mermaid_info(info)));
+            }
+        }
+    }
+
+    None
+}
+
 fn math_block_state_before(lines: &[String], end_idx: usize) -> bool {
     math_block_range(lines, SourceLine::new(end_idx))
         .is_some_and(|(start, _)| start.index() < end_idx)
@@ -143,18 +175,27 @@ impl MarkdownScanner {
         let mut current_table_alignments: Option<Vec<TableAlignment>> = None;
         let mut next_closing_fence: Option<usize> = None;
         let mut no_more_closing_fences = false;
-        let mut current_code_block_highlights: Option<(usize, Vec<Vec<InlineSpan>>)> =
+        let (mut current_code_block_highlights, mut current_mermaid_preview) =
             if initial_in_code_fence && range.start < lines.len() {
                 let open_fence_idx = (0..range.start).rev().find(|&i| is_fence_line(&lines[i]));
                 let close_fence_idx =
                     find_next_fence_from(lines, range.start).unwrap_or(lines.len());
-                Some(highlight_fenced_slice(
-                    lines,
-                    open_fence_idx,
-                    close_fence_idx,
-                ))
+                let preview = open_fence_idx
+                    .filter(|&open_idx| is_mermaid_fence(&lines[open_idx]))
+                    .filter(|_| close_fence_idx < lines.len())
+                    .and_then(|open_idx| {
+                        crate::mermaid::prepare_mermaid_lines(&lines[open_idx + 1..close_fence_idx])
+                    });
+                (
+                    Some(highlight_fenced_slice(
+                        lines,
+                        open_fence_idx,
+                        close_fence_idx,
+                    )),
+                    preview,
+                )
             } else {
-                None
+                (None, None)
             };
 
         for idx in range {
@@ -196,6 +237,13 @@ impl MarkdownScanner {
                     if let Some(close_idx) = next_closing_fence {
                         in_code_fence = true;
                         let lang_str = stripped.trim().to_string();
+                        let mermaid_preview = is_mermaid_fence(raw_line)
+                            .then(|| {
+                                crate::mermaid::prepare_mermaid_lines(&lines[idx + 1..close_idx])
+                            })
+                            .flatten();
+                        let is_mermaid = mermaid_preview.is_some();
+                        current_mermaid_preview = mermaid_preview.clone();
                         current_code_block_highlights =
                             Some(highlight_fenced_slice(lines, Some(idx), close_idx));
 
@@ -209,10 +257,19 @@ impl MarkdownScanner {
                                 (actual_lang_col, raw_line.chars().count()),
                             ));
                         }
+                        if let Some(rendered) = mermaid_preview {
+                            spans.push(InlineSpan::mermaid_diagram(rendered));
+                        }
                         result.push(ParsedLine {
                             raw_text: raw_line.clone(),
-                            kind: BlockKind::CodeBlock {
-                                is_fence_start: true,
+                            kind: if is_mermaid {
+                                BlockKind::MermaidBlock {
+                                    is_fence_start: true,
+                                }
+                            } else {
+                                BlockKind::CodeBlock {
+                                    is_fence_start: true,
+                                }
                             },
                             spans,
                         });
@@ -222,11 +279,18 @@ impl MarkdownScanner {
                 } else {
                     in_code_fence = false;
                     current_code_block_highlights = None;
+                    let is_mermaid = current_mermaid_preview.take().is_some();
                     let char_count = raw_line.chars().count();
                     result.push(ParsedLine {
                         raw_text: raw_line.clone(),
-                        kind: BlockKind::CodeBlock {
-                            is_fence_start: false,
+                        kind: if is_mermaid {
+                            BlockKind::MermaidBlock {
+                                is_fence_start: false,
+                            }
+                        } else {
+                            BlockKind::CodeBlock {
+                                is_fence_start: false,
+                            }
                         },
                         spans: vec![InlineSpan::hidden_marker(
                             raw_line.clone(),
@@ -251,7 +315,11 @@ impl MarkdownScanner {
                     });
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
-                    kind: BlockKind::CodeBlockContent,
+                    kind: if current_mermaid_preview.is_some() {
+                        BlockKind::MermaidBlockContent
+                    } else {
+                        BlockKind::CodeBlockContent
+                    },
                     spans,
                 });
                 continue;

@@ -25,6 +25,10 @@ pub enum BlockKind {
         is_fence_start: bool,
     },
     CodeBlockContent,
+    MermaidBlock {
+        is_fence_start: bool,
+    },
+    MermaidBlockContent,
     MathBlock {
         is_start: bool,
     },

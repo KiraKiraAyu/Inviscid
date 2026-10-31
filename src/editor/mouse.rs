@@ -241,6 +241,7 @@ impl Editor {
         if !matches!(
             &layout.parsed_lines.get(line_idx)?.kind,
             crate::markdown::BlockKind::CodeBlockContent
+                | crate::markdown::BlockKind::MermaidBlockContent
         ) {
             return None;
         }
@@ -250,6 +251,7 @@ impl Editor {
             && matches!(
                 &layout.parsed_lines[start_line - 1].kind,
                 crate::markdown::BlockKind::CodeBlockContent
+                    | crate::markdown::BlockKind::MermaidBlockContent
             )
         {
             start_line -= 1;
@@ -260,6 +262,7 @@ impl Editor {
             && matches!(
                 &layout.parsed_lines[end_line + 1].kind,
                 crate::markdown::BlockKind::CodeBlockContent
+                    | crate::markdown::BlockKind::MermaidBlockContent
             )
         {
             end_line += 1;
