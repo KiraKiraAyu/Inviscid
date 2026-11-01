@@ -459,6 +459,29 @@ pub fn get_line_layout_height(
     }
 
     let typo = get_block_typography_with_metrics(&parsed.kind, lcx.font_size, lcx.line_height);
+    let wrapped_code_height = || {
+        let scx = LineShapingContext::new(
+            &crate::theme::DEFAULT_THEME,
+            Some(crate::theme::DEFAULT_THEME.code_block_text),
+            false,
+            lcx.is_active,
+            lcx.cursor_col,
+        )
+        .with_selection_disclosure(lcx.is_selection_disclosure);
+        let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
+        let visual_lines = calculate_visual_lines_with_runs(
+            &line_str,
+            &runs,
+            font(crate::platform::platform_monospace_font()),
+            typo.font_size,
+            available_w,
+            lcx.soft_wrap,
+            lcx.text_system.as_ref(),
+            true,
+        );
+
+        typo.padding_vertical + typo.line_height * (visual_lines as f32)
+    };
     let wrapped_prose_height = |font: Font, color_override: Option<Hsla>, is_heading: bool| {
         let scx = LineShapingContext::new(
             &crate::theme::DEFAULT_THEME,
@@ -501,9 +524,8 @@ pub fn get_line_layout_height(
                 true,
             )
         }
-        BlockKind::CodeBlock { .. } | BlockKind::CodeBlockContent | BlockKind::ThematicBreak => {
-            typo.base_layout_height
-        }
+        BlockKind::CodeBlock { .. } | BlockKind::ThematicBreak => typo.base_layout_height,
+        BlockKind::CodeBlockContent => wrapped_code_height(),
         BlockKind::MermaidBlock {
             is_fence_start: true,
         } => {
@@ -530,7 +552,7 @@ pub fn get_line_layout_height(
         }
         | BlockKind::MermaidBlockContent => {
             if lcx.mermaid_block_editing {
-                typo.base_layout_height
+                wrapped_code_height()
             } else {
                 px(0.0)
             }

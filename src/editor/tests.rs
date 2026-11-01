@@ -57,6 +57,34 @@ fn mermaid_preview_hides_fenced_source_until_the_block_is_active() {
 }
 
 #[test]
+fn active_mermaid_source_line_layout_accounts_for_soft_wrapping() {
+    let long_label = std::iter::repeat_n("long label", 40)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let lines = vec![
+        "```mermaid".into(),
+        "flowchart TD".into(),
+        format!("A[{long_label}] --> B[end]"),
+        "```".into(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    assert_eq!(
+        parsed[2].kind,
+        crate::markdown::BlockKind::MermaidBlockContent
+    );
+
+    let wrapped = LineLayoutContext::live_preview(px(220.0))
+        .with_mermaid_block_editing(true)
+        .with_metrics(15.0, 1.6, true);
+    let unwrapped = wrapped.clone().with_metrics(15.0, 1.6, false);
+
+    assert!(
+        get_line_layout_height(&lines, 2, &parsed[2], wrapped)
+            > get_line_layout_height(&lines, 2, &parsed[2], unwrapped)
+    );
+}
+
+#[test]
 fn test_ime_preedit_occupies_inline_width_and_is_underlined() {
     use crate::editor::shaping::{LineShapingContext, build_line_runs};
     use crate::markdown::{InlineSpan, mark_ime_preedit};

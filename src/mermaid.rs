@@ -67,10 +67,6 @@ impl MermaidCache {
     }
 }
 
-fn source_within_limits(source: &str) -> bool {
-    source.len() <= MAX_DIAGRAM_SOURCE_BYTES && source.lines().count() <= MAX_DIAGRAM_LINES
-}
-
 fn source_lines_byte_len(lines: &[String]) -> Option<usize> {
     if lines.len() > MAX_DIAGRAM_LINES {
         return None;
@@ -147,14 +143,6 @@ fn render_uncached(source: &str) -> Option<MermaidSvg> {
         height: dimensions.viewbox_height.ceil() as u32,
         _data: data,
     })
-}
-
-pub(crate) fn prepare_mermaid(source: &str) -> Option<MermaidSvg> {
-    if !source_within_limits(source) {
-        return None;
-    }
-
-    prepare_bounded_mermaid(source)
 }
 
 pub(crate) fn prepare_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
@@ -246,7 +234,11 @@ mod tests {
 
     #[test]
     fn renders_valid_mermaid_to_a_registered_svg_asset() {
-        let rendered = prepare_mermaid("flowchart LR\n    A[Start] --> B[Done]").unwrap();
+        let lines = vec![
+            "flowchart LR".to_string(),
+            "    A[Start] --> B[Done]".to_string(),
+        ];
+        let rendered = prepare_mermaid_lines(&lines).unwrap();
 
         assert!(rendered.width > 0);
         assert!(rendered.height > 0);
@@ -263,8 +255,9 @@ mod tests {
     #[test]
     fn oversized_sources_are_not_retained_in_render_cache() {
         let source = "x".repeat(MAX_DIAGRAM_SOURCE_BYTES + 1);
+        let lines = vec![source.clone()];
 
-        assert!(prepare_mermaid(&source).is_none());
+        assert!(prepare_mermaid_lines(&lines).is_none());
         assert!(!render_cache_contains(&source));
     }
 
@@ -283,7 +276,10 @@ mod tests {
 
     #[test]
     fn invalid_and_oversized_diagrams_are_not_rendered() {
-        assert!(prepare_mermaid("not a diagram").is_none());
-        assert!(prepare_mermaid(&format!("flowchart TD\n{}", "A --> B\n".repeat(2048))).is_none());
+        assert!(prepare_mermaid_lines(&["not a diagram".to_string()]).is_none());
+
+        let source = format!("flowchart TD\n{}", "A --> B\n".repeat(2048));
+        let lines = source.lines().map(str::to_string).collect::<Vec<_>>();
+        assert!(prepare_mermaid_lines(&lines).is_none());
     }
 }
