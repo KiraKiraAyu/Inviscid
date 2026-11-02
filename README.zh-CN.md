@@ -1,3 +1,7 @@
+<p align="center">
+    <img src="./assets/images/Inviscid.svg" alt="Inviscid logo" width="128" height="128">
+</p>
+
 <h1 align="center">Inviscid</h1>
 
 <p align="center">

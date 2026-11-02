@@ -42,6 +42,11 @@ windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
 
+[build-dependencies]
+embed-resource = "3.0.12"
+image = { version = "0.25.10", default-features = false, features = ["ico"] }
+resvg = { version = "0.49.0", default-features = false }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

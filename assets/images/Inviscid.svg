@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="_图层_1" data-name=" 图层 1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 928.01 928">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: url(#_未命名的渐变);
+      }
+
+      .cls-1, .cls-2, .cls-3, .cls-4 {
+        stroke-width: 0px;
+      }
+
+      .cls-2 {
+        fill: none;
+      }
+
+      .cls-3 {
+        fill: url(#_未命名的渐变_2);
+      }
+
+      .cls-4 {
+        fill: url(#_未命名的渐变_3);
+      }
+
+      .cls-5 {
+        clip-path: url(#clippath);
+      }
+    </style>
+    <clipPath id="clippath">
+      <path class="cls-2" d="M235.07,0h457.87c129.82,0,235.07,107.37,235.07,239.82v448.36c0,132.45-105.24,239.82-235.07,239.82H235.07C105.24,928,0,820.63,0,688.18V239.82C0,107.37,105.24,0,235.07,0Z"/>
+    </clipPath>
+    <linearGradient id="_未命名的渐变" data-name="未命名的渐变" x1="151.41" y1="1086.16" x2="996.41" y2="1991.16" gradientTransform="translate(-109.03 -1122.71) scale(1.02 1.04)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e7d1ff"/>
+      <stop offset=".43" stop-color="#c5a8fa"/>
+      <stop offset="1" stop-color="#9475f7"/>
+    </linearGradient>
+    <linearGradient id="_未命名的渐变_2" data-name="未命名的渐变 2" x1="312.26" y1="1380.9" x2="843.26" y2="1820.9" gradientTransform="translate(-109.03 -1122.71) scale(1.02 1.04)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fffdff"/>
+      <stop offset=".34" stop-color="#f8f1ff"/>
+      <stop offset="1" stop-color="#dcc3ff"/>
+    </linearGradient>
+    <linearGradient id="_未命名的渐变_3" data-name="未命名的渐变 3" x1="150.15" y1="1823.39" x2="590.67" y2="1569.79" gradientTransform="translate(-109.03 -1122.71) scale(1.02 1.04)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d5b9ff"/>
+      <stop offset=".55" stop-color="#d8c6ff"/>
+      <stop offset="1" stop-color="#e8deff"/>
+    </linearGradient>
+  </defs>
+  <g class="cls-5">
+    <g>
+      <rect class="cls-1" width="928" height="928"/>
+      <path class="cls-3" d="M255.51,397.27c111.4-134.51,259.59-259.63,404.72-259.63,130.82-7.3,220.76,60.48,267.77,167.87v232.52c-39.86,134.51-160.46,233.56-331.14,222.09,134.91,0,237.11-62.56,265.73-157.45,20.44-60.48,8.18-105.31-29.64-123.04-38.84-18.77-74.61,4.17-112.42,33.37-59.28,44.84-110.38,85.5-171.7,101.14-53.15,14.6-104.25,10.43-162.5,12.51-156.37,0-291.28,70.9-341.36,205.41C14.31,787.24,0,735.1,0,680.88v-172.04c85.85-46.92,193.16-56.31,286.17-29.2,101.18,28.15,164.55,85.5,239.15,85.5,65.41,1.04,113.44-51.09,127.75-112.61,20.44-79.24-24.53-139.72-96.07-151.19-9.84-1.82-19.72-3-29.63-3.57-52-3-103.48,11.4-147.21,39.69-37.77,24.43-71.83,52.5-104.22,81.71-13.29,13.56-33.73-4.17-20.44-21.9h0Z"/>
+      <path class="cls-4" d="M0,680.88c64.39-84.46,168.63-136.59,262.66-134.51,96.07-2.09,169.66,44.84,260.62,45.88,33.73,1.04,67.25-.39,93.82-6.64-72.02,46.25-155.14,40.01-230.77,41.05-156.37,0-291.28,70.9-341.36,205.41C0,790.55,0,735.1,0,680.88Z"/>
+    </g>
+  </g>
+</svg>

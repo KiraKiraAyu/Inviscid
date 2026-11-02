@@ -60,25 +60,8 @@ impl Render for AboutWindow {
                     .flex()
                     .flex_col()
                     .items_center()
-                    // App Logo (Squircle container)
-                    .child(
-                        div()
-                            .w(px(58.0))
-                            .h(px(58.0))
-                            .rounded(Radius::XXL)
-                            .bg(theme.bg_toolbar)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                // TODO: Logo
-                                div()
-                                    .text_size(FontSize::HERO)
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(theme.text_accent)
-                                    .child("I"),
-                            ),
-                    )
+                    // App Logo
+                    .child(img("images/Inviscid.svg").size(px(58.0)))
                     // Product Title
                     .child(
                         div()
