@@ -1,4 +1,5 @@
 use super::*;
+use crate::buffer::ProjectedBlockIndex;
 
 #[test]
 fn test_inline_focus_disclosure() {
@@ -44,12 +45,214 @@ fn test_triple_backticks_not_collapsed() {
 }
 
 #[test]
-fn test_blockquote_requires_space() {
+fn test_blockquote_marker_only_starts_an_empty_quote_line() {
     let lines = vec![">".to_string(), "> hello".to_string()];
     let parsed = MarkdownScanner::scan_document(&lines);
     assert_eq!(parsed.len(), 2);
     assert!(matches!(parsed[0].kind, BlockKind::Paragraph));
-    assert!(matches!(parsed[1].kind, BlockKind::BlockQuote));
+    assert!(matches!(parsed[1].kind, BlockKind::Paragraph));
+    assert!(parsed.iter().all(|line| line.quote.is_some()));
+
+    let plain = MarkdownScanner::scan_document(&[">text".to_string()]);
+    assert!(matches!(plain[0].kind, BlockKind::Paragraph));
+}
+
+#[test]
+fn quoted_fenced_code_is_parsed_as_a_code_block() {
+    let lines = vec![
+        "> ```rust".to_string(),
+        "> fn example() {}".to_string(),
+        "> ```".to_string(),
+        "> **after**".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+
+    assert!(matches!(
+        parsed[0].kind,
+        BlockKind::CodeBlock {
+            is_fence_start: true
+        }
+    ));
+    assert_eq!(parsed[1].kind, BlockKind::CodeBlockContent);
+    assert_eq!(
+        parsed[1]
+            .spans
+            .iter()
+            .filter(|span| !span.is_marker)
+            .map(|span| span.text.as_str())
+            .collect::<String>(),
+        "fn example() {}"
+    );
+    assert!(matches!(
+        parsed[2].kind,
+        BlockKind::CodeBlock {
+            is_fence_start: false
+        }
+    ));
+    assert!(matches!(parsed[3].kind, BlockKind::Paragraph));
+    assert!(parsed.iter().all(|line| line.quote.is_some()));
+    assert!(
+        parsed[3]
+            .spans
+            .iter()
+            .any(|span| span.text == "after" && span.is_bold)
+    );
+
+    assert_eq!(
+        MarkdownScanner::scan_range(&lines, 1..2, true),
+        parsed[1..2]
+    );
+}
+
+#[test]
+fn quoted_markdown_uses_the_same_block_parsing_as_unquoted_markdown() {
+    let lines = vec![
+        "> # Heading".to_string(),
+        "> - list item".to_string(),
+        "> paragraph with **bold**".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+
+    assert_eq!(parsed[0].kind, BlockKind::Heading { level: 1 });
+    assert_eq!(parsed[1].kind, BlockKind::BulletList);
+    assert_eq!(parsed[2].kind, BlockKind::Paragraph);
+    assert!(parsed.iter().all(|line| line.quote.is_some()));
+    assert!(
+        parsed[0]
+            .spans
+            .iter()
+            .any(|span| span.is_marker && span.text == "# ")
+    );
+    assert!(
+        parsed[1]
+            .spans
+            .iter()
+            .any(|span| span.is_marker && span.text == "- ")
+    );
+    assert!(
+        parsed[2]
+            .spans
+            .iter()
+            .any(|span| span.text == "bold" && span.is_bold)
+    );
+}
+
+#[test]
+fn nested_quote_uses_the_same_inner_block_parser() {
+    let lines = vec![
+        "> > # Nested heading".to_string(),
+        "> > **bold**".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+
+    assert_eq!(parsed[0].kind, BlockKind::Heading { level: 1 });
+    assert_eq!(parsed[1].kind, BlockKind::Paragraph);
+    assert!(parsed.iter().all(|line| line.quote.is_some()));
+    assert!(
+        parsed[0]
+            .spans
+            .iter()
+            .any(|span| span.is_marker && span.text == "> > ")
+    );
+    assert!(
+        parsed[1]
+            .spans
+            .iter()
+            .any(|span| span.text == "bold" && span.is_bold)
+    );
+}
+
+#[test]
+fn quote_context_carries_depth_indentation_and_continuous_group_edges() {
+    let lines = vec![
+        "outside".to_string(),
+        "> # Heading".to_string(),
+        "> > **nested**".to_string(),
+        ">   - indented item".to_string(),
+        "> final".to_string(),
+        "after".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+
+    assert_eq!(parsed[0].quote, None);
+    assert_eq!(
+        parsed[1].quote,
+        Some(QuoteContext {
+            depth: 1,
+            content_indent: 0,
+            is_start: true,
+            is_end: false,
+        })
+    );
+    assert_eq!(
+        parsed[2].quote,
+        Some(QuoteContext {
+            depth: 2,
+            content_indent: 0,
+            is_start: false,
+            is_end: false,
+        })
+    );
+    assert_eq!(
+        parsed[3].quote,
+        Some(QuoteContext {
+            depth: 1,
+            content_indent: 2,
+            is_start: false,
+            is_end: false,
+        })
+    );
+    assert_eq!(
+        parsed[4].quote,
+        Some(QuoteContext {
+            depth: 1,
+            content_indent: 0,
+            is_start: false,
+            is_end: true,
+        })
+    );
+    assert_eq!(parsed[5].quote, None);
+}
+
+#[test]
+fn visual_document_keeps_inner_blocks_inside_a_continuous_blockquote() {
+    let lines = vec![
+        "outside".to_string(),
+        "> # Heading".to_string(),
+        "> - list item".to_string(),
+        "> ```rust".to_string(),
+        "> let value = 1;".to_string(),
+        "> ```".to_string(),
+        "> paragraph with **bold**".to_string(),
+        "after".to_string(),
+    ];
+    let document = VisualDocument::from_lines(&lines);
+
+    assert!(matches!(
+        document.blocks[ProjectedBlockIndex::new(0)],
+        VisualBlock::Paragraph { .. }
+    ));
+    assert!(matches!(
+        document.blocks[ProjectedBlockIndex::new(1)],
+        VisualBlock::Heading { .. }
+    ));
+    assert!(matches!(
+        document.blocks[ProjectedBlockIndex::new(2)],
+        VisualBlock::ListItem { .. }
+    ));
+    assert!(matches!(
+        document.blocks[ProjectedBlockIndex::new(3)],
+        VisualBlock::CodeBlock { .. }
+    ));
+    assert!(matches!(
+        document.blocks[ProjectedBlockIndex::new(4)],
+        VisualBlock::Paragraph { .. }
+    ));
+    assert!(matches!(
+        document.blocks[ProjectedBlockIndex::new(5)],
+        VisualBlock::Paragraph { .. }
+    ));
+    assert_eq!(document.blocks.len(), 6);
 }
 
 #[test]

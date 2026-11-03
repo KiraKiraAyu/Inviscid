@@ -1,9 +1,23 @@
-﻿use gpui::*;
+use gpui::*;
 use std::sync::Arc;
 
 use crate::editor::RenderMode;
 use crate::markdown::{BlockKind, InlineSpan, MathSpan, ParsedLine};
 use crate::theme::{ActiveTheme, Theme};
+
+/// Horizontal space reserved for the outer blockquote border and inset.
+pub const QUOTE_GUTTER: Pixels = px(18.0);
+/// Vertical space added at the first and last line of a quote group.
+pub const QUOTE_EDGE_PADDING: Pixels = px(4.0);
+const MIN_LINE_CONTENT_WIDTH: Pixels = px(100.0);
+
+#[inline]
+pub fn quote_content_indent_px(parsed: &ParsedLine, space_width: Pixels) -> Pixels {
+    px(parsed
+        .quote
+        .map_or(0.0, |quote| quote.content_indent as f32)
+        * f32::from(space_width))
+}
 
 /// Computes the centered document content container width based on window width and render mode
 pub fn compute_content_width(window_width: Pixels, mode: RenderMode) -> Pixels {
@@ -27,7 +41,6 @@ pub fn compute_available_line_width_with_mode(
         return (content_width - crate::editor::layout::SOURCE_GUTTER_WIDTH).max(px(100.0));
     }
     match kind {
-        BlockKind::BlockQuote => (content_width - px(18.0)).max(px(100.0)),
         BlockKind::TaskList { .. } | BlockKind::OrderedList { .. } => {
             (content_width - px(24.0)).max(px(100.0))
         }
@@ -53,6 +66,47 @@ pub fn get_block_left_offset_with_indent(
     get_block_left_offset(kind, mode) + indent_px
 }
 
+pub fn get_parsed_line_left_offset(
+    parsed: &ParsedLine,
+    mode: RenderMode,
+    indent_px: Pixels,
+    quote_content_indent_px: Pixels,
+) -> Pixels {
+    let quote_depth = parsed.quote.map_or(0, |quote| quote.depth);
+    get_block_left_offset_with_indent(&parsed.kind, mode, indent_px)
+        + if mode == RenderMode::LivePreview && parsed.quote.is_some() {
+            QUOTE_GUTTER * quote_depth as f32
+        } else {
+            px(0.0)
+        }
+        + if mode == RenderMode::LivePreview
+            && parsed.quote.is_some()
+            && parsed.kind.has_syntax_prefix()
+        {
+            quote_content_indent_px
+        } else {
+            px(0.0)
+        }
+}
+
+/// Effective width available to a parsed line after its outer quote and raw
+/// visual indentation have been applied.
+pub fn effective_content_width(
+    content_width: Pixels,
+    parsed: &ParsedLine,
+    mode: RenderMode,
+    indent_px: Pixels,
+) -> Pixels {
+    if mode == RenderMode::LivePreview
+        && let Some(quote) = parsed.quote
+    {
+        let quote_depth = quote.depth.max(1);
+        (content_width - QUOTE_GUTTER * quote_depth as f32 - indent_px).max(MIN_LINE_CONTENT_WIDTH)
+    } else {
+        content_width
+    }
+}
+
 /// Like [`compute_available_line_width_with_mode`], minus a per-line visual indent.
 pub fn compute_available_line_width_with_indent(
     content_width: Pixels,
@@ -61,6 +115,26 @@ pub fn compute_available_line_width_with_indent(
     indent_px: Pixels,
 ) -> Pixels {
     (compute_available_line_width_with_mode(content_width, kind, mode) - indent_px).max(px(100.0))
+}
+
+pub fn parsed_line_available_width(
+    content_width: Pixels,
+    parsed: &ParsedLine,
+    mode: RenderMode,
+    indent_px: Pixels,
+    quote_content_indent_px: Pixels,
+) -> Pixels {
+    let content_width = effective_content_width(content_width, parsed, mode, indent_px);
+    let inner_indent = if mode == RenderMode::LivePreview && parsed.quote.is_some() {
+        if parsed.kind.has_syntax_prefix() {
+            quote_content_indent_px
+        } else {
+            px(0.0)
+        }
+    } else {
+        indent_px
+    };
+    compute_available_line_width_with_indent(content_width, &parsed.kind, mode, inner_indent)
 }
 
 /// Computes the left horizontal offset of text content within a block container in Live Preview
@@ -72,7 +146,6 @@ pub fn get_block_left_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
         BlockKind::TaskList { .. } => px(24.0),
         BlockKind::BulletList => px(22.0),
         BlockKind::OrderedList { .. } => px(24.0),
-        BlockKind::BlockQuote => px(18.0),
         BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => px(15.0),
         BlockKind::CodeBlock {
             is_fence_start: true,
@@ -105,8 +178,7 @@ pub fn get_block_top_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
         | BlockKind::BulletList
         | BlockKind::OrderedList { .. }
         | BlockKind::Paragraph
-        | BlockKind::Image { .. }
-        | BlockKind::BlockQuote => px(4.0),
+        | BlockKind::Image { .. } => px(4.0),
         _ => px(0.0),
     }
 }

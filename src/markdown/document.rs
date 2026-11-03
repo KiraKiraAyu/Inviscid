@@ -69,9 +69,6 @@ pub enum VisualBlock {
     ListItem {
         source_line: SourceLine,
     },
-    BlockQuote {
-        source_line: SourceLine,
-    },
     ThematicBreak {
         source_line: SourceLine,
     },
@@ -86,7 +83,6 @@ impl VisualBlock {
             VisualBlock::Heading { source_line }
             | VisualBlock::Paragraph { source_line }
             | VisualBlock::ListItem { source_line }
-            | VisualBlock::BlockQuote { source_line }
             | VisualBlock::ThematicBreak { source_line }
             | VisualBlock::Image { source_line } => {
                 *source_line..SourceLine::new(source_line.index() + 1)
@@ -237,12 +233,6 @@ impl VisualDocument {
                 | BlockKind::OrderedList { .. }
                 | BlockKind::TaskList { .. } => {
                     blocks.push(VisualBlock::ListItem {
-                        source_line: SourceLine::new(idx),
-                    });
-                    idx += 1;
-                }
-                BlockKind::BlockQuote => {
-                    blocks.push(VisualBlock::BlockQuote {
                         source_line: SourceLine::new(idx),
                     });
                     idx += 1;
@@ -401,7 +391,6 @@ impl VisualDocument {
             VisualBlock::Heading { source_line, .. }
             | VisualBlock::Paragraph { source_line, .. }
             | VisualBlock::ListItem { source_line, .. }
-            | VisualBlock::BlockQuote { source_line, .. }
             | VisualBlock::ThematicBreak { source_line }
             | VisualBlock::Image { source_line, .. } => SourcePosition::new(*source_line, vpos.col),
             VisualBlock::CodeBlock {

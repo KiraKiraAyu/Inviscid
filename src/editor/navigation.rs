@@ -54,11 +54,14 @@ impl Editor {
         let viewport = self.viewport_bounds_val();
         let content_width = compute_content_width(viewport.size.width, self.render_mode);
         let indent_px = self.parsed_line_indent_px(parsed);
-        let available_width = crate::editor::shaping::compute_available_line_width_with_indent(
+        let quote_content_indent =
+            crate::editor::shaping::quote_content_indent_px(parsed, self.space_width());
+        let available_width = crate::editor::shaping::parsed_line_available_width(
             content_width,
-            &parsed.kind,
+            parsed,
             self.render_mode,
             indent_px,
+            quote_content_indent,
         );
         let wrap_width = if self.soft_wrap {
             Some(available_width)
@@ -87,6 +90,8 @@ impl Editor {
             let is_active_caret = self.is_active_disclosure_line(pos.line, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
+            let quote_content_indent =
+                crate::editor::shaping::quote_content_indent_px(parsed, self.space_width());
             let in_canvas_x = calculate_pos_from_col(
                 pos.col,
                 parsed,
@@ -97,10 +102,11 @@ impl Editor {
                 window,
             )
             .x;
-            let left_offset = crate::editor::shaping::get_block_left_offset_with_indent(
-                &parsed.kind,
+            let left_offset = crate::editor::shaping::get_parsed_line_left_offset(
+                parsed,
                 self.render_mode,
                 layout.indent_px(pos.line),
+                quote_content_indent,
             );
             left_offset + in_canvas_x
         } else {
@@ -149,10 +155,13 @@ impl Editor {
             let is_active_caret = self.is_active_disclosure_line(source_line, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
-            let target_left_offset = crate::editor::shaping::get_block_left_offset_with_indent(
-                &parsed.kind,
+            let quote_content_indent =
+                crate::editor::shaping::quote_content_indent_px(parsed, self.space_width());
+            let target_left_offset = crate::editor::shaping::get_parsed_line_left_offset(
+                parsed,
                 self.render_mode,
                 layout.indent_px(crate::buffer::SourceLine::new(line_idx)),
+                quote_content_indent,
             );
             let in_canvas_x = (goal_x - target_left_offset).max(px(0.0));
             let target_y = line_height * (visual_line_idx as f32) + line_height * 0.5;

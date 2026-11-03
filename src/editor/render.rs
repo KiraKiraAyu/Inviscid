@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::markdown::{BlockKind, ParsedLine, is_syntactic_separator, table};
+use crate::markdown::{BlockKind, ParsedLine, table};
 use crate::theme::Theme;
 use crate::ui::{Icon, IconName, IconSize};
 
@@ -91,13 +91,15 @@ pub fn render_live_line_content(
                     false,
                 );
 
-                let raw_lang = if parsed.raw_text.len() >= 3 {
-                    parsed.raw_text[3..].trim()
+                let fence_line = if parsed.quote.is_some() {
+                    let prefix_len = crate::markdown::quote_prefix_len(&parsed.raw_text);
+                    parsed.raw_text[prefix_len..].trim_start()
                 } else {
-                    ""
+                    parsed.raw_text.trim_start()
                 };
+                let raw_lang = fence_line.strip_prefix("```").unwrap_or("").trim();
 
-                div()
+                let header = div()
                     .w_full()
                     .mt(px(6.0))
                     .bg(theme.code_block_header_bg)
@@ -122,10 +124,10 @@ pub fn render_live_line_content(
                         } else {
                             div().min_w(px(50.0)).child(lang_canvas).into_any_element()
                         },
-                    ))
-                    .into_any_element()
+                    ));
+                header.into_any_element()
             } else {
-                div()
+                let closing = div()
                     .w_full()
                     .h(px(6.0))
                     .mb(px(6.0))
@@ -134,8 +136,8 @@ pub fn render_live_line_content(
                     .border_l_1()
                     .border_r_1()
                     .border_color(theme.code_block_border)
-                    .rounded_b(px(6.0))
-                    .into_any_element()
+                    .rounded_b(px(6.0));
+                closing.into_any_element()
             }
         }
 
@@ -160,7 +162,7 @@ pub fn render_live_line_content(
                 false,
             );
 
-            div()
+            let content = div()
                 .w_full()
                 .bg(theme.code_block_bg)
                 .border_l_1()
@@ -168,8 +170,8 @@ pub fn render_live_line_content(
                 .border_color(theme.code_block_border)
                 .px(px(14.0))
                 .py(px(1.0))
-                .child(text_canvas)
-                .into_any_element()
+                .child(text_canvas);
+            content.into_any_element()
         }
 
         BlockKind::ThematicBreak => div()
@@ -207,7 +209,7 @@ pub fn render_live_line_content(
                 if is_checked {
                     Some(theme.text_muted)
                 } else {
-                    None
+                    quote_text_color(parsed, theme)
                 },
                 false,
             );
@@ -273,7 +275,7 @@ pub fn render_live_line_content(
                 lrc,
                 typo.font_size,
                 typo.line_height,
-                None,
+                quote_text_color(parsed, theme),
                 false,
             );
 
@@ -305,7 +307,7 @@ pub fn render_live_line_content(
                 lrc,
                 typo.font_size,
                 typo.line_height,
-                None,
+                quote_text_color(parsed, theme),
                 false,
             );
 
@@ -321,55 +323,6 @@ pub fn render_live_line_content(
                 typo.line_height,
                 lrc.indent_px,
             )
-        }
-
-        BlockKind::BlockQuote => {
-            let is_prev_quote = if line_idx > 0 {
-                lines[line_idx - 1].trim_start().starts_with("> ")
-            } else {
-                false
-            };
-            let is_next_quote = if line_idx + 1 < lines.len() {
-                lines[line_idx + 1].trim_start().starts_with("> ")
-            } else {
-                false
-            };
-
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                lrc,
-                typo.font_size,
-                typo.line_height,
-                Some(theme.quote_text),
-                false,
-            );
-
-            let mut div_elem = div()
-                .w_full()
-                .border_l_4()
-                .border_color(theme.quote_border)
-                .bg(theme.quote_bg)
-                .pl(px(14.0))
-                .py(px(4.0));
-
-            if !is_prev_quote {
-                div_elem = div_elem.mt(px(4.0)).rounded_tr(px(4.0));
-            }
-            if !is_next_quote {
-                div_elem = div_elem.mb(px(4.0)).rounded_br(px(4.0));
-            }
-
-            div()
-                .w_full()
-                .pl(lrc.indent_px)
-                .child(div_elem.child(text_canvas))
-                .into_any_element()
         }
 
         BlockKind::Image { alt, url } => {
@@ -556,7 +509,7 @@ pub fn render_live_line_content(
                 lrc,
                 typo.font_size,
                 typo.line_height,
-                None,
+                quote_text_color(parsed, theme),
                 false,
             );
 
@@ -637,7 +590,7 @@ pub fn render_live_line_content(
         }
 
         BlockKind::Paragraph => {
-            if is_syntactic_separator(lines, source_line) && !is_active {
+            if lrc.is_syntactic_separator && !is_active {
                 // Syntactic blank separator lines between blocks: collapsed to 0 height in Live Preview
                 return div().h(px(0.0)).into_any_element();
             }
@@ -653,7 +606,7 @@ pub fn render_live_line_content(
                 lrc,
                 typo.font_size,
                 typo.line_height,
-                None,
+                quote_text_color(parsed, theme),
                 false,
             );
 
@@ -665,6 +618,11 @@ pub fn render_live_line_content(
                 .into_any_element()
         }
     }
+}
+
+#[inline]
+fn quote_text_color(parsed: &ParsedLine, theme: &Theme) -> Option<Hsla> {
+    parsed.quote.map(|_| theme.quote_text)
 }
 
 fn render_list_item_row(

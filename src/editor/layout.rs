@@ -1,4 +1,5 @@
 use gpui::*;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use super::{Editor, RenderMode};
 use crate::buffer::SourceLine;
 use crate::editor::shaping::compute_content_width;
 use crate::markdown::prefix::is_fence_line;
-use crate::markdown::{BlockKind, MarkdownScanner, ParsedLine};
+use crate::markdown::{BlockKind, MarkdownScanner, ParsedLine, QuoteProjection};
 use crate::theme::Theme;
 
 /// Width reserved for the line-number gutter in Source mode.
@@ -23,6 +24,23 @@ pub const MAX_CONTENT_WIDTH_LIVE: Pixels = px(860.0);
 
 /// Bottom overscroll buffer allowing the last line to sit comfortably above the window bottom.
 pub const BOTTOM_OVERSCROLL: Pixels = px(96.0);
+
+pub(crate) fn quote_ranges(parsed_lines: &[ParsedLine]) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = None;
+
+    for (idx, parsed) in parsed_lines.iter().enumerate() {
+        if parsed.quote.is_some() {
+            start.get_or_insert(idx);
+        } else if let Some(range_start) = start.take() {
+            ranges.push(range_start..idx);
+        }
+    }
+    if let Some(range_start) = start {
+        ranges.push(range_start..parsed_lines.len());
+    }
+    ranges
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockTypography {
@@ -122,11 +140,6 @@ pub fn get_block_typography_with_metrics(
                 px((8.0 * scale).round()),
             )
         }
-        BlockKind::BlockQuote => BlockTypography::new(
-            px(base_font_size),
-            px((base_font_size * line_height_factor).round()),
-            px((8.0 * scale).round()),
-        ),
         BlockKind::ThematicBreak => BlockTypography::new(
             px(base_font_size),
             px((18.0 * scale * lh_ratio).round()),
@@ -154,7 +167,6 @@ pub fn get_block_color_override(kind: &BlockKind, theme: &Theme) -> Option<Hsla>
             4 => Some(theme.heading_h4),
             _ => None,
         },
-        BlockKind::BlockQuote => Some(theme.quote_text),
         BlockKind::CodeBlock {
             is_fence_start: true,
         }
@@ -176,6 +188,7 @@ pub struct DocumentLayoutCache {
     pub active_line: SourceLine,
     pub active_col: usize,
     pub active_math_block: Option<(SourceLine, SourceLine)>,
+    pub active_mermaid_block: Option<(SourceLine, SourceLine)>,
     pub doc_path: Option<PathBuf>,
     pub image_cache_version: usize,
     pub syntax_cache_version: usize,
@@ -189,6 +202,8 @@ pub struct DocumentLayoutCache {
     pub space_width: Pixels,
     pub total_height: Pixels,
     pub separators: Vec<bool>,
+    pub quote_projection: Arc<QuoteProjection>,
+    pub quote_ranges: Vec<Range<usize>>,
 }
 
 impl Default for DocumentLayoutCache {
@@ -201,6 +216,7 @@ impl Default for DocumentLayoutCache {
             active_line: SourceLine::new(0),
             active_col: 0,
             active_math_block: None,
+            active_mermaid_block: None,
             doc_path: None,
             image_cache_version: 0,
             syntax_cache_version: 0,
@@ -214,6 +230,8 @@ impl Default for DocumentLayoutCache {
             space_width: px(0.0),
             total_height: px(0.0),
             separators: Vec::new(),
+            quote_projection: Arc::new(QuoteProjection::default()),
+            quote_ranges: Vec::new(),
         }
     }
 }
@@ -273,6 +291,7 @@ pub struct LineLayoutContext<'a> {
     pub line_height: f32,
     pub soft_wrap: bool,
     pub indent_px: Pixels,
+    pub quote_content_indent_px: Pixels,
     pub text_system: Option<Arc<WindowTextSystem>>,
 }
 
@@ -293,6 +312,7 @@ impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
             .field("line_height", &self.line_height)
             .field("soft_wrap", &self.soft_wrap)
             .field("indent_px", &self.indent_px)
+            .field("quote_content_indent_px", &self.quote_content_indent_px)
             .field("has_text_system", &self.text_system.is_some())
             .finish()
     }
@@ -315,6 +335,7 @@ impl<'a> Default for LineLayoutContext<'a> {
             line_height: 1.6,
             soft_wrap: true,
             indent_px: px(0.0),
+            quote_content_indent_px: px(0.0),
             text_system: None,
         }
     }
@@ -344,6 +365,7 @@ impl<'a> LineLayoutContext<'a> {
             line_height: 1.6,
             soft_wrap: true,
             indent_px: px(0.0),
+            quote_content_indent_px: px(0.0),
             text_system: None,
         }
     }
@@ -377,6 +399,11 @@ impl<'a> LineLayoutContext<'a> {
 
     pub fn with_indent(mut self, indent_px: Pixels) -> Self {
         self.indent_px = indent_px;
+        self
+    }
+
+    pub fn with_quote_content_indent(mut self, indent_px: Pixels) -> Self {
+        self.quote_content_indent_px = indent_px;
         self
     }
 
@@ -416,20 +443,23 @@ pub fn get_line_layout_height(
 
     use crate::editor::shaping::{
         LineShapingContext, build_line_runs, calculate_visual_lines_with_runs,
-        compute_available_line_width_with_indent,
+        effective_content_width, parsed_line_available_width,
     };
 
-    let content_width =
+    let base_content_width =
         if lcx.math_block_editing && matches!(parsed.kind, BlockKind::MathBlockContent) {
             (lcx.content_width / 2.0 + px(40.0)).max(px(0.0))
         } else {
             lcx.content_width
         };
-    let available_w = compute_available_line_width_with_indent(
-        content_width,
-        &parsed.kind,
+    let content_width =
+        effective_content_width(base_content_width, parsed, lcx.mode, lcx.indent_px);
+    let available_w = parsed_line_available_width(
+        base_content_width,
+        parsed,
         lcx.mode,
         lcx.indent_px,
+        lcx.quote_content_indent_px,
     );
 
     if lcx.mode == RenderMode::Source {
@@ -515,7 +545,7 @@ pub fn get_line_layout_height(
         typo.padding_vertical + typo.line_height.max(math_height) * (visual_lines as f32)
     };
 
-    match &parsed.kind {
+    let height = match &parsed.kind {
         BlockKind::Heading { .. } => {
             let color = get_block_color_override(&parsed.kind, &crate::theme::DEFAULT_THEME);
             wrapped_prose_height(
@@ -539,8 +569,16 @@ pub fn get_line_layout_height(
                     .map(|diagram| {
                         crate::mermaid::display_size(
                             &diagram.rendered,
-                            lcx.content_width,
-                            lcx.indent_px,
+                            content_width,
+                            if parsed.quote.is_some() {
+                                if parsed.kind.has_syntax_prefix() {
+                                    lcx.quote_content_indent_px
+                                } else {
+                                    px(0.0)
+                                }
+                            } else {
+                                lcx.indent_px
+                            },
                         )
                         .1 + px(26.0)
                     })
@@ -609,21 +647,6 @@ pub fn get_line_layout_height(
             };
             source_height.max(preview_height)
         }
-        BlockKind::BlockQuote => {
-            let is_prev_quote = idx > 0 && lines[idx - 1].trim_start().starts_with("> ");
-            let is_next_quote =
-                idx + 1 < lines.len() && lines[idx + 1].trim_start().starts_with("> ");
-            let color = get_block_color_override(&parsed.kind, &crate::theme::DEFAULT_THEME);
-            let mut h =
-                wrapped_prose_height(font(crate::platform::platform_ui_font()), color, false);
-            if !is_prev_quote {
-                h += px(4.0);
-            }
-            if !is_next_quote {
-                h += px(4.0);
-            }
-            h
-        }
         BlockKind::Image { url, .. } => {
             let base_h = if lcx.is_active {
                 px(38.0)
@@ -634,10 +657,11 @@ pub fn get_line_layout_height(
                 if let Some((w, h)) = crate::http::get_image_size(url, lcx.doc_path)
                     && w > 0
                 {
-                    let img_h = px((h as f32) * f32::from(lcx.content_width) / (w as f32));
-                    return base_h + img_h + px(12.0);
+                    let img_h = px((h as f32) * f32::from(content_width) / (w as f32));
+                    base_h + img_h + px(12.0)
+                } else {
+                    base_h + px(40.0) + px(12.0)
                 }
-                base_h + px(40.0) + px(12.0)
             } else if crate::http::is_url_failed(url) {
                 base_h + px(40.0) + px(12.0)
             } else {
@@ -689,6 +713,24 @@ pub fn get_line_layout_height(
         BlockKind::TaskList { .. } | BlockKind::BulletList | BlockKind::OrderedList { .. } => {
             wrapped_prose_height(font(crate::platform::platform_ui_font()), None, false)
         }
+    };
+
+    if let Some(quote) = parsed.quote {
+        height + blockquote_edge_spacing(quote)
+    } else {
+        height
+    }
+}
+
+fn blockquote_edge_spacing(quote: crate::markdown::QuoteContext) -> Pixels {
+    (if quote.is_start {
+        crate::editor::shaping::QUOTE_EDGE_PADDING
+    } else {
+        px(0.0)
+    }) + if quote.is_end {
+        crate::editor::shaping::QUOTE_EDGE_PADDING
+    } else {
+        px(0.0)
     }
 }
 
@@ -797,22 +839,34 @@ impl Editor {
         .with_selection_disclosure(self.is_selection_disclosure())
         .with_metrics(self.font_size, self.line_height, self.soft_wrap)
         .with_indent(indent_px)
+        .with_quote_content_indent(crate::editor::shaping::quote_content_indent_px(
+            parsed,
+            self.space_width(),
+        ))
         .with_text_system(self.text_system.clone())
     }
 
-    fn active_math_block(&self, active_line: SourceLine) -> Option<(SourceLine, SourceLine)> {
+    fn active_math_block_with_projection(
+        &self,
+        active_line: SourceLine,
+        projection: &QuoteProjection,
+    ) -> Option<(SourceLine, SourceLine)> {
         if self.render_mode == RenderMode::Source {
             return None;
         }
-        crate::markdown::math_block_range(self.buffer.lines(), active_line)
+        crate::markdown::math_block_range_with_projection(projection, active_line)
             .filter(|(start, end)| active_line > *start && active_line < *end)
     }
 
-    fn active_mermaid_block(&self, active_line: SourceLine) -> Option<(SourceLine, SourceLine)> {
+    fn active_mermaid_block_with_projection(
+        &self,
+        active_line: SourceLine,
+        projection: &QuoteProjection,
+    ) -> Option<(SourceLine, SourceLine)> {
         if self.render_mode == RenderMode::Source {
             return None;
         }
-        crate::markdown::mermaid_block_range(self.buffer.lines(), active_line)
+        crate::markdown::mermaid_block_range_with_projection(projection, active_line)
     }
 
     pub fn ensure_layout_cache(&self) {
@@ -821,16 +875,24 @@ impl Editor {
         let disclosure_position = self.disclosure_position();
         let active_line = disclosure_position.line;
         let active_col = disclosure_position.col;
-        let active_math_block = self.active_math_block(active_line);
         let current_img_v = crate::http::image_cache_version();
         let current_syntax_v = crate::syntax::syntax_cache_version();
 
         let current_cache = self.layout_cache.borrow().clone();
-        let active_mermaid_block = self.active_mermaid_block(active_line);
-        let cached_active_mermaid_block = self.active_mermaid_block(current_cache.active_line);
         let view_matches = self.cache_matches_view(&current_cache, content_width);
         let buffer_matches = current_cache.buffer_version == self.buffer.version()
             && current_cache.lines_len == self.buffer.line_count();
+        let quote_projection =
+            if buffer_matches && current_cache.quote_projection.len() == self.buffer.line_count() {
+                current_cache.quote_projection.clone()
+            } else {
+                Arc::new(QuoteProjection::from_lines(self.buffer.lines()))
+            };
+        let active_math_block =
+            self.active_math_block_with_projection(active_line, &quote_projection);
+        let active_mermaid_block =
+            self.active_mermaid_block_with_projection(active_line, &quote_projection);
+        let cached_active_mermaid_block = current_cache.active_mermaid_block;
 
         if buffer_matches
             && view_matches
@@ -838,6 +900,7 @@ impl Editor {
             && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.active_line == active_line
             && current_cache.active_math_block == active_math_block
+            && current_cache.active_mermaid_block == active_mermaid_block
             && (self.render_mode == RenderMode::Source || current_cache.active_col == active_col)
         {
             return;
@@ -862,7 +925,10 @@ impl Editor {
                     .copied()
                     .unwrap_or(false)
             } else {
-                crate::markdown::is_syntactic_separator(self.buffer.lines(), active_line)
+                crate::markdown::is_syntactic_separator_with_projection(
+                    &quote_projection,
+                    active_line,
+                )
             };
             let new_h = if let Some(parsed) = cache.parsed_lines.get(active_line_idx) {
                 let lcx = self.line_layout_ctx(
@@ -884,6 +950,7 @@ impl Editor {
             if (new_h - old_h).abs() < px(0.01) {
                 cache.active_col = active_col;
                 cache.active_math_block = active_math_block;
+                cache.active_mermaid_block = active_mermaid_block;
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
@@ -901,6 +968,7 @@ impl Editor {
             };
             cache.active_col = active_col;
             cache.active_math_block = active_math_block;
+            cache.active_mermaid_block = active_mermaid_block;
             *self.layout_cache.borrow_mut() = Arc::new(cache);
             return;
         }
@@ -912,7 +980,7 @@ impl Editor {
             && current_cache.syntax_cache_version == current_syntax_v
             && !current_cache.parsed_lines.is_empty()
             && current_cache.line_heights.len() == current_cache.parsed_lines.len()
-            && self.active_math_block(current_cache.active_line) == active_math_block
+            && current_cache.active_math_block == active_math_block
             && cached_active_mermaid_block == active_mermaid_block
         {
             let mut cache = (*current_cache).clone();
@@ -924,7 +992,7 @@ impl Editor {
             } else if cache.separators.len() == cache.lines_len {
                 cache.separators.clone()
             } else {
-                crate::markdown::compute_syntactic_separators(self.buffer.lines())
+                crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
             };
 
             let calc_h = |source_line: SourceLine, is_active: bool| -> Pixels {
@@ -969,6 +1037,7 @@ impl Editor {
                 cache.active_line = active_line;
                 cache.active_col = active_col;
                 cache.active_math_block = active_math_block;
+                cache.active_mermaid_block = active_mermaid_block;
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
@@ -999,6 +1068,7 @@ impl Editor {
             cache.active_line = active_line;
             cache.active_col = active_col;
             cache.active_math_block = active_math_block;
+            cache.active_mermaid_block = active_mermaid_block;
             *self.layout_cache.borrow_mut() = Arc::new(cache);
             return;
         }
@@ -1027,7 +1097,10 @@ impl Editor {
         {
             current_cache.parsed_lines.clone()
         } else {
-            let mut scanned = MarkdownScanner::scan_document(self.buffer.lines());
+            let mut scanned = MarkdownScanner::scan_document_with_projection(
+                self.buffer.lines(),
+                &quote_projection,
+            );
             self.project_ime_preedit(0, &mut scanned);
             Arc::new(scanned)
         };
@@ -1035,7 +1108,7 @@ impl Editor {
         let separators = if self.render_mode == RenderMode::Source {
             Vec::new()
         } else {
-            crate::markdown::compute_syntactic_separators(self.buffer.lines())
+            crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
         };
 
         let mut line_heights = Vec::with_capacity(parsed_doc.len());
@@ -1067,6 +1140,7 @@ impl Editor {
         } else {
             y + px(24.0)
         };
+        let parsed_quote_ranges = quote_ranges(&parsed_doc);
 
         let new_cache = DocumentLayoutCache {
             buffer_version: self.buffer.version(),
@@ -1076,6 +1150,7 @@ impl Editor {
             active_line,
             active_col,
             active_math_block,
+            active_mermaid_block,
             doc_path: self.buffer.file_path_buf(),
             image_cache_version: current_img_v,
             syntax_cache_version: current_syntax_v,
@@ -1089,6 +1164,8 @@ impl Editor {
             space_width: self.space_width(),
             total_height,
             separators,
+            quote_projection,
+            quote_ranges: parsed_quote_ranges,
         };
 
         *self.layout_cache.borrow_mut() = Arc::new(new_cache);
@@ -1119,9 +1196,12 @@ impl Editor {
         }) {
             return false;
         }
+        let quote_projection = Arc::new(QuoteProjection::from_lines(buf_lines));
         let active_col = self.disclosure_col();
-        let active_math_block = self.active_math_block(active_line);
-        let active_mermaid_block = self.active_mermaid_block(active_line);
+        let active_math_block =
+            self.active_math_block_with_projection(active_line, &quote_projection);
+        let active_mermaid_block =
+            self.active_mermaid_block_with_projection(active_line, &quote_projection);
 
         if cache_len.saturating_sub(delta.old_line_count) + delta.new_line_count != buf_len {
             return false;
@@ -1132,7 +1212,9 @@ impl Editor {
         }
 
         for line in &cache.parsed_lines[edit_start_idx..edit_start_idx + delta.old_line_count] {
-            if line.raw_text.trim_start().starts_with("```")
+            if crate::markdown::strip_quote_prefix(&line.raw_text)
+                .trim_start()
+                .starts_with("```")
                 || matches!(
                     line.kind,
                     BlockKind::CodeBlock { .. }
@@ -1144,7 +1226,8 @@ impl Editor {
             }
         }
         for line in &buf_lines[edit_start_idx..edit_start_idx + delta.new_line_count] {
-            if line.trim_start().starts_with("```") || line.trim() == "$$" {
+            let structural_line = crate::markdown::strip_quote_prefix(line).trim_start();
+            if structural_line.starts_with("```") || structural_line.trim() == "$$" {
                 return false;
             }
         }
@@ -1176,7 +1259,8 @@ impl Editor {
         let mut block_start = edit_start_idx;
         if in_code_block {
             while block_start > 0 {
-                let prev_trimmed = buf_lines[block_start - 1].trim_start();
+                let prev_trimmed =
+                    crate::markdown::strip_quote_prefix(&buf_lines[block_start - 1]).trim_start();
                 if is_fence_line(prev_trimmed) {
                     break;
                 }
@@ -1195,7 +1279,8 @@ impl Editor {
             }
         } else {
             while block_start > 0 && !buf_lines[block_start - 1].trim().is_empty() {
-                let prev_trimmed = buf_lines[block_start - 1].trim_start();
+                let prev_trimmed =
+                    crate::markdown::strip_quote_prefix(&buf_lines[block_start - 1]).trim_start();
                 if is_fence_line(prev_trimmed) || prev_trimmed.starts_with('#') {
                     break;
                 }
@@ -1206,7 +1291,8 @@ impl Editor {
         let mut block_end = edit_start_idx + delta.new_line_count;
         if in_code_block {
             while block_end < buf_len {
-                let next_trimmed = buf_lines[block_end].trim_start();
+                let next_trimmed =
+                    crate::markdown::strip_quote_prefix(&buf_lines[block_end]).trim_start();
                 if is_fence_line(next_trimmed) {
                     break;
                 }
@@ -1214,7 +1300,8 @@ impl Editor {
             }
         } else if in_math_block {
             while block_end < buf_len {
-                let is_close = buf_lines[block_end].trim() == "$$";
+                let is_close =
+                    crate::markdown::strip_quote_prefix(&buf_lines[block_end]).trim() == "$$";
                 block_end += 1;
                 if is_close {
                     break;
@@ -1222,7 +1309,8 @@ impl Editor {
             }
         } else {
             while block_end < buf_len && !buf_lines[block_end].trim().is_empty() {
-                let next_trimmed = buf_lines[block_end].trim_start();
+                let next_trimmed =
+                    crate::markdown::strip_quote_prefix(&buf_lines[block_end]).trim_start();
                 if is_fence_line(next_trimmed) || next_trimmed.starts_with('#') {
                     break;
                 }
@@ -1242,8 +1330,9 @@ impl Editor {
             return false;
         }
 
-        let mut new_parsed = MarkdownScanner::scan_range_with_state(
+        let mut new_parsed = MarkdownScanner::scan_range_with_projection_with_state(
             buf_lines,
+            &quote_projection,
             block_start..block_end,
             in_code_block,
             false,
@@ -1311,18 +1400,20 @@ impl Editor {
             cache.total_height += height_delta;
         }
 
-        if cache.separators.len() >= old_block_end {
-            cache.separators.splice(
-                block_start..old_block_end,
-                vec![false; block_end - block_start],
-            );
-        }
+        cache.separators = if self.render_mode == RenderMode::Source {
+            Vec::new()
+        } else {
+            crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
+        };
 
         cache.buffer_version = self.buffer.version();
         cache.lines_len = buf_len;
         cache.active_line = active_line;
         cache.active_col = active_col;
         cache.active_math_block = active_math_block;
+        cache.active_mermaid_block = active_mermaid_block;
+        cache.quote_projection = quote_projection;
+        cache.quote_ranges = quote_ranges(&cache.parsed_lines);
         cache.fold_version = self.display_map.version();
 
         true

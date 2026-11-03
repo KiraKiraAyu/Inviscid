@@ -154,25 +154,8 @@ impl Element for EditorElement {
                     let is_dragging = editor.is_dragging;
                     let is_selection_disclosure = editor.is_selection_disclosure();
                     let mode = editor.render_mode;
-                    let active_math_block = if mode == RenderMode::Source {
-                        None
-                    } else {
-                        crate::markdown::math_block_range(
-                            editor.buffer.lines(),
-                            disclosure_position.line,
-                        )
-                        .filter(|(start, end)| {
-                            disclosure_position.line > *start && disclosure_position.line < *end
-                        })
-                    };
-                    let active_mermaid_block = if mode == RenderMode::Source {
-                        None
-                    } else {
-                        crate::markdown::mermaid_block_range(
-                            editor.buffer.lines(),
-                            disclosure_position.line,
-                        )
-                    };
+                    let active_math_block = layout.active_math_block;
+                    let active_mermaid_block = layout.active_mermaid_block;
                     let theme = cx.theme();
                     let content_width = compute_content_width(bounds.size.width, mode);
                     let container_x =
@@ -181,12 +164,51 @@ impl Element for EditorElement {
                     let mut lines_to_prepaint =
                         Vec::with_capacity(visible_end.saturating_sub(visible_start));
 
+                    match mode {
+                        RenderMode::LivePreview => {
+                            for quote_range in &layout.quote_ranges {
+                                if quote_range.end <= visible_start
+                                    || quote_range.start >= visible_end
+                                {
+                                    continue;
+                                }
+                                let group_height = layout.line_heights[quote_range.clone()]
+                                    .iter()
+                                    .copied()
+                                    .fold(px(0.0), |height, line_height| height + line_height);
+                                let quote_indent = layout
+                                    .indent_px(crate::buffer::SourceLine::new(quote_range.start));
+                                let panel = div()
+                                    .w_full()
+                                    .h(group_height)
+                                    .border_l_4()
+                                    .border_color(theme.quote_border)
+                                    .bg(theme.quote_bg);
+                                let panel_y = bounds.origin.y
+                                    + layout.line_y_offsets[quote_range.start]
+                                    - scroll_top;
+                                lines_to_prepaint.push((
+                                    panel.into_any_element(),
+                                    point(container_x + quote_indent, panel_y),
+                                    size(
+                                        AvailableSpace::Definite(
+                                            (content_width - quote_indent).max(px(0.0)),
+                                        ),
+                                        AvailableSpace::Definite(group_height),
+                                    ),
+                                ));
+                            }
+                        }
+                        RenderMode::Source => {}
+                    }
+
                     for line_idx in visible_start..visible_end {
                         let source_line = crate::buffer::SourceLine::new(line_idx);
                         if editor.is_line_folded(source_line) {
                             continue;
                         }
                         let parsed = &layout.parsed_lines[line_idx];
+
                         let is_active_line = source_line == cursor_line;
                         let is_disclosure_line = source_line == disclosure_position.line;
                         let is_math_block_editing = active_math_block
@@ -229,6 +251,16 @@ impl Element for EditorElement {
                             line_height: editor.line_height,
                             soft_wrap: editor.soft_wrap,
                             indent_px: layout.indent_px(source_line),
+                            quote_content_indent_px:
+                                crate::editor::shaping::quote_content_indent_px(
+                                    parsed,
+                                    layout.space_width,
+                                ),
+                            is_syntactic_separator: layout
+                                .separators
+                                .get(line_idx)
+                                .copied()
+                                .unwrap_or(false),
                             text_system: editor.text_system.as_ref(),
                             highlights: &highlights,
                         };
@@ -429,8 +461,39 @@ fn render_line_element(
     if lrc.mode == RenderMode::Source {
         render_source_line(source_line, parsed, lrc, Some(editor))
     } else {
+        let mut content_lrc = *lrc;
+        if parsed.quote.is_some() {
+            content_lrc.content_width = crate::editor::shaping::effective_content_width(
+                lrc.content_width,
+                parsed,
+                lrc.mode,
+                lrc.indent_px,
+            );
+            content_lrc.indent_px = if parsed.kind.has_syntax_prefix() {
+                lrc.quote_content_indent_px
+            } else {
+                px(0.0)
+            };
+            content_lrc.quote_content_indent_px = px(0.0);
+        }
         let content_element =
-            render_live_line_content(source_line, parsed, lines, lrc, Some(editor));
+            render_live_line_content(source_line, parsed, lines, &content_lrc, Some(editor));
+
+        let content_element = if let Some(quote) = parsed.quote {
+            let quote_depth = quote.depth.max(1);
+            let mut quote_line = div()
+                .w_full()
+                .pl(crate::editor::shaping::QUOTE_GUTTER * quote_depth as f32 + lrc.indent_px);
+            if quote.is_start {
+                quote_line = quote_line.pt(px(4.0));
+            }
+            if quote.is_end {
+                quote_line = quote_line.pb(px(4.0));
+            }
+            quote_line.child(content_element).into_any_element()
+        } else {
+            content_element
+        };
 
         div()
             .id(ElementId::NamedInteger("live_line".into(), line_idx as u64))

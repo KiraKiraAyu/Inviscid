@@ -1,9 +1,10 @@
+use super::indent::{leading_indent_len, quote_depth, quote_prefix_len};
 use super::inline::{InlineSpan, parse_inline_spans};
 use super::prefix::{
     BlockPrefix, fence_info, is_fence_line, is_thematic_break, parse_block_prefix,
 };
 use super::table::{is_table_delimiter_row, parse_table_alignments, parse_table_row_cells};
-use super::types::{BlockKind, ParsedLine, TableAlignment};
+use super::types::{BlockKind, ParsedLine, QuoteContext, TableAlignment};
 use crate::buffer::SourceLine;
 
 fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
@@ -28,6 +29,15 @@ fn is_mermaid_fence(line: &str) -> bool {
     fence_info(line).is_some_and(is_mermaid_info)
 }
 
+#[inline]
+fn projected_line(line: &str, in_top_level_fence: bool) -> &str {
+    if in_top_level_fence {
+        line
+    } else {
+        super::indent::strip_quote_prefix(line)
+    }
+}
+
 fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usize> {
     let mut in_code_fence = false;
     for (offset, line) in lines.get(from_idx..)?.iter().enumerate() {
@@ -40,12 +50,63 @@ fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usiz
     None
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct QuoteProjection {
+    normalized: Vec<String>,
+    quote_prefixes: Vec<Option<usize>>,
+}
+
+impl QuoteProjection {
+    pub fn from_lines(lines: &[String]) -> Self {
+        let top_level_fences = top_level_fenced_lines(lines);
+        let mut normalized = Vec::with_capacity(lines.len());
+        let mut quote_prefixes = Vec::with_capacity(lines.len());
+        for (idx, line) in lines.iter().enumerate() {
+            if !top_level_fences[idx]
+                && let Some((prefix_len, content)) = quoted_content(line)
+            {
+                normalized.push(content.to_string());
+                quote_prefixes.push(Some(prefix_len));
+            } else {
+                normalized.push(line.clone());
+                quote_prefixes.push(None);
+            }
+        }
+        Self {
+            normalized,
+            quote_prefixes,
+        }
+    }
+
+    #[inline]
+    pub fn normalized_lines(&self) -> &[String] {
+        &self.normalized
+    }
+
+    #[inline]
+    pub fn quote_prefixes(&self) -> &[Option<usize>] {
+        &self.quote_prefixes
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.normalized.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.normalized.is_empty()
+    }
+}
+
 pub(crate) fn math_block_pairs(lines: &[String]) -> Vec<(SourceLine, SourceLine)> {
     let mut pairs = Vec::new();
     let mut in_code_fence = false;
     let mut open_idx = None;
+    let top_level_fences = top_level_fenced_lines(lines);
 
-    for (idx, line) in lines.iter().enumerate() {
+    for (idx, raw_line) in lines.iter().enumerate() {
+        let line = projected_line(raw_line, top_level_fences[idx]);
         if is_fence_line(line) {
             in_code_fence = !in_code_fence;
             continue;
@@ -65,6 +126,50 @@ pub(crate) fn math_block_pairs(lines: &[String]) -> Vec<(SourceLine, SourceLine)
 }
 
 pub(crate) fn math_block_range(
+    lines: &[String],
+    target_line: SourceLine,
+) -> Option<(SourceLine, SourceLine)> {
+    let target_idx = target_line.index();
+    let mut in_code_fence = false;
+    let mut open_idx = None;
+    let top_level_fences = top_level_fenced_lines(lines);
+
+    for (idx, raw_line) in lines.iter().enumerate() {
+        let line = projected_line(raw_line, top_level_fences[idx]);
+        if is_fence_line(line) {
+            in_code_fence = !in_code_fence;
+        } else if !in_code_fence && is_math_delimiter(line) {
+            if let Some(start) = open_idx.take() {
+                if start <= target_idx && target_idx <= idx {
+                    return Some((SourceLine::new(start), SourceLine::new(idx)));
+                }
+                if idx >= target_idx {
+                    return None;
+                }
+            } else {
+                if idx > target_idx {
+                    return None;
+                }
+                open_idx = Some(idx);
+            }
+        }
+
+        if idx >= target_idx && open_idx.is_none() {
+            return None;
+        }
+    }
+
+    None
+}
+
+pub(crate) fn math_block_range_with_projection(
+    projection: &QuoteProjection,
+    target_line: SourceLine,
+) -> Option<(SourceLine, SourceLine)> {
+    math_block_range_normalized(projection.normalized_lines(), target_line)
+}
+
+fn math_block_range_normalized(
     lines: &[String],
     target_line: SourceLine,
 ) -> Option<(SourceLine, SourceLine)> {
@@ -99,14 +204,38 @@ pub(crate) fn math_block_range(
     None
 }
 
-pub(crate) fn mermaid_block_range(
+pub fn mermaid_block_range(
     lines: &[String],
     target_line: SourceLine,
 ) -> Option<(SourceLine, SourceLine)> {
     let target_idx = target_line.index();
     let mut open_fence: Option<(usize, bool)> = None;
+    let top_level_fences = top_level_fenced_lines(lines);
 
-    for (idx, line) in lines.iter().enumerate() {
+    for (idx, raw_line) in lines.iter().enumerate() {
+        let line = projected_line(raw_line, top_level_fences[idx]);
+        if is_fence_line(line) {
+            if let Some((start, is_mermaid)) = open_fence.take() {
+                if is_mermaid && (start..=idx).contains(&target_idx) {
+                    return Some((SourceLine::new(start), SourceLine::new(idx)));
+                }
+            } else {
+                open_fence = Some((idx, is_mermaid_info(fence_info(line).unwrap_or(""))));
+            }
+        }
+    }
+
+    None
+}
+
+pub(crate) fn mermaid_block_range_with_projection(
+    projection: &QuoteProjection,
+    target_line: SourceLine,
+) -> Option<(SourceLine, SourceLine)> {
+    let target_idx = target_line.index();
+    let mut open_fence: Option<(usize, bool)> = None;
+
+    for (idx, line) in projection.normalized_lines().iter().enumerate() {
         if let Some(info) = fence_info(line) {
             if let Some((start, is_mermaid)) = open_fence.take() {
                 if is_mermaid && (start..=idx).contains(&target_idx) {
@@ -122,7 +251,7 @@ pub(crate) fn mermaid_block_range(
 }
 
 fn math_block_state_before(lines: &[String], end_idx: usize) -> bool {
-    math_block_range(lines, SourceLine::new(end_idx))
+    math_block_range_normalized(lines, SourceLine::new(end_idx))
         .is_some_and(|(start, _)| start.index() < end_idx)
 }
 
@@ -143,6 +272,38 @@ fn highlight_fenced_slice(
     (content_start, spans)
 }
 
+fn quoted_content(line: &str) -> Option<(usize, &str)> {
+    let prefix_len = quote_prefix_len(line);
+    (prefix_len > 0).then_some((prefix_len, &line[prefix_len..]))
+}
+
+fn top_level_fenced_lines(lines: &[String]) -> Vec<bool> {
+    let mut fenced = vec![false; lines.len()];
+    let mut open_idx = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if !is_fence_line(line) {
+            continue;
+        }
+        if let Some(start) = open_idx.take() {
+            fenced[start..=idx].fill(true);
+        } else {
+            open_idx = Some(idx);
+        }
+    }
+
+    fenced
+}
+
+fn shift_spans(spans: &mut [InlineSpan], offset: usize) {
+    for span in spans {
+        span.group_range.0 += offset;
+        span.group_range.1 += offset;
+        span.span_range.0 += offset;
+        span.span_range.1 += offset;
+    }
+}
+
 pub struct MarkdownScanner;
 
 impl MarkdownScanner {
@@ -150,21 +311,54 @@ impl MarkdownScanner {
         Self::scan_range(lines, 0..lines.len(), false)
     }
 
+    pub(crate) fn scan_document_with_projection(
+        lines: &[String],
+        projection: &QuoteProjection,
+    ) -> Vec<ParsedLine> {
+        Self::scan_range_with_projection_with_state(lines, projection, 0..lines.len(), false, false)
+    }
+
     pub fn scan_range(
         lines: &[String],
         range: std::ops::Range<usize>,
         initial_in_code_fence: bool,
     ) -> Vec<ParsedLine> {
+        let projection = QuoteProjection::from_lines(lines);
         let initial_in_math_block = if initial_in_code_fence {
             false
         } else {
-            math_block_state_before(lines, range.start)
+            math_block_state_before(projection.normalized_lines(), range.start)
         };
-        Self::scan_range_with_state(lines, range, initial_in_code_fence, initial_in_math_block)
+        Self::scan_range_with_projection_with_state(
+            lines,
+            &projection,
+            range,
+            initial_in_code_fence,
+            initial_in_math_block,
+        )
     }
 
-    pub(crate) fn scan_range_with_state(
+    pub(crate) fn scan_range_with_projection_with_state(
         lines: &[String],
+        projection: &QuoteProjection,
+        range: std::ops::Range<usize>,
+        initial_in_code_fence: bool,
+        initial_in_math_block: bool,
+    ) -> Vec<ParsedLine> {
+        Self::scan_normalized_range_with_state(
+            lines,
+            projection.normalized_lines(),
+            projection.quote_prefixes(),
+            range,
+            initial_in_code_fence,
+            initial_in_math_block,
+        )
+    }
+
+    fn scan_normalized_range_with_state(
+        source_lines: &[String],
+        lines: &[String],
+        quote_prefixes: &[Option<usize>],
         range: std::ops::Range<usize>,
         initial_in_code_fence: bool,
         initial_in_math_block: bool,
@@ -198,7 +392,7 @@ impl MarkdownScanner {
                 (None, None)
             };
 
-        for idx in range {
+        for idx in range.clone() {
             let raw_line = &lines[idx];
             let trimmed = raw_line.trim_start();
             let leading_spaces = raw_line.len() - trimmed.len();
@@ -218,6 +412,7 @@ impl MarkdownScanner {
                         raw_line.clone(),
                         (0, raw_line.chars().count()),
                     )],
+                    quote: None,
                 });
                 continue;
             }
@@ -272,6 +467,7 @@ impl MarkdownScanner {
                                 }
                             },
                             spans,
+                            quote: None,
                         });
                         continue;
                     }
@@ -297,6 +493,7 @@ impl MarkdownScanner {
                             (0, char_count),
                             (0, char_count),
                         )],
+                        quote: None,
                     });
                     continue;
                 }
@@ -321,6 +518,7 @@ impl MarkdownScanner {
                         BlockKind::CodeBlockContent
                     },
                     spans,
+                    quote: None,
                 });
                 continue;
             }
@@ -365,6 +563,7 @@ impl MarkdownScanner {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::MathBlock { is_start: true },
                     spans,
+                    quote: None,
                 });
                 continue;
             }
@@ -376,6 +575,7 @@ impl MarkdownScanner {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::Paragraph,
                     spans: vec![InlineSpan::plain(raw_line.clone(), (0, raw_line.len()))],
+                    quote: None,
                 });
                 continue;
             }
@@ -391,6 +591,7 @@ impl MarkdownScanner {
                         (0, char_count),
                         (0, char_count),
                     )],
+                    quote: None,
                 });
                 continue;
             }
@@ -401,7 +602,7 @@ impl MarkdownScanner {
                     BlockPrefix::Task { checked, .. } => Some(BlockKind::TaskList { checked }),
                     BlockPrefix::Bullet { .. } => Some(BlockKind::BulletList),
                     BlockPrefix::Ordered { num } => Some(BlockKind::OrderedList { num }),
-                    BlockPrefix::Quote => Some(BlockKind::BlockQuote),
+                    BlockPrefix::Quote => None,
                     BlockPrefix::Fence { .. } => None,
                 };
 
@@ -425,6 +626,7 @@ impl MarkdownScanner {
                         raw_text: raw_line.clone(),
                         kind,
                         spans: inline_spans,
+                        quote: None,
                     });
                     continue;
                 }
@@ -443,6 +645,7 @@ impl MarkdownScanner {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::Image { alt, url },
                     spans: inline_spans,
+                    quote: None,
                 });
                 continue;
             }
@@ -462,6 +665,7 @@ impl MarkdownScanner {
                         cells,
                     },
                     spans: inline_spans,
+                    quote: None,
                 });
                 continue;
             }
@@ -483,6 +687,7 @@ impl MarkdownScanner {
                         cells,
                     },
                     spans: inline_spans,
+                    quote: None,
                 });
                 continue;
             }
@@ -493,7 +698,32 @@ impl MarkdownScanner {
                 raw_text: raw_line.clone(),
                 kind: BlockKind::Paragraph,
                 spans: inline_spans,
+                quote: None,
             });
+        }
+
+        for (parsed, source_idx) in result.iter_mut().zip(range) {
+            if let Some(prefix_bytes) = quote_prefixes.get(source_idx).copied().flatten() {
+                let source = &source_lines[source_idx];
+                let prefix_chars = source[..prefix_bytes].chars().count();
+                parsed.quote = Some(QuoteContext {
+                    depth: quote_depth(source),
+                    content_indent: leading_indent_len(&lines[source_idx]),
+                    is_start: source_idx == 0 || quote_prefixes[source_idx - 1].is_none(),
+                    is_end: source_idx + 1 == source_lines.len()
+                        || quote_prefixes[source_idx + 1].is_none(),
+                });
+                shift_spans(&mut parsed.spans, prefix_chars);
+                parsed.spans.insert(
+                    0,
+                    InlineSpan::hidden_marker(
+                        source[..prefix_bytes].to_string(),
+                        (0, prefix_chars),
+                        (0, prefix_chars),
+                    ),
+                );
+                parsed.raw_text = source.clone();
+            }
         }
 
         result
@@ -501,6 +731,43 @@ impl MarkdownScanner {
 }
 
 pub fn compute_syntactic_separators(lines: &[String]) -> Vec<bool> {
+    let mut separators = vec![false; lines.len()];
+    if lines.is_empty() {
+        return separators;
+    }
+
+    let mut in_fence = false;
+    let mut previous_nonempty = false;
+    let mut prev_is_separator = false;
+    let top_level_fences = top_level_fenced_lines(lines);
+
+    for (i, raw_line) in lines.iter().enumerate() {
+        let line = projected_line(raw_line, top_level_fences[i]);
+        let is_fence = is_fence_line(line);
+        if is_fence {
+            in_fence = !in_fence;
+        }
+
+        let is_sep = if i == 0 || !line.trim().is_empty() || in_fence {
+            false
+        } else if previous_nonempty {
+            true
+        } else {
+            !prev_is_separator
+        };
+
+        separators[i] = is_sep;
+        prev_is_separator = is_sep;
+        previous_nonempty = !line.trim().is_empty();
+    }
+
+    separators
+}
+
+pub(crate) fn compute_syntactic_separators_with_projection(
+    projection: &QuoteProjection,
+) -> Vec<bool> {
+    let lines = projection.normalized_lines();
     let mut separators = vec![false; lines.len()];
     if lines.is_empty() {
         return separators;
@@ -530,6 +797,41 @@ pub fn compute_syntactic_separators(lines: &[String]) -> Vec<bool> {
 }
 
 pub fn is_syntactic_separator(lines: &[String], source_line: SourceLine) -> bool {
+    let idx = source_line.index();
+    if idx == 0 || idx >= lines.len() {
+        return false;
+    }
+
+    let mut in_fence = false;
+    let mut previous_nonempty = false;
+    let mut prev_is_separator = false;
+    let top_level_fences = top_level_fenced_lines(lines);
+
+    for (i, raw_line) in lines.iter().enumerate().take(idx + 1) {
+        let line = projected_line(raw_line, top_level_fences[i]);
+        let is_fence = is_fence_line(line);
+        if is_fence {
+            in_fence = !in_fence;
+        }
+
+        prev_is_separator = if i == 0 || !line.trim().is_empty() || in_fence {
+            false
+        } else if previous_nonempty {
+            true
+        } else {
+            !prev_is_separator
+        };
+        previous_nonempty = !line.trim().is_empty();
+    }
+
+    prev_is_separator
+}
+
+pub(crate) fn is_syntactic_separator_with_projection(
+    projection: &QuoteProjection,
+    source_line: SourceLine,
+) -> bool {
+    let lines = projection.normalized_lines();
     let idx = source_line.index();
     if idx == 0 || idx >= lines.len() || !lines[idx].trim().is_empty() {
         return false;

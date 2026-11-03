@@ -1054,6 +1054,10 @@ pub struct LineRenderContext<'a> {
     pub soft_wrap: bool,
     /// Per-line visual indent in pixels (Live Preview only).
     pub indent_px: Pixels,
+    /// Indentation inside an enclosing blockquote.
+    pub quote_content_indent_px: Pixels,
+    /// Whether an inactive paragraph line is a syntactic separator.
+    pub is_syntactic_separator: bool,
     pub text_system: Option<&'a Arc<WindowTextSystem>>,
     pub highlights: &'a [LineHighlight],
 }

@@ -65,10 +65,11 @@ impl Editor {
         let left_offset = if self.render_mode == RenderMode::Source {
             crate::editor::layout::SOURCE_GUTTER_WIDTH
         } else if let Some(parsed) = layout.parsed_lines.get(source_line.index()) {
-            crate::editor::shaping::get_block_left_offset_with_indent(
-                &parsed.kind,
+            crate::editor::shaping::get_parsed_line_left_offset(
+                parsed,
                 self.render_mode,
                 layout.indent_px(source_line),
+                crate::editor::shaping::quote_content_indent_px(parsed, layout.space_width),
             )
         } else {
             px(0.0)

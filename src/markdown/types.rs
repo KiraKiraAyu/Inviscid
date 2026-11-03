@@ -33,7 +33,6 @@ pub enum BlockKind {
         is_start: bool,
     },
     MathBlockContent,
-    BlockQuote,
     BulletList,
     OrderedList {
         num: usize,
@@ -65,9 +64,16 @@ impl BlockKind {
                 | BlockKind::TaskList { .. }
                 | BlockKind::BulletList
                 | BlockKind::OrderedList { .. }
-                | BlockKind::BlockQuote
         )
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuoteContext {
+    pub depth: usize,
+    pub content_indent: usize,
+    pub is_start: bool,
+    pub is_end: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,16 +81,23 @@ pub struct ParsedLine {
     pub raw_text: String,
     pub kind: BlockKind,
     pub spans: Vec<InlineSpan>,
+    pub quote: Option<QuoteContext>,
 }
 
 impl ParsedLine {
     #[inline]
     pub fn syntax_prefix_len(&self) -> usize {
-        if self.kind.has_syntax_prefix() {
-            crate::markdown::get_block_prefix_len(&self.raw_text)
+        let quote_prefix_len = if self.quote.is_some() {
+            crate::markdown::quote_prefix_len(&self.raw_text)
         } else {
             0
-        }
+        };
+        let inner_prefix_len = if self.kind.has_syntax_prefix() {
+            crate::markdown::get_block_prefix_len(&self.raw_text[quote_prefix_len..])
+        } else {
+            0
+        };
+        quote_prefix_len + inner_prefix_len
     }
 
     pub fn visible_text(&self, is_active: bool, cursor_col: usize, is_source: bool) -> String {

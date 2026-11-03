@@ -251,6 +251,23 @@ fn test_line_layout_heights() {
 }
 
 #[test]
+fn quote_layout_ranges_group_all_contiguous_quote_content() {
+    let lines = vec![
+        "outside".to_string(),
+        "> # Heading".to_string(),
+        "> - list item".to_string(),
+        "> ```rust".to_string(),
+        "> let value = 1;".to_string(),
+        "> ```".to_string(),
+        "> paragraph".to_string(),
+        "after".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+
+    assert_eq!(crate::editor::layout::quote_ranges(&parsed), vec![1..7]);
+}
+
+#[test]
 fn test_empty_heading_converted_to_paragraph_no_spacing_jump() {
     let lines = vec![
         "Paragraph 1".to_string(), // idx = 0
@@ -1265,6 +1282,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         active_line: crate::buffer::SourceLine::new(cursor_line),
         active_col: 0,
         active_math_block: None,
+        active_mermaid_block: None,
         doc_path: None,
         image_cache_version: crate::http::image_cache_version(),
         syntax_cache_version: crate::syntax::syntax_cache_version(),
@@ -1278,6 +1296,10 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         space_width: px(0.0),
         total_height: px(0.0),
         separators: Vec::new(),
+        quote_projection: std::sync::Arc::new(crate::markdown::QuoteProjection::from_lines(
+            buf.lines(),
+        )),
+        quote_ranges: Vec::new(),
     };
 
     let mut y = px(24.0);
@@ -1429,6 +1451,7 @@ fn test_folding_layout_height_and_navigation() {
         active_line: crate::buffer::SourceLine::new(0),
         active_col: 0,
         active_math_block: None,
+        active_mermaid_block: None,
         doc_path: None,
         image_cache_version: 0,
         syntax_cache_version: 0,
@@ -1442,6 +1465,10 @@ fn test_folding_layout_height_and_navigation() {
         space_width: px(0.0),
         total_height: px(0.0),
         separators: Vec::new(),
+        quote_projection: std::sync::Arc::new(crate::markdown::QuoteProjection::from_lines(
+            buf.lines(),
+        )),
+        quote_ranges: Vec::new(),
     };
 
     let mut y = px(24.0);
@@ -1514,6 +1541,7 @@ fn test_folding_layout_height_and_navigation() {
         active_line: crate::buffer::SourceLine::new(0),
         active_col: 0,
         active_math_block: None,
+        active_mermaid_block: None,
         doc_path: None,
         image_cache_version: 0,
         syntax_cache_version: 0,
@@ -1527,6 +1555,10 @@ fn test_folding_layout_height_and_navigation() {
         space_width: px(0.0),
         total_height: px(0.0),
         separators: Vec::new(),
+        quote_projection: std::sync::Arc::new(crate::markdown::QuoteProjection::from_lines(
+            buf.lines(),
+        )),
+        quote_ranges: Vec::new(),
     };
 
     let mut y_folded = px(24.0);
@@ -1840,7 +1872,7 @@ fn test_mouse_hit_testing_live_preview_offsets() {
                 px(24.0)
             );
 
-            // Line 4: BlockQuote ("> Quote block text", prefix len 2)
+            // Line 4: quoted paragraph ("> Quote block text", prefix len 2)
             let line_4_bounds = ed.line_screen_bounds(SourceLine::new(4), ed.viewport_bounds);
             let click_4 = point(
                 line_4_bounds.origin.x + px(1.0),
@@ -3428,6 +3460,54 @@ fn test_code_block_incremental_edit_and_syntax_cache_invalidation(cx: &mut gpui:
 }
 
 #[gpui::test]
+fn test_quoted_code_block_incremental_edit_matches_full_rebuild(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use gpui::{AppContext, Bounds, point, px, size};
+
+    let original = "> ```json\n> {\n>   \"count\": 1\n> }\n> ```\nafter";
+    let edited = "> ```json\n> {\n>   \"count\": 2\n> }\n> ```\nafter";
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(original, None), cx)
+    });
+    let ground_truth = cx.update(|_window, cx| {
+        cx.new(|cx| super::Editor::new_with_buffer(TextBuffer::from_str(edited, None), cx))
+    });
+    cx.run_until_parked();
+
+    let viewport = Bounds {
+        origin: point(px(0.0), px(0.0)),
+        size: size(px(800.0), px(600.0)),
+    };
+    let (incremental, full) = cx.update(|_window, cx| {
+        let incremental = editor.update(cx, |ed, _cx| {
+            ed.viewport_bounds = viewport;
+            ed.ensure_layout_cache();
+            ed.buffer_mut()
+                .set_cursor(Position::new(SourceLine::new(2), 14));
+            ed.buffer_mut()
+                .record_single_line_edit(SourceLine::new(2), |line, _| {
+                    line.replace_range(13..14, "2");
+                });
+            ed.ensure_layout_cache();
+            ed.layout_snapshot()
+        });
+        let full = ground_truth.update(cx, |ed, _cx| {
+            ed.viewport_bounds = viewport;
+            ed.ensure_layout_cache();
+            ed.layout_snapshot()
+        });
+        (incremental, full)
+    });
+
+    assert_eq!(
+        incremental.parsed_lines.as_ref(),
+        full.parsed_lines.as_ref()
+    );
+    assert_eq!(incremental.line_heights, full.line_heights);
+    assert_eq!(incremental.line_y_offsets, full.line_y_offsets);
+}
+
+#[gpui::test]
 fn test_editor_save_preserves_line_ending_and_tracks_mtime(cx: &mut gpui::TestAppContext) {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let test_file = temp_dir.path().join("crlf_doc.md");
@@ -3670,8 +3750,8 @@ fn test_line_visual_indent_chars() {
     assert_eq!(line_visual_indent_chars(&parsed[3]), 0);
     assert_eq!(line_visual_indent_chars(&parsed[4]), 0);
     assert_eq!(line_visual_indent_chars(&parsed[5]), 2);
-    // `>   - list inside quote` is parsed as an outer BlockQuote at col 0;
-    // the inner spaces before `-` remain visible in the text span and must NOT double-indent the quote border.
+    // `>   - list inside quote` keeps the quote border at col 0;
+    // the inner spaces before `-` contribute only to the list content indent.
     assert_eq!(line_visual_indent_chars(&parsed[6]), 0);
 
     // Source mode always resolves to 0px indent via compute_indent_px.
@@ -3844,6 +3924,8 @@ fn test_nested_list_render_live_content() {
             line_height: 24.0,
             soft_wrap: true,
             indent_px: if idx == 0 { px(0.0) } else { px(16.0) },
+            quote_content_indent_px: px(0.0),
+            is_syntactic_separator: false,
             text_system: None,
             highlights: &[],
         };
