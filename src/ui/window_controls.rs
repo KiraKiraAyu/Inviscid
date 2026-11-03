@@ -103,8 +103,6 @@ impl RenderOnce for CaptionButton {
             .occlude()
             .w(px(36.))
             .h_full()
-            .text_size(Self::ICON_SIZE)
-            .line_height(Self::ICON_SIZE)
             .text_color(theme.text_primary)
             .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
             .active(move |s| s.bg(active_bg).text_color(active_fg))
@@ -115,6 +113,11 @@ impl RenderOnce for CaptionButton {
                 }
                 CaptionButtonKind::Close => window.remove_window(),
             })
-            .child(self.icon())
+            .child(
+                div()
+                    .text_size(Self::ICON_SIZE)
+                    .line_height(Self::ICON_SIZE)
+                    .child(self.icon()),
+            )
     }
 }
