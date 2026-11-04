@@ -1,3 +1,4 @@
+use ropey::Rope;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -20,83 +21,164 @@ pub use primitives::*;
 /// let lines = SourceLines::from(vec![String::from("text")]);
 /// let _ = &lines[0];
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceLines(Vec<String>);
+#[derive(Clone, Debug)]
+pub struct SourceLines {
+    lines: Vec<String>,
+    dirty_range: Option<Range<usize>>,
+}
+
+impl PartialEq for SourceLines {
+    fn eq(&self, other: &Self) -> bool {
+        self.lines == other.lines
+    }
+}
+
+impl Eq for SourceLines {}
+
+impl SourceLines {
+    fn track_mutation(&mut self, range: Range<usize>) {
+        let Some(dirty) = &mut self.dirty_range else {
+            self.dirty_range = Some(range);
+            return;
+        };
+        dirty.start = dirty.start.min(range.start);
+        dirty.end = dirty.end.max(range.end);
+    }
+
+    fn track_splice(&mut self, start: usize, removed: usize, inserted: usize) {
+        let splice_end = start + removed;
+        if let Some(dirty) = &mut self.dirty_range {
+            // Keep earlier dirty coordinates aligned with the post-splice lines.
+            let delta = inserted as isize - removed as isize;
+            let map_start = |index: usize| {
+                if index <= start {
+                    index
+                } else if index >= splice_end {
+                    (index as isize + delta) as usize
+                } else {
+                    start
+                }
+            };
+            let map_end = |index: usize| {
+                if index < start {
+                    index
+                } else if index >= splice_end {
+                    (index as isize + delta) as usize
+                } else {
+                    start + inserted
+                }
+            };
+            let old_start = dirty.start;
+            let old_end = dirty.end;
+            dirty.start = map_start(old_start).min(start);
+            dirty.end = map_end(old_end).max(start + inserted);
+        } else {
+            self.dirty_range = Some(start..start + inserted);
+        }
+    }
+
+    fn take_dirty_range(&mut self) -> Option<Range<usize>> {
+        self.dirty_range.take()
+    }
+
+    fn clear_dirty_range(&mut self) {
+        self.dirty_range = None;
+    }
+}
 
 impl From<Vec<String>> for SourceLines {
     fn from(lines: Vec<String>) -> Self {
-        Self(lines)
+        Self {
+            lines,
+            dirty_range: None,
+        }
     }
 }
 
 impl PartialEq<Vec<&str>> for SourceLines {
     fn eq(&self, other: &Vec<&str>) -> bool {
-        self.0.iter().map(String::as_str).eq(other.iter().copied())
+        self.lines
+            .iter()
+            .map(String::as_str)
+            .eq(other.iter().copied())
     }
 }
 
 impl PartialEq<Vec<&str>> for &SourceLines {
     fn eq(&self, other: &Vec<&str>) -> bool {
-        self.0.iter().map(String::as_str).eq(other.iter().copied())
+        self.lines
+            .iter()
+            .map(String::as_str)
+            .eq(other.iter().copied())
     }
 }
 
 impl FromIterator<String> for SourceLines {
     fn from_iter<T: IntoIterator<Item = String>>(iter: T) -> Self {
-        Self(Vec::from_iter(iter))
+        Self::from(Vec::from_iter(iter))
     }
 }
 
 impl SourceLines {
     pub fn as_slice(&self) -> &[String] {
-        &self.0
+        &self.lines
     }
 
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.lines.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.lines.is_empty()
     }
 
     pub fn iter(&self) -> std::slice::Iter<'_, String> {
-        self.0.iter()
+        self.lines.iter()
     }
 
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, String> {
-        self.0.iter_mut()
+        self.track_mutation(0..self.lines.len());
+        self.lines.iter_mut()
     }
 
     pub fn push(&mut self, line: String) {
-        self.0.push(line);
+        let index = self.lines.len();
+        self.lines.push(line);
+        self.track_splice(index, 0, 1);
     }
 
     pub fn clear(&mut self) {
-        self.0.clear();
+        let old_len = self.lines.len();
+        self.lines.clear();
+        self.track_splice(0, old_len, 0);
     }
 
     pub fn join(&self, separator: &str) -> String {
-        self.0.join(separator)
+        self.lines.join(separator)
     }
 
     pub fn to_vec(&self) -> Vec<String> {
-        self.0.clone()
+        self.lines.clone()
     }
 
     pub fn get_source_line(&self, line: SourceLine) -> Option<&String> {
-        self.0.get(line.index())
+        self.lines.get(line.index())
     }
 
     pub fn get_source_line_mut(&mut self, line: SourceLine) -> Option<&mut String> {
-        self.0.get_mut(line.index())
+        let index = line.index();
+        self.track_mutation(index..index + 1);
+        self.lines.get_mut(index)
     }
 
     pub fn drain_source_lines(
         &mut self,
         lines: RangeInclusive<SourceLine>,
     ) -> std::vec::Drain<'_, String> {
-        self.0.drain(lines.start().index()..=lines.end().index())
+        let start = lines.start().index();
+        let removed = lines.end().index().saturating_sub(start) + 1;
+        self.track_splice(start, removed, 0);
+        self.lines.drain(start..start + removed)
     }
 
     pub fn replace_source_lines(
@@ -104,8 +186,12 @@ impl SourceLines {
         lines: RangeInclusive<SourceLine>,
         replacements: impl IntoIterator<Item = String>,
     ) {
-        self.0
-            .splice(lines.start().index()..=lines.end().index(), replacements);
+        let start = lines.start().index();
+        let end = lines.end().index().saturating_add(1);
+        let replacements = Vec::from_iter(replacements);
+        let replacement_len = replacements.len();
+        self.lines.splice(start..end, replacements);
+        self.track_splice(start, end - start, replacement_len);
     }
 
     pub fn replace_source_lines_at(
@@ -114,16 +200,31 @@ impl SourceLines {
         remove_count: usize,
         replacements: impl IntoIterator<Item = String>,
     ) {
-        self.0
-            .splice(start.index()..start.index() + remove_count, replacements);
+        let start = start.index();
+        let replacements = Vec::from_iter(replacements);
+        let replacement_len = replacements.len();
+        self.lines.splice(start..start + remove_count, replacements);
+        self.track_splice(start, remove_count, replacement_len);
     }
 
     pub fn insert_source_line(&mut self, line: SourceLine, text: String) {
-        self.0.insert(line.index(), text);
+        let index = line.index();
+        self.lines.insert(index, text);
+        self.track_splice(index, 0, 1);
     }
 
     pub fn remove_source_line(&mut self, line: SourceLine) -> String {
-        self.0.remove(line.index())
+        let index = line.index();
+        let removed = self.lines.remove(index);
+        self.track_splice(index, 1, 0);
+        removed
+    }
+
+    pub fn replace_all(&mut self, replacement: Vec<String>) {
+        let old_len = self.lines.len();
+        let new_len = replacement.len();
+        self.lines = replacement;
+        self.track_splice(0, old_len, new_len);
     }
 }
 
@@ -131,13 +232,15 @@ impl Index<SourceLine> for SourceLines {
     type Output = String;
 
     fn index(&self, line: SourceLine) -> &Self::Output {
-        &self.0[line.index()]
+        &self.lines[line.index()]
     }
 }
 
 impl IndexMut<SourceLine> for SourceLines {
     fn index_mut(&mut self, line: SourceLine) -> &mut Self::Output {
-        &mut self.0[line.index()]
+        let index = line.index();
+        self.track_mutation(index..index + 1);
+        &mut self.lines[index]
     }
 }
 
@@ -145,7 +248,7 @@ impl Index<RangeInclusive<SourceLine>> for SourceLines {
     type Output = [String];
 
     fn index(&self, lines: RangeInclusive<SourceLine>) -> &Self::Output {
-        &self.0[lines.start().index()..=lines.end().index()]
+        &self.lines[lines.start().index()..=lines.end().index()]
     }
 }
 
@@ -153,7 +256,24 @@ impl Index<RangeFrom<SourceLine>> for SourceLines {
     type Output = [String];
 
     fn index(&self, lines: RangeFrom<SourceLine>) -> &Self::Output {
-        &self.0[lines.start.index()..]
+        &self.lines[lines.start.index()..]
+    }
+}
+
+impl IndexMut<RangeInclusive<SourceLine>> for SourceLines {
+    fn index_mut(&mut self, lines: RangeInclusive<SourceLine>) -> &mut Self::Output {
+        let start = lines.start().index();
+        let end = lines.end().index().saturating_add(1);
+        self.track_mutation(start..end);
+        &mut self.lines[start..end]
+    }
+}
+
+impl IndexMut<RangeFrom<SourceLine>> for SourceLines {
+    fn index_mut(&mut self, lines: RangeFrom<SourceLine>) -> &mut Self::Output {
+        let start = lines.start.index();
+        self.track_mutation(start..self.lines.len());
+        &mut self.lines[start..]
     }
 }
 
@@ -202,6 +322,9 @@ pub struct SavedBaseline {
 #[derive(Clone, Debug)]
 pub struct TextBuffer {
     lines: SourceLines,
+    /// Normalized document text. The line vector remains a compatibility view
+    /// for layout and markdown code while callers migrate to range-based access.
+    pub(in crate::buffer) rope: Rope,
     pub(in crate::buffer) selection: Selection,
     pub(in crate::buffer) file_path: Option<PathBuf>,
     pub(in crate::buffer) line_ending: LineEnding,
@@ -245,6 +368,45 @@ pub(crate) fn char_col_to_byte_offset(s: &str, char_col: usize) -> usize {
 }
 
 impl TextBuffer {
+    fn rope_from_lines(lines: &SourceLines, is_empty_doc: bool) -> Rope {
+        if is_empty_doc {
+            Rope::new()
+        } else {
+            Rope::from_str(&lines.join("\n"))
+        }
+    }
+
+    fn replace_rope_lines(
+        &mut self,
+        start_line: SourceLine,
+        old_line_count: usize,
+        inserted_lines: &[String],
+    ) {
+        let start = start_line.index().min(self.rope.len_lines());
+        let end_line = start.saturating_add(old_line_count);
+        let mut start_char = self.rope.line_to_char(start);
+        let end_char = if end_line < self.rope.len_lines() {
+            self.rope.line_to_char(end_line)
+        } else {
+            self.rope.len_chars()
+        };
+        if end_line >= self.rope.len_lines() && inserted_lines.is_empty() && start > 0 {
+            start_char -= 1;
+        }
+        let mut replacement = inserted_lines.join("\n");
+        if end_line < self.rope.len_lines() && !inserted_lines.is_empty() {
+            replacement.push('\n');
+        } else if start == self.rope.len_lines()
+            && old_line_count == 0
+            && start > 0
+            && !inserted_lines.is_empty()
+        {
+            replacement.insert(0, '\n');
+        }
+        self.rope.remove(start_char..end_char);
+        self.rope.insert(start_char, &replacement);
+    }
+
     pub fn new() -> Self {
         Self::from_str("", None)
     }
@@ -266,6 +428,7 @@ impl TextBuffer {
 
         Self {
             lines: SourceLines::from(lines),
+            rope: Rope::from_str(if is_empty_doc { "" } else { &normalized }),
             selection: Selection::cursor(Position::new(SourceLine::new(0), 0)),
             file_path,
             line_ending,
@@ -290,6 +453,21 @@ impl TextBuffer {
             last_edit_delta: None,
             cached_word_count: Cell::new(None),
         }
+    }
+
+    fn old_rope_lines(&self, start: usize, count: usize, empty_before: bool) -> Vec<String> {
+        if empty_before {
+            return vec![String::new(); count];
+        }
+        (start..start + count)
+            .map(|line_idx| {
+                let mut line = self.rope.line(line_idx).to_string();
+                if line.ends_with('\n') {
+                    line.pop();
+                }
+                line
+            })
+            .collect()
     }
 
     #[inline]
@@ -409,7 +587,9 @@ impl TextBuffer {
         if self.is_empty() {
             String::new()
         } else {
-            self.lines.join(self.line_ending.as_str())
+            self.rope
+                .to_string()
+                .replace('\n', self.line_ending.as_str())
         }
     }
 
@@ -417,7 +597,7 @@ impl TextBuffer {
         if self.is_empty() {
             String::new()
         } else {
-            self.lines.join("\n")
+            self.rope.to_string()
         }
     }
 
@@ -651,6 +831,13 @@ impl TextBuffer {
         replaced_lines: &[String],
         inserted_lines: &[String],
     ) {
+        self.is_empty_doc = self.has_only_empty_sentinel_lines();
+        if self.rope.len_chars() == 0 || self.is_empty_doc {
+            self.rope = Self::rope_from_lines(&self.lines, self.is_empty_doc);
+        } else {
+            self.replace_rope_lines(start_line, replaced_lines.len(), inserted_lines);
+        }
+
         self.revision = self.revision.wrapping_add(1);
         *self.line_index_cache.borrow_mut() = None;
         self.last_edit_delta = Some(EditDelta {
@@ -715,6 +902,7 @@ impl TextBuffer {
         let old_line = self.lines[line_idx].clone();
 
         f(&mut self.lines[line_idx], &mut self.selection);
+        self.lines.clear_dirty_range();
 
         self.selection.anchor = self.clamp_position(self.selection.anchor);
         self.selection.head = self.clamp_position(self.selection.head);
@@ -761,35 +949,58 @@ impl TextBuffer {
         self.column_goal = None;
         let cursor_before = self.selection;
         let version_before = self.version;
-        let lines_before = self.lines.clone();
+        let line_count_before = self.lines.len();
+        let empty_before = self.is_empty_doc;
+        self.lines.clear_dirty_range();
 
         f(&mut self.lines, &mut self.selection);
 
         self.selection.anchor = self.clamp_position(self.selection.anchor);
         self.selection.head = self.clamp_position(self.selection.head);
 
-        if self.lines != lines_before || self.selection != cursor_before {
-            let mut prefix = 0;
-            while prefix < lines_before.len()
-                && prefix < self.lines.len()
-                && lines_before.as_slice()[prefix] == self.lines[SourceLine::new(prefix)]
+        let dirty = self
+            .lines
+            .take_dirty_range()
+            .or_else(|| (self.lines.len() != line_count_before).then_some(0..self.lines.len()));
+        if dirty.is_some() || self.selection != cursor_before {
+            let mut prefix = dirty.as_ref().map_or(0, |range| range.start);
+            let new_end = dirty
+                .as_ref()
+                .map_or(prefix, |range| range.end.min(self.lines.len()));
+            let new_count = new_end.saturating_sub(prefix);
+            let line_delta = self.lines.len() as isize - line_count_before as isize;
+            let old_count = (new_count as isize - line_delta).max(0) as usize;
+            let mut old_lines = self.old_rope_lines(prefix, old_count, empty_before);
+            let mut new_lines = self.lines.as_slice()[prefix..new_end].to_vec();
+
+            let mut unchanged_prefix = 0;
+            while unchanged_prefix < old_lines.len().min(new_lines.len())
+                && old_lines[unchanged_prefix] == new_lines[unchanged_prefix]
             {
-                prefix += 1;
+                unchanged_prefix += 1;
+            }
+            if unchanged_prefix > 0 {
+                old_lines.drain(..unchanged_prefix);
+                new_lines.drain(..unchanged_prefix);
+                prefix += unchanged_prefix;
             }
 
-            let mut suffix = 0;
-            while suffix < (lines_before.len() - prefix)
-                && suffix < (self.lines.len() - prefix)
-                && lines_before.as_slice()[lines_before.len() - 1 - suffix]
-                    == self.lines.as_slice()[self.lines.len() - 1 - suffix]
+            let mut unchanged_suffix = 0;
+            while unchanged_suffix < old_lines.len().min(new_lines.len())
+                && old_lines[old_lines.len() - 1 - unchanged_suffix]
+                    == new_lines[new_lines.len() - 1 - unchanged_suffix]
             {
-                suffix += 1;
+                unchanged_suffix += 1;
             }
-
-            let old_lines = lines_before.as_slice()[prefix..(lines_before.len() - suffix)].to_vec();
-            let new_lines = self.lines.as_slice()[prefix..(self.lines.len() - suffix)].to_vec();
+            if unchanged_suffix > 0 {
+                old_lines.truncate(old_lines.len() - unchanged_suffix);
+                new_lines.truncate(new_lines.len() - unchanged_suffix);
+            }
 
             let content_changed = !old_lines.is_empty() || !new_lines.is_empty();
+            if !content_changed && self.selection == cursor_before {
+                return;
+            }
             let version_after = if content_changed {
                 self.version = self.version.wrapping_add(1);
                 self.apply_content_metrics(SourceLine::new(prefix), &old_lines, &new_lines);
@@ -843,39 +1054,19 @@ impl TextBuffer {
     }
 
     pub fn text_in_range(&self, (start, end): (Position, Position)) -> String {
-        if start == end {
+        if self.is_empty_doc {
             return String::new();
         }
-        let (start, end) = if start < end {
+        let (start, end) = if start <= end {
             (start, end)
         } else {
             (end, start)
         };
-        let mut res = String::new();
-        for line_idx in start.line.index()..=end.line.index() {
-            let line = match self.lines.get_source_line(SourceLine::new(line_idx)) {
-                Some(l) => l,
-                None => continue,
-            };
-            if line_idx > start.line.index() {
-                res.push('\n');
-            }
-            if line_idx == start.line.index() && line_idx == end.line.index() {
-                let char_count = line.chars().count();
-                let start_col = start.col.min(char_count);
-                let end_col = end.col.min(char_count);
-                if start_col < end_col {
-                    res.extend(line.chars().skip(start_col).take(end_col - start_col));
-                }
-            } else if line_idx == start.line.index() {
-                res.extend(line.chars().skip(start.col));
-            } else if line_idx == end.line.index() {
-                res.extend(line.chars().take(end.col));
-            } else {
-                res.push_str(line);
-            }
-        }
-        res
+        let start = self.clamp_position(start);
+        let end = self.clamp_position(end);
+        let start_char = self.rope.line_to_char(start.line.index()) + start.col;
+        let end_char = self.rope.line_to_char(end.line.index()) + end.col;
+        self.rope.slice(start_char..end_char).to_string()
     }
 
     pub fn selected_text(&self) -> Option<String> {
@@ -898,7 +1089,9 @@ impl TextBuffer {
             );
             self.selection = step.cursor_before;
             self.version = step.version_before;
-            self.apply_content_metrics(step.start_line, &step.new_lines, &step.old_lines);
+            if !step.new_lines.is_empty() || !step.old_lines.is_empty() {
+                self.apply_content_metrics(step.start_line, &step.new_lines, &step.old_lines);
+            }
 
             self.redo_stack.push_back(step);
             self.update_empty_doc_state();
@@ -918,7 +1111,9 @@ impl TextBuffer {
             );
             self.selection = step.cursor_after;
             self.version = step.version_after;
-            self.apply_content_metrics(step.start_line, &step.old_lines, &step.new_lines);
+            if !step.old_lines.is_empty() || !step.new_lines.is_empty() {
+                self.apply_content_metrics(step.start_line, &step.old_lines, &step.new_lines);
+            }
 
             self.undo_stack.push_back(step);
             self.update_empty_doc_state();

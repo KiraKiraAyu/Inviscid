@@ -239,7 +239,7 @@ impl TextBuffer {
         let (start, end) = self.selection.range();
         self.record_edit(|lines, sel| {
             if lines.len() <= (end.line - start.line + 1) {
-                *lines = SourceLines::from(vec![String::new(), String::new()]);
+                lines.replace_all(vec![String::new(), String::new()]);
                 *sel = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
                 return;
             }
@@ -537,7 +537,7 @@ impl TextBuffer {
         let (new_text, count) = query.replace_all(&text, &normalized_rep);
         if count > 0 {
             self.record_edit(|lines, sel| {
-                *lines = new_text.split('\n').map(String::from).collect();
+                lines.replace_all(new_text.split('\n').map(String::from).collect());
                 ensure_min_empty_lines(lines);
                 *sel = Selection::cursor(Position::default());
             });

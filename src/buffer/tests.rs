@@ -1,6 +1,99 @@
 use super::*;
 
 #[test]
+fn rope_stays_in_sync_with_unicode_edits_and_history() {
+    let mut buf = TextBuffer::from_str("first\n第二", None);
+    assert_eq!(buf.rope.to_string(), "first\n第二");
+
+    buf.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 5));
+    buf.insert_text("\nnew");
+    assert_eq!(buf.rope.to_string(), "first\nnew\n第二");
+
+    buf.undo();
+    assert_eq!(buf.rope.to_string(), "first\n第二");
+    buf.redo();
+    assert_eq!(buf.rope.to_string(), "first\nnew\n第二");
+}
+
+#[test]
+fn rope_uses_normalized_line_endings_while_export_preserves_crlf() {
+    let buf = TextBuffer::from_str("first\r\nsecond", None);
+
+    assert_eq!(buf.rope.to_string(), "first\nsecond");
+    assert_eq!(buf.to_string_content(), "first\r\nsecond");
+}
+
+#[test]
+fn rope_tracks_empty_document_transitions_and_trailing_line_deletion() {
+    let mut empty = TextBuffer::new();
+    empty.insert_text("text");
+    assert_eq!(empty.rope.to_string(), "text\n");
+
+    empty.delete_lines();
+    assert_eq!(empty.rope.to_string(), "");
+    assert_eq!(empty.to_string_normalized(), "");
+
+    let mut trailing_line = TextBuffer::from_str("first\nlast", None);
+    trailing_line.set_selection(Selection::new(
+        Position::new(crate::buffer::SourceLine::new(1), 0),
+        Position::new(crate::buffer::SourceLine::new(1), 4),
+    ));
+    trailing_line.delete_lines();
+    assert_eq!(trailing_line.rope.to_string(), "first");
+}
+
+#[test]
+fn rope_stays_in_sync_during_repeated_edits_in_a_large_document() {
+    let content = (0..4_096)
+        .map(|line| format!("line-{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut buf = TextBuffer::from_str(&content, None);
+
+    for col in 0..48 {
+        buf.set_cursor(Position::new(
+            crate::buffer::SourceLine::new(2_048),
+            5 + col,
+        ));
+        buf.insert_text("λ");
+        assert_eq!(buf.rope.to_string(), buf.to_string_normalized());
+    }
+
+    buf.undo();
+    assert_eq!(buf.rope.to_string(), content);
+    buf.redo();
+    assert_eq!(buf.rope.to_string(), buf.to_string_normalized());
+}
+
+#[test]
+fn no_op_line_mutation_does_not_hide_the_previous_edit_from_undo() {
+    let mut buf = TextBuffer::from_str("original", None);
+    buf.insert_text("!");
+    assert_eq!(buf.to_string_normalized(), "!original");
+    buf.record_edit(|lines, _| {
+        let _ = &mut lines[crate::buffer::SourceLine::new(0)];
+    });
+    assert_eq!(buf.to_string_normalized(), "!original");
+
+    buf.undo();
+
+    assert_eq!(buf.to_string_normalized(), "original");
+}
+
+#[test]
+fn selection_only_undo_does_not_change_rope_content() {
+    let mut buf = TextBuffer::from_str("first\nlast", None);
+    buf.record_edit(|lines, selection| {
+        let _ = &mut lines[crate::buffer::SourceLine::new(1)];
+        *selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 4));
+    });
+
+    buf.undo();
+
+    assert_eq!(buf.to_string_normalized(), "first\nlast");
+}
+
+#[test]
 fn test_column_goal_movement() {
     let mut buf = TextBuffer::from_str("Hello World Long Line\nShort\nAnother Long Line", None);
     buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 15));
