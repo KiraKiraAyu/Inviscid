@@ -39,7 +39,7 @@ Inviscid 处于 `v0.1` 发布前的早期开发阶段。核心编辑、Live Prev
 - [x] Live Preview 原生渲染 Mermaid 图表，并保留可编辑的围栏源码
 - [x] 文档内查找与替换（Find & Replace）及工作区快速打开 / 全局搜索
 - [ ] 文档标题大纲（Outline / TOC）视图与标题锚点跳转
-- [ ] 文件系统外部变更监听（File Watcher）与冲突感知热重载
+- [x] 文件系统外部变更监听（File Watcher）与冲突感知热重载
 - [ ] 底层文本缓冲区向 Rope 结构演进以支撑超大文档编辑
 - [ ] HTML / PDF 导出及 Windows / macOS / Linux 三端 `v0.1` 预编译发行包
 

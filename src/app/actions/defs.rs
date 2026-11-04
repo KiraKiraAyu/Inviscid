@@ -19,6 +19,8 @@ actions!(
         OpenFolder,
         SaveFile,
         SaveFileAs,
+        ReloadFile,
+        KeepLocalChanges,
         NewWindow,
         ToggleRenderMode,
         ToggleSidebar,

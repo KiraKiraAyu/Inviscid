@@ -3551,6 +3551,152 @@ fn test_editor_save_preserves_line_ending_and_tracks_mtime(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
+fn test_external_change_reloads_clean_editor(cx: &mut gpui::TestAppContext) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let test_file = temp_dir.path().join("external.md");
+    std::fs::write(&test_file, "before").unwrap();
+
+    let (editor, cx) =
+        cx.add_window_view(|_window, cx| super::Editor::new_with_path(test_file.clone(), cx));
+    cx.run_until_parked();
+
+    std::fs::write(&test_file, "after").unwrap();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.handle_external_file_change(cx);
+            assert_eq!(ed.buffer().to_string_content(), "after");
+            assert!(!ed.external_change_pending());
+        });
+    });
+}
+
+#[gpui::test]
+fn test_external_change_preserves_dirty_editor_until_reload(cx: &mut gpui::TestAppContext) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let test_file = temp_dir.path().join("external_dirty.md");
+    std::fs::write(&test_file, "before").unwrap();
+
+    let (editor, cx) =
+        cx.add_window_view(|_window, cx| super::Editor::new_with_path(test_file.clone(), cx));
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.perform_edit(cx, |ed| ed.buffer_mut().insert_text(" local"));
+        });
+    });
+    std::fs::write(&test_file, "on disk").unwrap();
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.handle_external_file_change(cx);
+            assert_eq!(ed.buffer().to_string_content(), " localbefore");
+            assert!(ed.external_change_pending());
+            assert!(ed.save_file_async(cx).is_err());
+
+            ed.reload_file(cx).unwrap();
+            assert_eq!(ed.buffer().to_string_content(), "on disk");
+            assert!(!ed.external_change_pending());
+        });
+    });
+}
+
+#[gpui::test]
+fn test_keep_local_changes_allows_explicit_save(cx: &mut gpui::TestAppContext) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let test_file = temp_dir.path().join("external_keep_local.md");
+    std::fs::write(&test_file, "before").unwrap();
+
+    let (editor, cx) =
+        cx.add_window_view(|_window, cx| super::Editor::new_with_path(test_file.clone(), cx));
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.perform_edit(cx, |ed| ed.buffer_mut().insert_text(" local"));
+        });
+    });
+    std::fs::write(&test_file, "on disk").unwrap();
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.handle_external_file_change(cx);
+            assert!(ed.external_change_pending());
+            ed.keep_local_changes(cx);
+            assert!(!ed.external_change_pending());
+            let task = ed
+                .save_file_async(cx)
+                .expect("explicit save should succeed");
+            cx.spawn(async move |_this, _cx| task.await.unwrap())
+                .detach();
+        });
+    });
+    cx.run_until_parked();
+
+    assert_eq!(std::fs::read_to_string(&test_file).unwrap(), " localbefore");
+}
+
+#[gpui::test]
+fn test_deleted_file_can_be_kept_and_recreated(cx: &mut gpui::TestAppContext) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let test_file = temp_dir.path().join("external_deleted.md");
+    std::fs::write(&test_file, "before").unwrap();
+
+    let (editor, cx) =
+        cx.add_window_view(|_window, cx| super::Editor::new_with_path(test_file.clone(), cx));
+    cx.run_until_parked();
+    std::fs::remove_file(&test_file).unwrap();
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.handle_external_file_change(cx);
+            assert_eq!(
+                ed.external_change_state(),
+                super::ExternalChangeState::Deleted
+            );
+            assert!(ed.save_file_async(cx).is_err());
+            ed.keep_local_changes(cx);
+            let task = ed
+                .save_file_async(cx)
+                .expect("save should recreate the file");
+            cx.spawn(async move |_this, _cx| task.await.unwrap())
+                .detach();
+        });
+    });
+    cx.run_until_parked();
+
+    assert_eq!(std::fs::read_to_string(&test_file).unwrap(), "before");
+}
+
+#[gpui::test]
+fn test_file_watcher_detects_atomic_external_replacement(cx: &mut gpui::TestAppContext) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let test_file = temp_dir.path().join("watched.md");
+    std::fs::write(&test_file, "before").unwrap();
+
+    let (editor, cx) =
+        cx.add_window_view(|_window, cx| super::Editor::new_with_path(test_file.clone(), cx));
+    cx.run_until_parked();
+
+    crate::fs::atomic_write(&test_file, "after").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut updated = false;
+    while std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        updated = cx.update(|_window, cx| editor.read(cx).buffer().to_string_content() == "after");
+        if updated {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert!(
+        updated,
+        "the watcher should reload a clean editor after replacement"
+    );
+}
+
+#[gpui::test]
 fn test_scrollbar_bottom_matches_wheel_max_scroll(cx: &mut gpui::TestAppContext) {
     use gpui::{Bounds, Point, ScrollDelta, ScrollWheelEvent, point, px, size};
 

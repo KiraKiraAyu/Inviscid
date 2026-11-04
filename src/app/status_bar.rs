@@ -1,6 +1,6 @@
 use crate::app::SidebarView;
 use crate::app::actions::{ToggleOutlineSidebar, ToggleSearchSidebar, ToggleSidebar};
-use crate::editor::EditorStatusMeta;
+use crate::editor::{EditorStatusMeta, ExternalChangeState};
 use crate::theme::{DEFAULT_THEME, Theme, ThemeManager};
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
 use crate::ui::{Icon, IconName, IconSize};
@@ -167,6 +167,34 @@ impl Render for StatusBar {
                                 })
                                 .child(if is_dirty { "Unsaved" } else { "Saved" }),
                         )
+                        .when(
+                            meta.external_change != ExternalChangeState::None,
+                            |this| {
+                                let message = match meta.external_change {
+                                    ExternalChangeState::Deleted => "File deleted",
+                                    ExternalChangeState::Pending => "Changed on disk",
+                                    ExternalChangeState::None => "",
+                                };
+                                this.child(div().child(message))
+                                    .when(
+                                        meta.external_change == ExternalChangeState::Pending,
+                                        |this| {
+                                            this.child(external_change_button(
+                                                "reload_external_file",
+                                                "Reload",
+                                                crate::app::actions::ReloadFile.boxed_clone(),
+                                                theme,
+                                            ))
+                                        },
+                                    )
+                                    .child(external_change_button(
+                                        "keep_local_external_file",
+                                        "Keep Local",
+                                        crate::app::actions::KeepLocalChanges.boxed_clone(),
+                                        theme,
+                                    ))
+                            },
+                        )
                     })
                     .child(
                         div()
@@ -186,6 +214,22 @@ impl Render for StatusBar {
                     )),
             )
     }
+}
+
+fn external_change_button(
+    id: &'static str,
+    label: &'static str,
+    action: Box<dyn Action>,
+    theme: &Theme,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .px(Spacing::XS)
+        .cursor_pointer()
+        .text_color(theme.text_accent)
+        .hover(|style| style.text_color(theme.text_primary))
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+        .child(label)
 }
 
 /// One panel toggle; highlighted while its panel is on screen.
@@ -254,6 +298,7 @@ mod tests {
         // Test set_meta
         let meta = EditorStatusMeta {
             is_dirty: false,
+            external_change: ExternalChangeState::None,
             cursor_pos: crate::buffer::Position {
                 line: crate::buffer::SourceLine::new(10),
                 col: 5,

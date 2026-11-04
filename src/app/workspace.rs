@@ -412,6 +412,12 @@ impl Workspace {
                         this.sync_outline_panel(cx);
                     }
                 }
+                crate::editor::EditorEvent::ExternalChangeChanged(_) => {
+                    if this.active_editor() == Some(&tab_editor) {
+                        let meta = tab_editor.read(cx).status_meta();
+                        this.status_bar.update(cx, |sb, cx| sb.set_meta(meta, cx));
+                    }
+                }
                 crate::editor::EditorEvent::TitleChanged => {
                     if let Some(idx) = this.tabs.iter().position(|t| t.editor == tab_editor) {
                         let (title, dir_hint) = {

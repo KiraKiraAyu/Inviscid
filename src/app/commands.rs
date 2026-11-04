@@ -215,6 +215,26 @@ pub fn save_file_as_prompt(app: &mut InviscidWindow, cx: &mut Context<InviscidWi
     .detach();
 }
 
+pub fn reload_file(app: &mut InviscidWindow, cx: &mut Context<InviscidWindow>) {
+    let Some(editor) = app.workspace().read(cx).active_editor().cloned() else {
+        return;
+    };
+    if let Err(error) = editor.update(cx, |editor, cx| editor.reload_file(cx)) {
+        eprintln!("Failed to reload file: {}", error);
+    }
+    sync_workspace_to_global(app, cx);
+    cx.notify();
+}
+
+pub fn keep_local_changes(app: &mut InviscidWindow, cx: &mut Context<InviscidWindow>) {
+    let Some(editor) = app.workspace().read(cx).active_editor().cloned() else {
+        return;
+    };
+    editor.update(cx, |editor, cx| editor.keep_local_changes(cx));
+    sync_workspace_to_global(app, cx);
+    cx.notify();
+}
+
 pub fn new_window(cx: &mut App) {
     let bounds = if let Some(active_window) = cx.active_window() {
         if let Ok(active_bounds) = active_window.update(cx, |_, window, _| window.bounds()) {

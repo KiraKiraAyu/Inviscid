@@ -39,7 +39,7 @@ Inviscid is currently in pre-`v0.1` active development. Core editing, Live Previ
 - [x] Mermaid diagram rendering in Live Preview with editable fenced source
 - [x] In-document Find & Replace and workspace-wide search / quick open
 - [x] Document outline (TOC) view and heading anchor navigation
-- [ ] File system watcher for external modification detection and reload
+- [x] File system watcher for external modification detection and conflict-aware reload
 - [ ] Rope-backed text buffer for large-document scalability
 - [ ] HTML / PDF export and prebuilt `v0.1` release packages for Windows, macOS, and Linux
 
