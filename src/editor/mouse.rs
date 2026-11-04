@@ -355,6 +355,7 @@ impl Editor {
                     self.scroll
                         .set_direct(start_scroll + scroll_delta, metrics.max_scroll);
                     self.scroll.last_scroll_action = std::time::Instant::now();
+                    cx.emit(EditorEvent::ScrollChanged);
                     cx.notify();
                 }
             }
@@ -461,6 +462,7 @@ impl Editor {
                             if editor.buffer.cursor_pos() != prev_head {
                                 cx.emit(crate::editor::EditorEvent::CursorMoved);
                             }
+                            cx.emit(crate::editor::EditorEvent::ScrollChanged);
                             cx.notify();
                             true
                         } else {
@@ -613,6 +615,7 @@ impl Editor {
                 if p.y.abs() > px(0.01) {
                     self.scroll_task = None;
                     self.scroll.scroll_direct(p.y, max_scroll);
+                    cx.emit(EditorEvent::ScrollChanged);
                     cx.notify();
                 }
             }
@@ -655,6 +658,7 @@ impl Editor {
             self.scroll_task = None;
             self.scroll.set_direct(target, metrics.max_scroll);
             self.scroll.last_scroll_action = std::time::Instant::now();
+            cx.emit(EditorEvent::ScrollChanged);
         }
         cx.notify();
         true

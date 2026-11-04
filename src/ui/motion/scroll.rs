@@ -173,6 +173,17 @@ pub fn start_scroll_animation<E: 'static>(
     get_task_slot: impl Fn(&mut E) -> &mut Option<Task<()>> + Copy + 'static,
     step_frame: impl Fn(&mut E) -> bool + 'static,
 ) {
+    start_scroll_animation_with_event(entity, cx, get_task_slot, move |entity, _cx| {
+        step_frame(entity)
+    });
+}
+
+pub fn start_scroll_animation_with_event<E: 'static>(
+    entity: &mut E,
+    cx: &mut Context<E>,
+    get_task_slot: impl Fn(&mut E) -> &mut Option<Task<()>> + Copy + 'static,
+    step_frame: impl Fn(&mut E, &mut Context<E>) -> bool + 'static,
+) {
     if get_task_slot(entity).is_some() {
         return;
     }
@@ -181,7 +192,7 @@ pub fn start_scroll_animation<E: 'static>(
         loop {
             executor.timer(SCROLL_FRAME_INTERVAL).await;
             let Ok(is_animating) = this.update(cx, |entity, cx| {
-                let still_animating = step_frame(entity);
+                let still_animating = step_frame(entity, cx);
                 cx.notify();
                 still_animating
             }) else {

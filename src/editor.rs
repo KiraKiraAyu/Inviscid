@@ -209,6 +209,7 @@ pub enum EditorEvent {
     DirtyChanged(bool),
     TitleChanged,
     CursorMoved,
+    ScrollChanged,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -605,11 +606,18 @@ impl Editor {
     }
 
     pub(crate) fn start_scroll_animation(&mut self, cx: &mut Context<Self>) {
-        crate::ui::start_scroll_animation(
+        crate::ui::start_scroll_animation_with_event(
             self,
             cx,
             |editor| &mut editor.scroll_task,
-            |editor| editor.scroll.step_interpolation(),
+            |editor, cx| {
+                let previous = editor.scroll.current_scroll_top;
+                let still_animating = editor.scroll.step_interpolation();
+                if editor.scroll.current_scroll_top != previous {
+                    cx.emit(EditorEvent::ScrollChanged);
+                }
+                still_animating
+            },
         );
     }
 

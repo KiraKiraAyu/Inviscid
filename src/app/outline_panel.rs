@@ -55,13 +55,7 @@ impl OutlinePanel {
         cx: &mut Context<Self>,
     ) {
         let entries = collect_outline(lines);
-        let active_heading = active_line.and_then(|line| {
-            entries
-                .iter()
-                .rev()
-                .find(|entry| entry.source_line <= line)
-                .map(|entry| entry.source_line)
-        });
+        let active_heading = Self::heading_at_or_before(&entries, active_line);
         if self.entries == entries
             && self.active_line == active_heading
             && self.editor_focus_handle == editor_focus_handle
@@ -72,6 +66,27 @@ impl OutlinePanel {
         self.active_line = active_heading;
         self.editor_focus_handle = editor_focus_handle;
         cx.notify();
+    }
+
+    pub fn set_active_line(&mut self, line: Option<SourceLine>, cx: &mut Context<Self>) {
+        let active_heading = Self::heading_at_or_before(&self.entries, line);
+        if self.active_line != active_heading {
+            self.active_line = active_heading;
+            cx.notify();
+        }
+    }
+
+    fn heading_at_or_before(
+        entries: &[OutlineItem],
+        line: Option<SourceLine>,
+    ) -> Option<SourceLine> {
+        line.and_then(|line| {
+            entries
+                .iter()
+                .rev()
+                .find(|entry| entry.source_line <= line)
+                .map(|entry| entry.source_line)
+        })
     }
 
     fn select(&mut self, line: SourceLine, cx: &mut Context<Self>) {

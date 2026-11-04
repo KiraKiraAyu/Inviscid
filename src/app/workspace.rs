@@ -446,6 +446,18 @@ impl Workspace {
                         }
                     }
                 }
+                crate::editor::EditorEvent::ScrollChanged => {
+                    if this.active_editor() == Some(&tab_editor) {
+                        let visible_line = {
+                            let editor = tab_editor.read(cx);
+                            editor
+                                .layout_snapshot()
+                                .source_line_at_y(editor.scroll_state().current_scroll_top)
+                        };
+                        this.outline_panel
+                            .update(cx, |panel, cx| panel.set_active_line(visible_line, cx));
+                    }
+                }
             },
         );
         (editor, subscription)

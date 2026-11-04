@@ -27,6 +27,7 @@ pub use motion::scroll;
 pub use motion::{
     SMOOTH_SCROLL_DURATION, SmoothScrollPhysics, WHEEL_LINE_STEP_PX, calculate_caret_size,
     cubic_ease_out, start_cursor_animation, start_scroll_animation,
+    start_scroll_animation_with_event,
 };
 pub use option_pill::OptionPill;
 pub use selectable_row::SelectableRow;
