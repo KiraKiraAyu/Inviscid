@@ -23,6 +23,7 @@ actions!(
         ToggleRenderMode,
         ToggleSidebar,
         ToggleSearchSidebar,
+        ToggleOutlineSidebar,
         DismissOverlay,
         OpenAbout,
         OpenSettings,

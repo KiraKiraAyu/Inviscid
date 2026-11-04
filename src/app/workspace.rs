@@ -15,12 +15,18 @@ pub use tabs::TabItem;
 use tabs::TabKind;
 
 use crate::app::search_panel::SearchPanel;
-use crate::app::{SidebarView, status_bar, tab_bar};
-use crate::buffer::Position;
+use crate::app::{OutlinePanel, OutlinePanelEvent, SidebarView, status_bar, tab_bar};
+use crate::buffer::{Position, SourceLine};
 use crate::config::{AppConfig, WorkspaceState};
 use crate::editor::Editor;
 use crate::editor::find_bar::FindBar;
 use crate::theme::{DEFAULT_THEME, ThemeManager};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PanelResizeTarget {
+    Sidebar,
+    Outline,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceEvent {
@@ -38,14 +44,18 @@ pub struct Workspace {
     status_bar: Entity<status_bar::StatusBar>,
     project_panel: Entity<crate::app::project_panel::ProjectPanel>,
     _project_panel_sub: Subscription,
+    outline_panel: Entity<OutlinePanel>,
+    _outline_panel_sub: Subscription,
     root_dir: Option<PathBuf>,
     sidebar_visible: bool,
     sidebar_width: Pixels,
     sidebar_view: SidebarView,
+    outline_visible: bool,
+    outline_width: Pixels,
     search_panel: Entity<SearchPanel>,
-    is_resizing_sidebar: bool,
-    sidebar_drag_start_x: Option<Pixels>,
-    sidebar_drag_start_width: Option<Pixels>,
+    resize_target: Option<PanelResizeTarget>,
+    panel_drag_start_x: Option<Pixels>,
+    panel_drag_start_width: Option<Pixels>,
 }
 
 impl Focusable for Workspace {
@@ -124,6 +134,18 @@ impl Workspace {
         })
     }
 
+    fn subscribe_outline_panel(
+        outline_panel: &Entity<OutlinePanel>,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe(
+            outline_panel,
+            |this, _panel, event: &OutlinePanelEvent, cx| match event {
+                OutlinePanelEvent::Select(line) => this.jump_to_outline(*line, cx),
+            },
+        )
+    }
+
     pub fn new(initial_path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let (root_dir, file_path) = match initial_path {
@@ -189,9 +211,11 @@ impl Workspace {
             p.prewarm_filter_index(cx);
         });
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
+        let outline_panel = cx.new(|cx| OutlinePanel::new(cx.focus_handle()));
+        let outline_panel_sub = Self::subscribe_outline_panel(&outline_panel, cx);
         let search_panel = cx.new(SearchPanel::new);
         search_panel.update(cx, |sp, cx| sp.set_root_dir(root_dir.clone(), cx));
-        Self {
+        let mut workspace = Self {
             focus_handle,
             tabs,
             active_tab_idx,
@@ -200,15 +224,21 @@ impl Workspace {
             status_bar,
             project_panel,
             _project_panel_sub: project_panel_sub,
+            outline_panel,
+            _outline_panel_sub: outline_panel_sub,
             root_dir,
             sidebar_visible: true,
             sidebar_width: px(DEFAULT_SIDEBAR_WIDTH),
             sidebar_view: SidebarView::default(),
+            outline_visible: false,
+            outline_width: px(DEFAULT_SIDEBAR_WIDTH),
             search_panel,
-            is_resizing_sidebar: false,
-            sidebar_drag_start_x: None,
-            sidebar_drag_start_width: None,
-        }
+            resize_target: None,
+            panel_drag_start_x: None,
+            panel_drag_start_width: None,
+        };
+        workspace.sync_outline_panel(cx);
+        workspace
     }
 
     fn load_tabs_from_state(ws: &WorkspaceState, cx: &mut Context<Self>) -> (Vec<TabItem>, usize) {
@@ -259,6 +289,10 @@ impl Workspace {
             .sidebar_width
             .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
             .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+        let outline_width = px(ws
+            .outline_width
+            .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
         let sidebar_offset = if ws.sidebar_visible {
             sidebar_width
         } else {
@@ -284,9 +318,11 @@ impl Workspace {
             p.prewarm_filter_index(cx);
         });
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
+        let outline_panel = cx.new(|cx| OutlinePanel::new(cx.focus_handle()));
+        let outline_panel_sub = Self::subscribe_outline_panel(&outline_panel, cx);
         let search_panel = cx.new(SearchPanel::new);
         search_panel.update(cx, |sp, cx| sp.set_root_dir(ws.root_dir.clone(), cx));
-        Self {
+        let mut workspace = Self {
             focus_handle,
             tabs,
             active_tab_idx,
@@ -295,29 +331,43 @@ impl Workspace {
             status_bar,
             project_panel,
             _project_panel_sub: project_panel_sub,
+            outline_panel,
+            _outline_panel_sub: outline_panel_sub,
             root_dir: ws.root_dir.clone(),
             sidebar_visible: ws.sidebar_visible,
             sidebar_width,
             sidebar_view: SidebarView::default(),
+            outline_visible: false,
+            outline_width,
             search_panel,
-            is_resizing_sidebar: false,
-            sidebar_drag_start_x: None,
-            sidebar_drag_start_width: None,
-        }
+            resize_target: None,
+            panel_drag_start_x: None,
+            panel_drag_start_width: None,
+        };
+        workspace.sync_outline_panel(cx);
+        workspace
     }
 
     pub fn restore_from_state(&mut self, ws: &WorkspaceState, cx: &mut Context<Self>) {
         self.root_dir = ws.root_dir.clone();
         self.sidebar_visible = ws.sidebar_visible;
         self.sidebar_view = SidebarView::Files;
+        self.outline_visible = false;
+        self.status_bar.update(cx, |status_bar, cx| {
+            status_bar.set_outline_visible(false, cx)
+        });
         let sidebar_width = px(ws
             .sidebar_width
             .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
             .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
         self.sidebar_width = sidebar_width;
-        self.is_resizing_sidebar = false;
-        self.sidebar_drag_start_x = None;
-        self.sidebar_drag_start_width = None;
+        self.outline_width = px(ws
+            .outline_width
+            .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+        self.resize_target = None;
+        self.panel_drag_start_x = None;
+        self.panel_drag_start_width = None;
 
         let (tabs, active_tab_idx) = Self::load_tabs_from_state(ws, cx);
         self.tabs = tabs;
@@ -359,6 +409,7 @@ impl Workspace {
                     if this.active_editor() == Some(&tab_editor) {
                         this.status_bar
                             .update(cx, |sb, cx| sb.set_dirty(*is_dirty, cx));
+                        this.sync_outline_panel(cx);
                     }
                 }
                 crate::editor::EditorEvent::TitleChanged => {
@@ -374,6 +425,7 @@ impl Workspace {
                         let meta = tab_editor.read(cx).status_meta();
                         last_status_version = tab_editor.read(cx).buffer_version();
                         this.status_bar.update(cx, |sb, cx| sb.set_meta(meta, cx));
+                        this.sync_outline_panel(cx);
                         cx.emit(WorkspaceEvent::TitleChanged);
                     }
                 }
@@ -388,6 +440,9 @@ impl Workspace {
                             last_status_version = current_version;
                             let meta = tab_editor.read(cx).status_meta();
                             this.status_bar.update(cx, |sb, cx| sb.set_meta(meta, cx));
+                        }
+                        if this.active_editor() == Some(&tab_editor) {
+                            this.sync_outline_panel(cx);
                         }
                     }
                 }
@@ -460,6 +515,7 @@ impl Workspace {
         let active_file = self.active_file_path(cx).map(|p| p.to_path_buf());
         self.project_panel
             .update(cx, |p, cx| p.set_active_file(active_file, cx));
+        self.sync_outline_panel(cx);
         cx.emit(WorkspaceEvent::TitleChanged);
         cx.notify();
     }
@@ -919,6 +975,7 @@ impl Workspace {
             open_files,
             sidebar_visible: self.sidebar_visible,
             sidebar_width: Some(f32::from(self.sidebar_width)),
+            outline_width: Some(f32::from(self.outline_width)),
         });
     }
 
@@ -938,9 +995,23 @@ impl Workspace {
         self.sidebar_width
     }
 
+    pub fn outline_width(&self) -> Pixels {
+        self.outline_width
+    }
+
     #[inline]
     pub fn is_resizing_sidebar(&self) -> bool {
-        self.is_resizing_sidebar
+        self.resize_target == Some(PanelResizeTarget::Sidebar)
+    }
+
+    #[inline]
+    pub fn is_resizing_outline(&self) -> bool {
+        self.resize_target == Some(PanelResizeTarget::Outline)
+    }
+
+    #[inline]
+    pub fn is_resizing_panel(&self) -> bool {
+        self.resize_target.is_some()
     }
 
     pub fn set_sidebar_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
@@ -958,35 +1029,88 @@ impl Workspace {
         }
     }
 
+    pub fn set_outline_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        let clamped = sidebar::clamp_sidebar_width(width);
+        if self.outline_width != clamped {
+            self.outline_width = clamped;
+            cx.notify();
+        }
+    }
+
     pub fn start_sidebar_resize(&mut self, mouse_x: Pixels, cx: &mut Context<Self>) {
-        self.is_resizing_sidebar = true;
-        self.sidebar_drag_start_x = Some(mouse_x);
-        self.sidebar_drag_start_width = Some(self.sidebar_width);
+        self.start_panel_resize(PanelResizeTarget::Sidebar, mouse_x, cx);
+    }
+
+    pub fn start_outline_resize(&mut self, mouse_x: Pixels, cx: &mut Context<Self>) {
+        self.start_panel_resize(PanelResizeTarget::Outline, mouse_x, cx);
+    }
+
+    fn start_panel_resize(
+        &mut self,
+        target: PanelResizeTarget,
+        mouse_x: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        self.resize_target = Some(target);
+        self.panel_drag_start_x = Some(mouse_x);
+        self.panel_drag_start_width = Some(match target {
+            PanelResizeTarget::Sidebar => self.sidebar_width,
+            PanelResizeTarget::Outline => self.outline_width,
+        });
         cx.notify();
     }
 
     pub fn handle_sidebar_resize_drag(&mut self, current_x: Pixels, cx: &mut Context<Self>) {
-        if let (Some(start_x), Some(start_w)) =
-            (self.sidebar_drag_start_x, self.sidebar_drag_start_width)
-        {
-            let delta = current_x - start_x;
-            let new_width = start_w + delta;
-            self.set_sidebar_width(new_width, cx);
+        if self.is_resizing_sidebar() {
+            self.handle_panel_resize_drag(current_x, cx);
         }
     }
 
-    pub fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
-        self.is_resizing_sidebar = false;
-        self.sidebar_drag_start_x = None;
-        self.sidebar_drag_start_width = None;
+    pub fn handle_outline_resize_drag(&mut self, current_x: Pixels, cx: &mut Context<Self>) {
+        if self.is_resizing_outline() {
+            self.handle_panel_resize_drag(current_x, cx);
+        }
+    }
+
+    pub fn handle_panel_resize_drag(&mut self, current_x: Pixels, cx: &mut Context<Self>) {
+        if let (Some(target), Some(start_x), Some(start_w)) = (
+            self.resize_target,
+            self.panel_drag_start_x,
+            self.panel_drag_start_width,
+        ) {
+            let delta = current_x - start_x;
+            match target {
+                PanelResizeTarget::Sidebar => self.set_sidebar_width(start_w + delta, cx),
+                PanelResizeTarget::Outline => self.set_outline_width(start_w - delta, cx),
+            }
+        }
+    }
+
+    pub fn finish_panel_resize(&mut self, cx: &mut Context<Self>) {
+        self.resize_target = None;
+        self.panel_drag_start_x = None;
+        self.panel_drag_start_width = None;
         cx.notify();
     }
 
+    pub fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+        if self.is_resizing_sidebar() {
+            self.finish_panel_resize(cx);
+        }
+    }
+
     pub fn reset_sidebar_width(&mut self, cx: &mut Context<Self>) {
-        self.is_resizing_sidebar = false;
-        self.sidebar_drag_start_x = None;
-        self.sidebar_drag_start_width = None;
+        if self.is_resizing_sidebar() {
+            self.finish_panel_resize(cx);
+        }
         self.set_sidebar_width(px(DEFAULT_SIDEBAR_WIDTH), cx);
+    }
+
+    pub fn reset_outline_width(&mut self, cx: &mut Context<Self>) {
+        if self.is_resizing_outline() {
+            self.finish_panel_resize(cx);
+        }
+        self.set_outline_width(px(DEFAULT_SIDEBAR_WIDTH), cx);
     }
 
     pub fn set_sidebar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -1013,6 +1137,21 @@ impl Workspace {
     /// The sidebar panel on screen; `None` while the sidebar is hidden.
     pub fn active_sidebar(&self) -> Option<SidebarView> {
         self.sidebar_visible.then_some(self.sidebar_view)
+    }
+
+    pub fn outline_visible(&self) -> bool {
+        self.outline_visible
+    }
+
+    pub fn toggle_outline_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.outline_visible = !self.outline_visible;
+        self.status_bar.update(cx, |status_bar, cx| {
+            status_bar.set_outline_visible(self.outline_visible, cx)
+        });
+        if !self.outline_visible {
+            self.focus_active_editor(window, cx);
+        }
+        cx.notify();
     }
 
     /// Pushes the sidebar state to the views that mirror it.
@@ -1051,6 +1190,39 @@ impl Workspace {
 
     pub fn search_panel(&self) -> &Entity<SearchPanel> {
         &self.search_panel
+    }
+
+    pub fn outline_panel(&self) -> &Entity<OutlinePanel> {
+        &self.outline_panel
+    }
+
+    fn sync_outline_panel(&mut self, cx: &mut Context<Self>) {
+        let (lines, active_line, editor_focus_handle) = self
+            .active_editor()
+            .map(|editor| {
+                let editor = editor.read(cx);
+                (
+                    editor.buffer().lines().to_vec(),
+                    Some(editor.cursor_pos().line),
+                    Some(editor.focus_handle(cx)),
+                )
+            })
+            .unwrap_or_default();
+        self.outline_panel.update(cx, |panel, cx| {
+            panel.set_document(&lines, active_line, editor_focus_handle, cx)
+        });
+    }
+
+    pub fn jump_to_outline(&mut self, line: SourceLine, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| {
+                editor.buffer_mut().set_cursor(Position::new(line, 0));
+                editor.scroll_to_cursor();
+                editor.start_scroll_animation_if_needed(cx);
+                editor.reset_cursor_blink(cx);
+            });
+            self.sync_outline_panel(cx);
+        }
     }
 
     /// Hides the sidebar when `view` is already on screen, otherwise shows it.
@@ -1138,10 +1310,8 @@ impl Render for Workspace {
             .w_full()
             .flex()
             .flex_col()
-            .when(self.is_resizing_sidebar, |this| {
-                this.child(sidebar::render_sidebar_resize_canvas(
-                    cx.entity().downgrade(),
-                ))
+            .when(self.is_resizing_panel(), |this| {
+                this.child(sidebar::render_panel_resize_canvas(cx.entity().downgrade()))
             })
             .child(
                 div()
@@ -1163,7 +1333,7 @@ impl Render for Workspace {
                     })
                     .when(sidebar_visible, |this| {
                         this.child(sidebar::render_sidebar_resize_handle(
-                            self.is_resizing_sidebar,
+                            self.is_resizing_sidebar(),
                             cx.entity().downgrade(),
                             &theme,
                         ))
@@ -1193,7 +1363,19 @@ impl Render for Workspace {
                                         .into_any_element()
                                 },
                             )),
-                    ),
+                    )
+                    .when(self.outline_visible, |this| {
+                        this.child(sidebar::render_outline_resize_handle(
+                            self.is_resizing_outline(),
+                            cx.entity().downgrade(),
+                            &theme,
+                        ))
+                        .child(sidebar::render_right_panel(
+                            self.outline_width,
+                            self.outline_panel.clone().into_any_element(),
+                            &theme,
+                        ))
+                    }),
             )
             .child(self.status_bar.clone())
     }

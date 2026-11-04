@@ -449,6 +449,19 @@ pub fn toggle_search_view(
     cx.notify();
 }
 
+pub fn toggle_outline_view(
+    app: &mut InviscidWindow,
+    window: &mut Window,
+    cx: &mut Context<InviscidWindow>,
+) {
+    app.close_menu(cx);
+    app.workspace().update(cx, |ws, cx| {
+        ws.toggle_outline_panel(window, cx);
+    });
+    sync_workspace_to_global(app, cx);
+    cx.notify();
+}
+
 pub fn open_workspace_search(
     app: &mut InviscidWindow,
     window: &mut Window,

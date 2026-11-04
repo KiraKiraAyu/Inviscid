@@ -1,4 +1,5 @@
 pub mod context_menu;
+pub mod dock_panel;
 pub mod icon;
 pub mod keystroke;
 pub mod menu_item;

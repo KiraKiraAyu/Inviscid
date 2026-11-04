@@ -87,6 +87,9 @@ fn attach_view_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
     .on_action(cx.listener(|this, _: &ToggleSearchSidebar, window, cx| {
         commands::toggle_search_view(this, window, cx);
     }))
+    .on_action(cx.listener(|this, _: &ToggleOutlineSidebar, window, cx| {
+        commands::toggle_outline_view(this, window, cx);
+    }))
     .on_action(cx.listener(|this, action: &SetRenderMode, _, cx| {
         commands::set_render_mode(this, action.0, cx);
     }))

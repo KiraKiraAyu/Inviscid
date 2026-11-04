@@ -1254,7 +1254,7 @@ impl Render for ProjectPanel {
         }))
         .flex_1()
         .w_full()
-        .py(px(4.0));
+        .py(crate::ui::dock_panel::LIST_VERTICAL_PADDING);
 
         let on_action = {
             let panel_weak = panel_weak.clone();

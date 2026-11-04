@@ -5,6 +5,7 @@ use std::{ops::Range, path::Path};
 use crate::app::project_panel::inline_input::{InlineInput, InlineInputKind};
 use crate::app::project_panel::{FileTreeEntry, ProjectPanel};
 use crate::theme::Theme;
+use crate::ui::dock_panel;
 use crate::ui::{FontSize, Icon, IconName, IconSize, Radius, Spacing};
 
 /// Calculates the index in `entries` where a new inline input row should be rendered.
@@ -233,24 +234,13 @@ pub fn build_tree_items(
 
         let row_path = entry_path.clone();
         let row =
-            div()
+            dock_panel::row(indent, theme)
                 .id(ElementId::NamedInteger(
                     "file_tree_entry".into(),
                     entry_idx as u64,
                 ))
-                .h(px(22.0))
-                .w_full()
-                .pl(indent)
-                .pr(Spacing::SM)
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(5.0))
-                .overflow_hidden()
                 .bg(bg_color)
                 .block_mouse_except_scroll()
-                .hover(|s| s.bg(theme.btn_hover))
-                .cursor_pointer()
                 .on_click(move |_, window, cx| {
                     if let Some(panel) = panel_click.upgrade() {
                         panel.update(cx, |this, cx| {
@@ -324,20 +314,7 @@ pub fn render_empty_state(
     cx: &App,
 ) -> AnyElement {
     if !has_root {
-        div()
-            .w_full()
-            .h_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .text_size(FontSize::SM)
-                    .text_color(theme.text_muted)
-                    .child("No folder opened"),
-            )
-            .into_any_element()
+        dock_panel::empty_state("No folder opened", theme).into_any_element()
     } else if let Some(input) = inline_input {
         let input_ref = input.read(cx);
         let is_dir = matches!(input_ref.kind(), InlineInputKind::NewFolder { .. });
@@ -349,20 +326,7 @@ pub fn render_empty_state(
             .child(render_inline_row(input, is_dir, false, depth, theme))
             .into_any_element()
     } else {
-        div()
-            .w_full()
-            .h_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .text_size(FontSize::SM)
-                    .text_color(theme.text_muted)
-                    .child("Empty folder"),
-            )
-            .into_any_element()
+        dock_panel::empty_state("Empty folder", theme).into_any_element()
     }
 }
 

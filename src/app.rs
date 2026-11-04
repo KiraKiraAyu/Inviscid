@@ -5,6 +5,7 @@ pub mod about;
 pub mod actions;
 pub mod commands;
 pub(crate) mod menu;
+pub mod outline_panel;
 pub mod project_panel;
 pub mod search_panel;
 pub mod settings;
@@ -16,6 +17,7 @@ pub mod workspace;
 
 pub use about::AboutWindow;
 pub use menu::ActiveMenu;
+pub use outline_panel::{OutlinePanel, OutlinePanelEvent};
 pub use project_panel::{FileTreeEntry, FileTreeEntryKind, ProjectPanel};
 pub use search_panel::SearchPanel;
 pub use settings::SettingsWindow;

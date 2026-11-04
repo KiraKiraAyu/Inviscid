@@ -13,6 +13,7 @@ pub struct WorkspaceState {
     pub open_files: Vec<PathBuf>,
     pub sidebar_visible: bool,
     pub sidebar_width: Option<f32>,
+    pub outline_width: Option<f32>,
 }
 
 impl Default for WorkspaceState {
@@ -23,6 +24,7 @@ impl Default for WorkspaceState {
             open_files: Vec::new(),
             sidebar_visible: true,
             sidebar_width: None,
+            outline_width: None,
         }
     }
 }
@@ -326,7 +328,8 @@ mod tests {
                 PathBuf::from("/project/notes.md"),
             ],
             sidebar_visible: true,
-            sidebar_width: None,
+            sidebar_width: Some(260.0),
+            outline_width: Some(300.0),
         };
 
         let mut config = AppConfig::default();
@@ -357,6 +360,7 @@ mod tests {
         assert_eq!(ws.root_dir, None);
         assert!(ws.sidebar_visible);
         assert_eq!(ws.sidebar_width, None);
+        assert_eq!(ws.outline_width, None);
     }
 
     #[test]
@@ -369,6 +373,7 @@ mod tests {
                 open_files: vec![PathBuf::from(format!("/doc_{}.md", i))],
                 sidebar_visible: true,
                 sidebar_width: None,
+                outline_width: None,
             };
             config.update_last_workspace(state);
         }
@@ -385,6 +390,7 @@ mod tests {
             open_files: vec![PathBuf::from("/doc_10.md")],
             sidebar_visible: true,
             sidebar_width: None,
+            outline_width: None,
         };
         config.update_last_workspace(state_10);
         assert_eq!(config.recent_workspaces().len(), 10);
@@ -404,6 +410,7 @@ mod tests {
             open_files: vec![PathBuf::from("/notes/today.md")],
             sidebar_visible: true,
             sidebar_width: None,
+            outline_width: None,
         };
         config.update_last_workspace(state_file_a);
 
@@ -413,6 +420,7 @@ mod tests {
             open_files: vec![PathBuf::from("/notes/today.md")],
             sidebar_visible: false,
             sidebar_width: Some(250.0),
+            outline_width: None,
         };
         config.update_last_workspace(state_file_a_updated.clone());
 
@@ -465,6 +473,7 @@ mod tests {
             open_files: vec![PathBuf::from("/a/b.md")],
             sidebar_visible: true,
             sidebar_width: None,
+            outline_width: None,
         };
         config.update_last_workspace(ws);
         config.save_session();
@@ -550,6 +559,7 @@ mod tests {
             open_files: Vec::new(),
             sidebar_visible: true,
             sidebar_width: None,
+            outline_width: None,
         });
         assert_eq!(config.recent_workspaces().len(), 1);
 
@@ -572,6 +582,7 @@ mod tests {
                 open_files: Vec::new(),
                 sidebar_visible: true,
                 sidebar_width: None,
+                outline_width: None,
             }),
             recent_workspaces: vec![
                 WorkspaceState {
@@ -580,6 +591,7 @@ mod tests {
                     open_files: Vec::new(),
                     sidebar_visible: true,
                     sidebar_width: None,
+                    outline_width: None,
                 },
                 WorkspaceState {
                     root_dir: Some(valid_folder.clone()),
@@ -587,6 +599,7 @@ mod tests {
                     open_files: Vec::new(),
                     sidebar_visible: true,
                     sidebar_width: None,
+                    outline_width: None,
                 },
             ],
         };

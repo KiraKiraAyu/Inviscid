@@ -654,6 +654,7 @@ fn test_clear_recent_workspaces_action() {
                 open_files: Vec::new(),
                 sidebar_visible: true,
                 sidebar_width: None,
+                outline_width: None,
             },
             WorkspaceState {
                 root_dir: Some(PathBuf::from("/project_2")),
@@ -661,6 +662,7 @@ fn test_clear_recent_workspaces_action() {
                 open_files: Vec::new(),
                 sidebar_visible: true,
                 sidebar_width: None,
+                outline_width: None,
             },
         ];
         cx.set_global(config);
@@ -702,6 +704,7 @@ fn test_restore_recent_workspace_closes_dropdown_menu() {
         open_files: vec![doc_path.clone()],
         sidebar_visible: true,
         sidebar_width: None,
+        outline_width: None,
     };
 
     cx.update(|cx| {
@@ -2858,21 +2861,26 @@ fn test_workspace_sidebar_width_persistence_and_restore() {
     cx.update(|_window, cx| {
         ws.update(cx, |ws, cx| {
             ws.set_sidebar_width(px(380.0), cx);
+            ws.set_outline_width(px(420.0), cx);
             let mut config = AppConfig::default();
             ws.sync_workspace_state(&mut config, cx);
 
             let last_ws = config.last_workspace().unwrap();
             assert_eq!(last_ws.sidebar_width, Some(380.0));
+            assert_eq!(last_ws.outline_width, Some(420.0));
 
-            // Restore from state with 380px
+            // Restore both docked panel widths.
             let restored = Workspace::from_state(last_ws, cx);
             assert_eq!(restored.sidebar_width(), px(380.0));
+            assert_eq!(restored.outline_width(), px(420.0));
 
             // Restore from state with out of bounds value
             let mut oob_state = last_ws.clone();
             oob_state.sidebar_width = Some(50.0);
+            oob_state.outline_width = Some(50.0);
             let restored_oob = Workspace::from_state(&oob_state, cx);
             assert_eq!(restored_oob.sidebar_width(), px(MIN_SIDEBAR_WIDTH));
+            assert_eq!(restored_oob.outline_width(), px(MIN_SIDEBAR_WIDTH));
         });
     });
 
@@ -3731,6 +3739,7 @@ fn test_workspace_from_state_with_missing_files_active_idx() {
         open_files: vec![missing1, missing2, file1.clone(), file2.clone()],
         sidebar_visible: true,
         sidebar_width: Some(240.0),
+        outline_width: None,
     };
 
     let (_app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
@@ -3777,6 +3786,7 @@ fn test_workspace_restore_from_state_preserves_entities_and_focus() {
         open_files: vec![temp_dir2.join("README.md")],
         sidebar_visible: false,
         sidebar_width: Some(280.0),
+        outline_width: None,
     };
 
     cx.update(|window, cx| {

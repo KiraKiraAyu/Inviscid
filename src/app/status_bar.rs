@@ -1,5 +1,5 @@
 use crate::app::SidebarView;
-use crate::app::actions::{ToggleSearchSidebar, ToggleSidebar};
+use crate::app::actions::{ToggleOutlineSidebar, ToggleSearchSidebar, ToggleSidebar};
 use crate::editor::EditorStatusMeta;
 use crate::theme::{DEFAULT_THEME, Theme, ThemeManager};
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
@@ -11,6 +11,7 @@ pub struct StatusBar {
     meta: Option<EditorStatusMeta>,
     /// The sidebar panel on screen; `None` while the sidebar is hidden.
     active_sidebar: Option<SidebarView>,
+    outline_visible: bool,
 }
 
 impl StatusBar {
@@ -20,11 +21,23 @@ impl StatusBar {
         Self {
             meta,
             active_sidebar,
+            outline_visible: false,
         }
     }
 
     pub fn active_sidebar(&self) -> Option<SidebarView> {
         self.active_sidebar
+    }
+
+    pub fn outline_visible(&self) -> bool {
+        self.outline_visible
+    }
+
+    pub fn set_outline_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.outline_visible != visible {
+            self.outline_visible = visible;
+            cx.notify();
+        }
     }
 
     pub fn meta(&self) -> Option<&EditorStatusMeta> {
@@ -71,6 +84,7 @@ impl Render for StatusBar {
             .map(|m| m.theme())
             .unwrap_or(&DEFAULT_THEME);
         let active_sidebar = self.active_sidebar;
+        let outline_visible = self.outline_visible;
 
         div()
             .w_full()
@@ -80,7 +94,7 @@ impl Render for StatusBar {
             .border_t_1()
             .border_color(theme.border)
             .pl(Spacing::XS)
-            .pr(Spacing::LG)
+            .pr(Spacing::XS)
             .flex()
             .flex_row()
             .items_center()
@@ -162,12 +176,19 @@ impl Render for StatusBar {
                             .gap(Spacing::XS)
                             .child(Icon::new(IconName::Palette).size(IconSize::XSmall))
                             .child(theme.name.clone()),
-                    ),
+                    )
+                    .child(render_sidebar_switch(
+                        "outline_panel_btn",
+                        IconName::PanelRight,
+                        outline_visible,
+                        Box::new(ToggleOutlineSidebar),
+                        theme,
+                    )),
             )
     }
 }
 
-/// One button of the sidebar switcher; highlighted while its panel is on screen.
+/// One panel toggle; highlighted while its panel is on screen.
 fn render_sidebar_switch(
     id: &'static str,
     icon: IconName,

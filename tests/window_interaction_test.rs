@@ -488,6 +488,7 @@ fn test_inviscid_window_open_initial_and_lib_reexport() {
         open_files: vec![doc1.clone(), doc2.clone()],
         sidebar_visible: true,
         sidebar_width: None,
+        outline_width: None,
     };
 
     cx.update(|_window, cx| {

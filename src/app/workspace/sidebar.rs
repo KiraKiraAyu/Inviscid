@@ -13,7 +13,7 @@ pub fn clamp_sidebar_width(width: Pixels) -> Pixels {
     width.clamp(px(MIN_SIDEBAR_WIDTH), px(MAX_SIDEBAR_WIDTH))
 }
 
-pub fn render_sidebar_resize_canvas(ws_weak: WeakEntity<Workspace>) -> impl IntoElement {
+pub fn render_panel_resize_canvas(ws_weak: WeakEntity<Workspace>) -> impl IntoElement {
     let ws_move = ws_weak.clone();
     let ws_up = ws_weak;
     canvas(
@@ -29,14 +29,14 @@ pub fn render_sidebar_resize_canvas(ws_weak: WeakEntity<Workspace>) -> impl Into
                     }
                     let handled = if let Some(ws) = ws_move.upgrade() {
                         ws.update(cx, |this, cx| {
-                            if !this.is_resizing_sidebar() {
+                            if !this.is_resizing_panel() {
                                 return false;
                             }
                             if event.pressed_button != Some(MouseButton::Left) {
-                                this.finish_sidebar_resize(cx);
+                                this.finish_panel_resize(cx);
                                 return true;
                             }
-                            this.handle_sidebar_resize_drag(event.position.x, cx);
+                            this.handle_panel_resize_drag(event.position.x, cx);
                             true
                         })
                     } else {
@@ -59,8 +59,8 @@ pub fn render_sidebar_resize_canvas(ws_weak: WeakEntity<Workspace>) -> impl Into
                     if event.button == MouseButton::Left {
                         let stopped = if let Some(ws) = ws_up.upgrade() {
                             ws.update(cx, |this, cx| {
-                                if this.is_resizing_sidebar() {
-                                    this.finish_sidebar_resize(cx);
+                                if this.is_resizing_panel() {
+                                    this.finish_panel_resize(cx);
                                     true
                                 } else {
                                     false
@@ -83,17 +83,52 @@ pub fn render_sidebar_resize_canvas(ws_weak: WeakEntity<Workspace>) -> impl Into
 
 /// The sidebar frame; owns the width and the divider so the panels inside only fill it.
 pub fn render_sidebar_panel(width: Pixels, content: AnyElement, theme: &Theme) -> impl IntoElement {
-    div()
-        .id("sidebar_panel")
+    render_docked_panel(
+        "sidebar_panel",
+        width,
+        content,
+        theme,
+        DockedPanelSide::Left,
+    )
+}
+
+/// The outline frame docked to the right of the editor.
+pub fn render_right_panel(width: Pixels, content: AnyElement, theme: &Theme) -> impl IntoElement {
+    render_docked_panel("right_panel", width, content, theme, DockedPanelSide::Right)
+}
+
+#[derive(Clone, Copy)]
+enum DockedPanelSide {
+    Left,
+    Right,
+}
+
+fn render_docked_panel(
+    id: &'static str,
+    width: Pixels,
+    content: AnyElement,
+    theme: &Theme,
+    side: DockedPanelSide,
+) -> impl IntoElement {
+    let panel = div()
+        .id(id)
         .w(width)
         .h_full()
         .bg(theme.bg_toolbar)
-        .border_r_1()
-        .border_color(theme.border_subtle)
         .flex()
         .flex_col()
-        .overflow_hidden()
-        .child(content)
+        .overflow_hidden();
+
+    match side {
+        DockedPanelSide::Left => panel
+            .border_r_1()
+            .border_color(theme.border_subtle)
+            .child(content),
+        DockedPanelSide::Right => panel
+            .border_l_1()
+            .border_color(theme.border_subtle)
+            .child(content),
+    }
 }
 
 pub fn render_sidebar_resize_handle(
@@ -101,12 +136,47 @@ pub fn render_sidebar_resize_handle(
     ws_weak: WeakEntity<Workspace>,
     theme: &Theme,
 ) -> impl IntoElement {
+    render_panel_resize_handle(
+        "sidebar_resize_handle",
+        is_resizing,
+        ws_weak,
+        theme,
+        DockedPanelSide::Left,
+    )
+}
+
+pub fn render_outline_resize_handle(
+    is_resizing: bool,
+    ws_weak: WeakEntity<Workspace>,
+    theme: &Theme,
+) -> impl IntoElement {
+    render_panel_resize_handle(
+        "outline_resize_handle",
+        is_resizing,
+        ws_weak,
+        theme,
+        DockedPanelSide::Right,
+    )
+}
+
+fn render_panel_resize_handle(
+    id: &'static str,
+    is_resizing: bool,
+    ws_weak: WeakEntity<Workspace>,
+    theme: &Theme,
+    side: DockedPanelSide,
+) -> impl IntoElement {
+    let (left_margin, right_margin) = match side {
+        DockedPanelSide::Left => (px(-2.0), px(-3.0)),
+        DockedPanelSide::Right => (px(-3.0), px(-2.0)),
+    };
+
     div()
-        .id("sidebar_resize_handle")
+        .id(id)
         .h_full()
         .w(px(5.0))
-        .ml(px(-2.0))
-        .mr(px(-3.0))
+        .ml(left_margin)
+        .mr(right_margin)
         .cursor_col_resize()
         .hover(|s| s.bg(theme.border))
         .when(is_resizing, |s| s.bg(theme.text_accent))
@@ -114,9 +184,19 @@ pub fn render_sidebar_resize_handle(
             if let Some(ws) = ws_weak.upgrade() {
                 ws.update(cx, |this, cx| {
                     if event.click_count == 2 {
-                        this.reset_sidebar_width(cx);
+                        match side {
+                            DockedPanelSide::Left => this.reset_sidebar_width(cx),
+                            DockedPanelSide::Right => this.reset_outline_width(cx),
+                        }
                     } else {
-                        this.start_sidebar_resize(event.position.x, cx);
+                        match side {
+                            DockedPanelSide::Left => {
+                                this.start_sidebar_resize(event.position.x, cx)
+                            }
+                            DockedPanelSide::Right => {
+                                this.start_outline_resize(event.position.x, cx)
+                            }
+                        }
                     }
                 });
             }
