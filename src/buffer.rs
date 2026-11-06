@@ -1,11 +1,11 @@
 use ropey::Rope;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
 use std::ops::{Index, IndexMut, Range, RangeFrom, RangeInclusive};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
+mod fingerprint;
 pub mod movement;
 pub mod operations;
 pub mod primitives;
@@ -330,6 +330,7 @@ pub struct TextBuffer {
     redo_stack: VecDeque<UndoStep>,
 
     saved_baseline: SavedBaseline,
+    line_fingerprints: fingerprint::LineFingerprints,
     pub(in crate::buffer) version: usize,
     pub(in crate::buffer) revision: u64,
     last_edit_time: Option<Instant>,
@@ -347,13 +348,7 @@ impl Default for TextBuffer {
 }
 
 pub fn compute_lines_hash(lines: &[String]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    lines.len().hash(&mut hasher);
-    for line in lines {
-        hasher.write(line.as_bytes());
-        hasher.write_u8(0xff);
-    }
-    hasher.finish()
+    fingerprint::hash_lines(lines)
 }
 
 #[inline]
@@ -404,19 +399,14 @@ impl TextBuffer {
         let line_ending = LineEnding::detect(content);
         let normalized = content.replace("\r\n", "\n");
         let is_empty_doc = normalized.is_empty();
-        let lines: Vec<String> = if is_empty_doc {
-            vec![String::new(), String::new()]
-        } else {
-            normalized.split('\n').map(|s| s.to_string()).collect()
-        };
-        let saved_content_hash = compute_lines_hash(&lines);
-        let saved_line_count = lines.len();
-        let total_char_count =
-            lines.iter().map(|l| l.chars().count()).sum::<usize>() + lines.len().saturating_sub(1);
-        let baseline_char_count = if is_empty_doc { 0 } else { total_char_count };
+        let rope = Rope::from_str(&normalized);
+        let line_fingerprints = fingerprint::LineFingerprints::new(&rope);
+        let saved_content_hash = line_fingerprints.content_hash();
+        let saved_line_count = if is_empty_doc { 2 } else { rope.len_lines() };
+        let baseline_char_count = rope.len_chars();
 
         Self {
-            rope: Rope::from_str(if is_empty_doc { "" } else { &normalized }),
+            rope,
             selection: Selection::cursor(Position::new(SourceLine::new(0), 0)),
             file_path,
             line_ending,
@@ -432,6 +422,7 @@ impl TextBuffer {
                 char_count: baseline_char_count,
                 is_empty_doc,
             },
+            line_fingerprints,
             version: 0,
             revision: 0,
             last_edit_time: None,
@@ -935,23 +926,7 @@ impl TextBuffer {
     }
 
     fn compute_content_hash(&self) -> u64 {
-        let line_count = self.line_count();
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        line_count.hash(&mut hasher);
-        for line_idx in 0..line_count {
-            if self.is_empty_doc {
-                hasher.write_u8(0xff);
-                continue;
-            }
-            let line = self.rope.line(line_idx);
-            let content_end = line.len_chars()
-                - usize::from(line.len_chars() > 0 && line.char(line.len_chars() - 1) == '\n');
-            for chunk in line.slice(..content_end).chunks() {
-                hasher.write(chunk.as_bytes());
-            }
-            hasher.write_u8(0xff);
-        }
-        hasher.finish()
+        self.line_fingerprints.content_hash()
     }
 
     fn apply_content_metrics(
@@ -1101,6 +1076,8 @@ impl TextBuffer {
         replaced_lines: &[String],
         inserted_lines: &[String],
     ) {
+        self.line_fingerprints
+            .update(&self.rope, start_line.index(), replaced_lines.len());
         self.revision = self.revision.wrapping_add(1);
         *self.line_index_cache.borrow_mut() = None;
         self.last_edit_delta = Some(EditDelta {

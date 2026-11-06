@@ -26,7 +26,8 @@ Inviscid is currently in pre-`v0.1` active development. Core editing, Live Previ
 - **LaTeX Math Rendering** — Live Preview renders inline `$...$` and multiline display math wrapped by standalone `$$` lines while keeping the Markdown source editable.
 - **Incremental Markdown Layout** — Re-scans only affected block ranges on edit, caches per-line shaped runs, and supports GFM tables with column alignment, interactive task lists, fenced code block folding, blockquotes, and asynchronous local/remote image dimension probing with LRU caching.
 - **Native Input & Motion** — ~120 FPS cubic ease-out smooth scrolling, soft-wrap line measurement, auto-surrounding pairs (ASCII and CJK brackets/quotes), and underlined inline IME preedit text that participates in shaping and wrapping.
-- **Workspace & Multi-Tab Editing** — Single-window tab bar with drag-and-drop reordering, content-hash dirty tracking against saved baselines, optional debounced auto-save, and a project file tree supporting inline file/folder creation, renaming, clipboard copy/cut/paste, and OS trash integration.
+- **Rope Text Buffer** — Local edits update only affected text and line fingerprints, keeping saved-state checks independent of total document size. Editing an extremely long line still processes that line.
+- **Workspace & Multi-Tab Editing** — Single-window tab bar with drag-and-drop reordering, incremental content-fingerprint dirty tracking against saved baselines, optional debounced auto-save, and a project file tree supporting inline file/folder creation, renaming, clipboard copy/cut/paste, and OS trash integration.
 - **Themes & Keybinding Customization** — Ships with five built-in themes (_Catppuccin Mocha_, _Catppuccin Latte_, _Dracula_, _GitHub Light_, _Nord_). Supports custom `.toml` themes with palette inheritance and interactive keybinding recording in the settings window.
 
 ## Roadmap
