@@ -80,10 +80,6 @@ impl SourceLines {
     fn take_dirty_range(&mut self) -> Option<Range<usize>> {
         self.dirty_range.take()
     }
-
-    fn clear_dirty_range(&mut self) {
-        self.dirty_range = None;
-    }
 }
 
 impl From<Vec<String>> for SourceLines {
@@ -321,9 +317,7 @@ pub struct SavedBaseline {
 
 #[derive(Clone, Debug)]
 pub struct TextBuffer {
-    lines: SourceLines,
-    /// Normalized document text. The line vector remains a compatibility view
-    /// for layout and markdown code while callers migrate to range-based access.
+    /// Normalized document text; line strings are materialized only on demand.
     pub(in crate::buffer) rope: Rope,
     pub(in crate::buffer) selection: Selection,
     pub(in crate::buffer) file_path: Option<PathBuf>,
@@ -368,14 +362,6 @@ pub(crate) fn char_col_to_byte_offset(s: &str, char_col: usize) -> usize {
 }
 
 impl TextBuffer {
-    fn rope_from_lines(lines: &SourceLines, is_empty_doc: bool) -> Rope {
-        if is_empty_doc {
-            Rope::new()
-        } else {
-            Rope::from_str(&lines.join("\n"))
-        }
-    }
-
     fn replace_rope_lines(
         &mut self,
         start_line: SourceLine,
@@ -427,7 +413,6 @@ impl TextBuffer {
         let baseline_char_count = if is_empty_doc { 0 } else { total_char_count };
 
         Self {
-            lines: SourceLines::from(lines),
             rope: Rope::from_str(if is_empty_doc { "" } else { &normalized }),
             selection: Selection::cursor(Position::new(SourceLine::new(0), 0)),
             file_path,
@@ -456,12 +441,16 @@ impl TextBuffer {
     }
 
     fn old_rope_lines(&self, start: usize, count: usize, empty_before: bool) -> Vec<String> {
-        if empty_before {
+        if empty_before || self.rope.len_chars() == 0 {
             return vec![String::new(); count];
         }
         (start..start + count)
             .map(|line_idx| {
-                let mut line = self.rope.line(line_idx).to_string();
+                let mut line = self
+                    .rope
+                    .get_line(line_idx)
+                    .map(|line| line.to_string())
+                    .unwrap_or_default();
                 if line.ends_with('\n') {
                     line.pop();
                 }
@@ -470,28 +459,143 @@ impl TextBuffer {
             .collect()
     }
 
-    #[inline]
-    pub fn lines(&self) -> &[String] {
-        self.lines.as_slice()
+    fn position_to_rope_char(&self, pos: Position) -> usize {
+        if self.is_empty_doc {
+            return 0;
+        }
+        let line = pos
+            .line
+            .index()
+            .min(self.rope.len_lines().saturating_sub(1));
+        self.rope.line_to_char(line) + pos.col.min(self.line_len(SourceLine::new(line)))
+    }
+
+    fn rope_char_to_position(&self, char_idx: usize) -> Position {
+        if self.rope.len_chars() == 0 {
+            return Position::default();
+        }
+        let char_idx = char_idx.min(self.rope.len_chars());
+        let line = self.rope.char_to_line(char_idx);
+        let col = char_idx.saturating_sub(self.rope.line_to_char(line));
+        Position::new(SourceLine::new(line), col)
+    }
+
+    fn replace_range_in_rope(&mut self, range: (Position, Position), text: &str) -> Position {
+        let (start, end) = if range.0 <= range.1 {
+            range
+        } else {
+            (range.1, range.0)
+        };
+        let start = self.clamp_position(start);
+        let end = self.clamp_position(end);
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        if normalized.is_empty() && range.0 == range.1 {
+            return self.clamp_position(range.0);
+        }
+        let cursor_before = self.selection;
+        let version_before = self.version;
+        let old_empty = self.is_empty_doc;
+        let old_count = if old_empty {
+            2
+        } else {
+            end.line.index().saturating_sub(start.line.index()) + 1
+        };
+        let old_lines = self.old_rope_lines(start.line.index(), old_count, old_empty);
+        let start_char = self.position_to_rope_char(start);
+        let end_char = self.position_to_rope_char(end);
+        let at_document_end = end_char == self.rope.len_chars();
+        let old_has_trailing_newline = self
+            .rope
+            .len_chars()
+            .checked_sub(1)
+            .map(|idx| self.rope.char(idx) == '\n')
+            .unwrap_or(false);
+        self.rope.remove(start_char..end_char);
+
+        let append_virtual_trailing_line = old_empty
+            || (at_document_end && (old_has_trailing_newline || normalized.ends_with('\n')));
+        let mut replacement = normalized.clone();
+        if append_virtual_trailing_line && !replacement.ends_with('\n') && !replacement.is_empty() {
+            replacement.push('\n');
+        }
+        self.rope.insert(start_char, &replacement);
+
+        self.is_empty_doc = self.rope.len_chars() == 0;
+        let new_cursor_char = start_char + normalized.chars().count();
+        let new_cursor = self.rope_char_to_position(new_cursor_char);
+        let new_count = if self.is_empty_doc {
+            2
+        } else {
+            normalized.matches('\n').count()
+                + 1
+                + usize::from(append_virtual_trailing_line && !normalized.ends_with('\n'))
+        };
+        let new_lines = self.old_rope_lines(start.line.index(), new_count, false);
+
+        self.version = self.version.wrapping_add(1);
+        self.finish_content_metrics(SourceLine::new(start.line.index()), &old_lines, &new_lines);
+        let step = UndoStep {
+            start_line: start.line,
+            old_lines,
+            new_lines,
+            cursor_before,
+            cursor_after: Selection::cursor(new_cursor),
+            version_before,
+            version_after: self.version,
+        };
+        self.selection = Selection::cursor(new_cursor);
+        self.push_undo_step(step, false);
+        new_cursor
     }
 
     #[inline]
-    pub fn line(&self, source_line: SourceLine) -> Option<&str> {
-        self.lines.get_source_line(source_line).map(|s| s.as_str())
+    pub fn lines(&self) -> Vec<String> {
+        self.to_lines()
+    }
+
+    #[inline]
+    pub fn line(&self, source_line: SourceLine) -> Option<String> {
+        if self.is_empty_doc {
+            return (source_line.index() < 2).then(String::new);
+        }
+        self.line_text(source_line)
+    }
+
+    pub fn line_text(&self, source_line: SourceLine) -> Option<String> {
+        if self.is_empty_doc {
+            return (source_line.index() < 2).then(String::new);
+        }
+        if source_line.index() >= self.rope.len_lines() {
+            return None;
+        }
+        let mut line = self.rope.line(source_line.index()).to_string();
+        if line.ends_with('\n') {
+            line.pop();
+        }
+        Some(line)
+    }
+
+    pub fn to_lines(&self) -> Vec<String> {
+        if self.is_empty_doc {
+            return vec![String::new(), String::new()];
+        }
+        (0..self.rope.len_lines())
+            .map(|line| self.line_text(SourceLine::new(line)).unwrap_or_default())
+            .collect()
     }
 
     #[inline]
     pub fn line_count(&self) -> usize {
-        self.lines.len()
+        if self.is_empty_doc {
+            2
+        } else {
+            self.rope.len_lines()
+        }
     }
 
     #[inline]
     fn has_only_empty_sentinel_lines(&self) -> bool {
-        self.lines.is_empty()
-            || (self.lines.len() == 1 && self.lines[SourceLine::new(0)].is_empty())
-            || (self.lines.len() == 2
-                && self.lines[SourceLine::new(0)].is_empty()
-                && self.lines[SourceLine::new(1)].is_empty())
+        self.rope.len_chars() == 0
     }
 
     #[inline]
@@ -565,19 +669,18 @@ impl TextBuffer {
     }
 
     pub fn line_len(&self, source_line: SourceLine) -> usize {
-        self.lines
-            .get_source_line(source_line)
-            .map(|l| l.chars().count())
+        self.line_text(source_line)
+            .map(|line| line.chars().count())
             .unwrap_or(0)
     }
 
     pub fn clamp_position(&self, pos: Position) -> Position {
-        if self.lines.is_empty() {
+        if self.line_count() == 0 {
             return Position::new(SourceLine::new(0), 0);
         }
         let line = pos
             .line
-            .min(crate::buffer::SourceLine::new(self.lines.len() - 1));
+            .min(crate::buffer::SourceLine::new(self.line_count() - 1));
         let max_col = self.line_len(line);
         let col = pos.col.min(max_col);
         Position::new(line, col)
@@ -602,23 +705,21 @@ impl TextBuffer {
     }
 
     /// Yields chunks for each line and line ending.
-    pub fn chunks_with_line_ending(&self) -> impl Iterator<Item = &str> {
-        let line_ending_str = self.line_ending.as_str();
-        let is_empty = self.is_empty();
-        let total_lines = self.lines.len();
-        self.lines
-            .iter()
-            .enumerate()
-            .flat_map(move |(i, line)| {
-                if is_empty {
-                    ["", ""].into_iter()
-                } else if i + 1 < total_lines {
-                    [line.as_str(), line_ending_str].into_iter()
-                } else {
-                    [line.as_str(), ""].into_iter()
+    pub fn chunks_with_line_ending(&self) -> impl Iterator<Item = String> {
+        let content = self.to_string_content();
+        let ending = self.line_ending.as_str();
+        let mut chunks = Vec::new();
+        for segment in content.split_inclusive(ending) {
+            if let Some(line) = segment.strip_suffix(ending) {
+                if !line.is_empty() {
+                    chunks.push(line.to_owned());
                 }
-            })
-            .filter(|s| !s.is_empty())
+                chunks.push(ending.to_owned());
+            } else if !segment.is_empty() {
+                chunks.push(segment.to_owned());
+            }
+        }
+        chunks.into_iter()
     }
 
     pub fn word_count(&self) -> usize {
@@ -628,7 +729,7 @@ impl TextBuffer {
             return count;
         }
         let count = self
-            .lines
+            .to_lines()
             .iter()
             .map(|line| line.split_whitespace().count())
             .sum();
@@ -646,13 +747,13 @@ impl TextBuffer {
     }
 
     pub fn pos_to_utf16_offset(&self, pos: SourcePosition) -> usize {
-        if self.lines.is_empty() {
+        if self.line_count() == 0 {
             return 0;
         }
-        let line_idx = pos.line.index().min(self.lines.len() - 1);
+        let line_idx = pos.line.index().min(self.line_count() - 1);
         let line_start = self.line_index().line_utf16_offset(line_idx);
 
-        if let Some(line) = self.lines.get_source_line(SourceLine::new(line_idx)) {
+        if let Some(line) = self.line_text(SourceLine::new(line_idx)) {
             let col_offset: usize = line.chars().take(pos.col).map(|c| c.len_utf16()).sum();
             line_start + col_offset
         } else {
@@ -661,7 +762,7 @@ impl TextBuffer {
     }
 
     pub fn utf16_offset_to_pos(&self, offset: usize) -> SourcePosition {
-        if self.lines.is_empty() {
+        if self.line_count() == 0 {
             return SourcePosition::new(SourceLine::new(0), 0);
         }
         let target_line_idx = self.line_index().utf16_offset_to_line(offset);
@@ -669,7 +770,7 @@ impl TextBuffer {
         let line_start = self.line_index().line_utf16_offset(target_line_idx);
         let rel_offset = offset.saturating_sub(line_start);
 
-        if let Some(line) = self.lines.get_source_line(SourceLine::new(target_line_idx)) {
+        if let Some(line) = self.line_text(SourceLine::new(target_line_idx)) {
             let line_utf16_len: usize = line.chars().map(|c| c.len_utf16()).sum();
             if rel_offset <= line_utf16_len {
                 let mut char_count = 0;
@@ -684,7 +785,7 @@ impl TextBuffer {
                 }
                 return SourcePosition::new(target_line, char_count);
             }
-            if target_line_idx == self.lines.len() - 1 {
+            if target_line_idx == self.line_count() - 1 {
                 return SourcePosition::new(target_line, line.chars().count());
             }
         }
@@ -704,7 +805,7 @@ impl TextBuffer {
     }
 
     pub fn text_for_utf16_range(&self, range_utf16: Range<usize>) -> (String, Range<usize>) {
-        if self.lines.is_empty() {
+        if self.line_count() == 0 {
             return (String::new(), 0..0);
         }
 
@@ -715,19 +816,24 @@ impl TextBuffer {
         let adjusted = actual_start_utf16..actual_end_utf16;
 
         if start_pos.line == end_pos.line {
-            if start_pos.line.index() >= self.lines.len() {
+            if start_pos.line.index() >= self.line_count() {
                 return (String::new(), adjusted);
             }
-            let line = self.line(start_pos.line).unwrap_or("");
+            let line = self.line(start_pos.line).unwrap_or_default();
             let char_count = end_pos.col.saturating_sub(start_pos.col);
             let text: String = line.chars().skip(start_pos.col).take(char_count).collect();
             (text, adjusted)
         } else {
             let mut result = Vec::new();
             let start_line = start_pos.line.index();
-            let end_line = end_pos.line.index().min(self.lines.len().saturating_sub(1));
+            let end_line = end_pos
+                .line
+                .index()
+                .min(self.line_count().saturating_sub(1));
             for idx in start_line..=end_line {
-                let line = self.line(crate::buffer::SourceLine::new(idx)).unwrap_or("");
+                let line = self
+                    .line(crate::buffer::SourceLine::new(idx))
+                    .unwrap_or_default();
                 if idx == start_line {
                     result.push(line.chars().skip(start_pos.col).collect::<String>());
                 } else if idx == end_pos.line.index() {
@@ -784,9 +890,9 @@ impl TextBuffer {
 
     pub fn saved_baseline_snapshot(&self) -> SavedBaseline {
         SavedBaseline {
-            content_hash: compute_lines_hash(self.lines.as_slice()),
+            content_hash: compute_lines_hash(&self.to_lines()),
             revision: self.revision,
-            line_count: self.lines.len(),
+            line_count: self.line_count(),
             char_count: self.char_count(),
             is_empty_doc: self.is_empty(),
         }
@@ -813,7 +919,7 @@ impl TextBuffer {
             return;
         }
 
-        if self.lines.len() != self.saved_baseline.line_count
+        if self.line_count() != self.saved_baseline.line_count
             || self.char_count() != self.saved_baseline.char_count
             || self.is_empty_doc != self.saved_baseline.is_empty_doc
         {
@@ -821,7 +927,7 @@ impl TextBuffer {
             return;
         }
 
-        let current_hash = compute_lines_hash(self.lines.as_slice());
+        let current_hash = compute_lines_hash(&self.to_lines());
         self.is_dirty = current_hash != self.saved_baseline.content_hash;
     }
 
@@ -831,13 +937,21 @@ impl TextBuffer {
         replaced_lines: &[String],
         inserted_lines: &[String],
     ) {
-        self.is_empty_doc = self.has_only_empty_sentinel_lines();
-        if self.rope.len_chars() == 0 || self.is_empty_doc {
-            self.rope = Self::rope_from_lines(&self.lines, self.is_empty_doc);
+        if self.is_empty_doc {
+            self.rope = Rope::new();
         } else {
             self.replace_rope_lines(start_line, replaced_lines.len(), inserted_lines);
         }
 
+        self.finish_content_metrics(start_line, replaced_lines, inserted_lines);
+    }
+
+    fn finish_content_metrics(
+        &mut self,
+        start_line: SourceLine,
+        replaced_lines: &[String],
+        inserted_lines: &[String],
+    ) {
         self.revision = self.revision.wrapping_add(1);
         *self.line_index_cache.borrow_mut() = None;
         self.last_edit_delta = Some(EditDelta {
@@ -892,29 +1006,48 @@ impl TextBuffer {
     where
         F: FnOnce(&mut String, &mut Selection),
     {
-        if line_idx.index() >= self.lines.len() {
+        if line_idx.index() >= self.line_count() {
             return;
         }
 
         self.column_goal = None;
         let cursor_before = self.selection;
         let version_before = self.version;
-        let old_line = self.lines[line_idx].clone();
+        let was_empty_doc = self.is_empty_doc;
+        let old_line = self.line_text(line_idx).unwrap_or_default();
+        let mut new_line = old_line.clone();
+        f(&mut new_line, &mut self.selection);
 
-        f(&mut self.lines[line_idx], &mut self.selection);
-        self.lines.clear_dirty_range();
+        if was_empty_doc && !new_line.is_empty() {
+            self.is_empty_doc = false;
+        }
 
-        self.selection.anchor = self.clamp_position(self.selection.anchor);
-        self.selection.head = self.clamp_position(self.selection.head);
+        let new_line_len = new_line.chars().count();
+        let clamp_after_edit = |pos: Position| {
+            if pos.line == line_idx {
+                Position::new(line_idx, pos.col.min(new_line_len))
+            } else {
+                self.clamp_position(pos)
+            }
+        };
+        let anchor = clamp_after_edit(self.selection.anchor);
+        let head = clamp_after_edit(self.selection.head);
+        self.selection.anchor = anchor;
+        self.selection.head = head;
 
-        if self.lines[line_idx] != old_line || self.selection != cursor_before {
-            let new_lines = vec![self.lines[line_idx].clone()];
+        if new_line != old_line || self.selection != cursor_before {
+            let new_lines = vec![new_line];
             let old_lines = vec![old_line];
             let content_changed = new_lines[0] != old_lines[0];
 
             let version_after = if content_changed {
                 self.version = self.version.wrapping_add(1);
-                self.apply_content_metrics(line_idx, &old_lines, &new_lines);
+                if was_empty_doc {
+                    self.rope = Rope::from_str(&format!("{}\n", new_lines[0]));
+                    self.finish_content_metrics(line_idx, &old_lines, &new_lines);
+                } else {
+                    self.apply_content_metrics(line_idx, &old_lines, &new_lines);
+                }
                 self.version
             } else {
                 version_before
@@ -949,29 +1082,32 @@ impl TextBuffer {
         self.column_goal = None;
         let cursor_before = self.selection;
         let version_before = self.version;
-        let line_count_before = self.lines.len();
+        let line_count_before = self.line_count();
         let empty_before = self.is_empty_doc;
-        self.lines.clear_dirty_range();
+        let mut lines = SourceLines::from(self.to_lines());
+        f(&mut lines, &mut self.selection);
 
-        f(&mut self.lines, &mut self.selection);
+        let clamp_to_lines = |pos: Position| {
+            let line = pos.line.min(SourceLine::new(lines.len().saturating_sub(1)));
+            let col = pos.col.min(lines[line].chars().count());
+            Position::new(line, col)
+        };
+        self.selection.anchor = clamp_to_lines(self.selection.anchor);
+        self.selection.head = clamp_to_lines(self.selection.head);
 
-        self.selection.anchor = self.clamp_position(self.selection.anchor);
-        self.selection.head = self.clamp_position(self.selection.head);
-
-        let dirty = self
-            .lines
+        let dirty = lines
             .take_dirty_range()
-            .or_else(|| (self.lines.len() != line_count_before).then_some(0..self.lines.len()));
+            .or_else(|| (lines.len() != line_count_before).then_some(0..lines.len()));
         if dirty.is_some() || self.selection != cursor_before {
             let mut prefix = dirty.as_ref().map_or(0, |range| range.start);
             let new_end = dirty
                 .as_ref()
-                .map_or(prefix, |range| range.end.min(self.lines.len()));
+                .map_or(prefix, |range| range.end.min(lines.len()));
             let new_count = new_end.saturating_sub(prefix);
-            let line_delta = self.lines.len() as isize - line_count_before as isize;
+            let line_delta = lines.len() as isize - line_count_before as isize;
             let old_count = (new_count as isize - line_delta).max(0) as usize;
             let mut old_lines = self.old_rope_lines(prefix, old_count, empty_before);
-            let mut new_lines = self.lines.as_slice()[prefix..new_end].to_vec();
+            let mut new_lines = lines.as_slice()[prefix..new_end].to_vec();
 
             let mut unchanged_prefix = 0;
             while unchanged_prefix < old_lines.len().min(new_lines.len())
@@ -1003,7 +1139,17 @@ impl TextBuffer {
             }
             let version_after = if content_changed {
                 self.version = self.version.wrapping_add(1);
-                self.apply_content_metrics(SourceLine::new(prefix), &old_lines, &new_lines);
+                self.is_empty_doc = lines.len() == 2 && lines.iter().all(String::is_empty);
+                if empty_before {
+                    self.rope = if self.is_empty_doc {
+                        Rope::new()
+                    } else {
+                        Rope::from_str(&lines.join("\n"))
+                    };
+                    self.finish_content_metrics(SourceLine::new(prefix), &old_lines, &new_lines);
+                } else {
+                    self.apply_content_metrics(SourceLine::new(prefix), &old_lines, &new_lines);
+                }
                 self.version
             } else {
                 version_before
@@ -1081,16 +1227,12 @@ impl TextBuffer {
         self.column_goal = None;
         self.last_edit_time = None;
         if let Some(step) = self.undo_stack.pop_back() {
-            let replace_len = step.new_lines.len();
-            self.lines.replace_source_lines_at(
-                step.start_line,
-                replace_len,
-                step.old_lines.iter().cloned(),
-            );
             self.selection = step.cursor_before;
             self.version = step.version_before;
             if !step.new_lines.is_empty() || !step.old_lines.is_empty() {
+                self.is_empty_doc = false;
                 self.apply_content_metrics(step.start_line, &step.new_lines, &step.old_lines);
+                self.is_empty_doc = self.rope.len_chars() == 0;
             }
 
             self.redo_stack.push_back(step);
@@ -1103,16 +1245,12 @@ impl TextBuffer {
         self.column_goal = None;
         self.last_edit_time = None;
         if let Some(step) = self.redo_stack.pop_back() {
-            let replace_len = step.old_lines.len();
-            self.lines.replace_source_lines_at(
-                step.start_line,
-                replace_len,
-                step.new_lines.iter().cloned(),
-            );
             self.selection = step.cursor_after;
             self.version = step.version_after;
             if !step.old_lines.is_empty() || !step.new_lines.is_empty() {
+                self.is_empty_doc = false;
                 self.apply_content_metrics(step.start_line, &step.old_lines, &step.new_lines);
+                self.is_empty_doc = self.rope.len_chars() == 0;
             }
 
             self.undo_stack.push_back(step);

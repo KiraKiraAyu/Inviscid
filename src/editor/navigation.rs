@@ -276,7 +276,7 @@ impl Editor {
 
             // Step to next physical line, respecting folds and visual blocks
             let layout = self.layout_snapshot();
-            let vdoc = VisualDocument::from_parsed(self.buffer.lines(), &layout.parsed_lines);
+            let vdoc = VisualDocument::from_parsed(&self.buffer.lines(), &layout.parsed_lines);
             let vpos = vdoc.source_to_visual(crate::buffer::SourcePosition::from_position(pos));
             let next_line = self.adjacent_live_navigation_line(
                 &vdoc,
@@ -287,8 +287,8 @@ impl Editor {
             );
 
             if let Some(target_line) = next_line {
-                let target_line_str = self.buffer.line(target_line).unwrap_or("");
-                let prefix = get_block_prefix_len(target_line_str);
+                let target_line_str = self.buffer.line(target_line).unwrap_or_default();
+                let prefix = get_block_prefix_len(&target_line_str);
                 let col = if target_line_str.trim_start().starts_with("```") {
                     self.buffer.line_len(target_line)
                 } else {
@@ -319,7 +319,7 @@ impl Editor {
 
             // Step to previous physical line, respecting folds and visual blocks
             let layout = self.layout_snapshot();
-            let vdoc = VisualDocument::from_parsed(self.buffer.lines(), &layout.parsed_lines);
+            let vdoc = VisualDocument::from_parsed(&self.buffer.lines(), &layout.parsed_lines);
             let vpos = vdoc.source_to_visual(crate::buffer::SourcePosition::from_position(pos));
             let prev_line = self.adjacent_live_navigation_line(
                 &vdoc,
@@ -330,8 +330,8 @@ impl Editor {
             );
 
             if let Some(target_line) = prev_line {
-                let target_line_str = self.buffer.line(target_line).unwrap_or("");
-                let prefix = get_block_prefix_len(target_line_str);
+                let target_line_str = self.buffer.line(target_line).unwrap_or_default();
+                let prefix = get_block_prefix_len(&target_line_str);
                 let col = if target_line_str.trim_start().starts_with("```") {
                     self.buffer.line_len(target_line)
                 } else {

@@ -268,7 +268,7 @@ impl Element for EditorElement {
                         let line_el = render_line_element(
                             source_line,
                             parsed,
-                            editor.buffer.lines(),
+                            &editor.buffer.lines(),
                             &lrc,
                             &editor_entity,
                         );

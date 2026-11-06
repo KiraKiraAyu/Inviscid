@@ -220,7 +220,7 @@ impl TextInput {
     pub fn text(&self) -> String {
         self.buffer
             .line(crate::buffer::SourceLine::new(0))
-            .unwrap_or("")
+            .unwrap_or_default()
             .to_string()
     }
 
@@ -466,7 +466,7 @@ impl TextInput {
         let line_str = self
             .buffer
             .line(crate::buffer::SourceLine::new(0))
-            .unwrap_or("");
+            .unwrap_or_default();
         if line_str.is_empty() {
             return 0;
         }
@@ -552,11 +552,11 @@ impl TextInput {
         let line_str = self
             .buffer
             .line(crate::buffer::SourceLine::new(0))
-            .unwrap_or("");
+            .unwrap_or_default();
         let font_size = FontSize::SM.to_pixels(window.rem_size());
         let line_height = LineHeight::SM.to_pixels(window.rem_size());
         let (caret_w, _) = calculate_caret_size(font_size, line_height);
-        let byte_offset = char_col_to_byte_offset(line_str, cursor_col);
+        let byte_offset = char_col_to_byte_offset(&line_str, cursor_col);
 
         let run = measurement_run(line_str.len(), window.text_style().font());
         let x = window

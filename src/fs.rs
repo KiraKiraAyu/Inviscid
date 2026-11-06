@@ -8,10 +8,11 @@ use std::time::SystemTime;
 /// Saves a document directly to disk by streaming string chunks into a buffered writer.
 ///
 /// Overwrites the file in place to preserve file identity, hard links, and file watchers.
-pub fn save_document_chunks<'a>(
-    path: &Path,
-    chunks: impl IntoIterator<Item = &'a str>,
-) -> std::io::Result<SystemTime> {
+pub fn save_document_chunks<I, C>(path: &Path, chunks: I) -> std::io::Result<SystemTime>
+where
+    I: IntoIterator<Item = C>,
+    C: AsRef<[u8]>,
+{
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             let _ = fs::create_dir_all(parent);
@@ -26,7 +27,7 @@ pub fn save_document_chunks<'a>(
 
     let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file);
     for chunk in chunks {
-        writer.write_all(chunk.as_bytes())?;
+        writer.write_all(chunk.as_ref())?;
     }
     writer.flush()?;
 

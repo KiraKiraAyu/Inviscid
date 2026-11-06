@@ -224,7 +224,7 @@ impl TextBuffer {
         }
 
         *self.line_index_cache.borrow_mut() =
-            Some(LineIndex::build(self.version, self.lines.as_slice()));
+            Some(LineIndex::build(self.version, &self.to_lines()));
 
         let cache = self.line_index_cache.borrow();
         Ref::map(cache, |c| c.as_ref().unwrap())
@@ -251,7 +251,9 @@ impl TextBuffer {
             .copied()
             .unwrap_or(false);
         !crate::markdown::table::is_table_delimiter_row(
-            &self.lines[crate::buffer::SourceLine::new(line)],
+            &self
+                .line_text(crate::buffer::SourceLine::new(line))
+                .unwrap_or_default(),
         ) && (!is_separator || is_math_content)
             && !index.is_closing_fence(crate::buffer::SourceLine::new(line))
             && (is_source || !index.is_math_delimiter(crate::buffer::SourceLine::new(line)))
@@ -263,7 +265,7 @@ impl TextBuffer {
         is_source: bool,
     ) -> Option<crate::buffer::SourceLine> {
         let index = self.line_index();
-        ((from_line.index() + 1)..self.lines.len())
+        ((from_line.index() + 1)..self.line_count())
             .find(|&line| self.is_line_editable(&index, line, is_source))
             .map(crate::buffer::SourceLine::new)
     }
@@ -322,9 +324,11 @@ impl TextBuffer {
                 pos
             }
         } else if let Some(meta) =
-            crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line)
+            crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line)
         {
-            let cells = crate::markdown::table::parse_table_row_cells(&self.lines[pos.line]);
+            let cells = crate::markdown::table::parse_table_row_cells(
+                &self.line_text(pos.line).unwrap_or_default(),
+            );
             let cell_idx = crate::markdown::table::get_cell_index_for_col(&cells, pos.col);
             if let Some(cell) = cells.get(cell_idx) {
                 if pos.col > cell.col_range.1 {
@@ -335,14 +339,15 @@ impl TextBuffer {
                     Position::new(pos.line, cells[cell_idx - 1].col_range.1)
                 } else if pos.line.index() == meta.delimiter_line.index() + 1 {
                     let header_cells = crate::markdown::table::parse_table_row_cells(
-                        &self.lines[meta.header_line],
+                        &self.line_text(meta.header_line).unwrap_or_default(),
                     );
                     let col = header_cells.last().map(|c| c.col_range.1).unwrap_or(2);
                     Position::new(meta.header_line, col)
                 } else if pos.line.index() > meta.delimiter_line.index() + 1 {
                     let prev_row = pos.line - 1;
-                    let prev_cells =
-                        crate::markdown::table::parse_table_row_cells(&self.lines[prev_row]);
+                    let prev_cells = crate::markdown::table::parse_table_row_cells(
+                        &self.line_text(prev_row).unwrap_or_default(),
+                    );
                     let col = prev_cells.last().map(|c| c.col_range.1).unwrap_or(2);
                     Position::new(prev_row, col)
                 } else if let Some(prev_line) =
@@ -356,8 +361,8 @@ impl TextBuffer {
                 pos
             }
         } else {
-            let line = &self.lines[pos.line];
-            let prefix_len = get_block_prefix_len(line);
+            let line = self.line_text(pos.line).unwrap_or_default();
+            let prefix_len = get_block_prefix_len(&line);
 
             if pos.col <= prefix_len {
                 if let Some(prev_line) = self.find_prev_editable_line(pos.line, is_source) {
@@ -397,13 +402,21 @@ impl TextBuffer {
                     } else {
                         self.find_next_editable_line(end, false)
                             .map(|line| {
-                                Position::new(line, get_block_prefix_len(&self.lines[line]))
+                                Position::new(
+                                    line,
+                                    get_block_prefix_len(&self.line_text(line).unwrap_or_default()),
+                                )
                             })
                             .unwrap_or(Position::new(end, 0))
                     }
                 } else {
                     self.find_next_editable_line(end, false)
-                        .map(|line| Position::new(line, get_block_prefix_len(&self.lines[line])))
+                        .map(|line| {
+                            Position::new(
+                                line,
+                                get_block_prefix_len(&self.line_text(line).unwrap_or_default()),
+                            )
+                        })
                         .unwrap_or(Position::new(end, 0))
                 };
                 drop(index);
@@ -416,15 +429,17 @@ impl TextBuffer {
         let new_pos = if is_source {
             if pos.col < line_len {
                 Position::new(pos.line, pos.col + 1)
-            } else if (pos.line + 1).index() < self.lines.len() {
+            } else if (pos.line + 1).index() < self.line_count() {
                 Position::new(pos.line + 1, 0)
             } else {
                 pos
             }
         } else if let Some(meta) =
-            crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line)
+            crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line)
         {
-            let cells = crate::markdown::table::parse_table_row_cells(&self.lines[pos.line]);
+            let cells = crate::markdown::table::parse_table_row_cells(
+                &self.line_text(pos.line).unwrap_or_default(),
+            );
             let cell_idx = crate::markdown::table::get_cell_index_for_col(&cells, pos.col);
             if let Some(cell) = cells.get(cell_idx) {
                 if pos.col < cell.col_range.0 {
@@ -436,9 +451,11 @@ impl TextBuffer {
                     Position::new(pos.line, cells[cell_idx + 1].col_range.0)
                 } else if pos.line == meta.header_line {
                     let next_row = meta.delimiter_line.index() + 1;
-                    if next_row < self.lines.len() && next_row <= meta.last_table_line.index() {
+                    if next_row < self.line_count() && next_row <= meta.last_table_line.index() {
                         let next_cells = crate::markdown::table::parse_table_row_cells(
-                            &self.lines[crate::buffer::SourceLine::new(next_row)],
+                            &self
+                                .line_text(crate::buffer::SourceLine::new(next_row))
+                                .unwrap_or_default(),
                         );
                         let col = next_cells.first().map(|c| c.col_range.0).unwrap_or(2);
                         Position::new(crate::buffer::SourceLine::new(next_row), col)
@@ -447,14 +464,18 @@ impl TextBuffer {
                     }
                 } else if pos.line < meta.last_table_line {
                     let next_row = pos.line + 1;
-                    let next_cells =
-                        crate::markdown::table::parse_table_row_cells(&self.lines[next_row]);
+                    let next_cells = crate::markdown::table::parse_table_row_cells(
+                        &self.line_text(next_row).unwrap_or_default(),
+                    );
                     let col = next_cells.first().map(|c| c.col_range.0).unwrap_or(2);
                     Position::new(next_row, col)
                 } else if let Some(next_line) =
                     self.find_next_editable_line(meta.last_table_line, is_source)
                 {
-                    Position::new(next_line, get_block_prefix_len(&self.lines[next_line]))
+                    Position::new(
+                        next_line,
+                        get_block_prefix_len(&self.line_text(next_line).unwrap_or_default()),
+                    )
                 } else {
                     pos
                 }
@@ -462,8 +483,8 @@ impl TextBuffer {
                 pos
             }
         } else {
-            let line = &self.lines[pos.line];
-            let prefix_len = get_block_prefix_len(line);
+            let line = self.line_text(pos.line).unwrap_or_default();
+            let prefix_len = get_block_prefix_len(&line);
 
             if pos.col < prefix_len {
                 // Step over hidden prefix directly to right of first visible character
@@ -471,7 +492,8 @@ impl TextBuffer {
             } else if pos.col < line_len {
                 Position::new(pos.line, pos.col + 1)
             } else if let Some(next_line) = self.find_next_editable_line(pos.line, is_source) {
-                let next_prefix = get_block_prefix_len(&self.lines[next_line]);
+                let next_prefix =
+                    get_block_prefix_len(&self.line_text(next_line).unwrap_or_default());
                 Position::new(next_line, next_prefix.min(self.line_len(next_line)))
             } else if !select
                 && (self.is_in_code_fence(pos.line) || self.is_closing_code_fence(pos.line))
@@ -499,7 +521,7 @@ impl TextBuffer {
 
         let new_pos = if is_source {
             if is_down {
-                if (pos.line + 1).index() < self.lines.len() {
+                if (pos.line + 1).index() < self.line_count() {
                     let next_line = pos.line + 1;
                     Position::new(next_line, goal.min(self.line_len(next_line)))
                 } else {
@@ -519,8 +541,9 @@ impl TextBuffer {
             };
 
             if let Some(target) = target_line {
-                let prefix = get_block_prefix_len(&self.lines[target]);
-                let col = if self.lines[target].trim_start().starts_with("```") {
+                let target_text = self.line_text(target).unwrap_or_default();
+                let prefix = get_block_prefix_len(&target_text);
+                let col = if target_text.trim_start().starts_with("```") {
                     self.line_len(target)
                 } else {
                     goal.max(prefix).min(self.line_len(target))
@@ -553,7 +576,7 @@ impl TextBuffer {
     pub fn move_to_line_start_mode(&mut self, select: bool, is_source: bool) {
         self.column_goal = None;
         let pos = self.selection.head;
-        let line = &self.lines[pos.line];
+        let line = self.line_text(pos.line).unwrap_or_default();
 
         let new_col = if is_source {
             let trimmed = line.trim_start();
@@ -564,7 +587,7 @@ impl TextBuffer {
                 0
             }
         } else {
-            get_block_prefix_len(line)
+            get_block_prefix_len(&line)
         };
 
         let new_pos = Position::new(pos.line, new_col);
@@ -586,7 +609,7 @@ impl TextBuffer {
 
     pub fn move_to_doc_end(&mut self, select: bool) {
         self.column_goal = None;
-        let last_line = self.lines.len().saturating_sub(1);
+        let last_line = self.line_count().saturating_sub(1);
         let new_pos = Position::new(
             crate::buffer::SourceLine::new(last_line),
             self.line_len(crate::buffer::SourceLine::new(last_line)),
@@ -606,7 +629,11 @@ impl TextBuffer {
             return;
         }
 
-        let chars: Vec<char> = self.lines[pos.line].chars().collect();
+        let chars: Vec<char> = self
+            .line_text(pos.line)
+            .unwrap_or_default()
+            .chars()
+            .collect();
         let mut idx = pos.col;
 
         // Skip left whitespace
@@ -631,14 +658,18 @@ impl TextBuffer {
         let line_len = self.line_len(pos.line);
 
         if pos.col >= line_len {
-            if (pos.line + 1).index() < self.lines.len() {
+            if (pos.line + 1).index() < self.line_count() {
                 let new_pos = Position::new(pos.line + 1, 0);
                 self.update_cursor(select, new_pos);
             }
             return;
         }
 
-        let chars: Vec<char> = self.lines[pos.line].chars().collect();
+        let chars: Vec<char> = self
+            .line_text(pos.line)
+            .unwrap_or_default()
+            .chars()
+            .collect();
         let mut idx = pos.col;
 
         let kind = char_kind(chars[idx]);
@@ -657,10 +688,10 @@ impl TextBuffer {
 
     pub fn select_all(&mut self) {
         self.column_goal = None;
-        if self.lines.is_empty() {
+        if self.line_count() == 0 {
             return;
         }
-        let last_line = crate::buffer::SourceLine::new(self.lines.len() - 1);
+        let last_line = crate::buffer::SourceLine::new(self.line_count() - 1);
         let last_col = self.line_len(last_line);
         self.selection = Selection {
             anchor: Position::new(crate::buffer::SourceLine::new(0), 0),
@@ -670,10 +701,10 @@ impl TextBuffer {
 
     pub fn select_word_at(&mut self, pos: Position) {
         self.column_goal = None;
-        if pos.line.index() >= self.lines.len() {
+        if pos.line.index() >= self.line_count() {
             return;
         }
-        let line = &self.lines[pos.line];
+        let line = self.line_text(pos.line).unwrap_or_default();
         let chars: Vec<char> = line.chars().collect();
         if chars.is_empty() {
             self.selection = Selection::cursor(Position::new(pos.line, 0));
@@ -700,7 +731,7 @@ impl TextBuffer {
     pub fn select_line_at(&mut self, source_line: crate::buffer::SourceLine) {
         self.column_goal = None;
         let line_idx = source_line.index();
-        if line_idx >= self.lines.len() {
+        if line_idx >= self.line_count() {
             return;
         }
         let line_len = self.line_len(crate::buffer::SourceLine::new(line_idx));

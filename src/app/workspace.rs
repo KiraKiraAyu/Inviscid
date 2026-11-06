@@ -1220,7 +1220,7 @@ impl Workspace {
             .map(|editor| {
                 let editor = editor.read(cx);
                 (
-                    editor.buffer().lines().to_vec(),
+                    editor.buffer().to_lines(),
                     Some(editor.cursor_pos().line),
                     Some(editor.focus_handle(cx)),
                 )

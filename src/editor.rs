@@ -643,12 +643,12 @@ impl Editor {
 
         let layout = self.layout_snapshot();
         let pos = self.buffer.cursor_pos();
-        let vdoc = VisualDocument::from_parsed(self.buffer.lines(), &layout.parsed_lines);
+        let vdoc = VisualDocument::from_parsed(&self.buffer.lines(), &layout.parsed_lines);
         let vpos = vdoc.source_to_visual(crate::buffer::SourcePosition::from_position(pos));
         let mut target_pos = vdoc.visual_to_source(vpos).to_position();
 
-        let current_line_str = &self.buffer.lines()[target_pos.line.index()];
-        let prefix_len = get_block_prefix_len(current_line_str);
+        let current_line_str = self.buffer.line_text(target_pos.line).unwrap_or_default();
+        let prefix_len = get_block_prefix_len(&current_line_str);
         if prefix_len > 0 && target_pos.col < prefix_len {
             target_pos.col = prefix_len.min(self.buffer.line_len(target_pos.line));
         }
@@ -804,7 +804,7 @@ impl Editor {
             let (start, end) = buffer.selection().range();
             if start.line == end.line {
                 if let Some(line) = buffer.line(start.line) {
-                    let prefix_len = crate::markdown::get_block_prefix_len(line);
+                    let prefix_len = crate::markdown::get_block_prefix_len(&line);
                     let char_count = line.chars().count();
                     if start.col <= prefix_len && end.col == char_count {
                         let end_col = end.col.min(char_count);
@@ -816,7 +816,7 @@ impl Editor {
                 for line_idx in start.line.index()..=end.line.index() {
                     if let Some(line) = buffer.line(crate::buffer::SourceLine::new(line_idx)) {
                         if line_idx == start.line.index() {
-                            let prefix_len = crate::markdown::get_block_prefix_len(line);
+                            let prefix_len = crate::markdown::get_block_prefix_len(&line);
                             let actual_start_col = if start.col <= prefix_len {
                                 0
                             } else {
@@ -859,7 +859,7 @@ impl Editor {
         let Some(line) = self.buffer.line(source_line) else {
             return;
         };
-        if let Some(new_line) = toggle_task_checkbox(line) {
+        if let Some(new_line) = toggle_task_checkbox(&line) {
             self.track_buffer_change(cx, |this| {
                 this.buffer.record_edit(|lines, _| {
                     lines[source_line] = new_line;
@@ -921,8 +921,7 @@ impl Editor {
             ));
         }
         if let Some(path) = self.buffer.file_path_buf() {
-            let content_hash =
-                Self::hash_file_content(&self.buffer.chunks_with_line_ending().collect::<String>());
+            let content_hash = Self::hash_file_content(&self.buffer.to_string_content());
             let saved_mtime =
                 crate::fs::save_document_chunks(&path, self.buffer.chunks_with_line_ending())?;
             let baseline = self.buffer.saved_baseline_snapshot();
@@ -950,9 +949,7 @@ impl Editor {
         self.auto_save_task = None;
         match crate::fs::save_document_chunks(&path, self.buffer.chunks_with_line_ending()) {
             Ok(saved_mtime) => {
-                let content_hash = Self::hash_file_content(
-                    &self.buffer.chunks_with_line_ending().collect::<String>(),
-                );
+                let content_hash = Self::hash_file_content(&self.buffer.to_string_content());
                 let baseline = self.buffer.saved_baseline_snapshot();
                 self.buffer.set_file_path(Some(path));
                 self.buffer.mark_saved_as(baseline);

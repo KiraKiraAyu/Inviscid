@@ -886,7 +886,7 @@ impl Editor {
             if buffer_matches && current_cache.quote_projection.len() == self.buffer.line_count() {
                 current_cache.quote_projection.clone()
             } else {
-                Arc::new(QuoteProjection::from_lines(self.buffer.lines()))
+                Arc::new(QuoteProjection::from_lines(&self.buffer.lines()))
             };
         let active_math_block =
             self.active_math_block_with_projection(active_line, &quote_projection);
@@ -941,7 +941,7 @@ impl Editor {
                     active_math_block,
                     active_mermaid_block,
                 );
-                get_line_layout_height(self.buffer.lines(), active_line_idx, parsed, lcx)
+                get_line_layout_height(&self.buffer.lines(), active_line_idx, parsed, lcx)
             } else {
                 px(24.0)
             };
@@ -1009,7 +1009,7 @@ impl Editor {
                         active_math_block,
                         active_mermaid_block,
                     );
-                    get_line_layout_height(self.buffer.lines(), line_idx, parsed, lcx)
+                    get_line_layout_height(&self.buffer.lines(), line_idx, parsed, lcx)
                 } else {
                     px(24.0)
                 }
@@ -1098,7 +1098,7 @@ impl Editor {
             current_cache.parsed_lines.clone()
         } else {
             let mut scanned = MarkdownScanner::scan_document_with_projection(
-                self.buffer.lines(),
+                &self.buffer.lines(),
                 &quote_projection,
             );
             self.project_ime_preedit(0, &mut scanned);
@@ -1129,7 +1129,7 @@ impl Editor {
                 active_math_block,
                 active_mermaid_block,
             );
-            let h = get_line_layout_height(self.buffer.lines(), idx, parsed, lcx);
+            let h = get_line_layout_height(&self.buffer.lines(), idx, parsed, lcx);
             line_y_offsets.push(y);
             line_heights.push(h);
             y += h;
@@ -1196,7 +1196,7 @@ impl Editor {
         }) {
             return false;
         }
-        let quote_projection = Arc::new(QuoteProjection::from_lines(buf_lines));
+        let quote_projection = Arc::new(QuoteProjection::from_lines(&buf_lines));
         let active_col = self.disclosure_col();
         let active_math_block =
             self.active_math_block_with_projection(active_line, &quote_projection);
@@ -1331,7 +1331,7 @@ impl Editor {
         }
 
         let mut new_parsed = MarkdownScanner::scan_range_with_projection_with_state(
-            buf_lines,
+            &buf_lines,
             &quote_projection,
             block_start..block_end,
             in_code_block,
@@ -1363,7 +1363,7 @@ impl Editor {
                 active_math_block,
                 active_mermaid_block,
             );
-            let h = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
+            let h = get_line_layout_height(&buf_lines, line_idx, parsed, lcx);
             new_heights.push(h);
             new_height_sum += h;
         }

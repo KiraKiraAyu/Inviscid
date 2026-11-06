@@ -127,7 +127,7 @@ fn test_gpui_window_action_dispatch_and_buffer_mutation() {
             .read(cx)
             .buffer()
             .line(inviscid::buffer::SourceLine::new(0))
-            .unwrap_or("")
+            .unwrap_or_default()
             .to_string()
     });
     assert_eq!(restored_text, "Hello World");
@@ -255,7 +255,9 @@ fn test_gpui_ime_input_handler_lifecycle_contract() {
         editor.update(cx, |ed, cx| {
             assert_eq!(ed.marked_text_range(window, cx), Some(0..6));
             assert_eq!(
-                ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+                ed.buffer()
+                    .line(inviscid::buffer::SourceLine::new(0))
+                    .as_deref(),
                 Some("pinyin")
             );
             let mut adj = None;
@@ -278,12 +280,15 @@ fn test_gpui_ime_input_handler_lifecycle_contract() {
         editor.update(cx, |ed, cx| {
             assert_eq!(ed.marked_text_range(window, cx), None);
             assert_eq!(
-                ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+                ed.buffer()
+                    .line(inviscid::buffer::SourceLine::new(0))
+                    .as_deref(),
                 Some("拼音")
             );
             assert_eq!(
                 ed.buffer()
                     .line(inviscid::buffer::SourceLine::new(0))
+                    .as_deref()
                     .unwrap()
                     .chars()
                     .count(),
@@ -322,7 +327,9 @@ fn test_gpui_ime_input_handler_lifecycle_contract() {
             assert_eq!(ed.marked_text_range(window, cx), None);
             ed.replace_text_in_range(Some(2..7), "", window, cx);
             assert_eq!(
-                ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+                ed.buffer()
+                    .line(inviscid::buffer::SourceLine::new(0))
+                    .as_deref(),
                 Some("拼音")
             );
         });
@@ -349,7 +356,9 @@ fn test_gpui_ime_input_handler_lifecycle_contract() {
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
         assert_eq!(
-            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            ed.buffer()
+                .line(inviscid::buffer::SourceLine::new(0))
+                .as_deref(),
             Some("(拼音)")
         );
         assert_eq!(

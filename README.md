@@ -40,7 +40,7 @@ Inviscid is currently in pre-`v0.1` active development. Core editing, Live Previ
 - [x] In-document Find & Replace and workspace-wide search / quick open
 - [x] Document outline (TOC) view and heading anchor navigation
 - [x] File system watcher for external modification detection and conflict-aware reload
-- [ ] Rope-backed text buffer for large-document scalability
+- [x] Rope-backed text buffer for large-document scalability
 - [ ] HTML / PDF export and prebuilt `v0.1` release packages for Windows, macOS, and Linux
 
 ## Building from Source

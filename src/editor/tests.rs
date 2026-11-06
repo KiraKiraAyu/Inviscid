@@ -724,7 +724,7 @@ fn test_ime_composition_after_heading_prefix() {
     assert_eq!(marked_range, None);
 
     // Verify it is properly scanned as Heading 1
-    let parsed_doc = MarkdownScanner::scan_document(buffer.lines());
+    let parsed_doc = MarkdownScanner::scan_document(&buffer.lines());
     assert_eq!(parsed_doc.len(), 2);
     match &parsed_doc[0].kind {
         crate::markdown::BlockKind::Heading { level } => {
@@ -861,11 +861,11 @@ fn test_empty_document_live_preview_cursor_cannot_land_on_trailing_separator() {
     use crate::buffer::{Position, TextBuffer};
 
     let mut buf = TextBuffer::new();
-    assert_eq!(buf.lines(), &["", ""]);
+    assert_eq!(&buf.lines(), &["", ""]);
 
     // In Live Preview: line 0 is editable, line 1 is syntactic separator (collapsed to 0px)
-    assert!(!is_syntactic_separator(buf.lines(), SourceLine::new(0)));
-    assert!(is_syntactic_separator(buf.lines(), SourceLine::new(1)));
+    assert!(!is_syntactic_separator(&buf.lines(), SourceLine::new(0)));
+    assert!(is_syntactic_separator(&buf.lines(), SourceLine::new(1)));
 
     // Navigating down from line 0 in Live Preview stays on line 0
     buf.move_down_mode(false, false);
@@ -915,8 +915,9 @@ fn test_mouse_hit_testing_line_index_resolution() {
         "Second regular paragraph.".to_string(),
     ];
     let buf = crate::buffer::TextBuffer::from_str(&lines.join("\n"), None);
-    let parsed_doc =
-        std::sync::Arc::new(crate::markdown::MarkdownScanner::scan_document(buf.lines()));
+    let parsed_doc = std::sync::Arc::new(crate::markdown::MarkdownScanner::scan_document(
+        &buf.lines(),
+    ));
 
     let mut cache = crate::editor::layout::DocumentLayoutCache {
         parsed_lines: parsed_doc.clone(),
@@ -927,7 +928,7 @@ fn test_mouse_hit_testing_line_index_resolution() {
     let mut y = px(24.0);
     for (idx, parsed) in cache.parsed_lines.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
+        let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
         cache.line_y_offsets.push(y);
         cache.line_heights.push(h);
         y += h;
@@ -998,8 +999,9 @@ fn test_source_mode_line_index_resolution() {
         "}".to_string(),
     ];
     let buf = crate::buffer::TextBuffer::from_str(&lines.join("\n"), None);
-    let parsed_doc =
-        std::sync::Arc::new(crate::markdown::MarkdownScanner::scan_document(buf.lines()));
+    let parsed_doc = std::sync::Arc::new(crate::markdown::MarkdownScanner::scan_document(
+        &buf.lines(),
+    ));
 
     let mut cache = crate::editor::layout::DocumentLayoutCache {
         parsed_lines: parsed_doc.clone(),
@@ -1011,7 +1013,7 @@ fn test_source_mode_line_index_resolution() {
     let mut y = px(24.0);
     for (idx, parsed) in cache.parsed_lines.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::source(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
+        let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
         cache.line_y_offsets.push(y);
         cache.line_heights.push(h);
         y += h;
@@ -1061,8 +1063,9 @@ fn test_hit_testing_monotonicity_and_strict_boundary_invariants() {
         "Final paragraph line.".to_string(),
     ];
     let buf = crate::buffer::TextBuffer::from_str(&lines.join("\n"), None);
-    let parsed_doc =
-        std::sync::Arc::new(crate::markdown::MarkdownScanner::scan_document(buf.lines()));
+    let parsed_doc = std::sync::Arc::new(crate::markdown::MarkdownScanner::scan_document(
+        &buf.lines(),
+    ));
 
     let mut cache = crate::editor::layout::DocumentLayoutCache {
         parsed_lines: parsed_doc.clone(),
@@ -1073,7 +1076,7 @@ fn test_hit_testing_monotonicity_and_strict_boundary_invariants() {
     let mut y = px(24.0);
     for (idx, parsed) in cache.parsed_lines.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
+        let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
         cache.line_y_offsets.push(y);
         cache.line_heights.push(h);
         y += h;
@@ -1268,8 +1271,9 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
     let markdown = format!("# Title\n\n![Header]({})\n\nFooter paragraph.", url);
     let buf = crate::buffer::TextBuffer::from_str(&markdown, None);
 
-    let parsed_doc =
-        std::sync::Arc::new(crate::markdown::MarkdownScanner::scan_document(buf.lines()));
+    let parsed_doc = std::sync::Arc::new(crate::markdown::MarkdownScanner::scan_document(
+        &buf.lines(),
+    ));
     let content_width = px(800.0);
     let cursor_line = 0;
 
@@ -1297,7 +1301,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         total_height: px(0.0),
         separators: Vec::new(),
         quote_projection: std::sync::Arc::new(crate::markdown::QuoteProjection::from_lines(
-            buf.lines(),
+            &buf.lines(),
         )),
         quote_ranges: Vec::new(),
     };
@@ -1305,7 +1309,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
     let mut y = px(24.0);
     for (idx, parsed) in parsed_doc.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
+        let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
         initial_cache.line_y_offsets.push(y);
         initial_cache.line_heights.push(h);
         y += h;
@@ -1331,7 +1335,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
     updated_cache.line_y_offsets.clear();
     for (idx, parsed) in parsed_doc.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
-        let h = crate::editor::layout::get_line_layout_height(buf.lines(), idx, parsed, lcx);
+        let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
         updated_cache.line_y_offsets.push(y);
         updated_cache.line_heights.push(h);
         y += h;
@@ -1436,7 +1440,7 @@ fn test_folding_layout_height_and_navigation() {
 
     let markdown = "Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5";
     let buf = TextBuffer::from_str(markdown, None);
-    let parsed_doc = std::sync::Arc::new(MarkdownScanner::scan_document(buf.lines()));
+    let parsed_doc = std::sync::Arc::new(MarkdownScanner::scan_document(&buf.lines()));
     let content_width = px(800.0);
 
     let mut dmap = DisplayMap::new();
@@ -1466,7 +1470,7 @@ fn test_folding_layout_height_and_navigation() {
         total_height: px(0.0),
         separators: Vec::new(),
         quote_projection: std::sync::Arc::new(crate::markdown::QuoteProjection::from_lines(
-            buf.lines(),
+            &buf.lines(),
         )),
         quote_ranges: Vec::new(),
     };
@@ -1477,7 +1481,7 @@ fn test_folding_layout_height_and_navigation() {
             .fold_map()
             .is_line_folded(crate::buffer::SourceLine::new(idx));
         let lcx = LineLayoutContext::live_preview(content_width).with_folded(is_folded);
-        let h = get_line_layout_height(buf.lines(), idx, parsed, lcx);
+        let h = get_line_layout_height(&buf.lines(), idx, parsed, lcx);
         initial_cache.line_y_offsets.push(y);
         initial_cache.line_heights.push(h);
         y += h;
@@ -1556,7 +1560,7 @@ fn test_folding_layout_height_and_navigation() {
         total_height: px(0.0),
         separators: Vec::new(),
         quote_projection: std::sync::Arc::new(crate::markdown::QuoteProjection::from_lines(
-            buf.lines(),
+            &buf.lines(),
         )),
         quote_ranges: Vec::new(),
     };
@@ -1567,7 +1571,7 @@ fn test_folding_layout_height_and_navigation() {
             .fold_map()
             .is_line_folded(crate::buffer::SourceLine::new(idx));
         let lcx = LineLayoutContext::live_preview(content_width).with_folded(is_folded);
-        let h = get_line_layout_height(buf.lines(), idx, parsed, lcx);
+        let h = get_line_layout_height(&buf.lines(), idx, parsed, lcx);
         folded_cache.line_y_offsets.push(y_folded);
         folded_cache.line_heights.push(h);
         y_folded += h;
@@ -2058,7 +2062,10 @@ fn editing_display_math_updates_its_layout_snapshot_and_preview(cx: &mut gpui::T
 
             editor.perform_edit(cx, |editor| editor.buffer_mut().insert_text(" + z"));
             assert_eq!(
-                editor.buffer().line(crate::buffer::SourceLine::new(1)),
+                editor
+                    .buffer()
+                    .line(crate::buffer::SourceLine::new(1))
+                    .as_deref(),
                 Some("x + y + z")
             );
             editor.ensure_layout_cache();
@@ -2179,7 +2186,10 @@ fn test_clicking_empty_display_math_creates_an_editable_source_line(cx: &mut gpu
             );
             assert_eq!(editor.buffer().line_count(), 3);
             assert_eq!(
-                editor.buffer().line(crate::buffer::SourceLine::new(1)),
+                editor
+                    .buffer()
+                    .line(crate::buffer::SourceLine::new(1))
+                    .as_deref(),
                 Some("")
             );
         });
@@ -3847,7 +3857,7 @@ fn test_paragraph_with_inline_code_layout_height_matches_shape_text(cx: &mut gpu
                 .with_text_system(Some(ts.clone()));
 
                 let line_height = get_line_layout_height(
-                    ed.buffer.lines(),
+                    &ed.buffer.lines(),
                     0,
                     parsed_0,
                     lcx,

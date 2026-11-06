@@ -125,18 +125,18 @@ impl Editor {
         if !exact_only && self.render_mode != RenderMode::Source {
             let disclosure_line = self.disclosure_position().line;
             let active_math_block =
-                crate::markdown::math_block_range(self.buffer.lines(), disclosure_line);
+                crate::markdown::math_block_range(&self.buffer.lines(), disclosure_line);
             if active_math_block
                 .is_some_and(|(start, end)| source_line >= start && source_line <= end)
             {
                 // Preserve source rows while the split formula editor is open.
             } else if let Some((start, _)) =
-                crate::markdown::math_block_range(self.buffer.lines(), source_line)
+                crate::markdown::math_block_range(&self.buffer.lines(), source_line)
             {
                 source_line = start;
             } else {
                 let vdoc = crate::markdown::VisualDocument::from_parsed(
-                    self.buffer.lines(),
+                    &self.buffer.lines(),
                     &layout.parsed_lines,
                 );
                 let vpos =
@@ -173,7 +173,7 @@ impl Editor {
                     crate::markdown::BlockKind::MathBlock { is_start: true }
                 )
                 && let Some((start, end)) =
-                    crate::markdown::math_block_range(self.buffer.lines(), target_line)
+                    crate::markdown::math_block_range(&self.buffer.lines(), target_line)
                 && start == target_line
                 && end > start
             {
@@ -286,7 +286,7 @@ impl Editor {
         if self.render_mode == RenderMode::Source {
             return None;
         }
-        let (start, end) = crate::markdown::math_block_range(self.buffer.lines(), source_line)?;
+        let (start, end) = crate::markdown::math_block_range(&self.buffer.lines(), source_line)?;
         (start < source_line && source_line < end).then_some((
             Position::new(start + 1, 0),
             Position::new(

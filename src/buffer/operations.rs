@@ -152,13 +152,13 @@ impl TextBuffer {
         }
 
         let pos = self.selection.head;
-        if pos.line.index() >= self.lines.len() || pos.col == 0 {
+        if pos.line.index() >= self.line_count() || pos.col == 0 {
             return false;
         }
-        let line = &self.lines[pos.line];
-        let byte_left = char_col_to_byte_offset(line, pos.col - 1);
+        let line = self.line_text(pos.line).unwrap_or_default();
+        let byte_left = char_col_to_byte_offset(&line, pos.col - 1);
         let left_ch = line[byte_left..].chars().next();
-        let byte_right = char_col_to_byte_offset(line, pos.col);
+        let byte_right = char_col_to_byte_offset(&line, pos.col);
         let right_ch = line[byte_right..].chars().next();
 
         if let (Some(left), Some(right)) = (left_ch, right_ch) {
@@ -199,7 +199,7 @@ impl TextBuffer {
 
     pub fn move_lines_down(&mut self) {
         let (start, end) = self.selection.range();
-        if (end.line + 1).index() >= self.lines.len() {
+        if (end.line + 1).index() >= self.line_count() {
             return;
         }
 
@@ -305,9 +305,8 @@ impl TextBuffer {
         let (start, end) = self.selection.range();
 
         let is_list = self
-            .lines
-            .get_source_line(start.line)
-            .is_some_and(|l| list_marker(l).is_some());
+            .line_text(start.line)
+            .is_some_and(|l| list_marker(&l).is_some());
 
         if start == end && self.selection.head.col > 0 && !is_list {
             self.insert_text(&" ".repeat(tab_size));
@@ -315,7 +314,7 @@ impl TextBuffer {
         }
 
         let last = end.line.min(crate::buffer::SourceLine::new(
-            self.lines.len().saturating_sub(1),
+            self.line_count().saturating_sub(1),
         ));
         if start.line > last {
             return;
@@ -324,7 +323,7 @@ impl TextBuffer {
         let plans: Vec<(usize, usize)> = (start.line.index()..=last.index())
             .map(|idx| {
                 tab_plan(
-                    self.lines.as_slice(),
+                    &self.to_lines(),
                     crate::buffer::SourceLine::new(idx),
                     tab_size,
                 )
@@ -334,7 +333,13 @@ impl TextBuffer {
         let step = plans
             .iter()
             .enumerate()
-            .filter(|(offset, _)| !self.lines[start.line + *offset].trim().is_empty())
+            .filter(|(offset, _)| {
+                !self
+                    .line_text(start.line + *offset)
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty()
+            })
             .map(|(_, (_, len))| *len)
             .min()
             .or_else(|| plans.first().map(|(_, len)| *len))
@@ -383,7 +388,7 @@ impl TextBuffer {
         let (start, end) = self.selection.range();
 
         let last = end.line.min(crate::buffer::SourceLine::new(
-            self.lines.len().saturating_sub(1),
+            self.line_count().saturating_sub(1),
         ));
         if start.line > last {
             return;
@@ -392,7 +397,7 @@ impl TextBuffer {
         let plans: Vec<(usize, usize)> = (start.line.index()..=last.index())
             .map(|idx| {
                 shift_tab_plan(
-                    self.lines.as_slice(),
+                    &self.to_lines(),
                     crate::buffer::SourceLine::new(idx),
                     tab_size,
                 )
@@ -433,14 +438,14 @@ impl TextBuffer {
         let cursor_line = self.selection.head.line;
 
         // Check if we're in a code block
-        if let Some((start, end)) = code_fence_range(self.lines.as_slice(), cursor_line) {
+        if let Some((start, end)) = code_fence_range(&self.to_lines(), cursor_line) {
             let start = start.index();
             let end = end.index();
             // Skip the opening fence line for detection
             let detect_start = start + 1;
             if detect_start < end {
                 return detect_code_block_indent(
-                    self.lines.as_slice(),
+                    &self.to_lines(),
                     crate::buffer::SourceLine::new(detect_start),
                     crate::buffer::SourceLine::new(end),
                 );
@@ -487,7 +492,7 @@ impl TextBuffer {
         let is_single_line = self.selection.is_empty()
             && !text.contains('\n')
             && !text.contains('\r')
-            && self.selection.head.line.index() < self.lines.len();
+            && self.selection.head.line.index() < self.line_count();
 
         if is_single_line {
             let line_idx = self.selection.head.line;
@@ -498,6 +503,12 @@ impl TextBuffer {
                 let insert_len = text.chars().count();
                 *sel = Selection::cursor(Position::new(pos.line, pos.col + insert_len));
             });
+            return;
+        }
+
+        if !text.is_empty() || !self.selection.is_empty() {
+            let range = self.selection.range();
+            self.replace_range_in_rope(range, text);
             return;
         }
 
@@ -513,18 +524,7 @@ impl TextBuffer {
     }
 
     pub fn replace_range(&mut self, (start, end): (Position, Position), text: &str) -> Position {
-        let (start, end) = if start < end {
-            (start, end)
-        } else {
-            (end, start)
-        };
-        let mut new_end = start;
-        self.record_edit(|lines, sel| {
-            delete_range_internal(lines, (start, end));
-            new_end = insert_text_internal(lines, start, text);
-            *sel = Selection::cursor(new_end);
-        });
-        new_end
+        self.replace_range_in_rope((start, end), text)
     }
 
     pub fn replace_all_matches(
@@ -533,7 +533,7 @@ impl TextBuffer {
         replacement: &str,
     ) -> usize {
         let normalized_rep = replacement.replace("\r\n", "\n").replace('\r', "\n");
-        let text = self.lines.join("\n");
+        let text = self.to_string_normalized();
         let (new_text, count) = query.replace_all(&text, &normalized_rep);
         if count > 0 {
             self.record_edit(|lines, sel| {
@@ -730,7 +730,7 @@ impl TextBuffer {
         &mut self,
         start_line: crate::buffer::SourceLine,
     ) -> Option<Position> {
-        let (start, end) = crate::markdown::math_block_range(self.lines.as_slice(), start_line)?;
+        let (start, end) = crate::markdown::math_block_range(&self.to_lines(), start_line)?;
         if start != start_line {
             return None;
         }
@@ -1062,9 +1062,11 @@ impl TextBuffer {
 
         if pos.line == meta.header_line {
             let next_row = meta.delimiter_line.index() + 1;
-            if next_row < self.lines.len() && next_row <= meta.last_table_line.index() {
+            if next_row < self.line_count() && next_row <= meta.last_table_line.index() {
                 let next_cells = crate::markdown::table::parse_table_row_cells(
-                    &self.lines[crate::buffer::SourceLine::new(next_row)],
+                    &self
+                        .line_text(crate::buffer::SourceLine::new(next_row))
+                        .unwrap_or_default(),
                 );
                 let target_col = resolve_col(&next_cells);
                 self.selection = Selection::cursor(Position::new(
@@ -1086,7 +1088,9 @@ impl TextBuffer {
 
         if pos.line < meta.last_table_line {
             let next_row = pos.line + 1;
-            let next_cells = crate::markdown::table::parse_table_row_cells(&self.lines[next_row]);
+            let next_cells = crate::markdown::table::parse_table_row_cells(
+                &self.line_text(next_row).unwrap_or_default(),
+            );
             let target_col = resolve_col(&next_cells);
             self.selection = Selection::cursor(Position::new(next_row, target_col));
             return;
@@ -1109,13 +1113,14 @@ impl TextBuffer {
 
     pub fn table_tab_forward(&mut self) -> bool {
         let pos = self.selection.head;
-        let meta = match crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line)
-        {
+        let meta = match crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line) {
             Some(m) => m,
             None => return false,
         };
 
-        let current_cells = crate::markdown::table::parse_table_row_cells(&self.lines[pos.line]);
+        let current_cells = crate::markdown::table::parse_table_row_cells(
+            &self.line_text(pos.line).unwrap_or_default(),
+        );
         let cell_idx = crate::markdown::table::get_cell_index_for_col(&current_cells, pos.col);
 
         if cell_idx + 1 < current_cells.len() {
@@ -1130,13 +1135,14 @@ impl TextBuffer {
 
     pub fn table_tab_backward(&mut self) -> bool {
         let pos = self.selection.head;
-        let meta = match crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line)
-        {
+        let meta = match crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line) {
             Some(m) => m,
             None => return false,
         };
 
-        let current_cells = crate::markdown::table::parse_table_row_cells(&self.lines[pos.line]);
+        let current_cells = crate::markdown::table::parse_table_row_cells(
+            &self.line_text(pos.line).unwrap_or_default(),
+        );
         let cell_idx = crate::markdown::table::get_cell_index_for_col(&current_cells, pos.col);
 
         if cell_idx > 0 {
@@ -1146,8 +1152,9 @@ impl TextBuffer {
         }
 
         if pos.line == meta.delimiter_line + 1 {
-            let header_cells =
-                crate::markdown::table::parse_table_row_cells(&self.lines[meta.header_line]);
+            let header_cells = crate::markdown::table::parse_table_row_cells(
+                &self.line_text(meta.header_line).unwrap_or_default(),
+            );
             let target_col = header_cells.last().map(|c| c.col_range.1).unwrap_or(2);
             self.selection = Selection::cursor(Position::new(meta.header_line, target_col));
             return true;
@@ -1155,7 +1162,9 @@ impl TextBuffer {
 
         if pos.line > meta.delimiter_line + 1 {
             let prev_row = pos.line - 1;
-            let prev_cells = crate::markdown::table::parse_table_row_cells(&self.lines[prev_row]);
+            let prev_cells = crate::markdown::table::parse_table_row_cells(
+                &self.line_text(prev_row).unwrap_or_default(),
+            );
             let target_col = prev_cells.last().map(|c| c.col_range.1).unwrap_or(2);
             self.selection = Selection::cursor(Position::new(prev_row, target_col));
             return true;
@@ -1166,13 +1175,14 @@ impl TextBuffer {
 
     pub fn table_enter_next_row(&mut self) -> bool {
         let pos = self.selection.head;
-        let meta = match crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line)
-        {
+        let meta = match crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line) {
             Some(m) => m,
             None => return false,
         };
 
-        let current_cells = crate::markdown::table::parse_table_row_cells(&self.lines[pos.line]);
+        let current_cells = crate::markdown::table::parse_table_row_cells(
+            &self.line_text(pos.line).unwrap_or_default(),
+        );
         let cell_idx = crate::markdown::table::get_cell_index_for_col(&current_cells, pos.col);
 
         self.table_navigate_or_insert_next_row(&meta, Some(cell_idx));
@@ -1181,7 +1191,7 @@ impl TextBuffer {
 
     pub fn table_backspace(&mut self) -> bool {
         let pos = self.selection.head;
-        if crate::markdown::table::get_table_metadata(self.lines.as_slice(), pos.line).is_none() {
+        if crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line).is_none() {
             return false;
         }
 
@@ -1190,7 +1200,9 @@ impl TextBuffer {
             return true;
         }
 
-        let current_cells = crate::markdown::table::parse_table_row_cells(&self.lines[pos.line]);
+        let current_cells = crate::markdown::table::parse_table_row_cells(
+            &self.line_text(pos.line).unwrap_or_default(),
+        );
         let cell_idx = crate::markdown::table::get_cell_index_for_col(&current_cells, pos.col);
         if let Some(cell) = current_cells.get(cell_idx) {
             if pos.col <= cell.col_range.0 {
@@ -1210,7 +1222,7 @@ impl TextBuffer {
     }
 
     pub fn ensure_trailing_code_fence_newline(&mut self) -> Option<Position> {
-        let last_idx = self.lines.len().saturating_sub(1);
+        let last_idx = self.line_count().saturating_sub(1);
         if self.is_in_code_fence(crate::buffer::SourceLine::new(last_idx))
             || self.is_closing_code_fence(crate::buffer::SourceLine::new(last_idx))
         {
@@ -1235,7 +1247,9 @@ impl TextBuffer {
         } else if last_idx > 0
             && (self.is_in_code_fence(crate::buffer::SourceLine::new(last_idx - 1))
                 || self.is_closing_code_fence(crate::buffer::SourceLine::new(last_idx - 1)))
-            && self.lines[crate::buffer::SourceLine::new(last_idx)]
+            && self
+                .line_text(crate::buffer::SourceLine::new(last_idx))
+                .unwrap_or_default()
                 .trim()
                 .is_empty()
         {

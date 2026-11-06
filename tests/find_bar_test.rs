@@ -166,7 +166,9 @@ fn test_typing_in_the_bar_does_not_edit_the_document() {
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
         assert_eq!(
-            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            ed.buffer()
+                .line(inviscid::buffer::SourceLine::new(0))
+                .as_deref(),
             Some("keep me")
         );
         assert!(!ed.is_dirty());
@@ -219,7 +221,9 @@ fn test_replace_shortcut_opens_replace_mode() {
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
         assert_eq!(
-            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            ed.buffer()
+                .line(inviscid::buffer::SourceLine::new(0))
+                .as_deref(),
             Some("qux bar")
         );
     });
@@ -243,7 +247,9 @@ fn test_replace_next_replaces_and_advances() {
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
         assert_eq!(
-            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            ed.buffer()
+                .line(inviscid::buffer::SourceLine::new(0))
+                .as_deref(),
             Some("qux bar foo baz foo")
         );
         assert_eq!(ed.find_state().match_count(), 2);
@@ -255,7 +261,9 @@ fn test_replace_next_replaces_and_advances() {
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
         assert_eq!(
-            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            ed.buffer()
+                .line(inviscid::buffer::SourceLine::new(0))
+                .as_deref(),
             Some("qux bar qux baz foo")
         );
         assert_eq!(ed.find_state().match_count(), 1);
@@ -285,7 +293,9 @@ fn test_replace_all_replaces_all_and_atomic_undo() {
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
         assert_eq!(
-            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            ed.buffer()
+                .line(inviscid::buffer::SourceLine::new(0))
+                .as_deref(),
             Some("orange banana orange cherry orange")
         );
         assert_eq!(ed.find_state().match_count(), 0);
@@ -312,7 +322,9 @@ fn test_replace_all_replaces_all_and_atomic_undo() {
     cx.update(|_window, cx| {
         let ed = editor.read(cx);
         assert_eq!(
-            ed.buffer().line(inviscid::buffer::SourceLine::new(0)),
+            ed.buffer()
+                .line(inviscid::buffer::SourceLine::new(0))
+                .as_deref(),
             Some("apple banana apple cherry apple")
         );
     });
