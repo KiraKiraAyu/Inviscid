@@ -332,7 +332,6 @@ pub struct TextBuffer {
     saved_baseline: SavedBaseline,
     pub(in crate::buffer) version: usize,
     pub(in crate::buffer) revision: u64,
-    total_char_count: usize,
     last_edit_time: Option<Instant>,
     is_empty_doc: bool,
 
@@ -349,7 +348,11 @@ impl Default for TextBuffer {
 
 pub fn compute_lines_hash(lines: &[String]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    lines.hash(&mut hasher);
+    lines.len().hash(&mut hasher);
+    for line in lines {
+        hasher.write(line.as_bytes());
+        hasher.write_u8(0xff);
+    }
     hasher.finish()
 }
 
@@ -431,7 +434,6 @@ impl TextBuffer {
             },
             version: 0,
             revision: 0,
-            total_char_count,
             last_edit_time: None,
             is_empty_doc,
             line_index_cache: RefCell::new(None),
@@ -495,6 +497,7 @@ impl TextBuffer {
         let cursor_before = self.selection;
         let version_before = self.version;
         let old_empty = self.is_empty_doc;
+        let old_document_line_count = self.line_count();
         let old_count = if old_empty {
             2
         } else {
@@ -538,6 +541,10 @@ impl TextBuffer {
             start_line: start.line,
             old_lines,
             new_lines,
+            old_empty_doc: old_empty,
+            new_empty_doc: self.is_empty_doc,
+            old_document_line_count,
+            new_document_line_count: self.line_count(),
             cursor_before,
             cursor_after: Selection::cursor(new_cursor),
             version_before,
@@ -739,11 +746,7 @@ impl TextBuffer {
 
     #[inline]
     pub fn char_count(&self) -> usize {
-        if self.is_empty() {
-            0
-        } else {
-            self.total_char_count
-        }
+        self.rope.len_chars()
     }
 
     pub fn pos_to_utf16_offset(&self, pos: SourcePosition) -> usize {
@@ -890,7 +893,7 @@ impl TextBuffer {
 
     pub fn saved_baseline_snapshot(&self) -> SavedBaseline {
         SavedBaseline {
-            content_hash: compute_lines_hash(&self.to_lines()),
+            content_hash: self.compute_content_hash(),
             revision: self.revision,
             line_count: self.line_count(),
             char_count: self.char_count(),
@@ -927,8 +930,28 @@ impl TextBuffer {
             return;
         }
 
-        let current_hash = compute_lines_hash(&self.to_lines());
+        let current_hash = self.compute_content_hash();
         self.is_dirty = current_hash != self.saved_baseline.content_hash;
+    }
+
+    fn compute_content_hash(&self) -> u64 {
+        let line_count = self.line_count();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        line_count.hash(&mut hasher);
+        for line_idx in 0..line_count {
+            if self.is_empty_doc {
+                hasher.write_u8(0xff);
+                continue;
+            }
+            let line = self.rope.line(line_idx);
+            let content_end = line.len_chars()
+                - usize::from(line.len_chars() > 0 && line.char(line.len_chars() - 1) == '\n');
+            for chunk in line.slice(..content_end).chunks() {
+                hasher.write(chunk.as_bytes());
+            }
+            hasher.write_u8(0xff);
+        }
+        hasher.finish()
     }
 
     fn apply_content_metrics(
@@ -946,6 +969,132 @@ impl TextBuffer {
         self.finish_content_metrics(start_line, replaced_lines, inserted_lines);
     }
 
+    fn apply_history_content(
+        &mut self,
+        start_line: SourceLine,
+        replaced_lines: &[String],
+        inserted_lines: &[String],
+        target_empty_doc: bool,
+        target_document_line_count: usize,
+    ) {
+        if target_empty_doc {
+            self.rope = Rope::new();
+        } else if self.is_empty_doc {
+            // A history range can cover only part of the former document.
+            // Its saved extent distinguishes a virtual trailing line from a
+            // file that originally had no trailing newline.
+            let mut lines = vec![""; target_document_line_count];
+            let start = start_line.index();
+            for (target, text) in lines[start..start + inserted_lines.len()]
+                .iter_mut()
+                .zip(inserted_lines)
+            {
+                *target = text.as_str();
+            }
+            self.rope = Rope::from_str(&lines.join("\n"));
+        } else {
+            self.replace_rope_lines(start_line, replaced_lines.len(), inserted_lines);
+        }
+        self.is_empty_doc = target_empty_doc;
+        self.finish_content_metrics(start_line, replaced_lines, inserted_lines);
+    }
+
+    /// Replaces a contiguous range of logical lines without materializing the document.
+    pub fn replace_line_range(
+        &mut self,
+        start_line: SourceLine,
+        old_line_count: usize,
+        inserted_lines: Vec<String>,
+        selection_after: Selection,
+    ) {
+        self.column_goal = None;
+        let cursor_before = self.selection;
+        let version_before = self.version;
+        let old_empty_doc = self.is_empty_doc;
+        let line_count_before = self.line_count();
+        let mut start = start_line.index().min(line_count_before);
+        let old_count = old_line_count.min(line_count_before.saturating_sub(start));
+        debug_assert!(
+            inserted_lines
+                .iter()
+                .all(|line| !line.contains('\n') && !line.contains('\r'))
+        );
+
+        let mut old_lines = self.old_rope_lines(start, old_count, old_empty_doc);
+        let mut new_lines = inserted_lines;
+        let new_empty_doc;
+
+        if old_empty_doc {
+            let mut resulting_lines = self.to_lines();
+            resulting_lines.splice(start..start + old_count, new_lines);
+            if resulting_lines.is_empty()
+                || (resulting_lines.len() == 1 && resulting_lines[0].is_empty())
+            {
+                resulting_lines = vec![String::new(), String::new()];
+            }
+            new_empty_doc =
+                resulting_lines.len() == 2 && resulting_lines.iter().all(String::is_empty);
+            old_lines = self.to_lines();
+            new_lines = resulting_lines;
+            start = 0;
+        } else {
+            new_empty_doc = start == 0
+                && old_count == line_count_before
+                && new_lines.len() == 2
+                && new_lines.iter().all(String::is_empty);
+        }
+
+        let content_changed = old_lines != new_lines;
+        if !content_changed && cursor_before == selection_after {
+            return;
+        }
+        if !content_changed {
+            old_lines.clear();
+            new_lines.clear();
+        }
+
+        if content_changed {
+            self.version = self.version.wrapping_add(1);
+            if new_empty_doc {
+                self.rope = Rope::new();
+            } else if old_empty_doc {
+                self.rope = Rope::from_str(&new_lines.join("\n"));
+            } else {
+                self.replace_rope_lines(SourceLine::new(start), old_count, &new_lines);
+            }
+            self.is_empty_doc = new_empty_doc;
+            self.finish_content_metrics(SourceLine::new(start), &old_lines, &new_lines);
+        }
+
+        self.selection = Selection {
+            anchor: self.clamp_position(selection_after.anchor),
+            head: self.clamp_position(selection_after.head),
+        };
+
+        let is_single_char_insert = old_lines.len() == 1
+            && new_lines.len() == 1
+            && cursor_before.is_empty()
+            && self.selection.is_empty()
+            && self.selection.head.line == cursor_before.head.line
+            && self.selection.head.col == cursor_before.head.col + 1
+            && !new_lines[0].ends_with(' ')
+            && !new_lines[0].ends_with('\t');
+        let step = UndoStep {
+            start_line: SourceLine::new(start),
+            old_lines,
+            new_lines,
+            old_empty_doc,
+            new_empty_doc: self.is_empty_doc,
+            old_document_line_count: line_count_before,
+            new_document_line_count: self.line_count(),
+            cursor_before,
+            cursor_after: self.selection,
+            version_before,
+            version_after: self.version,
+        };
+        self.push_undo_step(step, is_single_char_insert);
+    }
+
     fn finish_content_metrics(
         &mut self,
         start_line: SourceLine,
@@ -960,11 +1109,7 @@ impl TextBuffer {
             new_line_count: inserted_lines.len(),
         });
 
-        let old_chars: usize = replaced_lines.iter().map(|l| l.chars().count()).sum();
-        let new_chars: usize = inserted_lines.iter().map(|l| l.chars().count()).sum();
-        let net_delta = (new_chars as isize - old_chars as isize)
-            + (inserted_lines.len() as isize - replaced_lines.len() as isize);
-        self.total_char_count = (self.total_char_count as isize + net_delta) as usize;
+        self.update_empty_doc_state();
     }
 
     fn push_undo_step(&mut self, step: UndoStep, is_single_char_insert: bool) {
@@ -974,7 +1119,8 @@ impl TextBuffer {
             .map(|t| now.duration_since(t).as_millis() < 800)
             .unwrap_or(false);
 
-        let coalesced = if is_single_char_insert && time_ok {
+        // A new edit after clearing the document starts a distinct history step.
+        let coalesced = if is_single_char_insert && time_ok && !step.old_empty_doc {
             if let Some(top) = self.undo_stack.back_mut() {
                 top.try_coalesce_single_char(
                     step.start_line,
@@ -1014,6 +1160,7 @@ impl TextBuffer {
         let cursor_before = self.selection;
         let version_before = self.version;
         let was_empty_doc = self.is_empty_doc;
+        let old_document_line_count = self.line_count();
         let old_line = self.line_text(line_idx).unwrap_or_default();
         let mut new_line = old_line.clone();
         f(&mut new_line, &mut self.selection);
@@ -1043,7 +1190,8 @@ impl TextBuffer {
             let version_after = if content_changed {
                 self.version = self.version.wrapping_add(1);
                 if was_empty_doc {
-                    self.rope = Rope::from_str(&format!("{}\n", new_lines[0]));
+                    self.rope = Rope::from_str("\n");
+                    self.replace_rope_lines(line_idx, old_lines.len(), &new_lines);
                     self.finish_content_metrics(line_idx, &old_lines, &new_lines);
                 } else {
                     self.apply_content_metrics(line_idx, &old_lines, &new_lines);
@@ -1065,6 +1213,10 @@ impl TextBuffer {
                 start_line: line_idx,
                 old_lines,
                 new_lines,
+                old_empty_doc: was_empty_doc,
+                new_empty_doc: self.is_empty_doc,
+                old_document_line_count,
+                new_document_line_count: self.line_count(),
                 cursor_before,
                 cursor_after: self.selection,
                 version_before,
@@ -1168,6 +1320,10 @@ impl TextBuffer {
                 start_line: SourceLine::new(prefix),
                 old_lines,
                 new_lines,
+                old_empty_doc: empty_before,
+                new_empty_doc: self.is_empty_doc,
+                old_document_line_count: line_count_before,
+                new_document_line_count: self.line_count(),
                 cursor_before,
                 cursor_after: self.selection,
                 version_before,
@@ -1230,9 +1386,13 @@ impl TextBuffer {
             self.selection = step.cursor_before;
             self.version = step.version_before;
             if !step.new_lines.is_empty() || !step.old_lines.is_empty() {
-                self.is_empty_doc = false;
-                self.apply_content_metrics(step.start_line, &step.new_lines, &step.old_lines);
-                self.is_empty_doc = self.rope.len_chars() == 0;
+                self.apply_history_content(
+                    step.start_line,
+                    &step.new_lines,
+                    &step.old_lines,
+                    step.old_empty_doc,
+                    step.old_document_line_count,
+                );
             }
 
             self.redo_stack.push_back(step);
@@ -1248,9 +1408,13 @@ impl TextBuffer {
             self.selection = step.cursor_after;
             self.version = step.version_after;
             if !step.old_lines.is_empty() || !step.new_lines.is_empty() {
-                self.is_empty_doc = false;
-                self.apply_content_metrics(step.start_line, &step.old_lines, &step.new_lines);
-                self.is_empty_doc = self.rope.len_chars() == 0;
+                self.apply_history_content(
+                    step.start_line,
+                    &step.old_lines,
+                    &step.new_lines,
+                    step.new_empty_doc,
+                    step.new_document_line_count,
+                );
             }
 
             self.undo_stack.push_back(step);

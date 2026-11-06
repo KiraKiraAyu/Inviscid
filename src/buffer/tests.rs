@@ -1917,6 +1917,76 @@ fn rope_backed_line_access_and_range_edit_roundtrip() {
 }
 
 #[test]
+fn local_line_range_edit_updates_only_the_requested_range_and_roundtrips_history() {
+    let mut buf = TextBuffer::from_str("first\nsecond\nthird\nfourth", None);
+    let cursor_after = Selection::cursor(Position::new(crate::buffer::SourceLine::new(2), 3));
+
+    buf.replace_line_range(
+        crate::buffer::SourceLine::new(1),
+        2,
+        vec!["updated".to_string()],
+        cursor_after,
+    );
+
+    assert_eq!(buf.to_lines(), vec!["first", "updated", "fourth"]);
+    assert_eq!(buf.selection(), cursor_after);
+    assert_eq!(
+        buf.last_edit_delta.unwrap().start_line,
+        crate::buffer::SourceLine::new(1)
+    );
+    assert_eq!(buf.last_edit_delta.unwrap().old_line_count, 2);
+    assert_eq!(buf.last_edit_delta.unwrap().new_line_count, 1);
+
+    buf.undo();
+    assert_eq!(buf.to_lines(), vec!["first", "second", "third", "fourth"]);
+
+    buf.redo();
+    assert_eq!(buf.to_lines(), vec!["first", "updated", "fourth"]);
+}
+
+#[test]
+fn local_line_range_edit_preserves_empty_document_state_through_history() {
+    let mut buf = TextBuffer::new();
+    let cursor_after = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 4));
+
+    buf.replace_line_range(
+        crate::buffer::SourceLine::new(0),
+        1,
+        vec!["text".to_string()],
+        cursor_after,
+    );
+    assert_eq!(buf.to_string_normalized(), "text\n");
+    assert_eq!(buf.selection(), cursor_after);
+
+    buf.undo();
+    assert!(buf.is_empty());
+    assert_eq!(buf.to_string_normalized(), "");
+
+    buf.redo();
+    assert_eq!(buf.to_string_normalized(), "text\n");
+    assert!(!buf.is_empty());
+}
+
+#[test]
+fn deleting_all_lines_restores_empty_document_on_undo() {
+    let mut buf = TextBuffer::from_str("first\nsecond", None);
+    buf.set_selection(Selection {
+        anchor: Position::new(crate::buffer::SourceLine::new(0), 0),
+        head: Position::new(crate::buffer::SourceLine::new(1), 6),
+    });
+
+    buf.delete_lines();
+    assert!(buf.is_empty());
+    assert_eq!(buf.to_string_normalized(), "");
+
+    buf.undo();
+    assert_eq!(buf.to_string_normalized(), "first\nsecond");
+
+    buf.redo();
+    assert!(buf.is_empty());
+}
+
+#[test]
 fn rope_line_access_preserves_chunked_long_lines() {
     let long_line = "x".repeat(128 * 1024);
     let content = format!("{long_line}\nlast");

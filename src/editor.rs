@@ -861,9 +861,12 @@ impl Editor {
         };
         if let Some(new_line) = toggle_task_checkbox(&line) {
             self.track_buffer_change(cx, |this| {
-                this.buffer.record_edit(|lines, _| {
-                    lines[source_line] = new_line;
-                });
+                this.buffer.replace_line_range(
+                    source_line,
+                    1,
+                    vec![new_line],
+                    this.buffer.selection(),
+                );
             });
             self.last_cursor_action = std::time::Instant::now();
             self.reset_cursor_blink(cx);

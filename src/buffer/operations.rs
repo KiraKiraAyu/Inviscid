@@ -1,10 +1,10 @@
 use super::char_col_to_byte_offset;
-use super::movement::{code_fence_range, is_closing_code_fence_lines, is_in_code_fence_lines};
+use super::movement::{is_closing_code_fence_lines, is_in_code_fence_lines};
 use super::primitives::{Position, Selection};
 use super::{SourceLines, TextBuffer};
 use crate::markdown::{
-    BlockPrefix, detect_code_block_indent, get_smart_continuation_prefix, is_thematic_break,
-    list_marker, parse_block_prefix, parse_heading_prefix, shift_tab_plan, tab_plan,
+    BlockPrefix, current_indent_relative, get_smart_continuation_prefix, indent_col,
+    is_thematic_break, list_marker, parse_block_prefix, parse_heading_prefix, quote_prefix_len,
 };
 
 fn ensure_min_empty_lines(lines: &mut SourceLines) {
@@ -14,6 +14,80 @@ fn ensure_min_empty_lines(lines: &mut SourceLines) {
     } else if lines.len() == 1 && lines[crate::buffer::SourceLine::new(0)].is_empty() {
         lines.push(String::new());
     }
+}
+
+fn list_ancestor_for_buffer(
+    buffer: &TextBuffer,
+    line_idx: usize,
+    max_marker_col: Option<usize>,
+) -> Option<(usize, usize)> {
+    let line = buffer.line_text(crate::buffer::SourceLine::new(line_idx))?;
+    let quote_len = quote_prefix_len(&line);
+    for idx in (0..line_idx).rev() {
+        let candidate = buffer.line_text(crate::buffer::SourceLine::new(idx))?;
+        if candidate.trim().is_empty() || quote_prefix_len(&candidate) != quote_len {
+            continue;
+        }
+        if let Some((parent_col, content_start)) = list_marker(&candidate)
+            && max_marker_col.is_none_or(|max_col| parent_col < max_col)
+        {
+            return Some((parent_col, content_start));
+        }
+    }
+    None
+}
+
+fn local_tab_plan(buffer: &TextBuffer, line_idx: usize, tab_size: usize) -> (usize, usize) {
+    let line = buffer
+        .line_text(crate::buffer::SourceLine::new(line_idx))
+        .unwrap_or_default();
+    let tab_size = tab_size.max(1);
+    let quote_len = quote_prefix_len(&line);
+    let current_rel = current_indent_relative(&line);
+    let target_rel = (current_rel / tab_size + 1) * tab_size;
+    let target_rel = list_ancestor_for_buffer(buffer, line_idx, None)
+        .map_or(target_rel, |(_, content_start)| {
+            target_rel.max(content_start.saturating_sub(quote_len))
+        });
+    let current_indent = quote_len + current_rel;
+    (
+        indent_col(&line),
+        (quote_len + target_rel).saturating_sub(current_indent),
+    )
+}
+
+fn local_shift_tab_plan(buffer: &TextBuffer, line_idx: usize, tab_size: usize) -> (usize, usize) {
+    let line = buffer
+        .line_text(crate::buffer::SourceLine::new(line_idx))
+        .unwrap_or_default();
+    let tab_size = tab_size.max(1);
+    let quote_len = quote_prefix_len(&line);
+    let current_rel = current_indent_relative(&line);
+    let default_rel = if current_rel.is_multiple_of(tab_size) {
+        current_rel.saturating_sub(tab_size)
+    } else {
+        (current_rel / tab_size) * tab_size
+    };
+    let Some((marker_col, _)) = list_marker(&line) else {
+        let current_indent = quote_len + current_rel;
+        let target = quote_len + default_rel;
+        return (target, current_indent.saturating_sub(target));
+    };
+    let marker_rel = marker_col.saturating_sub(quote_len);
+    let target_rel = list_ancestor_for_buffer(buffer, line_idx, Some(marker_col))
+        .map(|(parent_col, _)| {
+            let parent_rel = parent_col.saturating_sub(quote_len);
+            if parent_rel >= default_rel || marker_rel.saturating_sub(parent_rel) <= tab_size.max(3)
+            {
+                parent_rel
+            } else {
+                default_rel
+            }
+        })
+        .unwrap_or(default_rel);
+    let target = quote_len + target_rel;
+    let current_indent = quote_len + current_rel;
+    (target, current_indent.saturating_sub(target))
 }
 
 fn remove_char_at_col(line: &mut String, col: usize) {
@@ -48,39 +122,32 @@ fn delete_range_internal(lines: &mut SourceLines, (start, end): (Position, Posit
     ensure_min_empty_lines(lines);
 }
 
-fn insert_text_internal(lines: &mut SourceLines, pos: Position, text: &str) -> Position {
-    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-    let text_lines: Vec<&str> = normalized.split('\n').collect();
-    if text_lines.len() == 1 {
-        let insert_len = normalized.chars().count();
-        let byte_col = char_col_to_byte_offset(&lines[pos.line], pos.col);
-        lines[pos.line].insert_str(byte_col, &normalized);
-        Position::new(pos.line, pos.col + insert_len)
+fn append_block_below_buffer(
+    buffer: &mut TextBuffer,
+    current_line: crate::buffer::SourceLine,
+) -> crate::buffer::SourceLine {
+    let line_count = buffer.line_count();
+    let has_blank_after = current_line.index() + 1 < line_count
+        && buffer
+            .line_text(current_line + 1)
+            .is_some_and(|line| line.trim().is_empty());
+    let (insert_at, inserted_count) = if has_blank_after {
+        let has_second_blank = current_line.index() + 2 < line_count
+            && buffer
+                .line_text(current_line + 2)
+                .is_some_and(|line| line.trim().is_empty());
+        (current_line + 2, usize::from(!has_second_blank) + 1)
     } else {
-        let byte_col = char_col_to_byte_offset(&lines[pos.line], pos.col);
-        let prefix = lines[pos.line][..byte_col].to_string();
-        let suffix = lines[pos.line][byte_col..].to_string();
-
-        let mut new_lines = Vec::with_capacity(text_lines.len());
-        for (i, t_line) in text_lines.iter().enumerate() {
-            if i == 0 {
-                let mut first = prefix.clone();
-                first.push_str(t_line);
-                new_lines.push(first);
-            } else if i == text_lines.len() - 1 {
-                let mut last = (*t_line).to_string();
-                last.push_str(&suffix);
-                new_lines.push(last);
-            } else {
-                new_lines.push(t_line.to_string());
-            }
-        }
-
-        let end_line = pos.line + text_lines.len() - 1;
-        let end_col = text_lines.last().map(|l| l.chars().count()).unwrap_or(0);
-        lines.replace_source_lines(pos.line..=pos.line, new_lines);
-        Position::new(end_line, end_col)
-    }
+        (current_line + 1, 2)
+    };
+    let target = current_line + 2;
+    buffer.replace_line_range(
+        insert_at,
+        0,
+        vec![String::new(); inserted_count],
+        Selection::cursor(Position::new(target, 0)),
+    );
+    target
 }
 
 fn append_block_below(
@@ -102,6 +169,26 @@ fn append_block_below(
     }
 }
 
+fn is_in_paired_fence(buffer: &TextBuffer, target_line: crate::buffer::SourceLine) -> bool {
+    let mut open_fence = None;
+    for idx in 0..buffer.line_count() {
+        let line = buffer
+            .line_text(crate::buffer::SourceLine::new(idx))
+            .unwrap_or_default();
+        if !line.trim_start().starts_with("```") {
+            continue;
+        }
+        if let Some(start) = open_fence.take() {
+            if (start..=idx).contains(&target_line.index()) {
+                return true;
+            }
+        } else {
+            open_fence = Some(idx);
+        }
+    }
+    false
+}
+
 impl TextBuffer {
     pub fn surround_selection(&mut self, open: &str, close: &str) {
         if self.selection.is_empty() {
@@ -113,37 +200,38 @@ impl TextBuffer {
             return;
         }
 
-        self.record_edit(|lines, sel| {
-            let (start, end) = sel.range();
-            if start.line == end.line {
-                let line = &mut lines[start.line];
-                let start_byte = char_col_to_byte_offset(line, start.col);
-                let end_byte = char_col_to_byte_offset(line, end.col);
-                let start_byte = start_byte.min(end_byte);
-
-                line.insert_str(end_byte, close);
-                line.insert_str(start_byte, open);
-
-                let open_len = open.chars().count();
-                let close_len = close.chars().count();
-                *sel = Selection {
-                    anchor: Position::new(start.line, start.col),
-                    head: Position::new(end.line, end.col + open_len + close_len),
-                };
-            } else {
-                let start_byte = char_col_to_byte_offset(&lines[start.line], start.col);
-                let end_byte = char_col_to_byte_offset(&lines[end.line], end.col);
-
-                lines[start.line].insert_str(start_byte, open);
-                lines[end.line].insert_str(end_byte, close);
-
-                let close_len = close.chars().count();
-                *sel = Selection {
-                    anchor: Position::new(start.line, start.col),
-                    head: Position::new(end.line, end.col + close_len),
-                };
-            }
-        });
+        let (start, end) = self.selection.range();
+        let mut replacement = (start.line.index()..=end.line.index())
+            .map(|idx| {
+                self.line_text(crate::buffer::SourceLine::new(idx))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let start_byte = char_col_to_byte_offset(&replacement[0], start.col);
+        let end_offset = end.line.index() - start.line.index();
+        let end_byte = char_col_to_byte_offset(&replacement[end_offset], end.col);
+        if start.line == end.line {
+            replacement[0].insert_str(end_byte, close);
+            replacement[0].insert_str(start_byte, open);
+        } else {
+            replacement[0].insert_str(start_byte, open);
+            replacement[end_offset].insert_str(end_byte, close);
+        }
+        let close_len = close.chars().count();
+        let open_len = if start.line == end.line {
+            open.chars().count()
+        } else {
+            0
+        };
+        self.replace_line_range(
+            start.line,
+            end_offset + 1,
+            replacement,
+            Selection {
+                anchor: Position::new(start.line, start.col),
+                head: Position::new(end.line, end.col + close_len + open_len),
+            },
+        );
     }
 
     pub fn backspace_auto_pair(&mut self) -> bool {
@@ -187,14 +275,27 @@ impl TextBuffer {
         if start.line.index() == 0 {
             return;
         }
-
-        self.record_edit(|lines, sel| {
-            let line_above = lines.remove_source_line(start.line - 1);
-            lines.insert_source_line(end.line, line_above);
-
-            sel.anchor.line -= 1;
-            sel.head.line -= 1;
-        });
+        let range_start = start.line - 1;
+        let mut replacement: Vec<String> = (start.line.index()..=end.line.index())
+            .map(|line| {
+                self.line_text(crate::buffer::SourceLine::new(line))
+                    .unwrap_or_default()
+            })
+            .collect();
+        replacement.insert(
+            replacement.len(),
+            self.line_text(range_start).unwrap_or_default(),
+        );
+        let selection = Selection {
+            anchor: Position::new(self.selection.anchor.line - 1, self.selection.anchor.col),
+            head: Position::new(self.selection.head.line - 1, self.selection.head.col),
+        };
+        self.replace_line_range(
+            range_start,
+            end.line - range_start + 1,
+            replacement,
+            selection,
+        );
     }
 
     pub fn move_lines_down(&mut self) {
@@ -203,86 +304,114 @@ impl TextBuffer {
             return;
         }
 
-        self.record_edit(|lines, sel| {
-            let line_below = lines.remove_source_line(end.line + 1);
-            lines.insert_source_line(start.line, line_below);
-
-            sel.anchor.line += 1;
-            sel.head.line += 1;
-        });
+        let range_start = start.line;
+        let mut replacement = vec![self.line_text(end.line + 1).unwrap_or_default()];
+        replacement.extend((start.line.index()..=end.line.index()).map(|line| {
+            self.line_text(crate::buffer::SourceLine::new(line))
+                .unwrap_or_default()
+        }));
+        let selection = Selection {
+            anchor: Position::new(self.selection.anchor.line + 1, self.selection.anchor.col),
+            head: Position::new(self.selection.head.line + 1, self.selection.head.col),
+        };
+        self.replace_line_range(
+            range_start,
+            end.line - start.line + 2,
+            replacement,
+            selection,
+        );
     }
 
     pub fn duplicate_lines_down(&mut self) {
         let (start, end) = self.selection.range();
-        self.record_edit(|lines, sel| {
-            let block: Vec<String> = lines[start.line..=end.line].to_vec();
-            let count = block.len();
-            for (idx, line) in block.into_iter().enumerate() {
-                lines.insert_source_line(end.line + 1 + idx, line);
-            }
-            sel.anchor.line += count;
-            sel.head.line += count;
-        });
+        let count = end.line - start.line + 1;
+        let block = (start.line.index()..=end.line.index())
+            .map(|line| {
+                self.line_text(crate::buffer::SourceLine::new(line))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let selection = Selection {
+            anchor: Position::new(
+                self.selection.anchor.line + count,
+                self.selection.anchor.col,
+            ),
+            head: Position::new(self.selection.head.line + count, self.selection.head.col),
+        };
+        self.replace_line_range(end.line + 1, 0, block, selection);
     }
 
     pub fn duplicate_lines_up(&mut self) {
         let (start, end) = self.selection.range();
-        self.record_edit(|lines, _sel| {
-            let block: Vec<String> = lines[start.line..=end.line].to_vec();
-            for (idx, line) in block.into_iter().enumerate() {
-                lines.insert_source_line(start.line + idx, line);
-            }
-        });
+        let block = (start.line.index()..=end.line.index())
+            .map(|line| {
+                self.line_text(crate::buffer::SourceLine::new(line))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        self.replace_line_range(start.line, 0, block, self.selection);
     }
 
     pub fn delete_lines(&mut self) {
         let (start, end) = self.selection.range();
-        self.record_edit(|lines, sel| {
-            if lines.len() <= (end.line - start.line + 1) {
-                lines.replace_all(vec![String::new(), String::new()]);
-                *sel = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
-                return;
-            }
-
-            lines.drain_source_lines(start.line..=end.line);
-            ensure_min_empty_lines(lines);
-            let new_line = start.line.index().min(lines.len() - 1);
-            let new_col = sel.head.col.min(
-                lines[crate::buffer::SourceLine::new(new_line)]
-                    .chars()
-                    .count(),
+        let count = end.line - start.line + 1;
+        let line_count = self.line_count();
+        if count >= line_count {
+            self.replace_line_range(
+                crate::buffer::SourceLine::new(0),
+                line_count,
+                vec![String::new(), String::new()],
+                Selection::cursor(Position::default()),
             );
-            *sel = Selection::cursor(Position::new(
-                crate::buffer::SourceLine::new(new_line),
-                new_col,
-            ));
-        });
+            return;
+        }
+
+        let remaining = line_count - count;
+        let target_line = start.line.index().min(remaining - 1);
+        let target_source_line = crate::buffer::SourceLine::new(target_line);
+        let target_old_line = if target_line < start.line.index() {
+            target_source_line
+        } else {
+            end.line + 1
+        };
+        let target_text = self.line_text(target_old_line).unwrap_or_default();
+        if remaining == 1 && target_text.is_empty() {
+            self.replace_line_range(
+                crate::buffer::SourceLine::new(0),
+                line_count,
+                vec![String::new(), String::new()],
+                Selection::cursor(Position::default()),
+            );
+        } else {
+            let cursor = Position::new(
+                target_source_line,
+                self.selection.head.col.min(target_text.chars().count()),
+            );
+            self.replace_line_range(start.line, count, Vec::new(), Selection::cursor(cursor));
+        }
     }
 
     pub fn insert_newline_below(&mut self) {
-        self.record_edit(|lines, sel| {
-            let line_idx = sel.head.line;
-            let current_line = &lines[line_idx];
-            let trimmed_prefix = get_smart_continuation_prefix(current_line);
-
-            let (new_content, new_col) = if let Some(prefix) = trimmed_prefix {
-                let p_len = prefix.chars().count();
-                (prefix, p_len)
-            } else {
-                (String::new(), 0)
-            };
-
-            lines.insert_source_line(line_idx + 1, new_content);
-            *sel = Selection::cursor(Position::new(line_idx + 1, new_col));
-        });
+        let line_idx = self.selection.head.line;
+        let current_line = self.line_text(line_idx).unwrap_or_default();
+        let new_content = get_smart_continuation_prefix(&current_line).unwrap_or_default();
+        let new_col = new_content.chars().count();
+        self.replace_line_range(
+            line_idx + 1,
+            0,
+            vec![new_content],
+            Selection::cursor(Position::new(line_idx + 1, new_col)),
+        );
     }
 
     pub fn insert_newline_above(&mut self) {
-        self.record_edit(|lines, sel| {
-            let line_idx = sel.head.line;
-            lines.insert_source_line(line_idx, String::new());
-            *sel = Selection::cursor(Position::new(line_idx, 0));
-        });
+        let line_idx = self.selection.head.line;
+        self.replace_line_range(
+            line_idx,
+            0,
+            vec![String::new()],
+            Selection::cursor(Position::new(line_idx, 0)),
+        );
     }
 
     /// Indents the selected lines with smart tab size detection:
@@ -321,13 +450,7 @@ impl TextBuffer {
         }
 
         let plans: Vec<(usize, usize)> = (start.line.index()..=last.index())
-            .map(|idx| {
-                tab_plan(
-                    &self.to_lines(),
-                    crate::buffer::SourceLine::new(idx),
-                    tab_size,
-                )
-            })
+            .map(|idx| local_tab_plan(self, idx, tab_size))
             .collect();
 
         let step = plans
@@ -348,28 +471,35 @@ impl TextBuffer {
             return;
         }
 
-        self.record_edit(|lines, sel| {
-            let spaces = " ".repeat(step);
-            for (offset, (col, _)) in plans.iter().enumerate() {
-                let line_idx = start.line + offset;
-                if let Some(line) = lines.get_source_line_mut(line_idx) {
-                    if start.line != last && line.is_empty() {
-                        continue;
-                    }
-                    let byte = char_col_to_byte_offset(line, *col);
-                    line.insert_str(byte, &spaces);
+        let mut replacement = (start.line.index()..=last.index())
+            .map(|idx| {
+                self.line_text(crate::buffer::SourceLine::new(idx))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let spaces = " ".repeat(step);
+        for (offset, (col, _)) in plans.iter().enumerate() {
+            if start.line != last && replacement[offset].is_empty() {
+                continue;
+            }
+            let byte = char_col_to_byte_offset(&replacement[offset], *col);
+            replacement[offset].insert_str(byte, &spaces);
+        }
+        let mut selection = self.selection;
+        for pos in [&mut selection.anchor, &mut selection.head] {
+            if pos.line >= start.line && pos.line <= last {
+                let insert_col = plans.get(pos.line - start.line).map_or(0, |(col, _)| *col);
+                if pos.col >= insert_col {
+                    pos.col += step;
                 }
             }
-
-            for pos in [&mut sel.anchor, &mut sel.head] {
-                if pos.line >= start.line && pos.line <= last {
-                    let insert_col = plans.get(pos.line - start.line).map_or(0, |(col, _)| *col);
-                    if pos.col >= insert_col {
-                        pos.col += step;
-                    }
-                }
-            }
-        });
+        }
+        self.replace_line_range(
+            start.line,
+            last.index() - start.line.index() + 1,
+            replacement,
+            selection,
+        );
     }
 
     /// Outdents the selected lines with smart tab size detection:
@@ -395,40 +525,38 @@ impl TextBuffer {
         }
 
         let plans: Vec<(usize, usize)> = (start.line.index()..=last.index())
-            .map(|idx| {
-                shift_tab_plan(
-                    &self.to_lines(),
-                    crate::buffer::SourceLine::new(idx),
-                    tab_size,
-                )
-            })
+            .map(|idx| local_shift_tab_plan(self, idx, tab_size))
             .collect();
-
-        self.record_edit(|lines, sel| {
-            for (offset, &(col, len)) in plans.iter().enumerate() {
+        let mut replacement = (start.line.index()..=last.index())
+            .map(|idx| {
+                self.line_text(crate::buffer::SourceLine::new(idx))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let mut selection = self.selection;
+        for (offset, &(col, len)) in plans.iter().enumerate() {
+            let start_byte = char_col_to_byte_offset(&replacement[offset], col);
+            let max_end_byte = char_col_to_byte_offset(&replacement[offset], col + len);
+            let safe_len = replacement[offset][start_byte..max_end_byte]
+                .bytes()
+                .take_while(|&byte| byte == b' ' || byte == b'\t')
+                .count();
+            if safe_len > 0 {
+                replacement[offset].drain(start_byte..start_byte + safe_len);
                 let line_idx = start.line + offset;
-                let mut removed_chars = 0;
-                if let Some(line) = lines.get_source_line_mut(line_idx) {
-                    let start_byte = char_col_to_byte_offset(line, col);
-                    let max_end_byte = char_col_to_byte_offset(line, col + len);
-                    let safe_len = line[start_byte..max_end_byte]
-                        .bytes()
-                        .take_while(|&b| b == b' ' || b == b'\t')
-                        .count();
-                    if safe_len > 0 {
-                        line.drain(start_byte..start_byte + safe_len);
-                        removed_chars = safe_len;
-                    }
-                }
-                if removed_chars > 0 {
-                    for pos in [&mut sel.anchor, &mut sel.head] {
-                        if pos.line == line_idx && pos.col > col {
-                            pos.col = pos.col.saturating_sub(removed_chars).max(col);
-                        }
+                for pos in [&mut selection.anchor, &mut selection.head] {
+                    if pos.line == line_idx && pos.col > col {
+                        pos.col = pos.col.saturating_sub(safe_len).max(col);
                     }
                 }
             }
-        });
+        }
+        self.replace_line_range(
+            start.line,
+            last.index() - start.line.index() + 1,
+            replacement,
+            selection,
+        );
     }
 
     /// Detects the appropriate tab size based on context:
@@ -436,56 +564,81 @@ impl TextBuffer {
     /// - Outside code blocks: always returns 4
     fn detect_smart_tab_size(&self) -> usize {
         let cursor_line = self.selection.head.line;
-
-        // Check if we're in a code block
-        if let Some((start, end)) = code_fence_range(&self.to_lines(), cursor_line) {
-            let start = start.index();
-            let end = end.index();
-            // Skip the opening fence line for detection
-            let detect_start = start + 1;
-            if detect_start < end {
-                return detect_code_block_indent(
-                    &self.to_lines(),
-                    crate::buffer::SourceLine::new(detect_start),
-                    crate::buffer::SourceLine::new(end),
-                );
+        let mut open_fence = None;
+        for idx in 0..self.line_count() {
+            let line = self
+                .line_text(crate::buffer::SourceLine::new(idx))
+                .unwrap_or_default();
+            if !line.trim_start().starts_with("```") {
+                continue;
+            }
+            if let Some(start) = open_fence.take() {
+                if (start..=idx).contains(&cursor_line.index()) {
+                    let detect_start = start + 1;
+                    let detect_end = idx.min(detect_start + 50);
+                    let mut indent_2_count = 0;
+                    let mut indent_4_count = 0;
+                    for line_idx in detect_start..detect_end {
+                        let content = self
+                            .line_text(crate::buffer::SourceLine::new(line_idx))
+                            .unwrap_or_default();
+                        let spaces = crate::markdown::leading_indent_len(&content);
+                        if spaces == 0 || content.trim().is_empty() {
+                            continue;
+                        }
+                        if spaces % 2 == 0 && spaces % 4 != 0 {
+                            indent_2_count += 1;
+                        } else if spaces % 4 == 0 && spaces > 0 {
+                            indent_4_count += 1;
+                        } else if spaces % 2 == 0 {
+                            indent_2_count += 1;
+                        }
+                    }
+                    if indent_2_count + indent_4_count >= 3 {
+                        return if indent_2_count > indent_4_count {
+                            2
+                        } else {
+                            4
+                        };
+                    }
+                    return 4;
+                }
+            } else {
+                open_fence = Some(idx);
             }
         }
-
-        // Default to 4 spaces for document editing
         4
     }
 
     pub fn toggle_comment(&mut self) {
         let (start, end) = self.selection.range();
-        self.record_edit(|lines, sel| {
-            for line in lines
-                .iter_mut()
-                .take(end.line.index() + 1)
-                .skip(start.line.index())
+        let mut replacement = (start.line.index()..=end.line.index())
+            .map(|idx| {
+                self.line_text(crate::buffer::SourceLine::new(idx))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        for line in &mut replacement {
+            let leading_len = line.chars().take_while(|c| c.is_whitespace()).count();
+            let leading: String = line.chars().take(leading_len).collect();
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("<!--")
+                && let Some(inner_trimmed) = rest.strip_suffix("-->")
             {
-                let leading_len = line.chars().take_while(|c| c.is_whitespace()).count();
-                let leading: String = line.chars().take(leading_len).collect();
-                let trimmed = line.trim();
-
-                if let Some(rest) = trimmed.strip_prefix("<!--")
-                    && let Some(inner_trimmed) = rest.strip_suffix("-->")
-                {
-                    let inner = inner_trimmed.strip_prefix(' ').unwrap_or(inner_trimmed);
-                    let inner = inner.strip_suffix(' ').unwrap_or(inner);
-                    *line = format!("{}{}", leading, inner);
-                    continue;
-                }
-
+                let inner = inner_trimmed.strip_prefix(' ').unwrap_or(inner_trimmed);
+                let inner = inner.strip_suffix(' ').unwrap_or(inner);
+                *line = format!("{}{}", leading, inner);
+            } else {
                 let content = &line[leading.len()..];
                 *line = format!("{}<!-- {} -->", leading, content);
             }
-
-            let anchor_line_len = lines[sel.anchor.line].chars().count();
-            let head_line_len = lines[sel.head.line].chars().count();
-            sel.anchor.col = sel.anchor.col.min(anchor_line_len);
-            sel.head.col = sel.head.col.min(head_line_len);
-        });
+        }
+        self.replace_line_range(
+            start.line,
+            end.line.index() - start.line.index() + 1,
+            replacement,
+            self.selection,
+        );
     }
 
     pub fn insert_text(&mut self, text: &str) {
@@ -512,15 +665,7 @@ impl TextBuffer {
             return;
         }
 
-        self.record_edit(|lines, sel| {
-            if !sel.is_empty() {
-                delete_range_internal(lines, sel.range());
-                let (start, _) = sel.range();
-                *sel = Selection::cursor(start);
-            }
-            let new_pos = insert_text_internal(lines, sel.head, text);
-            *sel = Selection::cursor(new_pos);
-        });
+        return;
     }
 
     pub fn replace_range(&mut self, (start, end): (Position, Position), text: &str) -> Position {
@@ -551,6 +696,159 @@ impl TextBuffer {
     }
 
     pub fn insert_newline_mode(&mut self, is_source: bool) {
+        if self.selection.is_empty() {
+            let pos = self.selection.head;
+            let current_line = self.line_text(pos.line).unwrap_or_default();
+            let line_count = self.line_count();
+            if current_line.is_empty() {
+                if is_source
+                    || (pos.line.index() + 1 < line_count
+                        && self
+                            .line_text(pos.line + 1)
+                            .is_some_and(|line| !line.trim().is_empty()))
+                {
+                    self.replace_line_range(
+                        pos.line + 1,
+                        0,
+                        vec![String::new()],
+                        Selection::cursor(Position::new(pos.line + 1, 0)),
+                    );
+                } else {
+                    append_block_below_buffer(self, pos.line);
+                }
+                return;
+            }
+
+            let current_chars_len = current_line.chars().count();
+            let col = pos.col.min(current_chars_len);
+            let trimmed = current_line.trim_start();
+            let leading_spaces = current_line.len() - trimmed.len();
+            let split_byte = char_col_to_byte_offset(&current_line, col);
+            let left = current_line[..split_byte].to_string();
+            let right = current_line[split_byte..].to_string();
+
+            if is_source && !trimmed.starts_with("```") && trimmed != "$$"
+                || !is_source && is_in_paired_fence(self, pos.line)
+            {
+                self.replace_line_range(
+                    pos.line,
+                    1,
+                    vec![left, right],
+                    Selection::cursor(Position::new(pos.line + 1, 0)),
+                );
+                return;
+            }
+
+            if trimmed.starts_with("```") {
+                let has_closing = (pos.line.index() + 1..line_count).any(|idx| {
+                    self.line_text(crate::buffer::SourceLine::new(idx))
+                        .is_some_and(|line| line.trim().starts_with("```"))
+                });
+                let inserted = if has_closing {
+                    vec![current_line]
+                } else {
+                    vec![
+                        current_line,
+                        String::new(),
+                        "```".to_string(),
+                        String::new(),
+                    ]
+                };
+                self.replace_line_range(
+                    pos.line,
+                    1,
+                    inserted,
+                    Selection::cursor(Position::new(pos.line + 1, 0)),
+                );
+                return;
+            }
+
+            if trimmed == "$$" && col == current_chars_len {
+                // Math delimiter pairing is context-sensitive; keep its established path.
+            } else if is_thematic_break(trimmed) {
+                append_block_below_buffer(self, pos.line);
+                return;
+            } else if let Some((_level, prefix_len)) = parse_heading_prefix(trimmed) {
+                let actual_prefix_len = leading_spaces + prefix_len;
+                if col <= actual_prefix_len {
+                    self.replace_line_range(
+                        pos.line,
+                        0,
+                        vec![String::new()],
+                        Selection::cursor(Position::new(pos.line + 1, actual_prefix_len)),
+                    );
+                } else if col >= current_chars_len {
+                    append_block_below_buffer(self, pos.line);
+                } else {
+                    self.replace_line_range(
+                        pos.line,
+                        1,
+                        vec![left, String::new(), right],
+                        Selection::cursor(Position::new(pos.line + 2, 0)),
+                    );
+                }
+                return;
+            } else if let Some(prefix) = parse_block_prefix(&current_line)
+                && !matches!(
+                    prefix.kind,
+                    BlockPrefix::Heading { .. } | BlockPrefix::Fence { .. }
+                )
+                && current_chars_len <= prefix.total_len
+            {
+                let next_line_is_blank = pos.line.index() + 1 < line_count
+                    && self
+                        .line_text(pos.line + 1)
+                        .is_some_and(|line| line.trim().is_empty());
+                let mut inserted = vec![String::new(), String::new()];
+                if !is_source && !next_line_is_blank {
+                    inserted.push(String::new());
+                }
+                self.replace_line_range(
+                    pos.line,
+                    1,
+                    inserted,
+                    Selection::cursor(Position::new(pos.line + 1, 0)),
+                );
+                return;
+            } else if let Some(prefix) = get_smart_continuation_prefix(&current_line) {
+                let prefix_len = prefix.chars().count();
+                self.replace_line_range(
+                    pos.line,
+                    1,
+                    vec![left, format!("{}{}", prefix, right)],
+                    Selection::cursor(Position::new(pos.line + 1, prefix_len)),
+                );
+                return;
+            } else if is_source {
+                self.replace_line_range(
+                    pos.line,
+                    1,
+                    vec![left, right],
+                    Selection::cursor(Position::new(pos.line + 1, 0)),
+                );
+                return;
+            } else if col == 0 {
+                self.replace_line_range(
+                    pos.line,
+                    0,
+                    vec![String::new(), String::new()],
+                    Selection::cursor(Position::new(pos.line, 0)),
+                );
+                return;
+            } else if col >= current_chars_len {
+                append_block_below_buffer(self, pos.line);
+                return;
+            } else {
+                self.replace_line_range(
+                    pos.line,
+                    1,
+                    vec![left, String::new(), right],
+                    Selection::cursor(Position::new(pos.line + 2, 0)),
+                );
+                return;
+            }
+        }
+
         self.record_edit(|lines, sel| {
             if !sel.is_empty() {
                 delete_range_internal(lines, sel.range());
@@ -694,36 +992,49 @@ impl TextBuffer {
     }
 
     pub fn insert_line_below_block(&mut self) {
-        self.record_edit(|lines, sel| {
-            let pos = sel.head;
-            if pos.line.index() >= lines.len() {
-                lines.push(String::new());
-                let last = lines.len() - 1;
-                *sel = Selection::cursor(Position::new(crate::buffer::SourceLine::new(last), 0));
-                return;
+        let pos = self.selection.head;
+        let mut open_idx = None;
+        let mut closing_idx = None;
+        for idx in 0..self.line_count() {
+            let line = self
+                .line_text(crate::buffer::SourceLine::new(idx))
+                .unwrap_or_default();
+            if !line.trim_start().starts_with("```") {
+                continue;
             }
-
-            let mut open_idx = None;
-            let mut closing_idx = None;
-            for (idx, line) in lines.iter().enumerate() {
-                if line.trim_start().starts_with("```") {
-                    if let Some(open) = open_idx.take() {
-                        if open <= pos.line.index() && pos.line.index() <= idx {
-                            closing_idx = Some(idx);
-                            break;
-                        }
-                    } else {
-                        open_idx = Some(idx);
-                    }
+            if let Some(open) = open_idx.take() {
+                if open <= pos.line.index() && pos.line.index() <= idx {
+                    closing_idx = Some(idx);
+                    break;
                 }
+            } else {
+                open_idx = Some(idx);
             }
+        }
 
-            let anchor_line = closing_idx
-                .map(crate::buffer::SourceLine::new)
-                .unwrap_or(pos.line);
-            let target = append_block_below(lines, anchor_line);
-            *sel = Selection::cursor(Position::new(target, 0));
-        });
+        let anchor = closing_idx.unwrap_or(pos.line.index().min(self.line_count() - 1));
+        let has_blank_after = anchor + 1 < self.line_count()
+            && self
+                .line_text(crate::buffer::SourceLine::new(anchor + 1))
+                .is_some_and(|line| line.trim().is_empty());
+        let (insert_at, inserted_count) = if has_blank_after {
+            let has_second_blank = anchor + 2 < self.line_count()
+                && self
+                    .line_text(crate::buffer::SourceLine::new(anchor + 2))
+                    .is_some_and(|line| line.trim().is_empty());
+            (
+                crate::buffer::SourceLine::new(anchor + 2),
+                usize::from(!has_second_blank) + 1,
+            )
+        } else {
+            (crate::buffer::SourceLine::new(anchor + 1), 2)
+        };
+        self.replace_line_range(
+            insert_at,
+            0,
+            vec![String::new(); inserted_count],
+            Selection::cursor(Position::new(crate::buffer::SourceLine::new(anchor + 2), 0)),
+        );
     }
 
     pub(crate) fn ensure_math_block_content_line(
@@ -739,16 +1050,96 @@ impl TextBuffer {
         }
 
         let pos = Position::new(end, 0);
-        self.record_edit(|lines, sel| {
-            lines.insert_source_line(end, String::new());
-            *sel = Selection::cursor(pos);
-        });
+        self.replace_line_range(end, 0, vec![String::new()], Selection::cursor(pos));
         Some(pos)
     }
 
     pub fn backspace_mode(&mut self, is_source: bool) {
         if self.backspace_auto_pair() {
             return;
+        }
+
+        if !self.selection.is_empty() {
+            self.replace_range(self.selection.range(), "");
+            return;
+        }
+
+        let pos = self.selection.head;
+        if is_source {
+            if pos.col > 0 {
+                self.replace_range((Position::new(pos.line, pos.col - 1), pos), "");
+            } else if pos.line.index() > 0 {
+                let previous_line = pos.line - 1;
+                let previous_len = self.line_len(previous_line);
+                self.replace_range((Position::new(previous_line, previous_len), pos), "");
+            }
+            return;
+        }
+
+        if pos.col > 0 {
+            let line = self.line_text(pos.line).unwrap_or_default();
+            let trimmed = line.trim_start();
+            let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+            if !is_thematic_break(trimmed) {
+                if trimmed.starts_with("```") {
+                    let has_closing = (pos.line.index() + 1..self.line_count()).any(|idx| {
+                        self.line_text(crate::buffer::SourceLine::new(idx))
+                            .is_some_and(|line| line.trim().starts_with("```"))
+                    });
+                    if has_closing {
+                        if pos.col > leading_spaces + 3 {
+                            self.replace_range((Position::new(pos.line, pos.col - 1), pos), "");
+                        }
+                        return;
+                    }
+                }
+
+                if pos.col >= 4 && pos.col <= leading_spaces {
+                    let spaces_to_remove = if pos.col % 4 == 0 { 4 } else { pos.col % 4 };
+                    let start_col = pos.col - spaces_to_remove;
+                    self.replace_range((Position::new(pos.line, start_col), pos), "");
+                    return;
+                }
+
+                let has_block_prefix = parse_block_prefix(&line).is_some_and(|prefix| {
+                    !matches!(prefix.kind, BlockPrefix::Fence { .. }) && pos.col <= prefix.total_len
+                });
+                if !has_block_prefix && line.trim() != "$$" {
+                    self.replace_range((Position::new(pos.line, pos.col - 1), pos), "");
+                    return;
+                }
+            }
+        }
+
+        if pos.col == 0 && pos.line.index() > 0 {
+            let current_line = self.line_text(pos.line).unwrap_or_default();
+            let previous_line = self.line_text(pos.line - 1).unwrap_or_default();
+            let previous_previous_line = if pos.line.index() > 1 {
+                self.line_text(pos.line - 2).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let is_special_line = is_thematic_break(current_line.trim_start())
+                || current_line.trim() == "$$"
+                || current_line.trim_start().starts_with("```")
+                || parse_block_prefix(&current_line).is_some()
+                || previous_line.trim() == "$$"
+                || previous_line.trim_start().starts_with("```")
+                || previous_previous_line.trim() == "$$"
+                || previous_previous_line.trim_start().starts_with("```");
+
+            if !is_special_line {
+                if !is_source && previous_line.trim().is_empty() && pos.line.index() > 1 {
+                    let previous_previous = pos.line - 2;
+                    let join_col = self.line_len(previous_previous);
+                    self.replace_range((Position::new(previous_previous, join_col), pos), "");
+                } else {
+                    let previous = pos.line - 1;
+                    let join_col = self.line_len(previous);
+                    self.replace_range((Position::new(previous, join_col), pos), "");
+                }
+                return;
+            }
         }
 
         self.record_edit(|lines, sel| {
@@ -969,6 +1360,44 @@ impl TextBuffer {
 
     pub fn delete_forward_mode(&mut self, is_source: bool) {
         self.column_goal = None;
+        if !self.selection.is_empty() {
+            self.replace_range(self.selection.range(), "");
+            return;
+        }
+
+        let pos = self.selection.head;
+        let line = self.line_text(pos.line).unwrap_or_default();
+        let line_len = line.chars().count();
+        if is_source {
+            if pos.col < line_len {
+                self.replace_range((pos, Position::new(pos.line, pos.col + 1)), "");
+            } else if (pos.line + 1).index() < self.line_count() {
+                self.replace_range((pos, Position::new(pos.line + 1, 0)), "");
+            }
+            return;
+        }
+
+        if !is_thematic_break(line.trim()) && line.trim() != "$$" {
+            if pos.col < line_len {
+                self.replace_range((pos, Position::new(pos.line, pos.col + 1)), "");
+                return;
+            }
+            if (pos.line + 1).index() < self.line_count() {
+                let next_line = self.line_text(pos.line + 1).unwrap_or_default();
+                let next_next_line = if (pos.line + 2).index() < self.line_count() {
+                    self.line_text(pos.line + 2).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                if next_line.trim() != "$$"
+                    && !(next_line.trim().is_empty() && next_next_line.trim() == "$$")
+                {
+                    self.replace_range((pos, Position::new(pos.line + 1, 0)), "");
+                    return;
+                }
+            }
+        }
+
         self.record_edit(|lines, sel| {
             if !sel.is_empty() {
                 delete_range_internal(lines, sel.range());
@@ -1076,13 +1505,14 @@ impl TextBuffer {
                 return;
             }
             let new_row = crate::markdown::table::build_empty_table_row(meta.num_columns);
-            self.record_edit(|lines, sel| {
-                lines.insert_source_line(meta.delimiter_line + 1, new_row);
-                let cells =
-                    crate::markdown::table::parse_table_row_cells(&lines[meta.delimiter_line + 1]);
-                let col = resolve_col(&cells);
-                *sel = Selection::cursor(Position::new(meta.delimiter_line + 1, col));
-            });
+            let cells = crate::markdown::table::parse_table_row_cells(&new_row);
+            let col = resolve_col(&cells);
+            self.replace_line_range(
+                meta.delimiter_line + 1,
+                0,
+                vec![new_row],
+                Selection::cursor(Position::new(meta.delimiter_line + 1, col)),
+            );
             return;
         }
 
@@ -1098,17 +1528,17 @@ impl TextBuffer {
 
         let new_row = crate::markdown::table::build_empty_table_row(meta.num_columns);
         let insert_idx = meta.last_table_line.index() + 1;
-        self.record_edit(|lines, sel| {
-            lines.insert_source_line(crate::buffer::SourceLine::new(insert_idx), new_row);
-            let cells = crate::markdown::table::parse_table_row_cells(
-                &lines[crate::buffer::SourceLine::new(insert_idx)],
-            );
-            let col = resolve_col(&cells);
-            *sel = Selection::cursor(Position::new(
+        let cells = crate::markdown::table::parse_table_row_cells(&new_row);
+        let col = resolve_col(&cells);
+        self.replace_line_range(
+            crate::buffer::SourceLine::new(insert_idx),
+            0,
+            vec![new_row],
+            Selection::cursor(Position::new(
                 crate::buffer::SourceLine::new(insert_idx),
                 col,
-            ));
-        });
+            )),
+        );
     }
 
     pub fn table_tab_forward(&mut self) -> bool {
@@ -1226,23 +1656,21 @@ impl TextBuffer {
         if self.is_in_code_fence(crate::buffer::SourceLine::new(last_idx))
             || self.is_closing_code_fence(crate::buffer::SourceLine::new(last_idx))
         {
-            self.record_edit(|lines, sel| {
-                let last = lines.len().saturating_sub(1);
-                if is_closing_code_fence_lines(
-                    lines.as_slice(),
-                    crate::buffer::SourceLine::new(last),
-                ) {
-                    lines.push(String::new());
-                    lines.push(String::new());
-                } else {
-                    lines.push("```".to_string());
-                    lines.push(String::new());
-                }
-                *sel = Selection::cursor(Position::new(
-                    crate::buffer::SourceLine::new(lines.len() - 1),
+            let closing = self.is_closing_code_fence(crate::buffer::SourceLine::new(last_idx));
+            let inserted = if closing {
+                vec![String::new(), String::new()]
+            } else {
+                vec!["```".to_string(), String::new()]
+            };
+            self.replace_line_range(
+                crate::buffer::SourceLine::new(self.line_count()),
+                0,
+                inserted,
+                Selection::cursor(Position::new(
+                    crate::buffer::SourceLine::new(self.line_count() + 1),
                     0,
-                ));
-            });
+                )),
+            );
             Some(self.selection.head)
         } else if last_idx > 0
             && (self.is_in_code_fence(crate::buffer::SourceLine::new(last_idx - 1))
@@ -1253,13 +1681,15 @@ impl TextBuffer {
                 .trim()
                 .is_empty()
         {
-            self.record_edit(|lines, sel| {
-                lines.push(String::new());
-                *sel = Selection::cursor(Position::new(
-                    crate::buffer::SourceLine::new(lines.len() - 1),
+            self.replace_line_range(
+                crate::buffer::SourceLine::new(self.line_count()),
+                0,
+                vec![String::new()],
+                Selection::cursor(Position::new(
+                    crate::buffer::SourceLine::new(self.line_count()),
                     0,
-                ));
-            });
+                )),
+            );
             Some(self.selection.head)
         } else {
             None
