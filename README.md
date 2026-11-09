@@ -57,6 +57,9 @@ Inviscid is currently in pre-`v0.1` active development. Core editing, Live Previ
 ### Build and Run
 
 ```bash
+# Prepare the local GPUI dependency on a fresh checkout or after patch updates
+python patches/gpui/prepare.py
+
 # Run in release mode
 cargo run --release
 

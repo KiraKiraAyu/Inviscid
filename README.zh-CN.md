@@ -57,6 +57,9 @@ Inviscid 处于 `v0.1` 发布前的早期开发阶段。核心编辑、Live Prev
 ### 编译与运行
 
 ```bash
+# 首次检出或补丁更新后，准备本地 GPUI 依赖
+python patches/gpui/prepare.py
+
 # 以 Release 模式编译并运行
 cargo run --release
 

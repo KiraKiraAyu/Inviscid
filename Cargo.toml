@@ -53,6 +53,10 @@ windows = { version = "0.62.2", features = [
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
 
+[patch.crates-io]
+# Run python patches/gpui/prepare.py first; see patches/gpui/README.md.
+gpui = { path = "vendor/gpui" }
+
 [build-dependencies]
 embed-resource = "3.0.12"
 image = { version = "0.25.10", default-features = false, features = ["ico"] }
