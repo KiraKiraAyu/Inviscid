@@ -1,19 +1,152 @@
 use crate::buffer::Position;
 use crate::search::match_result::{SearchMatch, SearchQuery};
+use ropey::Rope;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-pub fn find_matches(text: &str, query: &SearchQuery, max_matches: usize) -> Vec<SearchMatch> {
-    let mut cursor = PositionCursor::default();
+/// Byte ranges shared by document search and workspace line search.
+pub(crate) fn find_byte_ranges<'a>(
+    text: &'a str,
+    query: &'a SearchQuery,
+) -> impl Iterator<Item = std::ops::Range<usize>> + 'a {
     query
         .regex()
         .find_iter(text)
-        .filter(|m| !m.is_empty())
+        .filter(|found| !found.is_empty())
+        .map(|found| found.range())
+}
+
+pub fn find_matches(text: &str, query: &SearchQuery, max_matches: usize) -> Vec<SearchMatch> {
+    let mut cursor = PositionCursor::default();
+    find_byte_ranges(text, query)
         .take(max_matches)
         .map(|m| {
-            let start = cursor.advance_to(text, m.start());
-            let end = cursor.advance_to(text, m.end());
+            let start = cursor.advance_to(text, m.start);
+            let end = cursor.advance_to(text, m.end);
             SearchMatch::new(start, end)
         })
         .collect()
+}
+
+/// Searches an immutable snapshot. Cancellation discards the whole result.
+/// Literal queries retain only a bounded window; regex queries need contiguous text.
+pub fn find_matches_in_rope(
+    rope: &Rope,
+    query: &SearchQuery,
+    max_matches: usize,
+    cancel: &AtomicBool,
+) -> Option<Vec<SearchMatch>> {
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    if max_matches == 0 {
+        return Some(Vec::new());
+    }
+    if query.options().use_regex {
+        let mut text = String::with_capacity(rope.len_bytes());
+        for chunk in rope.chunks() {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            text.push_str(chunk);
+        }
+        let mut cursor = PositionCursor::default();
+        let mut matches = Vec::new();
+        for range in find_byte_ranges(&text, query).take(max_matches) {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            matches.push(SearchMatch::new(
+                cursor.advance_to(&text, range.start),
+                cursor.advance_to(&text, range.end),
+            ));
+        }
+        return (!cancel.load(Ordering::Relaxed)).then_some(matches);
+    }
+
+    // Unicode simple case folding preserves the number of scalars. Each literal
+    // scalar can therefore consume at most four bytes, plus one lookahead scalar
+    // for a whole-word boundary. Keep one preceding scalar for the left boundary.
+    let lookahead = query
+        .raw()
+        .chars()
+        .count()
+        .saturating_mul(4)
+        .saturating_add(4);
+    let mut window = String::new();
+    let mut base = 0;
+    let mut next_start = 0;
+    let mut matches = Vec::new();
+    let mut positions = RopePositionCursor::new(rope);
+    for chunk in rope.chunks() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        window.push_str(chunk);
+        let is_last = base + window.len() == rope.len_bytes();
+        let safe_end = if is_last {
+            window.len()
+        } else {
+            window.floor_char_boundary(window.len().saturating_sub(lookahead))
+        };
+        while next_start - base < safe_end {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            let Some(found) = query.regex().find_at(&window, next_start - base) else {
+                break;
+            };
+            if found.start() >= safe_end {
+                break;
+            }
+            let start = base + found.start();
+            let end = base + found.end();
+            matches.push(SearchMatch::new(
+                positions.advance_to(start),
+                positions.advance_to(end),
+            ));
+            if matches.len() == max_matches {
+                return (!cancel.load(Ordering::Relaxed)).then_some(matches);
+            }
+            next_start = end;
+        }
+        next_start = next_start.max(base + safe_end);
+        let consumed = next_start - base;
+        let retain_from = window[..consumed]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(i, _)| i);
+        window.drain(..retain_from);
+        base += retain_from;
+    }
+    (!cancel.load(Ordering::Relaxed)).then_some(matches)
+}
+
+struct RopePositionCursor<'a> {
+    chunks: ropey::iter::Chunks<'a>,
+    remaining: &'a str,
+    cursor: PositionCursor,
+}
+
+impl<'a> RopePositionCursor<'a> {
+    fn new(rope: &'a Rope) -> Self {
+        Self {
+            chunks: rope.chunks(),
+            remaining: "",
+            cursor: PositionCursor::default(),
+        }
+    }
+
+    fn advance_to(&mut self, byte: usize) -> Position {
+        while self.cursor.byte < byte {
+            if self.remaining.is_empty() {
+                self.remaining = self.chunks.next().expect("match within snapshot");
+            }
+            let count = (byte - self.cursor.byte).min(self.remaining.len());
+            self.cursor.advance(&self.remaining[..count]);
+            self.remaining = &self.remaining[count..];
+        }
+        self.cursor.pos
+    }
 }
 
 #[derive(Default)]
@@ -24,7 +157,11 @@ struct PositionCursor {
 
 impl PositionCursor {
     fn advance_to(&mut self, text: &str, byte: usize) -> Position {
-        let gap = &text[self.byte..byte];
+        self.advance(&text[self.byte..byte]);
+        self.pos
+    }
+
+    fn advance(&mut self, gap: &str) {
         match memchr::memrchr(b'\n', gap.as_bytes()) {
             Some(last_newline) => {
                 self.pos.line += memchr::memchr_iter(b'\n', gap.as_bytes()).count();
@@ -32,8 +169,7 @@ impl PositionCursor {
             }
             None => self.pos.col += gap.chars().count(),
         }
-        self.byte = byte;
-        self.pos
+        self.byte += gap.len();
     }
 }
 

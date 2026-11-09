@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::results::{FileSearchResult, WorkspaceMatch};
 use crate::search::SearchQuery;
+use crate::search::engine::find_byte_ranges;
 
 /// Files with a NUL byte in this prefix are treated as binary and skipped.
 const BINARY_SNIFF_LEN: usize = 4096;
@@ -162,25 +163,21 @@ fn find_line_matches(
     query: &SearchQuery,
     limit: usize,
 ) -> (Vec<WorkspaceMatch>, bool) {
-    let regex = query.regex();
     let mut matches = Vec::new();
-    if !regex.is_match(content) {
-        return (matches, false);
-    }
 
     for (line_idx, line) in content.lines().enumerate() {
         let mut shared_line: Option<Arc<str>> = None;
-        for m in regex.find_iter(line).filter(|m| !m.is_empty()) {
+        for m in find_byte_ranges(line, query) {
             if matches.len() == limit {
                 return (matches, true);
             }
-            let char_start = line[..m.start()].chars().count();
-            let char_end = char_start + m.as_str().chars().count();
+            let char_start = line[..m.start].chars().count();
+            let char_end = char_start + line[m.clone()].chars().count();
             let line_content = shared_line.get_or_insert_with(|| Arc::from(line)).clone();
             matches.push(WorkspaceMatch {
                 line_number: line_idx + 1,
                 line_content,
-                byte_range: (m.start(), m.end()),
+                byte_range: (m.start, m.end),
                 char_range: (char_start, char_end),
             });
         }
@@ -362,6 +359,44 @@ mod tests {
 
         let lines: Vec<_> = results[0].matches.iter().map(|m| m.line_number).collect();
         assert_eq!(lines, [1, 2]);
+    }
+
+    #[test]
+    fn workspace_and_document_search_share_matching_semantics_within_each_line() {
+        let content = "Kelvin \u{212a} k\r\nfoo foobar foo\u{301}\nuser_42 user_7\n";
+        for raw in ["k", "foo", r"user_(\d+)", r"x*", r"^", r"\b"] {
+            for use_regex in [false, true] {
+                for whole_word in [false, true] {
+                    let query = SearchQuery::new(
+                        raw,
+                        SearchOptions {
+                            use_regex,
+                            whole_word,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                    let expected: Vec<_> = content
+                        .lines()
+                        .enumerate()
+                        .flat_map(|(idx, line)| {
+                            crate::search::find_matches(line, &query, usize::MAX)
+                                .into_iter()
+                                .map(move |found| (idx + 1, (found.start.col, found.end.col)))
+                        })
+                        .collect();
+                    let (actual, capped) = find_line_matches(content, &query, usize::MAX);
+                    assert!(!capped);
+                    assert_eq!(
+                        actual
+                            .iter()
+                            .map(|m| (m.line_number, m.char_range))
+                            .collect::<Vec<_>>(),
+                        expected
+                    );
+                }
+            }
+        }
     }
 
     #[test]

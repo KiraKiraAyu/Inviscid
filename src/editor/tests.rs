@@ -4670,7 +4670,11 @@ fn test_search_highlights_clip_multiline_matches_to_each_line(cx: &mut gpui::Tes
             };
             let query = SearchQuery::new(r"target\ntwo\nth", options).unwrap();
             ed.set_find_query(Some(query), cx);
-
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _| {
             let continues = |cols| LineHighlight {
                 cols,
                 continues: true,
@@ -4712,6 +4716,11 @@ fn test_search_highlights_mark_only_the_current_match_active(cx: &mut gpui::Test
                 Some(SearchQuery::new("ab", SearchOptions::default()).unwrap()),
                 cx,
             );
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
             let kinds = |ed: &super::Editor, line: SourceLine| {
                 ed.search_highlights(line)
                     .into_iter()
@@ -4752,6 +4761,11 @@ fn test_find_matches_follow_edits(cx: &mut gpui::TestAppContext) {
                 Some(SearchQuery::new("foo", SearchOptions::default()).unwrap()),
                 cx,
             );
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
             assert_eq!(ed.search_highlights(SourceLine::new(0))[0].cols, 3..6);
 
             ed.buffer
@@ -4784,6 +4798,11 @@ fn find_updates_literal_matches_from_the_edited_lines(cx: &mut gpui::TestAppCont
                 Some(SearchQuery::new("needle", SearchOptions::default()).unwrap()),
                 cx,
             );
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
             let materializations = ed.buffer.full_line_materializations();
             let changed_line = 2_500;
             ed.buffer
@@ -4818,7 +4837,7 @@ fn find_updates_literal_matches_from_the_edited_lines(cx: &mut gpui::TestAppCont
 }
 
 #[gpui::test]
-fn regex_find_refresh_keeps_the_full_document_fallback(cx: &mut gpui::TestAppContext) {
+fn regex_find_refresh_searches_the_snapshot_in_background(cx: &mut gpui::TestAppContext) {
     use crate::buffer::{Position, Selection};
     use crate::search::{SearchOptions, SearchQuery};
 
@@ -4845,7 +4864,12 @@ fn regex_find_refresh_keeps_the_full_document_fallback(cx: &mut gpui::TestAppCon
                 ),
                 cx,
             );
-            let materializations = ed.buffer.full_line_materializations();
+        });
+    });
+    cx.run_until_parked();
+    let materializations = editor.read_with(cx, |ed, _| ed.buffer.full_line_materializations());
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
             ed.buffer.set_cursor(Position::new(SourceLine::new(50), 0));
             ed.perform_edit(cx, |ed| {
                 ed.buffer.replace_line_range(
@@ -4856,9 +4880,13 @@ fn regex_find_refresh_keeps_the_full_document_fallback(cx: &mut gpui::TestAppCon
                 );
             });
 
-            assert!(ed.buffer.full_line_materializations() > materializations);
-            assert_eq!(ed.find_state().match_count(), 99);
+            assert!(ed.find_state().is_stale(ed.buffer.revision()));
         });
+    });
+    cx.run_until_parked();
+    editor.read_with(cx, |ed, _| {
+        assert_eq!(ed.buffer.full_line_materializations(), materializations);
+        assert_eq!(ed.find_state().match_count(), 99);
     });
 }
 

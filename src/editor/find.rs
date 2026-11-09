@@ -1,12 +1,51 @@
-use gpui::{AppContext, Context, Entity, Subscription, Window};
+use gpui::{AppContext, Context, Entity, Subscription, Task, Window};
+use std::collections::VecDeque;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::buffer::{Position, SourceLine};
-use crate::search::{FindState, SearchMatch, SearchQuery, find_matches};
+use crate::search::{FindState, SearchMatch, SearchQuery, find_matches, find_matches_in_rope};
 
 use super::find_bar::{FindBar, FindBarEvent, FindBarMatches};
 use super::{Editor, HighlightKind, LineHighlight};
 
 const MAX_FIND_MATCHES: usize = 10_000;
+
+#[derive(Default)]
+pub(crate) struct FindSearch {
+    generation: u64,
+    pending: Option<PendingFindSearch>,
+    actions: VecDeque<FindAction>,
+    reveal: bool,
+}
+
+impl FindSearch {
+    fn cancel(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.pending = None;
+    }
+}
+
+struct PendingFindSearch {
+    revision: u64,
+    cancel: Arc<AtomicBool>,
+    _task: Task<()>,
+}
+
+impl Drop for PendingFindSearch {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+enum FindAction {
+    Next,
+    Previous,
+    ReplaceNext(String),
+    ReplaceAll(String),
+}
 
 pub(crate) struct FindBarHandle {
     pub(crate) view: Entity<FindBar>,
@@ -66,6 +105,7 @@ impl Editor {
         if self.find_bar.take().is_none() {
             return;
         }
+        self.reset_find_search();
         self.find_state.clear();
         if let Some(window) = window {
             window.focus(&self.focus_handle);
@@ -77,12 +117,14 @@ impl Editor {
 
     pub fn detach_find_bar(&mut self, cx: &mut Context<Self>) -> Option<Entity<FindBar>> {
         let handle = self.find_bar.take()?;
+        self.reset_find_search();
         self.find_state.clear();
         cx.notify();
         Some(handle.view)
     }
 
     pub fn attach_find_bar(&mut self, view: Entity<FindBar>, cx: &mut Context<Self>) {
+        self.reset_find_search();
         let subscription = cx.subscribe(&view, |this, _, event, cx| {
             this.on_find_bar_event(event, cx);
         });
@@ -95,7 +137,7 @@ impl Editor {
         match query {
             Some(query) => {
                 self.find_state.set_query(query);
-                self.refresh_find_matches();
+                self.refresh_find_matches(cx);
             }
             None => self.find_state.clear(),
         }
@@ -127,11 +169,12 @@ impl Editor {
     }
 
     pub fn set_find_query(&mut self, query: Option<SearchQuery>, cx: &mut Context<Self>) {
+        self.reset_find_search();
         match query {
             Some(query) => {
                 self.find_state.set_query(query);
-                self.refresh_find_matches();
-                self.reveal_current_match(cx);
+                self.find_search.reveal = true;
+                self.refresh_find_matches(cx);
             }
             None => self.find_state.clear(),
         }
@@ -139,17 +182,101 @@ impl Editor {
         cx.notify();
     }
 
-    pub(crate) fn refresh_find_matches(&mut self) {
-        let Some(query) = self.find_state.query() else {
+    pub(crate) fn reset_find_search(&mut self) {
+        self.find_search.cancel();
+        self.find_search.actions.clear();
+        self.find_search.reveal = false;
+        if let Some(query) = self.find_state.query().cloned() {
+            self.find_state.set_query(query);
+        }
+    }
+
+    pub(crate) fn clear_pending_find_actions(&mut self) {
+        self.find_search.actions.clear();
+        self.find_search.reveal = false;
+    }
+
+    pub(crate) fn refresh_find_matches(&mut self, cx: &mut Context<Self>) {
+        let Some(query) = self.find_state.query().cloned() else {
             return;
         };
-        let matches = self.incremental_find_matches(query).unwrap_or_else(|| {
-            let text = self.buffer.lines().join("\n");
-            find_matches(&text, query, MAX_FIND_MATCHES)
+        let revision = self.buffer.revision();
+        if self
+            .find_search
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.revision == revision)
+        {
+            return;
+        }
+        self.find_search.cancel();
+        if let Some(matches) = self.incremental_find_matches(&query) {
+            self.find_state
+                .set_matches(matches, revision, self.buffer.selection().start());
+            return;
+        }
+
+        let snapshot = self.buffer.text_snapshot();
+        let generation = self.find_search.generation;
+        let selection = self.buffer.selection();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let search = cx.background_executor().spawn(async move {
+            find_matches_in_rope(&snapshot, &query, MAX_FIND_MATCHES, &worker_cancel)
         });
-        let anchor = self.buffer.selection().start();
-        self.find_state
-            .set_matches(matches, self.buffer.revision(), anchor);
+        let task = cx.spawn(async move |this, cx| {
+            let Some(matches) = search.await else {
+                return;
+            };
+            // The editor may have been closed while its immutable snapshot was searched.
+            let _ = this.update(cx, |ed, cx| {
+                if ed.find_search.generation != generation {
+                    return;
+                }
+                ed.find_search.pending = None;
+                if ed.buffer.revision() != revision {
+                    ed.clear_pending_find_actions();
+                    ed.refresh_find_matches(cx);
+                    return;
+                }
+                ed.find_state
+                    .set_matches(matches, revision, ed.buffer.selection().start());
+                if ed.find_search.reveal && ed.buffer.selection() == selection {
+                    ed.reveal_current_match(cx);
+                }
+                ed.find_search.reveal = false;
+                while !ed.find_state.is_stale(ed.buffer.revision()) {
+                    let Some(action) = ed.find_search.actions.pop_front() else {
+                        break;
+                    };
+                    match action {
+                        FindAction::Next => ed.find_next(cx),
+                        FindAction::Previous => ed.find_previous(cx),
+                        FindAction::ReplaceNext(text) => ed.replace_next(&text, cx),
+                        FindAction::ReplaceAll(text) => ed.replace_all(&text, cx),
+                    }
+                }
+                ed.sync_find_bar(cx);
+                cx.notify();
+            });
+        });
+        self.find_search.pending = Some(PendingFindSearch {
+            revision,
+            cancel,
+            _task: task,
+        });
+    }
+
+    fn defer_find_action(&mut self, action: FindAction, cx: &mut Context<Self>) -> bool {
+        if !self.find_state.is_stale(self.buffer.revision()) {
+            return false;
+        }
+        self.refresh_find_matches(cx);
+        if !self.find_state.is_stale(self.buffer.revision()) {
+            return false;
+        }
+        self.find_search.actions.push_back(action);
+        true
     }
 
     fn incremental_find_matches(&self, query: &SearchQuery) -> Option<Vec<SearchMatch>> {
@@ -226,19 +353,25 @@ impl Editor {
     }
 
     pub fn find_next(&mut self, cx: &mut Context<Self>) {
+        if self.defer_find_action(FindAction::Next, cx) {
+            return;
+        }
         self.step_match(cx, |state, wrap| state.next_match(wrap));
     }
 
     pub fn find_previous(&mut self, cx: &mut Context<Self>) {
+        if self.defer_find_action(FindAction::Previous, cx) {
+            return;
+        }
         self.step_match(cx, |state, wrap| state.prev_match(wrap));
     }
 
     pub(crate) fn replace_next(&mut self, replacement: &str, cx: &mut Context<Self>) {
-        if !self.find_state.is_active() || self.find_state.match_count() == 0 {
+        if !self.find_state.is_active() {
             return;
         }
-        if self.find_state.is_stale(self.buffer.revision()) {
-            self.refresh_find_matches();
+        if self.defer_find_action(FindAction::ReplaceNext(replacement.to_owned()), cx) {
+            return;
         }
         let Some(query) = self.find_state.query().cloned() else {
             return;
@@ -251,14 +384,21 @@ impl Editor {
         let rep_text = query.expand_replacement(&matched_text, replacement);
         self.buffer.replace_range((m.start, m.end), &rep_text);
 
-        self.refresh_find_matches();
-        self.reveal_current_match(cx);
+        self.find_search.reveal = true;
+        self.refresh_find_matches(cx);
+        if !self.find_state.is_stale(self.buffer.revision()) {
+            self.find_search.reveal = false;
+            self.reveal_current_match(cx);
+        }
         self.sync_find_bar(cx);
         cx.notify();
     }
 
     pub(crate) fn replace_all(&mut self, replacement: &str, cx: &mut Context<Self>) {
-        if !self.find_state.is_active() || self.find_state.match_count() == 0 {
+        if !self.find_state.is_active() {
+            return;
+        }
+        if self.defer_find_action(FindAction::ReplaceAll(replacement.to_owned()), cx) {
             return;
         }
         let Some(query) = self.find_state.query().cloned() else {
@@ -266,8 +406,12 @@ impl Editor {
         };
         let count = self.buffer.replace_all_matches(&query, replacement);
         if count > 0 {
-            self.refresh_find_matches();
-            self.reveal_current_match(cx);
+            self.find_search.reveal = true;
+            self.refresh_find_matches(cx);
+            if !self.find_state.is_stale(self.buffer.revision()) {
+                self.find_search.reveal = false;
+                self.reveal_current_match(cx);
+            }
             self.sync_find_bar(cx);
             cx.notify();
         }
@@ -281,10 +425,6 @@ impl Editor {
         if !self.find_state.is_active() {
             return;
         }
-        if self.find_state.is_stale(self.buffer.revision()) {
-            self.refresh_find_matches();
-        }
-
         let wrap_around = self
             .find_state
             .query()
@@ -377,6 +517,157 @@ mod tests {
     }
 
     #[gpui::test]
+    fn full_search_is_deferred_and_only_the_latest_query_is_applied(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            Editor::new_with_buffer(TextBuffer::from_str("alpha beta beta", None), cx)
+        });
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(
+                Some(SearchQuery::new("alpha", Default::default()).unwrap()),
+                cx,
+            );
+            assert!(ed.find_state().is_stale(ed.buffer.revision()));
+            ed.set_find_query(
+                Some(SearchQuery::new("beta", Default::default()).unwrap()),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |ed, _| {
+            assert_eq!(ed.find_state().match_count(), 2);
+            assert_eq!(ed.find_state().query().unwrap().raw(), "beta");
+            assert!(!ed.find_state().is_stale(ed.buffer.revision()));
+        });
+    }
+
+    #[gpui::test]
+    fn pending_navigation_and_replacements_wait_for_current_results(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            Editor::new_with_buffer(TextBuffer::from_str("foo foo foo", None), cx)
+        });
+        let query = || {
+            SearchQuery::new(
+                "foo",
+                crate::search::SearchOptions {
+                    use_regex: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(Some(query()), cx);
+            ed.find_next(cx);
+            ed.find_previous(cx);
+            ed.find_next(cx);
+            ed.replace_next("bar", cx);
+            ed.replace_next("baz", cx);
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |ed, _| {
+            assert_eq!(ed.buffer.to_string_normalized(), "foo bar baz");
+            assert_eq!(ed.find_state().match_count(), 1);
+        });
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(Some(query()), cx);
+            ed.replace_all("done", cx);
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |ed, _| {
+            assert_eq!(ed.buffer.to_string_normalized(), "done bar baz");
+            assert_eq!(ed.find_state().match_count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn closing_find_cancels_worker_and_drops_deferred_replacements(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            Editor::new_with_buffer(TextBuffer::from_str("foo foo", None), cx)
+        });
+        let cancel = cx.update(|window, cx| {
+            editor.update(cx, |ed, cx| {
+                ed.open_find_bar(window, cx);
+                ed.set_find_query(
+                    Some(SearchQuery::new("foo", Default::default()).unwrap()),
+                    cx,
+                );
+                ed.replace_all("bar", cx);
+                let cancel = ed.find_search.pending.as_ref().unwrap().cancel.clone();
+                ed.close_find_bar(None, cx);
+                cancel
+            })
+        });
+        assert!(cancel.load(Ordering::Relaxed));
+        cx.run_until_parked();
+        editor.read_with(cx, |ed, _| {
+            assert!(!ed.find_state().is_active());
+            assert_eq!(ed.buffer.to_string_normalized(), "foo foo");
+        });
+    }
+
+    #[gpui::test]
+    fn background_results_do_not_move_a_cursor_changed_by_the_user(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            Editor::new_with_buffer(TextBuffer::from_str("foo last", None), cx)
+        });
+        let cursor = Position::new(SourceLine::new(0), 8);
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(
+                Some(SearchQuery::new("foo", Default::default()).unwrap()),
+                cx,
+            );
+            ed.buffer.set_cursor(cursor);
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |ed, _| assert_eq!(ed.buffer.cursor_pos(), cursor));
+    }
+
+    #[gpui::test]
+    fn pending_search_cannot_publish_after_edit_clear_or_document_reload(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            Editor::new_with_buffer(TextBuffer::from_str("alpha", None), cx)
+        });
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(
+                Some(SearchQuery::new("alpha", Default::default()).unwrap()),
+                cx,
+            );
+            ed.perform_edit(cx, |ed| ed.buffer.insert_text("alpha "));
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |ed, _| assert_eq!(ed.find_state().match_count(), 2));
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(
+                Some(SearchQuery::new("alpha", Default::default()).unwrap()),
+                cx,
+            );
+            ed.set_find_query(None, cx);
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |ed, _| assert!(!ed.find_state().is_active()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        std::fs::write(&path, "beta").unwrap();
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(
+                Some(SearchQuery::new("alpha", Default::default()).unwrap()),
+                cx,
+            );
+            ed.load_file(path, cx).unwrap();
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |ed, _| {
+            assert_eq!(ed.find_state().match_count(), 0);
+            assert!(!ed.find_state().is_stale(ed.buffer.revision()));
+        });
+    }
+
+    #[gpui::test]
     fn test_attach_and_detach_find_bar(cx: &mut TestAppContext) {
         init_globals(cx);
 
@@ -394,6 +685,7 @@ mod tests {
             });
         });
 
+        cx.run_until_parked();
         ed1.read_with(cx, |ed, cx| {
             assert!(ed.is_find_bar_visible());
             assert_eq!(ed.find_state().match_count(), 2);
@@ -419,6 +711,7 @@ mod tests {
         });
 
         ed2.update(cx, |ed, cx| ed.attach_find_bar(bar, cx));
+        cx.run_until_parked();
 
         ed2.read_with(cx, |ed, cx| {
             assert!(ed.is_find_bar_visible());
@@ -436,6 +729,7 @@ mod tests {
             bar.update(cx, |bar, cx| bar.focus_query(Some("grape"), window, cx));
         });
 
+        cx.run_until_parked();
         ed2.read_with(cx, |ed, _| {
             assert_eq!(ed.find_state().match_count(), 1);
         });
@@ -459,6 +753,7 @@ mod tests {
             });
         });
 
+        cx.run_until_parked();
         ed.read_with(cx, |ed, _| {
             assert!(ed.is_find_bar_visible());
             assert_eq!(ed.find_state().match_count(), 1);

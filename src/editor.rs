@@ -204,6 +204,7 @@ pub struct Editor {
     pub(crate) space_width_memo: std::cell::Cell<Option<(f32, Pixels)>>,
 
     pub(crate) find_state: FindState,
+    pub(crate) find_search: find::FindSearch,
     /// `Some` while the find bar is open.
     pub(crate) find_bar: Option<find::FindBarHandle>,
     pub(crate) needs_focus_after_find: bool,
@@ -482,6 +483,7 @@ impl Editor {
             text_system: None,
             space_width_memo: std::cell::Cell::new(None),
             find_state: FindState::new(),
+            find_search: find::FindSearch::default(),
             find_bar: None,
             needs_focus_after_find: false,
         };
@@ -718,7 +720,8 @@ impl Editor {
         let prev_version = self.buffer.version();
         f(self);
         if self.find_state.is_stale(self.buffer.revision()) {
-            self.refresh_find_matches();
+            self.clear_pending_find_actions();
+            self.refresh_find_matches(cx);
             self.sync_find_bar(cx);
         }
         if self.buffer.is_dirty() != prev_dirty {
@@ -888,7 +891,10 @@ impl Editor {
         let mtime = std::fs::metadata(&path)
             .ok()
             .and_then(|m| m.modified().ok());
+        self.reset_find_search();
         self.buffer = TextBuffer::from_str(&content, Some(path));
+        self.refresh_find_matches(cx);
+        self.sync_find_bar(cx);
         self.buffer.set_last_saved_mtime(mtime);
         self.external_disk_hash = Some(Self::hash_file_content(&content));
         self.external_change = ExternalChangeState::None;

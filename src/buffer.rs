@@ -722,6 +722,11 @@ impl TextBuffer {
         }
     }
 
+    /// A cheap, immutable copy-on-write snapshot for background readers.
+    pub fn text_snapshot(&self) -> Rope {
+        self.rope.clone()
+    }
+
     /// Yields chunks for each line and line ending.
     pub fn chunks_with_line_ending(&self) -> impl Iterator<Item = String> {
         let content = self.to_string_content();

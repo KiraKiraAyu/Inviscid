@@ -8,7 +8,7 @@ mod find_state;
 mod match_result;
 mod workspace;
 
-pub use engine::find_matches;
+pub use engine::{find_matches, find_matches_in_rope};
 pub use find_state::FindState;
 pub use match_result::{SearchMatch, SearchOptions, SearchQuery, SearchToggle};
 pub use workspace::{

@@ -833,10 +833,6 @@ impl Workspace {
             if let Some(active_editor) = self.active_editor() {
                 active_editor.update(cx, |editor, cx| {
                     let _ = editor.load_file(path.clone(), cx);
-                    if editor.is_find_bar_visible() {
-                        editor.refresh_find_matches();
-                        editor.sync_find_bar(cx);
-                    }
                 });
                 self.sync_active_editor_state(cx);
             }
@@ -1461,6 +1457,7 @@ mod tests {
             });
         });
 
+        cx.run_until_parked();
         ed0.read_with(cx, |ed, _| {
             assert!(ed.is_find_bar_visible());
             assert_eq!(ed.find_state().match_count(), 1);
@@ -1470,7 +1467,7 @@ mod tests {
         });
 
         ws.update(cx, |ws, cx| ws.switch_tab(1, cx));
-
+        cx.run_until_parked();
         ed0.read_with(cx, |ed, _| {
             assert!(!ed.is_find_bar_visible());
             assert_eq!(ed.find_state().match_count(), 0);
@@ -1482,6 +1479,7 @@ mod tests {
         });
 
         ws.update(cx, |ws, cx| ws.switch_tab(0, cx));
+        cx.run_until_parked();
         ed0.read_with(cx, |ed, cx| {
             assert!(ed.is_find_bar_visible());
             assert_eq!(ed.find_state().match_count(), 1);
@@ -1603,7 +1601,7 @@ mod tests {
         assert!(ed1.read_with(cx, |ed, _| ed.is_find_bar_visible()));
 
         ws.update(cx, |ws, cx| ws.close_tab(1, cx));
-
+        cx.run_until_parked();
         ed0.read_with(cx, |ed, cx| {
             assert!(ed.is_find_bar_visible());
             assert_eq!(ed.find_state().match_count(), 1);
