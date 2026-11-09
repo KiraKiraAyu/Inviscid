@@ -164,7 +164,7 @@ impl Element for EditorElement {
                                 let group_bottom = layout
                                     .metrics
                                     .top(quote_range.end)
-                                    .unwrap_or(layout.total_height - px(24.0));
+                                    .unwrap_or(layout.metrics.total_height() - px(24.0));
                                 let group_height =
                                     group_bottom - layout.metrics.top(quote_range.start).unwrap();
                                 let quote_indent = layout
@@ -277,7 +277,7 @@ impl Element for EditorElement {
                     }
 
                     let track_h = bounds.size.height;
-                    let metrics = editor.scrollbar_metrics(track_h, layout.total_height);
+                    let metrics = editor.scrollbar_metrics(track_h, layout.metrics.total_height());
 
                     let last_scroll = editor.scroll.last_scroll_action;
                     let scroll_elapsed = std::time::Instant::now()

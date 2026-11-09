@@ -6,6 +6,11 @@ pub const DOCUMENT_TOP_PADDING: Pixels = px(24.0);
 pub const DOCUMENT_BOTTOM_PADDING: Pixels = px(24.0);
 pub const EMPTY_DOCUMENT_HEIGHT: Pixels = px(48.0);
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static SUMMARY_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Fixed(i64);
 
@@ -41,6 +46,8 @@ impl Item for LineItem {
     type Summary = LineSummary;
 
     fn summary(&self, (): ()) -> LineSummary {
+        #[cfg(test)]
+        SUMMARY_WORK.update(|work| work + 1);
         LineSummary {
             lines: 1,
             height: self.height,
@@ -55,6 +62,8 @@ impl ContextLessSummary for LineSummary {
     }
 
     fn add_summary(&mut self, other: &Self) {
+        #[cfg(test)]
+        SUMMARY_WORK.update(|work| work + 1);
         self.lines += other.lines;
         self.height.0 += other.height.0;
         self.visible_lines += other.visible_lines;
@@ -67,12 +76,16 @@ struct VisibleLines(usize);
 
 impl<'a> SeekTarget<'a, LineSummary, LineSummary> for Lines {
     fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
+        #[cfg(test)]
+        SUMMARY_WORK.update(|work| work + 1);
         Ord::cmp(&self.0, &location.lines)
     }
 }
 
 impl<'a> SeekTarget<'a, LineSummary, LineSummary> for Height {
     fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
+        #[cfg(test)]
+        SUMMARY_WORK.update(|work| work + 1);
         // Compare the same f32 coordinates returned to GPUI, including at large y.
         self.0
             .partial_cmp(&location.height.document_y())
@@ -82,6 +95,8 @@ impl<'a> SeekTarget<'a, LineSummary, LineSummary> for Height {
 
 impl<'a> SeekTarget<'a, LineSummary, LineSummary> for VisibleLines {
     fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
+        #[cfg(test)]
+        SUMMARY_WORK.update(|work| work + 1);
         Ord::cmp(&self.0, &location.visible_lines)
     }
 }
@@ -150,11 +165,6 @@ impl LineMetrics {
         drop(cursor);
         self.tree = tree;
         true
-    }
-
-    // Transitional compatibility for layout callers, removed in stage C3.
-    pub fn rebuild_from(&mut self, start: usize) {
-        assert!(start <= self.len(), "line out of bounds");
     }
 
     pub fn len(&self) -> usize {
@@ -421,6 +431,29 @@ mod tests {
     }
 
     #[test]
+    fn middle_edits_and_collapsed_row_queries_have_bounded_tree_work() {
+        for len in [2_000, 20_000, 200_000] {
+            let mut heights = vec![px(0.0); len];
+            heights[0] = px(32.0);
+            heights[len - 1] = px(32.0);
+            let mut metrics = LineMetrics::from_heights(heights);
+            let retained = metrics.clone();
+            SUMMARY_WORK.set(0);
+            metrics.set_height(len / 2, px(24.0));
+            metrics.splice(len / 2..len / 2, vec![px(0.0), px(16.0)]);
+            assert_eq!(metrics.top(len - 1), Some(px(96.0)));
+            assert_eq!(metrics.total_height(), px(152.0));
+            assert_eq!(metrics.next_visible_line_after(len / 2 + 2), Some(len + 1));
+            assert_eq!(retained.height(len / 2), Some(px(0.0)));
+            let work = SUMMARY_WORK.get();
+            assert!(
+                work < 2_000,
+                "{len} rows required {work} summary operations"
+            );
+        }
+    }
+
+    #[test]
     fn fractional_heights_use_fixed_precision_without_suffix_rebuilds() {
         let mut metrics = LineMetrics::from_heights(vec![px(0.0006), px(0.0006), px(0.0)]);
         assert_eq!(metrics.height(0), Some(px(1.0 / 1024.0)));
@@ -482,20 +515,17 @@ mod tests {
     }
 
     #[test]
-    fn height_updates_rebuild_only_the_requested_suffix() {
+    fn height_updates_immediately_refresh_derived_offsets() {
         let mut metrics = LineMetrics::from_heights(vec![px(10.0), px(20.0), px(30.0)]);
         metrics.set_height(1, px(0.0));
-        metrics.rebuild_from(1);
         assert_eq!(
             metrics,
             LineMetrics::from_heights(vec![px(10.0), px(0.0), px(30.0)])
         );
         metrics.set_height(0, px(40.0));
-        metrics.rebuild_from(0);
         assert_eq!(metrics.top(2), Some(px(64.0)));
         assert_eq!(metrics.total_height(), px(118.0));
-        let mut empty = LineMetrics::from_heights(Vec::new());
-        empty.rebuild_from(0);
+        let empty = LineMetrics::from_heights(Vec::new());
         assert_eq!(empty.total_height(), px(48.0));
     }
 
@@ -513,9 +543,7 @@ mod tests {
             (0..3, vec![], vec![]),
             (0..0, vec![px(7.0)], vec![px(7.0)]),
         ] {
-            let start = range.start;
             assert!(metrics.splice(range, replacement));
-            metrics.rebuild_from(start);
             assert_eq!(metrics, LineMetrics::from_heights(expected));
         }
         assert!(!metrics.splice(0..1, vec![px(7.0)]));

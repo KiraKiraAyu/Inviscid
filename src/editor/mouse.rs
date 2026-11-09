@@ -91,7 +91,7 @@ impl Editor {
             return Position::new(crate::buffer::SourceLine::new(0), 0);
         }
 
-        let total_h = self.layout_snapshot().total_height;
+        let total_h = self.layout_snapshot().metrics.total_height();
         let viewport = self.viewport_bounds_val();
         let scroll_top = self.scroll.current_scroll_top;
         let doc_y = point.y - viewport.origin.y + scroll_top;

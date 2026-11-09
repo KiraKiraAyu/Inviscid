@@ -201,7 +201,6 @@ pub struct DocumentLayoutCache {
     pub parsed_lines: Arc<Vec<ParsedLine>>,
     pub metrics: super::line_metrics::LineMetrics,
     pub space_width: Pixels,
-    pub total_height: Pixels,
     pub separators: Vec<bool>,
     pub quote_projection: Arc<QuoteProjection>,
     pub quote_ranges: Vec<Range<usize>>,
@@ -229,7 +228,6 @@ impl Default for DocumentLayoutCache {
             parsed_lines: Arc::new(Vec::new()),
             metrics: Default::default(),
             space_width: px(0.0),
-            total_height: px(0.0),
             separators: Vec::new(),
             quote_projection: Arc::new(QuoteProjection::default()),
             quote_ranges: Vec::new(),
@@ -1010,8 +1008,7 @@ impl Editor {
             }
 
             cache.metrics.set_height(active_line_idx, new_h);
-            cache.metrics.rebuild_from(active_line_idx);
-            cache.total_height = cache.metrics.total_height();
+
             cache.active_col = active_col;
             cache.active_math_block = active_math_block;
             cache.active_mermaid_block = active_mermaid_block;
@@ -1104,9 +1101,6 @@ impl Editor {
                 cache.metrics.set_height(new_active_idx, new_active_new_h);
             }
 
-            let start_rebuild = old_active_idx.min(new_active_idx);
-            cache.metrics.rebuild_from(start_rebuild);
-            cache.total_height = cache.metrics.total_height();
             cache.active_line = active_line;
             cache.active_col = active_col;
             cache.active_math_block = active_math_block;
@@ -1197,7 +1191,7 @@ impl Editor {
         }
 
         let metrics = LineMetrics::from_heights(line_heights);
-        let total_height = metrics.total_height();
+
         let parsed_quote_ranges = quote_ranges(&parsed_doc);
 
         let new_cache = DocumentLayoutCache {
@@ -1220,7 +1214,7 @@ impl Editor {
             parsed_lines: parsed_doc,
             metrics,
             space_width: self.space_width(),
-            total_height,
+
             separators,
             quote_projection,
             quote_ranges: parsed_quote_ranges,
@@ -1458,10 +1452,9 @@ impl Editor {
             new_heights.push(h);
         }
 
-        let mut rebuild_from = cache
+        cache
             .metrics
-            .splice(block_start..old_block_end, new_heights)
-            .then_some(block_start);
+            .splice(block_start..old_block_end, new_heights);
         let mut quote_edge_rows = [None, None];
         {
             let parsed_lines = Arc::make_mut(&mut cache.parsed_lines);
@@ -1529,13 +1522,7 @@ impl Editor {
             let height = self.measure_line_layout_height(line_idx, parsed, lcx);
             if Some(height) != cache.metrics.height(line_idx) {
                 cache.metrics.set_height(line_idx, height);
-                rebuild_from = Some(rebuild_from.map_or(line_idx, |start| start.min(line_idx)));
             }
-        }
-
-        if let Some(start) = rebuild_from {
-            cache.metrics.rebuild_from(start);
-            cache.total_height = cache.metrics.total_height();
         }
 
         cache.buffer_version = self.buffer.version();
@@ -1555,13 +1542,13 @@ impl Editor {
     pub fn get_line_y_range(&self, target_line: SourceLine) -> (Pixels, Pixels) {
         let layout = self.layout_snapshot();
         layout.source_line_y_range(target_line).unwrap_or_else(|| {
-            let total = layout.total_height;
+            let total = layout.metrics.total_height();
             ((total - DOCUMENT_BOTTOM_PADDING).max(px(0.0)), total)
         })
     }
 
     pub fn get_total_content_height(&self) -> Pixels {
-        self.layout_snapshot().total_height
+        self.layout_snapshot().metrics.total_height()
     }
 
     /// Viewport height with a fallback before initial layout measurement.
@@ -1779,7 +1766,7 @@ mod incremental_tests {
                         assert_eq!(cache.parsed_lines, full.parsed_lines);
                         assert_eq!(cache.metrics.heights(), full.metrics.heights());
                         assert_eq!(cache.metrics.offsets(), full.metrics.offsets());
-                        assert_eq!(cache.total_height, full.total_height);
+                        assert_eq!(cache.metrics.total_height(), full.metrics.total_height());
                         assert_eq!(cache.separators, full.separators);
                         assert_eq!(cache.quote_ranges, full.quote_ranges);
                     }
@@ -1820,7 +1807,7 @@ mod incremental_tests {
                         assert_eq!(after.parsed_lines, full.parsed_lines);
                         assert_eq!(after.metrics.heights(), full.metrics.heights());
                         assert_eq!(after.metrics.offsets(), full.metrics.offsets());
-                        assert_eq!(after.total_height, full.total_height);
+                        assert_eq!(after.metrics.total_height(), full.metrics.total_height());
                         assert_eq!(before.quote_projection.normalized_lines(), before_lines);
                     }
                 }
@@ -1865,7 +1852,7 @@ mod incremental_tests {
                         assert_eq!(cache.parsed_lines, full.parsed_lines);
                         assert_eq!(cache.metrics.heights(), full.metrics.heights());
                         assert_eq!(cache.metrics.offsets(), full.metrics.offsets());
-                        assert_eq!(cache.total_height, full.total_height);
+                        assert_eq!(cache.metrics.total_height(), full.metrics.total_height());
                         assert_eq!(before.parsed_lines, before_parsed);
                     }
                 }
