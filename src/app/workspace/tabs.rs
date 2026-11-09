@@ -10,6 +10,7 @@ pub(crate) enum TabKind {
 }
 
 pub struct TabItem {
+    pub(crate) _load_task: Option<Task<()>>,
     pub editor: Entity<Editor>,
     pub(crate) kind: TabKind,
     pub is_pinned: bool,
@@ -22,6 +23,7 @@ pub fn collect_tabs_meta(tabs: &[TabItem], cx: &App) -> Vec<TabMeta> {
             TabKind::Editor => {
                 let ed = tab.editor.read(cx);
                 TabMeta {
+                    is_loading: ed.is_loading(),
                     title: ed.title(),
                     is_dirty: ed.is_dirty(),
                     dir_hint: ed.dir_hint(),
@@ -32,6 +34,7 @@ pub fn collect_tabs_meta(tabs: &[TabItem], cx: &App) -> Vec<TabMeta> {
                 }
             }
             TabKind::WorkspaceSearch => TabMeta {
+                is_loading: false,
                 title: "Search".to_string(),
                 is_dirty: false,
                 dir_hint: None,

@@ -165,7 +165,13 @@ impl Render for StatusBar {
                                         .color(theme.text_accent)
                                         .into_any_element()
                                 })
-                                .child(if is_dirty { "Unsaved" } else { "Saved" }),
+                                .child(if meta.is_loading {
+                                    "Loading..."
+                                } else if is_dirty {
+                                    "Unsaved"
+                                } else {
+                                    "Saved"
+                                }),
                         )
                         .when_some(meta.load_error.as_ref(), |this, error| {
                             this.child(div().child(error.clone()))
@@ -300,6 +306,7 @@ mod tests {
 
         // Test set_meta
         let meta = EditorStatusMeta {
+            is_loading: false,
             load_error: None,
             is_dirty: false,
             external_change: ExternalChangeState::None,

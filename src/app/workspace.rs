@@ -58,6 +58,9 @@ pub struct Workspace {
     panel_drag_start_width: Option<Pixels>,
 }
 
+#[cfg(test)]
+mod loading_tests;
+
 impl Focusable for Workspace {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -161,9 +164,10 @@ impl Workspace {
         };
 
         let (tabs, active_tab_idx, tabs_meta, status_meta) = if let Some(path) = file_path.clone() {
-            let (editor, subscription) = Self::init_editor(Some(path), cx);
+            let (editor, subscription, load_task) = Self::init_editor(Some(path), cx);
             let meta = editor.read(cx).status_meta();
             let tab_meta = tab_bar::TabMeta {
+                is_loading: editor.read(cx).is_loading(),
                 title: editor.read(cx).title(),
                 is_dirty: editor.read(cx).is_dirty(),
                 dir_hint: editor.read(cx).dir_hint(),
@@ -174,6 +178,7 @@ impl Workspace {
             };
             (
                 vec![TabItem {
+                    _load_task: load_task,
                     editor,
                     kind: TabKind::Editor,
                     is_pinned: false,
@@ -247,8 +252,10 @@ impl Workspace {
 
         for file_path in &ws.open_files {
             if file_path.exists() {
-                let (editor, subscription) = Self::init_editor(Some(file_path.clone()), cx);
+                let (editor, subscription, load_task) =
+                    Self::init_editor(Some(file_path.clone()), cx);
                 tabs.push(TabItem {
+                    _load_task: load_task,
                     editor,
                     kind: TabKind::Editor,
                     is_pinned: false,
@@ -391,9 +398,9 @@ impl Workspace {
     pub fn init_editor(
         path: Option<PathBuf>,
         cx: &mut Context<Self>,
-    ) -> (Entity<Editor>, Subscription) {
-        let editor = cx.new(|cx| match path {
-            Some(p) => Editor::new_with_path(p, cx),
+    ) -> (Entity<Editor>, Subscription, Option<Task<()>>) {
+        let editor = cx.new(|cx| match path.as_ref() {
+            Some(p) => Editor::new_loading(p.clone(), cx),
             None => Editor::new(cx),
         });
         let tab_editor = editor.clone();
@@ -469,7 +476,40 @@ impl Workspace {
                 }
             },
         );
-        (editor, subscription)
+        let task = path.map(|path| Self::spawn_file_load(path, editor.downgrade(), cx));
+        (editor, subscription, task)
+    }
+
+    fn spawn_file_load(
+        path: PathBuf,
+        editor: WeakEntity<Editor>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let requested_path = path.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { crate::editor::loading::LoadedFile::read(path) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |workspace, cx| {
+                let Some(editor) = editor.upgrade() else {
+                    return;
+                };
+                let Some(index) = workspace.tabs.iter().position(|tab| tab.editor == editor) else {
+                    return;
+                };
+                if editor.read(cx).file_path() != Some(requested_path.as_path()) {
+                    if let Some(path) = editor.read(cx).file_path_buf() {
+                        workspace.tabs[index]._load_task =
+                            Some(Self::spawn_file_load(path, editor.downgrade(), cx));
+                    }
+                    return;
+                }
+                editor.update(cx, |editor, cx| editor.finish_loading(result, cx));
+                workspace.tabs[index]._load_task = None;
+                workspace.sync_active_editor_state(cx);
+            });
+        })
     }
 
     pub fn active_editor(&self) -> Option<&Entity<Editor>> {
@@ -556,8 +596,9 @@ impl Workspace {
 
     pub fn new_tab(&mut self, cx: &mut Context<Self>) {
         let find_bar = self.transfer_find_bar(cx);
-        let (editor, subscription) = Self::init_editor(None, cx);
+        let (editor, subscription, load_task) = Self::init_editor(None, cx);
         self.tabs.push(TabItem {
+            _load_task: load_task,
             editor,
             kind: TabKind::Editor,
             is_pinned: false,
@@ -830,16 +871,19 @@ impl Workspace {
         });
 
         if is_current_empty_and_untitled {
-            if let Some(active_editor) = self.active_editor() {
-                active_editor.update(cx, |editor, cx| {
-                    let _ = editor.load_file(path.clone(), cx);
+            if let Some(active_editor) = self.active_editor().cloned() {
+                active_editor.update(cx, |editor, _| {
+                    editor.begin_loading(path.clone());
                 });
+                let task = Self::spawn_file_load(path.clone(), active_editor.downgrade(), cx);
+                self.tabs[self.active_tab_idx]._load_task = Some(task);
                 self.sync_active_editor_state(cx);
             }
         } else {
             let find_bar = self.transfer_find_bar(cx);
-            let (editor, subscription) = Self::init_editor(Some(path.clone()), cx);
+            let (editor, subscription, load_task) = Self::init_editor(Some(path.clone()), cx);
             self.tabs.push(TabItem {
+                _load_task: load_task,
                 editor,
                 kind: TabKind::Editor,
                 is_pinned: false,
@@ -1279,10 +1323,7 @@ impl Workspace {
         self.open_file(path, cx);
         if let Some(active_editor) = self.active_editor() {
             active_editor.update(cx, |ed, cx| {
-                ed.buffer_mut().set_cursor(position);
-                ed.scroll_to_cursor();
-                ed.start_scroll_animation_if_needed(cx);
-                ed.reset_cursor_blink(cx);
+                ed.open_at_position(position, cx);
             });
         }
     }
@@ -1298,8 +1339,9 @@ impl Workspace {
         {
             self.switch_tab(index, cx);
         } else {
-            let (editor, subscription) = Self::init_editor(None, cx);
+            let (editor, subscription, load_task) = Self::init_editor(None, cx);
             self.tabs.push(TabItem {
+                _load_task: load_task,
                 editor,
                 kind: TabKind::WorkspaceSearch,
                 is_pinned: false,
@@ -1673,6 +1715,8 @@ mod tests {
                 cx,
             );
         });
+
+        cx.run_until_parked();
 
         ws.read_with(cx, |ws, cx| {
             let active = ws.active_editor().expect("active editor");

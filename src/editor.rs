@@ -34,6 +34,7 @@ pub mod input_handler;
 pub mod keymap;
 pub mod layout;
 pub mod line_metrics;
+pub(crate) mod loading;
 pub mod mouse;
 pub mod navigation;
 pub mod render;
@@ -150,6 +151,7 @@ pub struct HoveredLink {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditorStatusMeta {
+    pub is_loading: bool,
     pub load_error: Option<String>,
     pub is_dirty: bool,
     pub external_change: ExternalChangeState,
@@ -169,6 +171,8 @@ pub enum ExternalChangeState {
 }
 
 pub struct Editor {
+    is_loading: bool,
+    pending_open_position: Option<Position>,
     load_error: Option<String>,
     pub(in crate::editor) buffer: TextBuffer,
     pub(crate) focus_handle: FocusHandle,
@@ -407,6 +411,11 @@ impl Editor {
 
     pub fn update_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.buffer.set_file_path(Some(path));
+        if self.is_loading {
+            cx.emit(EditorEvent::TitleChanged);
+            cx.notify();
+            return;
+        }
         self.external_disk_hash = self
             .buffer
             .file_path()
@@ -428,6 +437,17 @@ impl Editor {
     }
 
     pub fn new_with_buffer(buffer: TextBuffer, cx: &mut Context<Self>) -> Self {
+        let disk_hash = buffer
+            .file_path()
+            .and_then(|path| Self::read_file_hash(path).ok());
+        Self::new_with_buffer_and_disk_hash(buffer, disk_hash, cx)
+    }
+
+    fn new_with_buffer_and_disk_hash(
+        buffer: TextBuffer,
+        external_disk_hash: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
 
         let image_rx = crate::http::subscribe_image_updates();
@@ -459,10 +479,9 @@ impl Editor {
             })
             .unwrap_or((RenderMode::LivePreview, 15.0, 1.6, true, true, true));
 
-        let external_disk_hash = buffer
-            .file_path()
-            .and_then(|path| Self::read_file_hash(path).ok());
         let mut editor = Self {
+            is_loading: false,
+            pending_open_position: None,
             load_error: None,
             buffer,
             focus_handle,
@@ -580,7 +599,7 @@ impl Editor {
 
     #[inline]
     pub fn can_edit(&self) -> bool {
-        self.is_editable() && !self.is_read_only()
+        self.is_editable() && !self.is_read_only() && !self.is_loading
     }
 
     pub fn set_read_only(&mut self, is_read_only: bool) {
@@ -674,6 +693,7 @@ impl Editor {
             return None;
         }
         Some(EditorStatusMeta {
+            is_loading: self.is_loading,
             load_error: self.load_error.clone(),
             is_dirty: self.buffer.is_dirty(),
             external_change: self.external_change,
@@ -1284,6 +1304,19 @@ impl Render for Editor {
         }
 
         let theme = cx.theme();
+
+        if self.is_loading {
+            return div()
+                .size_full()
+                .bg(theme.bg_editor)
+                .track_focus(&self.focus_handle)
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(theme.text_muted)
+                .child("Loading...")
+                .into_any_element();
+        }
 
         if !self.is_editable() {
             return self

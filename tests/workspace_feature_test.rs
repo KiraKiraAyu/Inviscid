@@ -1976,6 +1976,11 @@ async fn test_tab_context_menu_bulk_close_and_pin_protection() {
         });
         assert_eq!(ws.read(cx).tab_count(), 4);
         // Tabs now: [f1 (pinned), f4, f2, f3]
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = app.read(cx).workspace().clone();
 
         // Make f3 (index 3) dirty
         let ed3 = ws.read(cx).tabs()[3].editor.clone();

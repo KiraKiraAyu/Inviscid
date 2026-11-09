@@ -8,6 +8,7 @@ use context_menu::{TabContextMenuAction, TabContextMenuState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabMeta {
+    pub is_loading: bool,
     pub title: String,
     pub is_dirty: bool,
     pub dir_hint: Option<String>,
@@ -460,6 +461,14 @@ impl Render for TabBar {
                                     })
                                     .child(fname),
                             )
+                            .when(meta.is_loading, |this| {
+                                this.child(
+                                    div()
+                                        .text_size(FontSize::CAPTION)
+                                        .text_color(theme.text_muted)
+                                        .child("Loading..."),
+                                )
+                            })
                             .children(dir_hint.map(|hint| {
                                 div()
                                     .text_size(FontSize::CAPTION)
@@ -534,6 +543,7 @@ mod tests {
     fn test_disambiguate_tab_directory_hint_only_on_duplicate_titles() {
         let tabs = vec![
             TabMeta {
+                is_loading: false,
                 title: "main.rs".to_string(),
                 is_dirty: false,
                 dir_hint: Some("src".to_string()),
@@ -543,6 +553,7 @@ mod tests {
                 supports_editing: true,
             },
             TabMeta {
+                is_loading: false,
                 title: "lib.rs".to_string(),
                 is_dirty: false,
                 dir_hint: Some("src".to_string()),
@@ -563,6 +574,7 @@ mod tests {
         // Add a duplicate "main.rs" from another folder
         let tabs_with_dup = vec![
             TabMeta {
+                is_loading: false,
                 title: "main.rs".to_string(),
                 is_dirty: false,
                 dir_hint: Some("src".to_string()),
@@ -572,6 +584,7 @@ mod tests {
                 supports_editing: true,
             },
             TabMeta {
+                is_loading: false,
                 title: "lib.rs".to_string(),
                 is_dirty: false,
                 dir_hint: Some("src".to_string()),
@@ -581,6 +594,7 @@ mod tests {
                 supports_editing: true,
             },
             TabMeta {
+                is_loading: false,
                 title: "main.rs".to_string(),
                 is_dirty: false,
                 dir_hint: Some("tests".to_string()),
@@ -607,6 +621,7 @@ mod tests {
         // Tab with no dir_hint: should return None even if title is duplicated
         let tabs_no_hint = vec![
             TabMeta {
+                is_loading: false,
                 title: "Untitled.md".to_string(),
                 is_dirty: false,
                 dir_hint: None,
@@ -616,6 +631,7 @@ mod tests {
                 supports_editing: true,
             },
             TabMeta {
+                is_loading: false,
                 title: "Untitled.md".to_string(),
                 is_dirty: false,
                 dir_hint: None,
@@ -634,6 +650,7 @@ mod tests {
     fn test_tab_bar_set_tab_title_updates_duplicate_titles(cx: &mut gpui::TestAppContext) {
         let tabs = vec![
             TabMeta {
+                is_loading: false,
                 title: "foo.rs".to_string(),
                 is_dirty: false,
                 dir_hint: Some("dir_a".to_string()),
@@ -643,6 +660,7 @@ mod tests {
                 supports_editing: true,
             },
             TabMeta {
+                is_loading: false,
                 title: "bar.rs".to_string(),
                 is_dirty: false,
                 dir_hint: Some("dir_b".to_string()),
@@ -683,6 +701,7 @@ mod tests {
     fn test_tab_bar_sync_preserves_scroll_when_active_tab_unchanged(cx: &mut gpui::TestAppContext) {
         let tabs = vec![
             TabMeta {
+                is_loading: false,
                 title: "a.rs".to_string(),
                 is_dirty: false,
                 dir_hint: None,
@@ -692,6 +711,7 @@ mod tests {
                 supports_editing: true,
             },
             TabMeta {
+                is_loading: false,
                 title: "b.rs".to_string(),
                 is_dirty: false,
                 dir_hint: None,
