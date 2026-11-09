@@ -786,6 +786,9 @@ impl Editor {
     }
 
     pub(crate) fn invalidate_layout_cache(&mut self) {
+        self.layout_epoch
+            .set(self.layout_epoch.get().wrapping_add(1));
+        self.layout_task = None;
         *self.layout_cache.borrow_mut() = Arc::new(DocumentLayoutCache::default());
     }
 
@@ -795,7 +798,11 @@ impl Editor {
         self.layout_cache.borrow().clone()
     }
 
-    fn cache_matches_view(&self, cache: &DocumentLayoutCache, content_width: Pixels) -> bool {
+    pub(super) fn cache_matches_view(
+        &self,
+        cache: &DocumentLayoutCache,
+        content_width: Pixels,
+    ) -> bool {
         cache.render_mode == self.render_mode
             && cache.content_width == content_width
             && cache.doc_path.as_deref() == self.buffer.file_path()
@@ -968,7 +975,11 @@ impl Editor {
             .collect()
     }
 
-    fn measure_pending_range(&self, cache: &mut DocumentLayoutCache, range: Range<usize>) {
+    pub(super) fn measure_pending_range(
+        &self,
+        cache: &mut DocumentLayoutCache,
+        range: Range<usize>,
+    ) {
         let scroll_top = self.scroll.current_scroll_top + self.layout_scroll_adjustment.get();
         let anchor = cache.metrics.line_at_y(scroll_top);
         let old_top = anchor.and_then(|line| cache.metrics.top(line));
@@ -1022,8 +1033,15 @@ impl Editor {
                 self.measure_viewport(Arc::make_mut(&mut cache));
             }
         }
-        self.scroll
-            .compensate_layout(self.layout_scroll_adjustment.replace(px(0.0)));
+        self.apply_layout_scroll_adjustment();
+    }
+
+    pub(super) fn apply_layout_scroll_adjustment(&mut self) {
+        let adjustment = self.layout_scroll_adjustment.replace(px(0.0));
+        self.scroll.compensate_layout(adjustment);
+        if let Some(start) = self.scroll.scrollbar_drag_start_scroll.as_mut() {
+            *start += adjustment;
+        }
     }
 
     #[cfg(test)]
@@ -1080,6 +1098,8 @@ impl Editor {
         }
 
         // Same line, only cursor column changed in Live Preview
+        self.layout_epoch
+            .set(self.layout_epoch.get().wrapping_add(1));
         if buffer_matches
             && view_matches
             && current_cache.image_cache_version == current_img_v

@@ -207,6 +207,7 @@ fn middle_code_block_newline_keeps_layout_and_height_index_work_local(
             assert!(stats.lines_measured <= 4);
             assert_eq!(stats.cache_deep_clones, 0);
             assert!(super::line_metrics::SUMMARY_WORK.get() < 2_000);
+            drop(incremental);
             ed.measure_all_pending_for_test();
             let incremental = ed.layout_snapshot();
             ed.invalidate_layout_cache();

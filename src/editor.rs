@@ -37,6 +37,7 @@ pub mod line_metrics;
 pub(crate) mod loading;
 pub mod mouse;
 pub mod navigation;
+mod pending_layout;
 pub mod render;
 pub mod shaping;
 #[cfg(test)]
@@ -197,6 +198,10 @@ pub struct Editor {
 
     pub(crate) layout_cache: RefCell<Arc<DocumentLayoutCache>>,
     layout_scroll_adjustment: std::cell::Cell<Pixels>,
+    layout_epoch: std::cell::Cell<u64>,
+    layout_task_epoch: u64,
+    layout_task: Option<Task<()>>,
+    layout_notifier: crate::sync::VersionedNotifier,
     #[cfg(test)]
     pub(crate) layout_stats: std::cell::Cell<LayoutStats>,
     pub(crate) display_map: DisplayMap,
@@ -453,7 +458,11 @@ impl Editor {
 
         let image_rx = crate::http::subscribe_image_updates();
         let syntax_rx = crate::syntax::subscribe_syntax_updates();
-        let mut async_update_rx = futures::stream::select(image_rx, syntax_rx);
+        let layout_notifier = crate::sync::VersionedNotifier::new();
+        let mut async_update_rx = futures::stream::select(
+            futures::stream::select(image_rx, syntax_rx),
+            layout_notifier.subscribe(),
+        );
         let async_update_task = cx.spawn(async move |this, cx| {
             use futures::StreamExt;
             while let Some(_version) = async_update_rx.next().await {
@@ -510,6 +519,10 @@ impl Editor {
             _async_update_task: Some(async_update_task),
             layout_cache: RefCell::new(Arc::new(DocumentLayoutCache::default())),
             layout_scroll_adjustment: std::cell::Cell::new(px(0.0)),
+            layout_epoch: std::cell::Cell::new(0),
+            layout_task_epoch: 0,
+            layout_task: None,
+            layout_notifier,
             #[cfg(test)]
             layout_stats: std::cell::Cell::new(LayoutStats::default()),
             display_map: DisplayMap::new(),
