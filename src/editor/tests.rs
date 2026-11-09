@@ -1056,8 +1056,10 @@ fn test_mouse_hit_testing_line_index_resolution() {
     for (idx, parsed) in cache.parsed_lines.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
         let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
-        cache.metrics.offsets.push(y);
-        cache.metrics.heights.push(h);
+
+        cache
+            .metrics
+            .splice(cache.metrics.len()..cache.metrics.len(), vec![h]);
         y += h;
     }
     cache.total_height = y + px(24.0);
@@ -1066,9 +1068,9 @@ fn test_mouse_hit_testing_line_index_resolution() {
     // Line 0 (Heading): y in [24.0, 78.0) (height 54.0)
     // Line 1 (Paragraph): y in [78.0, 110.0) (height 32.0)
     // Line 2 (Paragraph): y in [110.0, 142.0) (height 32.0)
-    assert_eq!(cache.metrics.offsets[0], px(24.0));
-    assert_eq!(cache.metrics.offsets[1], px(78.0));
-    assert_eq!(cache.metrics.offsets[2], px(110.0));
+    assert_eq!(cache.metrics.top(0).unwrap(), px(24.0));
+    assert_eq!(cache.metrics.top(1).unwrap(), px(78.0));
+    assert_eq!(cache.metrics.top(2).unwrap(), px(110.0));
 
     // Viewport layout: top in window coordinates is at 70px (TitleBar 36px + TabBar 34px)
     let viewport = Bounds {
@@ -1080,7 +1082,7 @@ fn test_mouse_hit_testing_line_index_resolution() {
     // Hit-testing helper simulating doc_y calculation
     let resolve_line = |point_y: gpui::Pixels, scroll: gpui::Pixels| -> usize {
         let doc_y = (point_y - viewport.origin.y + scroll).max(px(0.0));
-        let idx = cache.metrics.offsets.partition_point(|&y| y <= doc_y);
+        let idx = cache.metrics.offsets().partition_point(|&y| y <= doc_y);
         idx.saturating_sub(1).min(cache.parsed_lines.len() - 1)
     };
 
@@ -1109,7 +1111,7 @@ fn test_mouse_hit_testing_line_index_resolution() {
         let d = (click_bottom_of_line_0 - buggy_viewport_top + scroll_top).max(px(0.0));
         cache
             .metrics
-            .offsets
+            .offsets()
             .partition_point(|&y| y <= d)
             .saturating_sub(1)
     };
@@ -1142,15 +1144,17 @@ fn test_source_mode_line_index_resolution() {
     for (idx, parsed) in cache.parsed_lines.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::source(content_width);
         let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
-        cache.metrics.offsets.push(y);
-        cache.metrics.heights.push(h);
+
+        cache
+            .metrics
+            .splice(cache.metrics.len()..cache.metrics.len(), vec![h]);
         y += h;
     }
 
     // In Source mode, every line height is exactly 24px
-    assert_eq!(cache.metrics.heights[0], px(24.0));
-    assert_eq!(cache.metrics.heights[1], px(24.0));
-    assert_eq!(cache.metrics.heights[2], px(24.0));
+    assert_eq!(cache.metrics.height(0).unwrap(), px(24.0));
+    assert_eq!(cache.metrics.height(1).unwrap(), px(24.0));
+    assert_eq!(cache.metrics.height(2).unwrap(), px(24.0));
 
     let viewport = Bounds {
         origin: point(px(0.0), px(70.0)),
@@ -1159,9 +1163,9 @@ fn test_source_mode_line_index_resolution() {
 
     // Test line index mapping for all lines
     for line in 0..3 {
-        let y_middle = px(70.0) + cache.metrics.offsets[line] + px(12.0);
+        let y_middle = px(70.0) + cache.metrics.top(line).unwrap() + px(12.0);
         let doc_y = (y_middle - viewport.origin.y).max(px(0.0));
-        let idx = cache.metrics.offsets.partition_point(|&y| y <= doc_y);
+        let idx = cache.metrics.offsets().partition_point(|&y| y <= doc_y);
         let resolved_line = idx.saturating_sub(1).min(cache.parsed_lines.len() - 1);
         assert_eq!(resolved_line, line, "Line {} should resolve exactly", line);
     }
@@ -1205,8 +1209,10 @@ fn test_hit_testing_monotonicity_and_strict_boundary_invariants() {
     for (idx, parsed) in cache.parsed_lines.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
         let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
-        cache.metrics.offsets.push(y);
-        cache.metrics.heights.push(h);
+
+        cache
+            .metrics
+            .splice(cache.metrics.len()..cache.metrics.len(), vec![h]);
         y += h;
     }
     cache.total_height = y + px(24.0);
@@ -1217,15 +1223,15 @@ fn test_hit_testing_monotonicity_and_strict_boundary_invariants() {
         let doc_y = (win_y - viewport_top + scroll).max(px(0.0));
         let idx = cache
             .metrics
-            .offsets
+            .offsets()
             .partition_point(|&offset| offset <= doc_y);
         idx.saturating_sub(1).min(cache.parsed_lines.len() - 1)
     };
 
     // 1. Boundary & Exact interval mapping for each line
     for line_idx in 0..cache.parsed_lines.len() {
-        let top = cache.metrics.offsets[line_idx];
-        let h = cache.metrics.heights[line_idx];
+        let top = cache.metrics.top(line_idx).unwrap();
+        let h = cache.metrics.height(line_idx).unwrap();
         if h <= px(0.0) {
             continue; // Skip collapsed lines
         }
@@ -1439,15 +1445,18 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
     for (idx, parsed) in parsed_doc.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
         let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
-        initial_cache.metrics.offsets.push(y);
-        initial_cache.metrics.heights.push(h);
+
+        initial_cache.metrics.splice(
+            initial_cache.metrics.len()..initial_cache.metrics.len(),
+            vec![h],
+        );
         y += h;
     }
     initial_cache.total_height = y + px(24.0);
 
     // Image line is line 2 (0: # Title, 1: empty, 2: ![Header]...)
     // Initially not loaded: base_h(padding_vertical=8px) + 140px + 12px = 160px
-    let placeholder_height = initial_cache.metrics.heights[2];
+    let placeholder_height = initial_cache.metrics.height(2).unwrap();
     assert_eq!(placeholder_height, px(8.0) + px(140.0) + px(12.0));
 
     // 2. Simulate image finishing downloading in background
@@ -1460,20 +1469,23 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
     // 3. Recompute layout with updated image cache
     let mut updated_cache = initial_cache.clone();
     let mut y = px(24.0);
-    updated_cache.metrics.heights.clear();
-    updated_cache.metrics.offsets.clear();
+    updated_cache.metrics = crate::editor::line_metrics::LineMetrics::default();
+
     for (idx, parsed) in parsed_doc.iter().enumerate() {
         let lcx = crate::editor::layout::LineLayoutContext::live_preview(content_width);
         let h = crate::editor::layout::get_line_layout_height(&buf.lines(), idx, parsed, lcx);
-        updated_cache.metrics.offsets.push(y);
-        updated_cache.metrics.heights.push(h);
+
+        updated_cache.metrics.splice(
+            updated_cache.metrics.len()..updated_cache.metrics.len(),
+            vec![h],
+        );
         y += h;
     }
     updated_cache.image_cache_version = new_img_v;
     updated_cache.total_height = y + px(24.0);
 
     // Image line height is now base_h(8px) + img_h(400px) + 12px = 420px
-    let loaded_height = updated_cache.metrics.heights[2];
+    let loaded_height = updated_cache.metrics.height(2).unwrap();
     assert_eq!(loaded_height, px(8.0) + px(400.0) + px(12.0));
     assert_ne!(placeholder_height, loaded_height);
 
@@ -1611,14 +1623,17 @@ fn test_folding_layout_height_and_navigation() {
             .is_line_folded(crate::buffer::SourceLine::new(idx));
         let lcx = LineLayoutContext::live_preview(content_width).with_folded(is_folded);
         let h = get_line_layout_height(&buf.lines(), idx, parsed, lcx);
-        initial_cache.metrics.offsets.push(y);
-        initial_cache.metrics.heights.push(h);
+
+        initial_cache.metrics.splice(
+            initial_cache.metrics.len()..initial_cache.metrics.len(),
+            vec![h],
+        );
         y += h;
     }
     initial_cache.total_height = y + px(24.0);
 
     // All lines should have non-zero height initially
-    for h in &initial_cache.metrics.heights {
+    for h in &initial_cache.metrics.heights() {
         assert!(*h > px(0.0));
     }
 
@@ -1701,27 +1716,31 @@ fn test_folding_layout_height_and_navigation() {
             .is_line_folded(crate::buffer::SourceLine::new(idx));
         let lcx = LineLayoutContext::live_preview(content_width).with_folded(is_folded);
         let h = get_line_layout_height(&buf.lines(), idx, parsed, lcx);
-        folded_cache.metrics.offsets.push(y_folded);
-        folded_cache.metrics.heights.push(h);
+
+        folded_cache.metrics.splice(
+            folded_cache.metrics.len()..folded_cache.metrics.len(),
+            vec![h],
+        );
         y_folded += h;
     }
     folded_cache.total_height = y_folded + px(24.0);
 
     // Folded lines 2 and 3 must have height 0
-    assert_eq!(folded_cache.metrics.heights[2], px(0.0));
-    assert_eq!(folded_cache.metrics.heights[3], px(0.0));
+    assert_eq!(folded_cache.metrics.height(2).unwrap(), px(0.0));
+    assert_eq!(folded_cache.metrics.height(3).unwrap(), px(0.0));
     // Header line 1 and remaining lines retain normal height
     assert_eq!(
-        folded_cache.metrics.heights[1],
-        initial_cache.metrics.heights[1]
+        folded_cache.metrics.height(1).unwrap(),
+        initial_cache.metrics.height(1).unwrap()
     );
     assert_eq!(
-        folded_cache.metrics.heights[4],
-        initial_cache.metrics.heights[4]
+        folded_cache.metrics.height(4).unwrap(),
+        initial_cache.metrics.height(4).unwrap()
     );
 
     // Total height shrunk by exactly the heights of lines 2 and 3
-    let folded_height_sum = initial_cache.metrics.heights[2] + initial_cache.metrics.heights[3];
+    let folded_height_sum =
+        initial_cache.metrics.height(2).unwrap() + initial_cache.metrics.height(3).unwrap();
     assert_eq!(
         initial_cache.total_height - folded_cache.total_height,
         folded_height_sum
@@ -2157,9 +2176,9 @@ fn test_clicking_display_math_enters_source_and_preview_editing(cx: &mut gpui::T
                 .buffer_mut()
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(2), 0));
             editor.ensure_layout_cache();
-            assert_eq!(editor.layout_snapshot().metrics.heights[1], px(0.0));
-            assert!(editor.layout_snapshot().metrics.heights[2] > px(0.0));
-            assert_eq!(editor.layout_snapshot().metrics.heights[3], px(0.0));
+            assert_eq!(editor.layout_snapshot().metrics.height(1).unwrap(), px(0.0));
+            assert!(editor.layout_snapshot().metrics.height(2).unwrap() > px(0.0));
+            assert_eq!(editor.layout_snapshot().metrics.height(3).unwrap(), px(0.0));
         });
     });
 }
@@ -2215,7 +2234,7 @@ fn editing_display_math_updates_its_layout_snapshot_and_preview(cx: &mut gpui::T
                 layout.parsed_lines[0].spans[0].math.as_ref().unwrap().tex,
                 "x + y + z"
             );
-            assert!(layout.metrics.heights[1] > gpui::px(0.0));
+            assert!(layout.metrics.height(1).unwrap() > gpui::px(0.0));
         });
     });
 }
@@ -2639,8 +2658,8 @@ fn tail_edit_blank_lines_reuse_prefix_layout(cx: &mut gpui::TestAppContext) {
                     ed.invalidate_layout_cache();
                     let rebuilt = ed.layout_snapshot();
                     assert_eq!(incremental.parsed_lines, rebuilt.parsed_lines);
-                    assert_eq!(incremental.metrics.heights, rebuilt.metrics.heights);
-                    assert_eq!(incremental.metrics.offsets, rebuilt.metrics.offsets);
+                    assert_eq!(incremental.metrics.heights(), rebuilt.metrics.heights());
+                    assert_eq!(incremental.metrics.offsets(), rebuilt.metrics.offsets());
                     assert_eq!(incremental.total_height, rebuilt.total_height);
                 });
             }
@@ -2685,10 +2704,11 @@ fn tail_edit_layout_matches_rebuild_across_block_boundaries(cx: &mut gpui::TestA
                         "{mode:?}, {tail:?}, {text:?}"
                     );
                     assert_eq!(
-                        incremental.metrics.heights, rebuilt.metrics.heights,
+                        incremental.metrics.heights(),
+                        rebuilt.metrics.heights(),
                         "{mode:?}, {tail:?}, {text:?}"
                     );
-                    assert_eq!(incremental.metrics.offsets, rebuilt.metrics.offsets);
+                    assert_eq!(incremental.metrics.offsets(), rebuilt.metrics.offsets());
                     assert_eq!(incremental.total_height, rebuilt.total_height);
                 });
             }
@@ -2801,7 +2821,7 @@ fn scroll_frames_prepare_only_viewport_text(cx: &mut gpui::TestAppContext) {
                 let layout = editor.layout_snapshot();
                 let top = editor.scroll.current_scroll_top;
                 let bottom = top + editor.viewport_bounds.size.height;
-                layout.metrics.offsets.iter().zip(&layout.metrics.heights)
+                layout.metrics.offsets().iter().zip(&layout.metrics.heights())
                     .filter(|(y, height)| **y < bottom && **y + **height > top)
                     .count()
             });
@@ -2889,11 +2909,13 @@ fn test_layout_cache_incremental_update_matches_full_rebuild(cx: &mut gpui::Test
         "incrementally parsed lines must match a full rebuild"
     );
     assert_eq!(
-        incremental.metrics.heights, full.metrics.heights,
+        incremental.metrics.heights(),
+        full.metrics.heights(),
         "incremental line heights must match a full rebuild"
     );
     assert_eq!(
-        incremental.metrics.offsets, full.metrics.offsets,
+        incremental.metrics.offsets(),
+        full.metrics.offsets(),
         "incremental line Y offsets must match a full rebuild"
     );
     assert_eq!(
@@ -2960,11 +2982,11 @@ fn projection_snapshots_survive_edits_and_skipped_history_revisions(cx: &mut gpu
                 "last branch"
             );
             let incremental_lines = branched.parsed_lines.clone();
-            let incremental_heights = branched.metrics.heights.clone();
+            let incremental_heights = branched.metrics.heights().clone();
             ed.invalidate_layout_cache();
             let rebuilt = ed.layout_snapshot();
             assert_eq!(*incremental_lines, *rebuilt.parsed_lines);
-            assert_eq!(incremental_heights, rebuilt.metrics.heights);
+            assert_eq!(incremental_heights, rebuilt.metrics.heights());
         });
     });
 }
@@ -3513,15 +3535,15 @@ fn test_live_preview_link_caret_disclosure_differential_layout_height(
             ed.buffer_mut()
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
             let layout1 = ed.layout_snapshot();
-            let h0_collapsed = layout1.metrics.heights[0];
-            let y1_collapsed = layout1.metrics.offsets[1];
+            let h0_collapsed = layout1.metrics.height(0).unwrap();
+            let y1_collapsed = layout1.metrics.top(1).unwrap();
 
             // 2. Cursor moves into the link (col 45): syntax markers expand
             ed.buffer_mut()
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(0), 45));
             let layout2 = ed.layout_snapshot();
-            let h0_expanded = layout2.metrics.heights[0];
-            let y1_expanded = layout2.metrics.offsets[1];
+            let h0_expanded = layout2.metrics.height(0).unwrap();
+            let y1_expanded = layout2.metrics.top(1).unwrap();
 
             assert!(
                 h0_expanded > h0_collapsed,
@@ -3540,8 +3562,8 @@ fn test_live_preview_link_caret_disclosure_differential_layout_height(
             ed.buffer_mut()
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
             let layout3 = ed.layout_snapshot();
-            assert_eq!(layout3.metrics.heights[0], h0_collapsed);
-            assert_eq!(layout3.metrics.offsets[1], y1_collapsed);
+            assert_eq!(layout3.metrics.height(0).unwrap(), h0_collapsed);
+            assert_eq!(layout3.metrics.top(1).unwrap(), y1_collapsed);
         });
     });
 }
@@ -3566,13 +3588,13 @@ fn test_text_system_native_line_wrapper_layout(cx: &mut gpui::TestAppContext) {
             );
 
             let layout = ed.layout_snapshot();
-            assert_eq!(layout.metrics.heights.len(), 3);
+            assert_eq!(layout.metrics.heights().len(), 3);
             assert!(layout.total_height > px(0.0));
 
             ed.set_render_mode(RenderMode::Source, _cx);
             let src_layout = ed.layout_snapshot();
             assert_eq!(src_layout.render_mode, RenderMode::Source);
-            assert_eq!(src_layout.metrics.heights.len(), 3);
+            assert_eq!(src_layout.metrics.heights().len(), 3);
         });
     });
 }
@@ -3600,17 +3622,18 @@ fn test_line_wrapper_matches_shape_text_across_widths(cx: &mut gpui::TestAppCont
             ed.buffer_mut()
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
             let layout_initial = ed.layout_snapshot();
-            assert_eq!(layout_initial.metrics.heights[1], px(32.0));
-            assert_eq!(layout_initial.metrics.offsets[2], px(106.0));
+            assert_eq!(layout_initial.metrics.height(1).unwrap(), px(32.0));
+            assert_eq!(layout_initial.metrics.top(2).unwrap(), px(106.0));
 
             // 2. Move cursor to "Nut|lope" in line 1
             ed.buffer_mut()
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(1), 26));
             let layout = ed.layout_snapshot();
-            assert_eq!(layout.metrics.heights[1], px(56.0));
-            assert_eq!(layout.metrics.offsets[2], px(130.0));
+            assert_eq!(layout.metrics.height(1).unwrap(), px(56.0));
+            assert_eq!(layout.metrics.top(2).unwrap(), px(130.0));
             assert!(
-                layout.metrics.offsets[2] >= layout.metrics.offsets[1] + layout.metrics.heights[1]
+                layout.metrics.top(2).unwrap()
+                    >= layout.metrics.top(1).unwrap() + layout.metrics.height(1).unwrap()
             );
 
             let parsed_lines = &layout.parsed_lines;
@@ -3691,13 +3714,13 @@ fn test_ime_composition_pins_disclosure_to_composition_anchor(cx: &mut gpui::Tes
             ed.buffer_mut()
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(0), line_len));
             let before = ed.layout_snapshot();
-            let before_height = before.metrics.heights[0];
+            let before_height = before.metrics.height(0).unwrap();
             let before_total = before.total_height;
             let before_visible = before.parsed_lines[0]
                 .visible_text(true, line_len, false)
                 .chars()
                 .count();
-            assert!(before_total > before_height + before.metrics.heights[1]);
+            assert!(before_total > before_height + before.metrics.height(1).unwrap());
 
             ed.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
 
@@ -3715,7 +3738,8 @@ fn test_ime_composition_pins_disclosure_to_composition_anchor(cx: &mut gpui::Tes
             );
             assert_eq!(during_visible.chars().count(), before_visible + 2);
             assert!(
-                during.metrics.heights[0] >= before_height && during.total_height >= before_total,
+                during.metrics.height(0).unwrap() >= before_height
+                    && during.total_height >= before_total,
                 "composition may add wrapped rows but must not collapse document geometry"
             );
 
@@ -3723,7 +3747,7 @@ fn test_ime_composition_pins_disclosure_to_composition_anchor(cx: &mut gpui::Tes
             let after = ed.layout_snapshot();
             assert_eq!(ed.disclosure_col(), line_len + 1);
             assert!(
-                after.metrics.heights[0] < before_height,
+                after.metrics.height(0).unwrap() < before_height,
                 "markers hide once the committed caret leaves the construct"
             );
         });
@@ -3750,7 +3774,7 @@ fn test_ime_composition_on_empty_line_is_inline_and_underlined(cx: &mut gpui::Te
             ed.buffer_mut()
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(1), 0));
             let before = ed.layout_snapshot();
-            let before_height = before.metrics.heights[1];
+            let before_height = before.metrics.height(1).unwrap();
             assert!(
                 before.parsed_lines[1]
                     .visible_text(true, 0, false)
@@ -3767,7 +3791,8 @@ fn test_ime_composition_on_empty_line_is_inline_and_underlined(cx: &mut gpui::Te
                 "an in-flight preedit must participate in line shaping"
             );
             assert_eq!(
-                during.metrics.heights[1], before_height,
+                during.metrics.height(1).unwrap(),
+                before_height,
                 "an empty line must not grow while composing"
             );
             assert_eq!(during.total_height, before.total_height);
@@ -3868,7 +3893,7 @@ fn test_ime_composition_reserves_width_and_wraps(cx: &mut gpui::TestAppContext) 
                     shaped[0].wrap_boundaries.len() + 1,
                     caret_row,
                     follow_x,
-                    layout.metrics.heights[0],
+                    layout.metrics.height(0).unwrap(),
                     layout.total_height,
                 )
             };
@@ -4207,8 +4232,8 @@ fn test_quoted_code_block_incremental_edit_matches_full_rebuild(cx: &mut gpui::T
         incremental.parsed_lines.as_ref(),
         full.parsed_lines.as_ref()
     );
-    assert_eq!(incremental.metrics.heights, full.metrics.heights);
-    assert_eq!(incremental.metrics.offsets, full.metrics.offsets);
+    assert_eq!(incremental.metrics.heights(), full.metrics.heights());
+    assert_eq!(incremental.metrics.offsets(), full.metrics.offsets());
 }
 
 #[gpui::test]
@@ -4567,8 +4592,8 @@ fn test_paragraph_with_inline_code_layout_height_matches_shape_text(cx: &mut gpu
 
             // Verify that subsequent line Y offset strictly starts after the first line's full height (no overlap)
             assert_eq!(
-                layout.metrics.offsets[1],
-                layout.metrics.offsets[0] + layout.metrics.heights[0],
+                layout.metrics.top(1).unwrap(),
+                layout.metrics.top(0).unwrap() + layout.metrics.height(0).unwrap(),
                 "Subsequent line offset must strictly equal previous line Y + height (no vertical overlap)"
             );
         });
@@ -5030,10 +5055,11 @@ fn layout_y_hit_testing_returns_source_lines_across_variable_heights() {
     use gpui::px;
 
     let cache = DocumentLayoutCache {
-        metrics: crate::editor::line_metrics::LineMetrics {
-            offsets: vec![px(20.0), px(30.0), px(70.0)],
-            heights: vec![px(10.0), px(40.0), px(5.0)],
-        },
+        metrics: crate::editor::line_metrics::LineMetrics::from_heights(vec![
+            px(6.0),
+            px(40.0),
+            px(5.0),
+        ]),
         ..Default::default()
     };
 

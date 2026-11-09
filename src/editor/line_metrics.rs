@@ -1,68 +1,186 @@
 use gpui::{Pixels, px};
-use std::ops::Range;
+use gpui_sum_tree::{Bias, ContextLessSummary, Item, SeekTarget, SumTree};
+use std::{cmp::Ordering, ops::Range};
 
 pub const DOCUMENT_TOP_PADDING: Pixels = px(24.0);
 pub const DOCUMENT_BOTTOM_PADDING: Pixels = px(24.0);
 pub const EMPTY_DOCUMENT_HEIGHT: Pixels = px(48.0);
 
-/// Geometry of source rows, including zero-height collapsed rows.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Fixed(i64);
+
+impl Fixed {
+    fn from_pixels(height: Pixels) -> Self {
+        let height = f32::from(height);
+        assert!(height.is_finite() && height >= 0.0, "invalid line height");
+        Self((f64::from(height) * 1024.0).round() as i64)
+    }
+
+    fn pixels(self) -> Pixels {
+        px((self.0 as f64 / 1024.0) as f32)
+    }
+
+    fn document_y(self) -> Pixels {
+        Fixed(self.0 + Fixed::from_pixels(DOCUMENT_TOP_PADDING).0).pixels()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LineItem {
+    height: Fixed,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LineSummary {
+    lines: usize,
+    height: Fixed,
+    visible_lines: usize,
+}
+
+impl Item for LineItem {
+    type Summary = LineSummary;
+
+    fn summary(&self, (): ()) -> LineSummary {
+        LineSummary {
+            lines: 1,
+            height: self.height,
+            visible_lines: usize::from(self.height.0 > 0),
+        }
+    }
+}
+
+impl ContextLessSummary for LineSummary {
+    fn zero() -> Self {
+        Self::default()
+    }
+
+    fn add_summary(&mut self, other: &Self) {
+        self.lines += other.lines;
+        self.height.0 += other.height.0;
+        self.visible_lines += other.visible_lines;
+    }
+}
+
+struct Lines(usize);
+struct Height(Pixels);
+struct VisibleLines(usize);
+
+impl<'a> SeekTarget<'a, LineSummary, LineSummary> for Lines {
+    fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
+        Ord::cmp(&self.0, &location.lines)
+    }
+}
+
+impl<'a> SeekTarget<'a, LineSummary, LineSummary> for Height {
+    fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
+        // Compare the same f32 coordinates returned to GPUI, including at large y.
+        self.0
+            .partial_cmp(&location.height.document_y())
+            .unwrap_or(Ordering::Less)
+    }
+}
+
+impl<'a> SeekTarget<'a, LineSummary, LineSummary> for VisibleLines {
+    fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
+        Ord::cmp(&self.0, &location.visible_lines)
+    }
+}
+
+/// Persistent geometry index. Clones share the tree; updates copy only tree paths.
+#[derive(Clone, Debug)]
 pub struct LineMetrics {
-    pub(super) heights: Vec<Pixels>,
-    pub(super) offsets: Vec<Pixels>,
+    tree: SumTree<LineItem>,
+}
+
+impl Default for LineMetrics {
+    fn default() -> Self {
+        Self {
+            tree: SumTree::new(()),
+        }
+    }
 }
 
 impl LineMetrics {
     pub fn from_heights(heights: Vec<Pixels>) -> Self {
-        let mut metrics = Self {
-            offsets: vec![px(0.0); heights.len()],
-            heights,
-        };
-        metrics.rebuild_from(0);
-        metrics
+        Self {
+            tree: SumTree::from_iter(
+                heights.into_iter().map(|height| LineItem {
+                    height: Fixed::from_pixels(height),
+                }),
+                (),
+            ),
+        }
     }
 
     pub fn set_height(&mut self, line: usize, height: Pixels) {
-        self.heights[line] = height;
+        assert!(line < self.len(), "line out of bounds");
+        self.splice(line..line + 1, vec![height]);
     }
 
-    /// Returns whether geometry changed. Rebuild offsets after all height edits.
+    /// Replaces source rows and immediately updates all derived geometry.
     pub fn splice(&mut self, range: Range<usize>, heights: Vec<Pixels>) -> bool {
-        let changed = self.heights[range.clone()] != heights;
-        if changed {
-            self.offsets
-                .splice(range.clone(), std::iter::repeat_n(px(0.0), heights.len()));
+        assert!(
+            range.start <= range.end && range.end <= self.len(),
+            "invalid line range"
+        );
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Lines(range.start), Bias::Right);
+        let items = heights
+            .into_iter()
+            .map(|height| LineItem {
+                height: Fixed::from_pixels(height),
+            })
+            .collect::<Vec<_>>();
+        let unchanged = range.len() == items.len()
+            && items.iter().all(|item| {
+                let equal = cursor.item() == Some(item);
+                cursor.next();
+                equal
+            });
+        if unchanged {
+            return false;
         }
-        self.heights.splice(range, heights);
-        changed
+        drop(cursor);
+
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        let mut tree = cursor.slice(&Lines(range.start), Bias::Right);
+        cursor.seek_forward(&Lines(range.end), Bias::Right);
+        tree.extend(items, ());
+        tree.append(cursor.suffix(), ());
+        drop(cursor);
+        self.tree = tree;
+        true
     }
 
+    // Transitional compatibility for layout callers, removed in stage C3.
     pub fn rebuild_from(&mut self, start: usize) {
-        let mut y = if start == 0 {
-            DOCUMENT_TOP_PADDING
-        } else {
-            self.offsets[start - 1] + self.heights[start - 1]
-        };
-        for line in start..self.len() {
-            self.offsets[line] = y;
-            y += self.heights[line];
-        }
+        assert!(start <= self.len(), "line out of bounds");
     }
 
     pub fn len(&self) -> usize {
-        self.heights.len()
+        self.tree.summary().lines
     }
 
     pub fn is_empty(&self) -> bool {
-        self.heights.is_empty()
+        self.tree.is_empty()
     }
 
     pub fn top(&self, line: usize) -> Option<Pixels> {
-        self.offsets.get(line).copied()
+        if line >= self.len() {
+            return None;
+        }
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Lines(line), Bias::Right);
+        Some(cursor.start().height.document_y())
     }
 
     pub fn height(&self, line: usize) -> Option<Pixels> {
-        self.heights.get(line).copied()
+        if line >= self.len() {
+            return None;
+        }
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Lines(line), Bias::Right);
+        cursor.item().map(|item| item.height.pixels())
     }
 
     pub fn y_range(&self, line: usize) -> Option<(Pixels, Pixels)> {
@@ -74,41 +192,244 @@ impl LineMetrics {
         if self.is_empty() {
             return None;
         }
-        Some(
-            self.offsets
-                .partition_point(|&top| top <= y)
-                .saturating_sub(1)
-                .min(self.len() - 1),
-        )
+        if y < DOCUMENT_TOP_PADDING || f32::from(y).is_nan() {
+            return Some(0);
+        }
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Height(y), Bias::Right);
+        Some(cursor.start().lines.min(self.len() - 1))
     }
 
     pub fn visible_lines(&self, top: Pixels, height: Pixels) -> Range<usize> {
         if height <= px(0.0) || self.is_empty() {
             return 0..0;
         }
-        let end = self.offsets.partition_point(|&y| y < top + height);
+        let bottom = top + height;
+        let end = if bottom <= DOCUMENT_TOP_PADDING || f32::from(bottom).is_nan() {
+            0
+        } else {
+            let mut cursor = self.tree.cursor::<LineSummary>(());
+            cursor.seek(&Height(bottom), Bias::Left);
+            (cursor.start().lines + usize::from(cursor.item().is_some())).min(self.len())
+        };
         let mut start = self.line_at_y(top).unwrap();
-        if self.offsets[start] + self.heights[start] <= top {
+        if self.top(start).unwrap() + self.height(start).unwrap() <= top {
             start += 1;
         }
         start.min(end)..end
     }
 
     pub fn next_visible_line_after(&self, idx: usize) -> Option<usize> {
-        (idx.saturating_add(1)..self.len()).find(|&line| self.heights[line] > px(0.0))
+        let next = idx.saturating_add(1);
+        if next >= self.len() {
+            return None;
+        }
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Lines(next), Bias::Right);
+        let visible = cursor.start().visible_lines;
+        cursor.seek(&VisibleLines(visible), Bias::Right);
+        cursor.item().map(|_| cursor.start().lines)
     }
 
     pub fn total_height(&self) -> Pixels {
-        match self.heights.last().zip(self.offsets.last()) {
-            Some((height, top)) => *top + *height + DOCUMENT_BOTTOM_PADDING,
-            None => EMPTY_DOCUMENT_HEIGHT,
-        }
+        Fixed(
+            self.tree.summary().height.0
+                + Fixed::from_pixels(DOCUMENT_TOP_PADDING + DOCUMENT_BOTTOM_PADDING).0,
+        )
+        .pixels()
+    }
+
+    #[cfg(test)]
+    pub(super) fn heights(&self) -> Vec<Pixels> {
+        self.tree.iter().map(|item| item.height.pixels()).collect()
+    }
+
+    #[cfg(test)]
+    pub(super) fn offsets(&self) -> Vec<Pixels> {
+        let mut height = Fixed::default();
+        self.tree
+            .iter()
+            .map(|item| {
+                let top = height.document_y();
+                height.0 += item.height.0;
+                top
+            })
+            .collect()
     }
 }
 
 #[cfg(test)]
+impl PartialEq for LineMetrics {
+    fn eq(&self, other: &Self) -> bool {
+        self.tree.iter().eq(other.tree.iter())
+    }
+}
+
+#[cfg(test)]
+mod vec_metrics;
+
+#[cfg(test)]
 mod tests {
+    use super::vec_metrics::VecMetrics;
     use super::*;
+
+    fn assert_matches_oracle(metrics: &LineMetrics, oracle: &VecMetrics, y: Pixels) {
+        assert_eq!(metrics.len(), oracle.len());
+        assert_eq!(metrics.is_empty(), oracle.is_empty());
+        assert_eq!(metrics.total_height(), oracle.total_height());
+        for line in 0..=metrics.len() {
+            assert_eq!(metrics.top(line), oracle.top(line), "top at {line}");
+            assert_eq!(
+                metrics.height(line),
+                oracle.height(line),
+                "height at {line}"
+            );
+            assert_eq!(metrics.y_range(line), oracle.y_range(line));
+        }
+        for y in [y, px(-1.0), DOCUMENT_TOP_PADDING, metrics.total_height()] {
+            assert_eq!(metrics.line_at_y(y), oracle.line_at_y(y), "y {y:?}");
+            for height in [px(0.0), px(0.001), px(32.0), px(700.0)] {
+                assert_eq!(
+                    metrics.visible_lines(y, height),
+                    oracle.visible_lines(y, height),
+                    "viewport {y:?} + {height:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_seed_edits_match_vec_oracle_for_ten_thousand_steps() {
+        let mut seed = 0x5eed_cafe_u64;
+        let mut random = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 32) as usize
+        };
+        let initial: Vec<_> = (0..5_000)
+            .map(|line| {
+                if line % 7 == 0 {
+                    px(0.0)
+                } else {
+                    px((random() % 100_000) as f32 / 997.0)
+                }
+            })
+            .collect();
+        let mut metrics = LineMetrics::from_heights(initial.clone());
+        let mut oracle = VecMetrics::from_heights(initial);
+        for step in 0..10_000 {
+            let len = metrics.len();
+            let start = random() % (len + 1);
+            if step % 3 == 0 && len > 0 {
+                let line = start.min(len - 1);
+                let height = px((random() % 65_537) as f32 / 1027.0);
+                metrics.set_height(line, height);
+                oracle.set_height(line, height);
+                oracle.rebuild_from(line);
+            } else {
+                let removed = (random() % 9).min(len - start);
+                let added = (random() % 9).min(5_000 - (len - removed));
+                let heights: Vec<_> = (0..added)
+                    .map(|_| {
+                        let value = random();
+                        if value % 3 == 0 {
+                            px(0.0)
+                        } else {
+                            px((value % 65_537) as f32 / 997.0)
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    metrics.splice(start..start + removed, heights.clone()),
+                    oracle.splice(start..start + removed, heights)
+                );
+                oracle.rebuild_from(start);
+            }
+            let line = random() % (metrics.len() + 1);
+            let y = oracle.top(line).unwrap_or(px(0.0)) + px((random() % 5) as f32 - 2.0);
+            assert_eq!(metrics.top(line), oracle.top(line), "step {step}");
+            assert_eq!(metrics.height(line), oracle.height(line));
+            assert_eq!(metrics.total_height(), oracle.total_height());
+            assert_eq!(
+                metrics.line_at_y(y),
+                oracle.line_at_y(y),
+                "step {step}, y {y:?}"
+            );
+            assert_eq!(
+                metrics.visible_lines(y, px(700.0)),
+                oracle.visible_lines(y, px(700.0)),
+                "step {step}"
+            );
+            assert_eq!(
+                metrics.next_visible_line_after(line),
+                oracle.next_visible_line_after(line)
+            );
+            if step % 500 == 0 {
+                assert_matches_oracle(&metrics, &oracle, y);
+            }
+        }
+        assert_matches_oracle(&metrics, &oracle, px(24.0));
+    }
+
+    #[test]
+    fn collapsed_runs_and_large_coordinates_match_vec_boundaries() {
+        for heights in [
+            vec![],
+            vec![px(0.0); 150],
+            [vec![px(0.0); 80], vec![px(32.0)], vec![px(0.0); 80]].concat(),
+            [
+                vec![px(20_000_000.0)],
+                vec![px(0.001); 100],
+                vec![px(0.0); 80],
+            ]
+            .concat(),
+        ] {
+            let metrics = LineMetrics::from_heights(heights.clone());
+            let oracle = VecMetrics::from_heights(heights);
+            for line in 0..=metrics.len() {
+                let y = oracle.top(line).unwrap_or(px(0.0));
+                for y in [y - px(0.001), y, y + px(0.001)] {
+                    assert_matches_oracle(&metrics, &oracle, y);
+                }
+                assert_eq!(
+                    metrics.next_visible_line_after(line),
+                    oracle.next_visible_line_after(line)
+                );
+            }
+            assert_eq!(metrics.next_visible_line_after(usize::MAX), None);
+        }
+    }
+
+    #[test]
+    fn cloned_geometry_shares_storage_and_preserves_old_snapshots() {
+        let mut metrics = LineMetrics::from_heights(vec![px(32.0); 5_000]);
+        let retained = metrics.clone();
+        assert!(std::ptr::eq(
+            metrics.tree.summary(),
+            retained.tree.summary()
+        ));
+        metrics.set_height(2_500, px(0.0));
+        assert_eq!(retained.height(2_500), Some(px(32.0)));
+        assert_eq!(
+            metrics.top(2_501),
+            retained.top(2_501).map(|y| y - px(32.0))
+        );
+        metrics.splice(1_000..4_000, vec![]);
+        assert_eq!(metrics.len(), 2_000);
+        assert_eq!(retained.len(), 5_000);
+    }
+
+    #[test]
+    fn fractional_heights_use_fixed_precision_without_suffix_rebuilds() {
+        let mut metrics = LineMetrics::from_heights(vec![px(0.0006), px(0.0006), px(0.0)]);
+        assert_eq!(metrics.height(0), Some(px(1.0 / 1024.0)));
+        metrics.set_height(1, px(32.0));
+        assert_eq!(metrics.top(2), Some(px(56.0 + 1.0 / 1024.0)));
+        metrics.splice(0..1, vec![px(12.0), px(0.0)]);
+        assert_eq!(metrics.top(3), Some(px(68.0)));
+        assert_eq!(metrics.total_height(), px(92.0));
+    }
 
     #[test]
     fn empty_and_collapsed_line_boundaries_match_offsets() {

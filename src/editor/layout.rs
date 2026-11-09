@@ -1649,17 +1649,18 @@ mod incremental_tests {
             for height in [0.0, 1.0, 23.0, 100.0, 999.0] {
                 let top = px(top as f32);
                 let height = px(height);
-                let expected: Vec<_> = (0..cache.metrics.heights.len())
+                let expected: Vec<_> = (0..cache.metrics.heights().len())
                     .filter(|&idx| {
                         height > px(0.0)
-                            && cache.metrics.heights[idx] > px(0.0)
-                            && cache.metrics.offsets[idx] < top + height
-                            && cache.metrics.offsets[idx] + cache.metrics.heights[idx] > top
+                            && cache.metrics.height(idx).unwrap() > px(0.0)
+                            && cache.metrics.top(idx).unwrap() < top + height
+                            && cache.metrics.top(idx).unwrap() + cache.metrics.height(idx).unwrap()
+                                > top
                     })
                     .collect();
                 let actual: Vec<_> = cache
                     .visible_source_lines(top, height)
-                    .filter(|&idx| cache.metrics.heights[idx] > px(0.0))
+                    .filter(|&idx| cache.metrics.height(idx).unwrap() > px(0.0))
                     .collect();
                 assert_eq!(actual, expected, "viewport {top:?} + {height:?}");
             }
@@ -1697,8 +1698,8 @@ mod incremental_tests {
                 ed.invalidate_layout_cache();
                 let full = ed.layout_snapshot();
                 assert_eq!(after.parsed_lines, full.parsed_lines);
-                assert_eq!(after.metrics.heights, full.metrics.heights);
-                assert_eq!(after.metrics.offsets, full.metrics.offsets);
+                assert_eq!(after.metrics.heights(), full.metrics.heights());
+                assert_eq!(after.metrics.offsets(), full.metrics.offsets());
                 assert_eq!(after.separators, full.separators);
             });
         });
@@ -1776,8 +1777,8 @@ mod incremental_tests {
                         ed.invalidate_layout_cache();
                         let full = ed.layout_snapshot();
                         assert_eq!(cache.parsed_lines, full.parsed_lines);
-                        assert_eq!(cache.metrics.heights, full.metrics.heights);
-                        assert_eq!(cache.metrics.offsets, full.metrics.offsets);
+                        assert_eq!(cache.metrics.heights(), full.metrics.heights());
+                        assert_eq!(cache.metrics.offsets(), full.metrics.offsets());
                         assert_eq!(cache.total_height, full.total_height);
                         assert_eq!(cache.separators, full.separators);
                         assert_eq!(cache.quote_ranges, full.quote_ranges);
@@ -1817,8 +1818,8 @@ mod incremental_tests {
                         ed.invalidate_layout_cache();
                         let full = ed.layout_snapshot();
                         assert_eq!(after.parsed_lines, full.parsed_lines);
-                        assert_eq!(after.metrics.heights, full.metrics.heights);
-                        assert_eq!(after.metrics.offsets, full.metrics.offsets);
+                        assert_eq!(after.metrics.heights(), full.metrics.heights());
+                        assert_eq!(after.metrics.offsets(), full.metrics.offsets());
                         assert_eq!(after.total_height, full.total_height);
                         assert_eq!(before.quote_projection.normalized_lines(), before_lines);
                     }
@@ -1862,8 +1863,8 @@ mod incremental_tests {
                         ed.invalidate_layout_cache();
                         let full = ed.layout_snapshot();
                         assert_eq!(cache.parsed_lines, full.parsed_lines);
-                        assert_eq!(cache.metrics.heights, full.metrics.heights);
-                        assert_eq!(cache.metrics.offsets, full.metrics.offsets);
+                        assert_eq!(cache.metrics.heights(), full.metrics.heights());
+                        assert_eq!(cache.metrics.offsets(), full.metrics.offsets());
                         assert_eq!(cache.total_height, full.total_height);
                         assert_eq!(before.parsed_lines, before_parsed);
                     }
