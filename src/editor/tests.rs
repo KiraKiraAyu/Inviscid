@@ -5,6 +5,70 @@ use crate::markdown::{MarkdownScanner, is_syntactic_separator};
 use gpui::px;
 
 #[gpui::test]
+fn large_document_first_layout_measures_only_viewport(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    let text = vec!["a short paragraph"; 200_000].join("\n");
+    let editor = cx.new(|cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&text, None), cx)
+    });
+    editor.update(cx, |ed, _| {
+        for mode in [super::RenderMode::Source, super::RenderMode::LivePreview] {
+            ed.render_mode = mode;
+            ed.invalidate_layout_cache();
+            ed.layout_stats.set(super::LayoutStats::default());
+            let layout = ed.layout_snapshot();
+            let stats = ed.layout_stats.get();
+            assert_eq!(stats.lines_scanned, 200_000);
+            assert!(stats.lines_measured <= 128, "{stats:?}");
+            assert!(layout.metrics.unmeasured_count() >= 199_872);
+        }
+    });
+}
+
+#[gpui::test]
+fn lazy_measurement_converges_and_preserves_visible_anchor(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    let text =
+        "# Heading\n\n> quote\n> next\n\n```rust\nlet x = 1;\n```\n\nlong paragraph with words\n"
+            .repeat(2200);
+    let editor = cx.new(|cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&text, None), cx)
+    });
+    editor.update(cx, |ed, _| {
+        ed.ensure_layout_cache();
+        let top = ed.layout_snapshot().metrics.top(10_000).unwrap() + px(3.0);
+        ed.scroll.set_direct(top, px(1_000_000.0));
+        let before = ed.layout_snapshot();
+        let anchor = before.metrics.line_at_y(top).unwrap();
+        let screen_y = before.metrics.top(anchor).unwrap() - top;
+        drop(before);
+        ed.prepare_viewport_layout();
+        let layout = ed.layout_snapshot();
+        assert!(
+            (layout.metrics.top(anchor).unwrap() - ed.scroll.current_scroll_top - screen_y).abs()
+                < px(0.01)
+        );
+        drop(layout);
+        ed.measure_all_pending_for_test();
+        let lazy = ed.layout_snapshot();
+        let expected = ed.measure_range(
+            0..lazy.parsed_lines.len(),
+            &lazy.parsed_lines,
+            &lazy.separators,
+            lazy.content_width,
+            lazy.active_math_block,
+            lazy.active_mermaid_block,
+        );
+        let eager = super::line_metrics::LineMetrics::from_heights(expected);
+        assert_eq!(lazy.metrics, eager);
+        for line in 0..eager.len() {
+            assert_eq!(lazy.metrics.top(line), eager.top(line));
+        }
+        assert_eq!(lazy.metrics.unmeasured_count(), 0);
+    });
+}
+
+#[gpui::test]
 fn background_fingerprints_retry_after_edits_and_finish_idle(cx: &mut gpui::TestAppContext) {
     use gpui::AppContext;
     let buffer = crate::buffer::TextBuffer::from_bytes(b"first\nsecond", None).unwrap();
@@ -67,15 +131,11 @@ fn large_document_layout_work_guards(cx: &mut gpui::TestAppContext) {
                 ed.invalidate_layout_cache();
                 ed.layout_stats.set(LayoutStats::default());
                 ed.ensure_layout_cache();
-                assert_eq!(
-                    ed.layout_stats.get(),
-                    LayoutStats {
-                        full_rebuilds: 1,
-                        lines_scanned: 20_000,
-                        lines_measured: 20_000,
-                        cache_deep_clones: 0,
-                    }
-                );
+                let initial = ed.layout_stats.get();
+                assert_eq!(initial.full_rebuilds, 1);
+                assert_eq!(initial.lines_scanned, 20_000);
+                assert!(initial.lines_measured <= 128);
+                assert_eq!(initial.cache_deep_clones, 0);
                 ed.layout_stats.set(LayoutStats::default());
                 super::line_metrics::SUMMARY_WORK.set(0);
                 ed.buffer.insert_text(insertion);
@@ -89,7 +149,7 @@ fn large_document_layout_work_guards(cx: &mut gpui::TestAppContext) {
                 } else {
                     assert_eq!(stats.full_rebuilds, 1);
                     assert_eq!(stats.lines_scanned, ed.buffer.line_count());
-                    assert_eq!(stats.lines_measured, ed.buffer.line_count());
+                    assert!(stats.lines_measured <= 128);
                 }
                 assert_eq!(stats.cache_deep_clones, 0);
             }
@@ -147,7 +207,10 @@ fn middle_code_block_newline_keeps_layout_and_height_index_work_local(
             assert!(stats.lines_measured <= 4);
             assert_eq!(stats.cache_deep_clones, 0);
             assert!(super::line_metrics::SUMMARY_WORK.get() < 2_000);
+            ed.measure_all_pending_for_test();
+            let incremental = ed.layout_snapshot();
             ed.invalidate_layout_cache();
+            ed.measure_all_pending_for_test();
             let eager = ed.layout_snapshot();
             assert_eq!(incremental.metrics, eager.metrics);
             assert_eq!(incremental.parsed_lines, eager.parsed_lines);

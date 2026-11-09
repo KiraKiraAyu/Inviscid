@@ -32,7 +32,9 @@ impl Fixed {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LineItem {
+    count: usize,
     height: Fixed,
+    measured: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -40,6 +42,7 @@ struct LineSummary {
     lines: usize,
     height: Fixed,
     visible_lines: usize,
+    unmeasured: usize,
 }
 
 impl Item for LineItem {
@@ -49,9 +52,10 @@ impl Item for LineItem {
         #[cfg(test)]
         SUMMARY_WORK.update(|work| work + 1);
         LineSummary {
-            lines: 1,
-            height: self.height,
-            visible_lines: usize::from(self.height.0 > 0),
+            lines: self.count,
+            height: Fixed(self.height.0 * self.count as i64),
+            visible_lines: if self.height.0 > 0 { self.count } else { 0 },
+            unmeasured: if self.measured { 0 } else { self.count },
         }
     }
 }
@@ -67,12 +71,20 @@ impl ContextLessSummary for LineSummary {
         self.lines += other.lines;
         self.height.0 += other.height.0;
         self.visible_lines += other.visible_lines;
+        self.unmeasured += other.unmeasured;
     }
 }
 
 struct Lines(usize);
 struct Height(Pixels);
 struct VisibleLines(usize);
+struct Unmeasured(usize);
+
+impl<'a> SeekTarget<'a, LineSummary, LineSummary> for Unmeasured {
+    fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
+        Ord::cmp(&self.0, &location.unmeasured)
+    }
+}
 
 impl<'a> SeekTarget<'a, LineSummary, LineSummary> for Lines {
     fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
@@ -105,12 +117,14 @@ impl<'a> SeekTarget<'a, LineSummary, LineSummary> for VisibleLines {
 #[derive(Clone, Debug)]
 pub struct LineMetrics {
     tree: SumTree<LineItem>,
+    estimate: Fixed,
 }
 
 impl Default for LineMetrics {
     fn default() -> Self {
         Self {
             tree: SumTree::new(()),
+            estimate: Fixed::default(),
         }
     }
 }
@@ -120,11 +134,76 @@ impl LineMetrics {
         Self {
             tree: SumTree::from_iter(
                 heights.into_iter().map(|height| LineItem {
+                    count: 1,
                     height: Fixed::from_pixels(height),
+                    measured: true,
                 }),
                 (),
             ),
+            estimate: Fixed::default(),
         }
+    }
+
+    pub fn estimated(count: usize, height: Pixels) -> Self {
+        let estimate = Fixed::from_pixels(height);
+        Self {
+            tree: SumTree::from_iter(
+                (count > 0).then_some(LineItem {
+                    count,
+                    height: estimate,
+                    measured: false,
+                }),
+                (),
+            ),
+            estimate,
+        }
+    }
+
+    pub fn unmeasured_count(&self) -> usize {
+        self.tree.summary().unmeasured
+    }
+
+    pub fn next_unmeasured(&self, from: usize) -> Option<usize> {
+        if from >= self.len() {
+            return None;
+        }
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Lines(from), Bias::Right);
+        if !cursor.item()?.measured {
+            return Some(from);
+        }
+        let pending = cursor.start().unmeasured;
+        cursor.seek(&Unmeasured(pending), Bias::Right);
+        cursor.item().map(|_| cursor.start().lines)
+    }
+
+    pub fn mark_unmeasured(&mut self, range: Range<usize>) {
+        let count = range.len();
+        self.replace_runs(
+            range,
+            (count > 0).then_some(LineItem {
+                count,
+                height: self.estimate,
+                measured: false,
+            }),
+        );
+    }
+
+    pub fn set_measured(&mut self, range: Range<usize>, heights: Vec<Pixels>) {
+        assert_eq!(range.len(), heights.len());
+        self.splice(range, heights);
+    }
+
+    pub fn set_uniform_measured(&mut self, range: Range<usize>, height: Pixels) {
+        let count = range.len();
+        self.replace_runs(
+            range,
+            (count > 0).then_some(LineItem {
+                count,
+                height: Fixed::from_pixels(height),
+                measured: true,
+            }),
+        );
     }
 
     pub fn set_height(&mut self, line: usize, height: Pixels) {
@@ -138,33 +217,61 @@ impl LineMetrics {
             range.start <= range.end && range.end <= self.len(),
             "invalid line range"
         );
-        let mut cursor = self.tree.cursor::<LineSummary>(());
-        cursor.seek(&Lines(range.start), Bias::Right);
         let items = heights
             .into_iter()
             .map(|height| LineItem {
+                count: 1,
                 height: Fixed::from_pixels(height),
+                measured: true,
             })
             .collect::<Vec<_>>();
         let unchanged = range.len() == items.len()
-            && items.iter().all(|item| {
-                let equal = cursor.item() == Some(item);
-                cursor.next();
-                equal
+            && items.iter().enumerate().all(|(offset, item)| {
+                let mut cursor = self.tree.cursor::<LineSummary>(());
+                cursor.seek(&Lines(range.start + offset), Bias::Right);
+                cursor
+                    .item()
+                    .is_some_and(|old| old.height == item.height && old.measured)
             });
         if unchanged {
             return false;
         }
-        drop(cursor);
+        self.replace_runs(range, items);
+        true
+    }
 
+    fn replace_runs(&mut self, range: Range<usize>, items: impl IntoIterator<Item = LineItem>) {
+        assert!(range.start <= range.end && range.end <= self.len());
         let mut cursor = self.tree.cursor::<LineSummary>(());
         let mut tree = cursor.slice(&Lines(range.start), Bias::Right);
+        if let Some(item) = cursor.item() {
+            let count = range.start - cursor.start().lines;
+            if count > 0 {
+                tree.push(
+                    LineItem {
+                        count,
+                        ..item.clone()
+                    },
+                    (),
+                );
+            }
+        }
         cursor.seek_forward(&Lines(range.end), Bias::Right);
+        let tail = cursor.item().and_then(|item| {
+            let skipped = range.end - cursor.start().lines;
+            (skipped > 0).then(|| LineItem {
+                count: item.count - skipped,
+                ..item.clone()
+            })
+        });
+        if tail.is_some() {
+            cursor.next();
+        }
         tree.extend(items, ());
+        tree.extend(tail, ());
         tree.append(cursor.suffix(), ());
         drop(cursor);
         self.tree = tree;
-        true
     }
 
     pub fn len(&self) -> usize {
@@ -181,7 +288,13 @@ impl LineMetrics {
         }
         let mut cursor = self.tree.cursor::<LineSummary>(());
         cursor.seek(&Lines(line), Bias::Right);
-        Some(cursor.start().height.document_y())
+        Some(
+            Fixed(
+                cursor.start().height.0
+                    + (line - cursor.start().lines) as i64 * cursor.item()?.height.0,
+            )
+            .document_y(),
+        )
     }
 
     pub fn height(&self, line: usize) -> Option<Pixels> {
@@ -207,7 +320,13 @@ impl LineMetrics {
         }
         let mut cursor = self.tree.cursor::<LineSummary>(());
         cursor.seek(&Height(y), Bias::Right);
-        Some(cursor.start().lines.min(self.len() - 1))
+        let offset = cursor
+            .item()
+            .map(|item| {
+                partition_run(item, cursor.start().height, |top| top <= y).saturating_sub(1)
+            })
+            .unwrap_or(0);
+        Some((cursor.start().lines + offset).min(self.len() - 1))
     }
 
     pub fn visible_lines(&self, top: Pixels, height: Pixels) -> Range<usize> {
@@ -220,7 +339,11 @@ impl LineMetrics {
         } else {
             let mut cursor = self.tree.cursor::<LineSummary>(());
             cursor.seek(&Height(bottom), Bias::Left);
-            (cursor.start().lines + usize::from(cursor.item().is_some())).min(self.len())
+            cursor.start().lines
+                + cursor
+                    .item()
+                    .map(|item| partition_run(item, cursor.start().height, |y| y < bottom))
+                    .unwrap_or(0)
         };
         let mut start = self.line_at_y(top).unwrap();
         if self.top(start).unwrap() + self.height(start).unwrap() <= top {
@@ -236,6 +359,9 @@ impl LineMetrics {
         }
         let mut cursor = self.tree.cursor::<LineSummary>(());
         cursor.seek(&Lines(next), Bias::Right);
+        if cursor.item().is_some_and(|item| item.height.0 > 0) {
+            return Some(next);
+        }
         let visible = cursor.start().visible_lines;
         cursor.seek(&VisibleLines(visible), Bias::Right);
         cursor.item().map(|_| cursor.start().lines)
@@ -251,7 +377,10 @@ impl LineMetrics {
 
     #[cfg(test)]
     pub(super) fn heights(&self) -> Vec<Pixels> {
-        self.tree.iter().map(|item| item.height.pixels()).collect()
+        self.tree
+            .iter()
+            .flat_map(|item| std::iter::repeat_n(item.height.pixels(), item.count))
+            .collect()
     }
 
     #[cfg(test)]
@@ -259,10 +388,11 @@ impl LineMetrics {
         let mut height = Fixed::default();
         self.tree
             .iter()
-            .map(|item| {
-                let top = height.document_y();
-                height.0 += item.height.0;
-                top
+            .flat_map(|item| {
+                let start = height;
+                height.0 += item.height.0 * item.count as i64;
+                (0..item.count)
+                    .map(move |offset| Fixed(start.0 + offset as i64 * item.height.0).document_y())
             })
             .collect()
     }
@@ -271,8 +401,22 @@ impl LineMetrics {
 #[cfg(test)]
 impl PartialEq for LineMetrics {
     fn eq(&self, other: &Self) -> bool {
-        self.tree.iter().eq(other.tree.iter())
+        self.heights() == other.heights()
     }
+}
+
+fn partition_run(item: &LineItem, prefix: Fixed, predicate: impl Fn(Pixels) -> bool) -> usize {
+    let mut low = 0;
+    let mut high = item.count;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if predicate(Fixed(prefix.0 + mid as i64 * item.height.0).document_y()) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    low
 }
 
 #[cfg(test)]
@@ -282,6 +426,59 @@ mod vec_metrics;
 mod tests {
     use super::vec_metrics::VecMetrics;
     use super::*;
+
+    #[test]
+    fn estimated_runs_split_and_keep_old_snapshots() {
+        let mut metrics = LineMetrics::estimated(1_000_000, px(24.0));
+        assert_eq!(metrics.tree.iter().count(), 1);
+        assert_eq!(metrics.unmeasured_count(), 1_000_000);
+        let snapshot = metrics.clone();
+        metrics.set_measured(123..126, vec![px(0.0), px(48.0), px(24.0)]);
+        assert_eq!(metrics.next_unmeasured(123), Some(126));
+        assert_eq!(metrics.next_unmeasured(122), Some(122));
+        assert_eq!(metrics.unmeasured_count(), 999_997);
+        assert_eq!(snapshot.unmeasured_count(), 1_000_000);
+        assert_eq!(metrics.top(126), snapshot.top(126));
+        metrics.mark_unmeasured(120..130);
+        assert_eq!(metrics.unmeasured_count(), 1_000_000);
+        assert_eq!(metrics.heights(), snapshot.heights());
+        metrics.set_measured(0..1_000_000, vec![px(24.0); 1_000_000]);
+        assert_eq!(metrics.next_unmeasured(0), None);
+    }
+
+    #[test]
+    fn estimated_run_edits_match_quantized_vec_oracle() {
+        let mut metrics = LineMetrics::estimated(5000, px(23.123));
+        let mut oracle = VecMetrics::from_heights(vec![px(23.123); 5000]);
+        let mut seed = 0x1234_5678_u64;
+        for step in 0..10_000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let start = (seed >> 32) as usize % 4990;
+            let range = start..start + 10;
+            if step % 3 == 0 {
+                metrics.mark_unmeasured(range.clone());
+                oracle.splice(range, vec![px(23.123); 10]);
+            } else {
+                let heights = vec![px((step % 7) as f32 * 10.25); 10];
+                metrics.set_measured(range.clone(), heights.clone());
+                oracle.splice(range, heights);
+            }
+            oracle.rebuild_from(start);
+            let y = oracle.top(start).unwrap();
+            assert_eq!(metrics.line_at_y(y), oracle.line_at_y(y));
+            assert_eq!(
+                metrics.visible_lines(y, px(700.0)),
+                oracle.visible_lines(y, px(700.0))
+            );
+            assert_eq!(
+                metrics.next_visible_line_after(start),
+                oracle.next_visible_line_after(start)
+            );
+            if step % 1000 == 0 {
+                assert_matches_oracle(&metrics, &oracle, y);
+            }
+        }
+    }
 
     fn assert_matches_oracle(metrics: &LineMetrics, oracle: &VecMetrics, y: Pixels) {
         assert_eq!(metrics.len(), oracle.len());

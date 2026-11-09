@@ -26,6 +26,9 @@ pub const MAX_CONTENT_WIDTH_LIVE: Pixels = px(860.0);
 /// Bottom overscroll buffer allowing the last line to sit comfortably above the window bottom.
 pub const BOTTOM_OVERSCROLL: Pixels = px(96.0);
 
+pub(crate) const LAZY_LAYOUT_MIN_LINES: usize = 20_000;
+const LAYOUT_OVERSCAN_LINES: usize = 32;
+
 pub(crate) fn quote_ranges(parsed_lines: &[ParsedLine]) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut start = None;
@@ -935,7 +938,7 @@ impl Editor {
         parsed
     }
 
-    fn measure_range(
+    pub(super) fn measure_range(
         &self,
         range: Range<usize>,
         parsed: &[ParsedLine],
@@ -963,6 +966,76 @@ impl Editor {
                 self.measure_line_layout_height(idx, parsed, lcx)
             })
             .collect()
+    }
+
+    fn measure_pending_range(&self, cache: &mut DocumentLayoutCache, range: Range<usize>) {
+        let scroll_top = self.scroll.current_scroll_top + self.layout_scroll_adjustment.get();
+        let anchor = cache.metrics.line_at_y(scroll_top);
+        let old_top = anchor.and_then(|line| cache.metrics.top(line));
+        let mut from = range.start;
+        while let Some(start) = cache
+            .metrics
+            .next_unmeasured(from)
+            .filter(|&line| line < range.end)
+        {
+            let end = (start + 32).min(range.end);
+            let heights = self.measure_range(
+                start..end,
+                &cache.parsed_lines[start..end],
+                &cache.separators,
+                cache.content_width,
+                cache.active_math_block,
+                cache.active_mermaid_block,
+            );
+            cache.metrics.set_measured(start..end, heights);
+            from = end;
+        }
+        if let Some((old_top, new_top)) =
+            old_top.zip(anchor.and_then(|line| cache.metrics.top(line)))
+        {
+            self.layout_scroll_adjustment
+                .set(self.layout_scroll_adjustment.get() + new_top - old_top);
+        }
+    }
+
+    fn measure_viewport(&self, cache: &mut DocumentLayoutCache) {
+        if cache.metrics.unmeasured_count() == 0 {
+            return;
+        }
+        let visible = cache.metrics.visible_lines(
+            self.scroll.current_scroll_top + self.layout_scroll_adjustment.get(),
+            self.viewport_height(),
+        );
+        let range = visible.start.saturating_sub(LAYOUT_OVERSCAN_LINES)
+            ..visible
+                .end
+                .saturating_add(LAYOUT_OVERSCAN_LINES)
+                .min(cache.metrics.len());
+        self.measure_pending_range(cache, range);
+    }
+
+    pub(crate) fn prepare_viewport_layout(&mut self) {
+        self.ensure_layout_cache();
+        {
+            let mut cache = self.layout_cache.borrow_mut();
+            if cache.metrics.unmeasured_count() > 0 {
+                self.measure_viewport(Arc::make_mut(&mut cache));
+            }
+        }
+        self.scroll
+            .compensate_layout(self.layout_scroll_adjustment.replace(px(0.0)));
+    }
+
+    #[cfg(test)]
+    pub(super) fn measure_all_pending_for_test(&mut self) {
+        self.ensure_layout_cache();
+        {
+            let mut cache = self.layout_cache.borrow_mut();
+            let len = cache.metrics.len();
+            self.measure_pending_range(Arc::make_mut(&mut cache), 0..len);
+        }
+        self.scroll
+            .compensate_layout(self.layout_scroll_adjustment.replace(px(0.0)));
     }
 
     pub fn ensure_layout_cache(&self) {
@@ -1218,20 +1291,22 @@ impl Editor {
             crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
         };
 
-        let line_heights = self.measure_range(
-            0..parsed_doc.len(),
-            &parsed_doc,
-            &separators,
-            content_width,
-            active_math_block,
-            active_mermaid_block,
-        );
-
-        let metrics = LineMetrics::from_heights(line_heights);
+        let metrics = if parsed_doc.len() >= LAZY_LAYOUT_MIN_LINES {
+            LineMetrics::estimated(parsed_doc.len(), px(self.font_size * self.line_height))
+        } else {
+            LineMetrics::from_heights(self.measure_range(
+                0..parsed_doc.len(),
+                &parsed_doc,
+                &separators,
+                content_width,
+                active_math_block,
+                active_mermaid_block,
+            ))
+        };
 
         let parsed_quote_ranges = quote_ranges(&parsed_doc);
 
-        let new_cache = DocumentLayoutCache {
+        let mut new_cache = DocumentLayoutCache {
             buffer_version: self.buffer.version(),
             buffer_revision: self.buffer.revision(),
             lines_len: self.buffer.line_count(),
@@ -1256,6 +1331,13 @@ impl Editor {
             quote_projection,
             quote_ranges: parsed_quote_ranges,
         };
+
+        for region in self.display_map.fold_map().folded_regions() {
+            let start = (region.start_line.index() + 1).min(new_cache.metrics.len());
+            let end = (region.end_line.index() + 1).min(new_cache.metrics.len());
+            new_cache.metrics.set_uniform_measured(start..end, px(0.0));
+        }
+        self.measure_viewport(&mut new_cache);
 
         *self.layout_cache.borrow_mut() = Arc::new(new_cache);
     }

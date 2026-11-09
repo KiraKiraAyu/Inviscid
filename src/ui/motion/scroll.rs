@@ -52,6 +52,13 @@ impl Default for SmoothScrollPhysics {
 }
 
 impl SmoothScrollPhysics {
+    /// Move the coordinate origin without restarting an in-flight animation.
+    pub fn compensate_layout(&mut self, delta: Pixels) {
+        self.current_scroll_top += delta;
+        self.target_scroll_top += delta;
+        self.anim_start_scroll_top += delta;
+    }
+
     pub fn new() -> Self {
         Self {
             current_scroll_top: px(0.0),
@@ -212,6 +219,23 @@ pub fn start_scroll_animation_with_event<E: 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_compensation_preserves_animation_progress() {
+        let mut scroll = SmoothScrollPhysics::new();
+        scroll.set_direct(px(100.0), px(1000.0));
+        scroll.scroll_by_wheel(px(-200.0), px(1000.0));
+        scroll.step_interpolation_with_elapsed(Duration::from_millis(40));
+        let time = scroll.anim_start_time;
+        let current = scroll.current_scroll_top;
+        scroll.compensate_layout(px(53.5));
+        assert_eq!(scroll.current_scroll_top, current + px(53.5));
+        assert_eq!(scroll.target_scroll_top, px(353.5));
+        assert_eq!(scroll.anim_start_scroll_top, px(153.5));
+        assert_eq!(scroll.anim_start_time, time);
+        scroll.step_interpolation_with_elapsed(Duration::from_millis(40));
+        assert_eq!(scroll.current_scroll_top, current + px(53.5));
+    }
 
     #[test]
     fn test_cubic_ease_out_math() {
