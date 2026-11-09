@@ -120,25 +120,12 @@ impl Element for EditorElement {
                 let (lines_to_prepaint, scrollbar) = {
                     let editor = editor_entity.read(cx);
                     let layout = editor.layout_snapshot();
-                    let total_lines = layout.parsed_lines.len();
-
-                    // Calculate visible line slice based on ScrollState with 300px overscan
+                    // Heights are already known: prepare only rows intersecting the viewport.
                     let scroll_top = editor.scroll.current_scroll_top;
                     let scroll_h = bounds.size.height;
-                    let min_y = (scroll_top - px(300.0)).max(px(0.0));
-                    let max_y = scroll_top + scroll_h + px(300.0);
-
-                    let (visible_start, visible_end) = if layout.line_y_offsets.is_empty() {
-                        (0, 0)
-                    } else {
-                        let start = layout
-                            .line_y_offsets
-                            .partition_point(|&y| y < min_y)
-                            .saturating_sub(1);
-                        let end = (layout.line_y_offsets.partition_point(|&y| y <= max_y) + 1)
-                            .min(total_lines);
-                        (start, end)
-                    };
+                    let visible = layout.visible_source_lines(scroll_top, scroll_h);
+                    let visible_start = visible.start;
+                    let visible_end = visible.end;
 
                     let is_focused = editor.focus_handle.is_focused(window);
                     let cursor_opacity = if is_focused {
@@ -167,16 +154,20 @@ impl Element for EditorElement {
 
                     match mode {
                         RenderMode::LivePreview => {
-                            for quote_range in &layout.quote_ranges {
-                                if quote_range.end <= visible_start
-                                    || quote_range.start >= visible_end
-                                {
-                                    continue;
-                                }
-                                let group_height = layout.line_heights[quote_range.clone()]
-                                    .iter()
+                            let first_quote = layout
+                                .quote_ranges
+                                .partition_point(|range| range.end <= visible_start);
+                            for quote_range in layout.quote_ranges[first_quote..]
+                                .iter()
+                                .take_while(|range| range.start < visible_end)
+                            {
+                                let group_bottom = layout
+                                    .line_y_offsets
+                                    .get(quote_range.end)
                                     .copied()
-                                    .fold(px(0.0), |height, line_height| height + line_height);
+                                    .unwrap_or(layout.total_height - px(24.0));
+                                let group_height =
+                                    group_bottom - layout.line_y_offsets[quote_range.start];
                                 let quote_indent = layout
                                     .indent_px(crate::buffer::SourceLine::new(quote_range.start));
                                 let panel = div()
@@ -205,7 +196,7 @@ impl Element for EditorElement {
 
                     for line_idx in visible_start..visible_end {
                         let source_line = crate::buffer::SourceLine::new(line_idx);
-                        if editor.is_line_folded(source_line) {
+                        if layout.line_heights[line_idx] <= px(0.0) {
                             continue;
                         }
                         let parsed = &layout.parsed_lines[line_idx];

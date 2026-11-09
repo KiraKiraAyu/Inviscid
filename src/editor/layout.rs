@@ -264,6 +264,23 @@ impl DocumentLayoutCache {
         Some((top, top + height))
     }
 
+    /// Source rows intersecting the viewport, including a partially visible tall row.
+    /// Collapsed rows within the range must be skipped by the renderer.
+    pub(crate) fn visible_source_lines(&self, top: Pixels, height: Pixels) -> Range<usize> {
+        if height <= px(0.0) || self.line_y_offsets.is_empty() {
+            return 0..0;
+        }
+        let end = self.line_y_offsets.partition_point(|&y| y < top + height);
+        let mut start = self
+            .line_y_offsets
+            .partition_point(|&y| y <= top)
+            .saturating_sub(1);
+        if self.line_y_offsets[start] + self.line_heights[start] <= top {
+            start += 1;
+        }
+        start.min(end)..end
+    }
+
     pub fn source_line_at_y(&self, y: Pixels) -> Option<SourceLine> {
         if self.line_y_offsets.is_empty() {
             return None;
@@ -1632,6 +1649,44 @@ mod incremental_tests {
     use crate::buffer::{Position, Selection, TextBuffer};
     use gpui::px;
     use std::sync::Arc;
+
+    #[test]
+    fn viewport_line_range_matches_intersections_including_tall_and_collapsed_rows() {
+        let cache = super::DocumentLayoutCache {
+            line_y_offsets: [24.0, 24.0, 56.0, 56.0, 1056.0, 1056.0, 1080.0]
+                .into_iter()
+                .map(px)
+                .collect(),
+            line_heights: [0.0, 32.0, 0.0, 1000.0, 0.0, 24.0, 0.0]
+                .into_iter()
+                .map(px)
+                .collect(),
+            ..Default::default()
+        };
+        for top in (-20..1120).step_by(17) {
+            for height in [0.0, 1.0, 23.0, 100.0, 999.0] {
+                let top = px(top as f32);
+                let height = px(height);
+                let expected: Vec<_> = (0..cache.line_heights.len())
+                    .filter(|&idx| {
+                        height > px(0.0)
+                            && cache.line_heights[idx] > px(0.0)
+                            && cache.line_y_offsets[idx] < top + height
+                            && cache.line_y_offsets[idx] + cache.line_heights[idx] > top
+                    })
+                    .collect();
+                let actual: Vec<_> = cache
+                    .visible_source_lines(top, height)
+                    .filter(|&idx| cache.line_heights[idx] > px(0.0))
+                    .collect();
+                assert_eq!(actual, expected, "viewport {top:?} + {height:?}");
+            }
+        }
+        assert_eq!(
+            super::DocumentLayoutCache::default().visible_source_lines(px(0.0), px(700.0)),
+            0..0
+        );
+    }
 
     #[gpui::test]
     fn normalized_blank_quote_edits_require_a_separator_state_rebuild(

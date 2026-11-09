@@ -2447,6 +2447,53 @@ fn rope_scroll_frames_source_do_not_copy_document(cx: &mut gpui::TestAppContext)
 }
 
 #[gpui::test]
+fn scroll_frames_prepare_only_viewport_text(cx: &mut gpui::TestAppContext) {
+    use super::shaping::preparation_metrics;
+    use crate::buffer::TextBuffer;
+    use gpui::size;
+
+    let content = (0..500)
+        .map(|line| format!("Paragraph {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (editor, cx) = cx.add_window_view(|_, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(&content, None), cx)
+    });
+    cx.simulate_resize(size(px(800.0), px(120.0)));
+    for mode in [super::RenderMode::Source, super::RenderMode::LivePreview] {
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, _| {
+                editor.render_mode = mode;
+                editor.has_explicit_render_mode = true;
+                editor.invalidate_layout_cache();
+            });
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        cx.update(|window, cx| {
+            let visible_lines = editor.update(cx, |editor, _| {
+                editor.scroll.set_direct(px(1201.0), px(100_000.0));
+                let layout = editor.layout_snapshot();
+                let top = editor.scroll.current_scroll_top;
+                let bottom = top + editor.viewport_bounds.size.height;
+                layout.line_y_offsets.iter().zip(&layout.line_heights)
+                    .filter(|(y, height)| **y < bottom && **y + **height > top)
+                    .count()
+            });
+            preparation_metrics::reset();
+            window.refresh();
+            window.draw(cx).clear();
+            let calls = preparation_metrics::calls();
+            assert!(calls > 0);
+            assert!(
+                calls <= visible_lines * 2,
+                "scroll prepared {calls} text runs for only {visible_lines} visible lines ({mode:?})"
+            );
+        });
+    }
+}
+
+#[gpui::test]
 fn rope_scroll_frames_live_preview_do_not_copy_document(cx: &mut gpui::TestAppContext) {
     assert_rope_scroll_frames_do_not_copy_document(cx, super::RenderMode::LivePreview);
 }

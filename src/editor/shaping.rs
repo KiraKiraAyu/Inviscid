@@ -446,12 +446,33 @@ pub fn table_cell_font_metrics(is_header: bool) -> (Pixels, Pixels) {
 
 pub use crate::ui::cursor::calculate_caret_size;
 
+#[cfg(test)]
+pub(super) mod preparation_metrics {
+    std::thread_local! {
+        static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    pub fn reset() {
+        CALLS.set(0);
+    }
+
+    pub fn calls() -> usize {
+        CALLS.get()
+    }
+
+    pub fn record() {
+        CALLS.set(CALLS.get() + 1);
+    }
+}
+
 pub fn build_line_runs(
     spans: &[InlineSpan],
     scx: LineShapingContext,
     hovered_link_range: Option<(usize, usize)>,
     base_style: &TextStyle,
 ) -> (String, Vec<TextRun>) {
+    #[cfg(test)]
+    preparation_metrics::record();
     let mut line_str = String::new();
     let mut runs = Vec::new();
 
