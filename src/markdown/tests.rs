@@ -1035,3 +1035,197 @@ fn mermaid_block_range_includes_both_fences_but_excludes_neighboring_lines() {
         None
     );
 }
+#[test]
+fn quote_projection_reads_source_sequentially_without_random_line_lookups() {
+    use crate::buffer::{LineSource, SourceLine};
+    use crate::markdown::QuoteProjection;
+    use std::borrow::Cow;
+    use std::cell::Cell;
+
+    struct SequentialSource {
+        lines: Vec<String>,
+        lookups: Cell<usize>,
+    }
+
+    impl LineSource for SequentialSource {
+        fn line_count(&self) -> usize {
+            self.lines.len()
+        }
+
+        fn source_line(&self, line: SourceLine) -> Cow<'_, str> {
+            self.lookups.set(self.lookups.get() + 1);
+            Cow::Borrowed(&self.lines[line.index()])
+        }
+
+        fn source_lines(&self) -> impl Iterator<Item = Cow<'_, str>> {
+            self.lines.iter().map(|line| Cow::Borrowed(line.as_str()))
+        }
+    }
+
+    let source = SequentialSource {
+        lines: [
+            "> 引用🙂",
+            "```text",
+            "> 原样保留",
+            "```",
+            "> 尾部",
+            "```",
+            "> 未闭合",
+        ]
+        .map(String::from)
+        .to_vec(),
+        lookups: Cell::new(0),
+    };
+    let projection = QuoteProjection::from_source(&source);
+    assert_eq!(
+        projection.normalized_lines(),
+        [
+            "引用🙂",
+            "```text",
+            "> 原样保留",
+            "```",
+            "尾部",
+            "```",
+            "未闭合"
+        ]
+    );
+    assert_eq!(
+        projection.quote_prefixes(),
+        &[Some(2), None, None, None, Some(2), None, Some(2)]
+    );
+    assert_eq!(source.lookups.get(), 0);
+}
+
+#[test]
+fn quote_projection_local_update_reads_only_changed_lines_and_matches_rebuild() {
+    use crate::buffer::{EditDelta, LineSource, SourceLine};
+    use std::{borrow::Cow, cell::RefCell};
+
+    struct TrackedSource {
+        lines: Vec<String>,
+        reads: RefCell<Vec<usize>>,
+    }
+    impl LineSource for TrackedSource {
+        fn line_count(&self) -> usize {
+            self.lines.len()
+        }
+        fn source_line(&self, line: SourceLine) -> Cow<'_, str> {
+            self.reads.borrow_mut().push(line.index());
+            Cow::Borrowed(&self.lines[line.index()])
+        }
+    }
+
+    let mut source = TrackedSource {
+        lines: [
+            "before",
+            "> quote",
+            "```text",
+            "> literal",
+            "```",
+            "> tail",
+            "```",
+            "> unmatched",
+        ]
+        .map(String::from)
+        .to_vec(),
+        reads: RefCell::new(Vec::new()),
+    };
+    let mut projection = QuoteProjection::from_source(&source);
+    for (index, replacement) in [
+        (1, "> > 中文🙂"),
+        (3, "> literal changed"),
+        (5, "plain"),
+        (7, "> unmatched changed"),
+    ] {
+        source.lines[index] = replacement.to_string();
+        source.reads.borrow_mut().clear();
+        assert!(projection.try_update_source(
+            &source,
+            EditDelta {
+                start_line: SourceLine::new(index),
+                old_line_count: 1,
+                new_line_count: 1,
+            }
+        ));
+        assert_eq!(*source.reads.borrow(), vec![index]);
+        let full = QuoteProjection::from_lines(&source.lines);
+        assert_eq!(projection.normalized_lines(), full.normalized_lines());
+        assert_eq!(projection.quote_prefixes(), full.quote_prefixes());
+    }
+}
+
+#[test]
+fn quote_projection_rejects_structural_edits_without_partial_changes() {
+    use crate::buffer::{EditDelta, SourceLine};
+    let original = ["first", "> quote", "```text", "content", "```"].map(String::from);
+    let mut projection = QuoteProjection::from_lines(&original);
+    let normalized_before = projection.normalized_lines().to_vec();
+    for (start, old_count, replacement) in [
+        (0, 2, vec!["changed", "```"]),
+        (2, 1, vec!["```rust"]),
+        (2, 1, vec!["plain"]),
+        (1, 1, vec!["one", "two"]),
+        (1, 1, vec![]),
+    ] {
+        let mut edited = original.to_vec();
+        edited.splice(
+            start..start + old_count,
+            replacement.iter().map(|s| s.to_string()),
+        );
+        assert!(!projection.try_update_source(
+            &edited,
+            EditDelta {
+                start_line: SourceLine::new(start),
+                old_line_count: old_count,
+                new_line_count: replacement.len(),
+            }
+        ));
+        assert_eq!(projection.normalized_lines(), normalized_before);
+        assert_eq!(
+            projection.quote_prefixes(),
+            &[None, Some(2), None, None, None]
+        );
+    }
+}
+
+#[test]
+fn quote_projection_local_updates_match_rebuild_across_fence_and_quote_transitions() {
+    use crate::buffer::{EditDelta, SourceLine};
+    let variants = [
+        "plain",
+        "> quote",
+        "> > nested",
+        "> ```text",
+        "```",
+        "```rust",
+        "",
+        "中文🙂",
+    ];
+    for middle in variants {
+        let original = ["before", "```", "> literal", "```", middle, "> tail"].map(String::from);
+        for index in 0..original.len() {
+            for replacement in variants {
+                let mut projection = QuoteProjection::from_lines(&original);
+                let before_lines = projection.normalized_lines().to_vec();
+                let before_prefixes = projection.quote_prefixes().to_vec();
+                let mut edited = original.to_vec();
+                edited[index] = replacement.to_string();
+                if projection.try_update_source(
+                    &edited,
+                    EditDelta {
+                        start_line: SourceLine::new(index),
+                        old_line_count: 1,
+                        new_line_count: 1,
+                    },
+                ) {
+                    let full = QuoteProjection::from_lines(&edited);
+                    assert_eq!(projection.normalized_lines(), full.normalized_lines());
+                    assert_eq!(projection.quote_prefixes(), full.quote_prefixes());
+                } else {
+                    assert_eq!(projection.normalized_lines(), before_lines);
+                    assert_eq!(projection.quote_prefixes(), before_prefixes);
+                }
+            }
+        }
+    }
+}

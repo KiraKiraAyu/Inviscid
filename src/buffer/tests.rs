@@ -2037,6 +2037,32 @@ fn rope_line_access_preserves_chunked_long_lines() {
 }
 
 #[test]
+fn source_lines_preserve_unicode_chunk_boundaries_and_empty_document_lines() {
+    use crate::buffer::LineSource;
+    use std::borrow::Cow;
+
+    let long_line = "跨越 Rope 块的内容🙂".repeat(1000);
+    let content = format!("短行🙂\r\n{long_line}\r\n尾行\r\n");
+    let buf = TextBuffer::from_str(&content, None);
+    let lines: Vec<_> = buf.source_lines().collect();
+    assert_eq!(lines, vec!["短行🙂", long_line.as_str(), "尾行", ""]);
+    assert!(matches!(lines[0], Cow::Borrowed(_)));
+    assert!(matches!(lines[1], Cow::Owned(_)));
+    for (index, line) in lines.iter().enumerate() {
+        assert_eq!(
+            *line,
+            buf.source_line(crate::buffer::SourceLine::new(index))
+        );
+    }
+
+    for text in ["", "\n", "\n\n", "你好", "你好\n"] {
+        let buf = TextBuffer::from_str(text, None);
+        assert_eq!(buf.source_lines().count(), buf.line_count());
+        assert_eq!(buf.source_lines().collect::<Vec<_>>(), buf.to_lines());
+    }
+}
+
+#[test]
 fn test_dirty_state_after_undo_and_new_edit() {
     let mut buf = TextBuffer::from_str("initial", None);
     assert!(!buf.is_dirty());

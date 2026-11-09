@@ -1280,6 +1280,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
     // 1. Initial layout calculation when image is not loaded
     let mut initial_cache = crate::editor::layout::DocumentLayoutCache {
         buffer_version: buf.version(),
+        buffer_revision: buf.revision(),
         lines_len: buf.line_count(),
         render_mode: crate::editor::RenderMode::LivePreview,
         content_width,
@@ -1449,6 +1450,7 @@ fn test_folding_layout_height_and_navigation() {
     // Initial unfolded layout
     let mut initial_cache = DocumentLayoutCache {
         buffer_version: buf.version(),
+        buffer_revision: buf.revision(),
         lines_len: buf.line_count(),
         render_mode: crate::editor::RenderMode::LivePreview,
         content_width,
@@ -1539,6 +1541,7 @@ fn test_folding_layout_height_and_navigation() {
     // Recompute folded layout
     let mut folded_cache = DocumentLayoutCache {
         buffer_version: buf.version(),
+        buffer_revision: buf.revision(),
         lines_len: buf.line_count(),
         render_mode: crate::editor::RenderMode::LivePreview,
         content_width,
@@ -2423,10 +2426,17 @@ fn assert_rope_scroll_frames_do_not_copy_document(
                 before,
                 "scroll painting must not materialize the entire document ({mode:?})"
             );
-            assert!(std::sync::Arc::ptr_eq(
-                &cached_layout,
-                &editor.layout_snapshot(),
-            ));
+            let current_layout = editor.layout_snapshot();
+            // Background resource completion legitimately invalidates layout,
+            // even when the document and viewport have not changed.
+            if cached_layout.image_cache_version == current_layout.image_cache_version
+                && cached_layout.syntax_cache_version == current_layout.syntax_cache_version
+            {
+                assert!(
+                    std::sync::Arc::ptr_eq(&cached_layout, &current_layout),
+                    "scroll painting must reuse layout while resource versions are stable ({mode:?})"
+                );
+            }
         });
     }
 }
@@ -2518,6 +2528,113 @@ fn test_layout_cache_incremental_update_matches_full_rebuild(cx: &mut gpui::Test
         incremental.total_height, full.total_height,
         "incremental total height must match a full rebuild"
     );
+}
+
+#[gpui::test]
+fn local_edit_reuses_unchanged_projection_lines(cx: &mut gpui::TestAppContext) {
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(
+            crate::buffer::TextBuffer::from_str("first\n\n> quote\n\nlast", None),
+            cx,
+        )
+    });
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _| {
+            let before = ed.layout_snapshot();
+            let unchanged = before.quote_projection.normalized_lines()[0].as_ptr();
+            drop(before);
+            ed.buffer
+                .record_single_line_edit(SourceLine::new(2), |line, _| line.push_str(" changed"));
+            let after = ed.layout_snapshot();
+            assert_eq!(
+                after.quote_projection.normalized_lines()[0].as_ptr(),
+                unchanged
+            );
+            assert_eq!(
+                after.quote_projection.normalized_lines()[2],
+                "quote changed"
+            );
+        });
+    });
+}
+
+#[gpui::test]
+fn projection_snapshots_survive_edits_and_skipped_history_revisions(cx: &mut gpui::TestAppContext) {
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(
+            crate::buffer::TextBuffer::from_str("first\n\n> quote\n\nlast", None),
+            cx,
+        )
+    });
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _| {
+            let original = ed.layout_snapshot();
+            ed.buffer
+                .record_single_line_edit(SourceLine::new(2), |line, _| line.push_str(" changed"));
+            let edited = ed.layout_snapshot();
+            assert_eq!(original.quote_projection.normalized_lines()[2], "quote");
+            assert_eq!(
+                edited.quote_projection.normalized_lines()[2],
+                "quote changed"
+            );
+
+            ed.buffer.undo();
+            ed.buffer
+                .record_single_line_edit(SourceLine::new(4), |line, _| line.push_str(" branch"));
+            let branched = ed.layout_snapshot();
+            assert_eq!(branched.quote_projection.normalized_lines()[2], "quote");
+            assert_eq!(
+                branched.quote_projection.normalized_lines()[4],
+                "last branch"
+            );
+            let incremental_lines = branched.parsed_lines.clone();
+            let incremental_heights = branched.line_heights.clone();
+            ed.invalidate_layout_cache();
+            let rebuilt = ed.layout_snapshot();
+            assert_eq!(*incremental_lines, *rebuilt.parsed_lines);
+            assert_eq!(incremental_heights, rebuilt.line_heights);
+        });
+    });
+}
+
+#[gpui::test]
+fn retained_projection_survives_local_and_structural_edits(cx: &mut gpui::TestAppContext) {
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(
+            crate::buffer::TextBuffer::from_str("before\n```text\n> literal\n```\n> tail", None),
+            cx,
+        )
+    });
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _| {
+            let retained = ed.layout_snapshot().quote_projection.clone();
+            ed.buffer
+                .record_single_line_edit(SourceLine::new(2), |line, _| line.push_str(" changed"));
+            assert_eq!(
+                ed.layout_snapshot().quote_projection.normalized_lines()[2],
+                "> literal changed"
+            );
+            assert_eq!(retained.normalized_lines()[2], "> literal");
+
+            ed.buffer
+                .record_single_line_edit(SourceLine::new(3), |line, _| line.clear());
+            let after = ed.layout_snapshot();
+            assert_eq!(
+                after.quote_projection.normalized_lines()[2],
+                "literal changed"
+            );
+            assert_eq!(retained.normalized_lines()[2], "> literal");
+            let full = crate::markdown::QuoteProjection::from_source(&ed.buffer);
+            assert_eq!(
+                after.quote_projection.normalized_lines(),
+                full.normalized_lines()
+            );
+            assert_eq!(
+                after.quote_projection.quote_prefixes(),
+                full.quote_prefixes()
+            );
+        });
+    });
 }
 
 #[gpui::test]

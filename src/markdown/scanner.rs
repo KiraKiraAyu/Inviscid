@@ -5,7 +5,7 @@ use super::prefix::{
 };
 use super::table::{is_table_delimiter_row, parse_table_alignments, parse_table_row_cells};
 use super::types::{BlockKind, ParsedLine, QuoteContext, TableAlignment};
-use crate::buffer::{LineSource, SourceLine};
+use crate::buffer::{EditDelta, LineSource, SourceLine};
 
 fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
     lines
@@ -54,6 +54,7 @@ fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usiz
 pub struct QuoteProjection {
     normalized: Vec<String>,
     quote_prefixes: Vec<Option<usize>>,
+    top_level_fences: Vec<bool>,
 }
 
 impl QuoteProjection {
@@ -65,8 +66,7 @@ impl QuoteProjection {
         let top_level_fences = top_level_fenced_lines(lines);
         let mut normalized = Vec::with_capacity(lines.line_count());
         let mut quote_prefixes = Vec::with_capacity(lines.line_count());
-        for (idx, fenced) in top_level_fences.iter().copied().enumerate() {
-            let line = lines.source_line(SourceLine::new(idx));
+        for (line, fenced) in lines.source_lines().zip(top_level_fences.iter().copied()) {
             if !fenced && let Some((prefix_len, content)) = quoted_content(&line) {
                 normalized.push(content.to_string());
                 quote_prefixes.push(Some(prefix_len));
@@ -78,7 +78,51 @@ impl QuoteProjection {
         Self {
             normalized,
             quote_prefixes,
+            top_level_fences,
         }
+    }
+
+    /// Updates only changed lines when top-level fence pairing cannot change.
+    /// Structural edits leave this projection unchanged and require a rebuild.
+    pub(crate) fn try_update_source(
+        &mut self,
+        lines: &(impl LineSource + ?Sized),
+        delta: EditDelta,
+    ) -> bool {
+        let start = delta.start_line.index();
+        let Some(end) = start.checked_add(delta.old_line_count) else {
+            return false;
+        };
+        if delta.old_line_count != delta.new_line_count
+            || lines.line_count() != self.len()
+            || end > self.len()
+        {
+            return false;
+        }
+        // A normalized unquoted fence is also a fence in the original source.
+        if (start..end)
+            .any(|idx| self.quote_prefixes[idx].is_none() && is_fence_line(&self.normalized[idx]))
+        {
+            return false;
+        }
+        let changed: Vec<_> = (start..end)
+            .map(|idx| lines.source_line(SourceLine::new(idx)))
+            .collect();
+        if changed.iter().any(|line| is_fence_line(line)) {
+            return false;
+        }
+        for (idx, line) in (start..end).zip(changed) {
+            if !self.top_level_fences[idx]
+                && let Some((prefix_len, content)) = quoted_content(&line)
+            {
+                self.normalized[idx] = content.to_string();
+                self.quote_prefixes[idx] = Some(prefix_len);
+            } else {
+                self.normalized[idx] = line.into_owned();
+                self.quote_prefixes[idx] = None;
+            }
+        }
+        true
     }
 
     #[inline]
@@ -284,8 +328,7 @@ fn top_level_fenced_lines(lines: &(impl LineSource + ?Sized)) -> Vec<bool> {
     let mut fenced = vec![false; lines.line_count()];
     let mut open_idx = None;
 
-    for idx in 0..lines.line_count() {
-        let line = lines.source_line(SourceLine::new(idx));
+    for (idx, line) in lines.source_lines().enumerate() {
         if !is_fence_line(&line) {
             continue;
         }

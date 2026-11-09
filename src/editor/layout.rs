@@ -182,6 +182,7 @@ pub fn get_block_color_override(kind: &BlockKind, theme: &Theme) -> Option<Hsla>
 #[derive(Clone, Debug)]
 pub struct DocumentLayoutCache {
     pub buffer_version: usize,
+    pub buffer_revision: u64,
     pub lines_len: usize,
     pub render_mode: RenderMode,
     pub content_width: Pixels,
@@ -210,6 +211,7 @@ impl Default for DocumentLayoutCache {
     fn default() -> Self {
         Self {
             buffer_version: 0,
+            buffer_revision: 0,
             lines_len: 0,
             render_mode: RenderMode::LivePreview,
             content_width: px(0.0),
@@ -883,6 +885,23 @@ impl Editor {
         crate::markdown::mermaid_block_range_with_projection(projection, active_line)
     }
 
+    /// Reuse projection storage only when no reader retains the old snapshot.
+    fn try_update_quote_projection(&self) -> Option<Arc<QuoteProjection>> {
+        let delta = self.buffer.last_edit_delta()?;
+        let mut cached = self.layout_cache.borrow_mut();
+        if cached.buffer_revision.wrapping_add(1) != self.buffer.revision()
+            || cached.quote_projection.len() != cached.lines_len
+        {
+            return None;
+        }
+        let cache = Arc::get_mut(&mut cached)?;
+        let projection = Arc::get_mut(&mut cache.quote_projection)?;
+        if !projection.try_update_source(&self.buffer, delta) {
+            return None;
+        }
+        Some(cache.quote_projection.clone())
+    }
+
     pub fn ensure_layout_cache(&self) {
         let viewport = self.viewport_bounds_val();
         let content_width = compute_content_width(viewport.size.width, self.render_mode);
@@ -892,13 +911,17 @@ impl Editor {
         let current_img_v = crate::http::image_cache_version();
         let current_syntax_v = crate::syntax::syntax_cache_version();
 
+        let updated_projection = self.try_update_quote_projection();
         let current_cache = self.layout_cache.borrow().clone();
         let view_matches = self.cache_matches_view(&current_cache, content_width);
         let buffer_matches = current_cache.buffer_version == self.buffer.version()
+            && current_cache.buffer_revision == self.buffer.revision()
             && current_cache.lines_len == self.buffer.line_count();
         let quote_projection =
             if buffer_matches && current_cache.quote_projection.len() == self.buffer.line_count() {
                 current_cache.quote_projection.clone()
+            } else if let Some(projection) = updated_projection {
+                projection
             } else {
                 Arc::new(QuoteProjection::from_source(&self.buffer))
             };
@@ -1089,6 +1112,7 @@ impl Editor {
 
         // Incremental block update on intra-block edits
         if let Some(delta) = self.buffer.last_edit_delta()
+            && current_cache.buffer_revision.wrapping_add(1) == self.buffer.revision()
             && view_matches
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
@@ -1096,20 +1120,23 @@ impl Editor {
             && current_cache.line_heights.len() == current_cache.lines_len
             && current_cache.line_y_offsets.len() == current_cache.lines_len
         {
-            let mut cache = (*current_cache).clone();
+            // Release our read handle so an unshared cache can be updated in place.
+            // Arc::make_mut preserves snapshots retained by other readers.
+            drop(current_cache);
+            let mut cached = self.layout_cache.borrow_mut();
             if self.try_incremental_layout_update(
-                &mut cache,
+                Arc::make_mut(&mut cached),
                 delta,
                 active_line,
                 content_width,
                 quote_projection.clone(),
             ) {
-                *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
         }
 
         // Full layout rebuild
+        let current_cache = self.layout_cache.borrow().clone();
         let parsed_doc = if buffer_matches
             && view_matches
             && current_cache.syntax_cache_version == current_syntax_v
@@ -1162,6 +1189,7 @@ impl Editor {
 
         let new_cache = DocumentLayoutCache {
             buffer_version: self.buffer.version(),
+            buffer_revision: self.buffer.revision(),
             lines_len: self.buffer.line_count(),
             render_mode: self.render_mode,
             content_width,
@@ -1225,6 +1253,13 @@ impl Editor {
             return false;
         }
 
+        // Entering/leaving a preview changes every row of that block.
+        if cache.active_math_block != active_math_block
+            || cache.active_mermaid_block != active_mermaid_block
+        {
+            return false;
+        }
+
         if self.render_mode != RenderMode::Source && cache.separators.len() != cache_len {
             return false;
         }
@@ -1264,13 +1299,17 @@ impl Editor {
 
         if !in_code_block {
             for line in &cache.parsed_lines[edit_start_idx..edit_start_idx + delta.old_line_count] {
-                if line.raw_text.trim().is_empty() {
+                let content = if line.quote.is_some() {
+                    crate::markdown::strip_quote_prefix(&line.raw_text)
+                } else {
+                    &line.raw_text
+                };
+                if content.trim().is_empty() {
                     return false;
                 }
             }
             for idx in edit_start_idx..edit_start_idx + delta.new_line_count {
-                let line = buf_lines.source_line(SourceLine::new(idx));
-                if line.trim().is_empty() {
+                if quote_projection.normalized_lines()[idx].trim().is_empty() {
                     return false;
                 }
             }
@@ -1356,13 +1395,6 @@ impl Editor {
             return false;
         }
 
-        if cache.active_line != active_line
-            && (cache.active_line.index() < block_start
-                || cache.active_line.index() >= old_block_end)
-        {
-            return false;
-        }
-
         let mut new_parsed = MarkdownScanner::scan_range_with_projection_with_state(
             buf_lines,
             &quote_projection,
@@ -1375,8 +1407,12 @@ impl Editor {
         }
         self.project_ime_preedit(block_start, &mut new_parsed);
 
+        cache.separators = if self.render_mode == RenderMode::Source {
+            Vec::new()
+        } else {
+            crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
+        };
         let mut new_heights = Vec::with_capacity(new_parsed.len());
-        let mut new_height_sum = px(0.0);
         for (i, parsed) in new_parsed.iter().enumerate() {
             let line_idx = block_start + i;
             let source_line = SourceLine::new(line_idx);
@@ -1398,48 +1434,111 @@ impl Editor {
             );
             let h = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
             new_heights.push(h);
-            new_height_sum += h;
         }
 
-        let old_height_sum: Pixels = cache.line_heights[block_start..old_block_end]
-            .iter()
+        let block_y = cache
+            .line_y_offsets
+            .get(block_start)
             .copied()
-            .fold(px(0.0), |acc, h| acc + h);
-        let height_delta = new_height_sum - old_height_sum;
-
-        Arc::make_mut(&mut cache.parsed_lines).splice(block_start..old_block_end, new_parsed);
+            .unwrap_or(cache.total_height - px(24.0));
+        let mut rebuild_from =
+            (cache.line_heights[block_start..old_block_end] != new_heights).then_some(block_start);
+        let mut quote_edge_rows = [None, None];
+        {
+            let parsed_lines = Arc::make_mut(&mut cache.parsed_lines);
+            parsed_lines.splice(block_start..old_block_end, new_parsed);
+            // Quote groups can start/end on a neighboring heading excluded
+            // from the reparsed block. Its edge padding must change as well.
+            for (slot, row) in [
+                block_start.checked_sub(1),
+                (block_end < buf_len).then_some(block_end),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let Some(idx) = row else { continue };
+                let Some(quote) = parsed_lines[idx].quote.as_mut() else {
+                    continue;
+                };
+                let prefixes = quote_projection.quote_prefixes();
+                let is_start = idx == 0 || prefixes[idx - 1].is_none();
+                let is_end = idx + 1 == buf_len || prefixes[idx + 1].is_none();
+                if quote.is_start != is_start || quote.is_end != is_end {
+                    quote.is_start = is_start;
+                    quote.is_end = is_end;
+                    quote_edge_rows[slot] = Some(idx);
+                }
+            }
+        }
+        if rebuild_from.is_some() {
+            cache.line_y_offsets.splice(
+                block_start..old_block_end,
+                std::iter::repeat_n(block_y, new_heights.len()),
+            );
+        }
         cache
             .line_heights
-            .splice(block_start..old_block_end, new_heights.clone());
+            .splice(block_start..old_block_end, new_heights);
 
-        let mut y = if block_start == 0 {
-            px(24.0)
+        // Map the former disclosure row through any inserted/deleted lines.
+        // Both old and new rows can lie outside the reparsed block.
+        let old_active_idx = cache.active_line.index();
+        let old_disclosure = if old_active_idx < block_start {
+            Some(old_active_idx)
+        } else if old_active_idx >= old_block_end {
+            Some(old_active_idx - delta.old_line_count + delta.new_line_count)
         } else {
-            cache.line_y_offsets[block_start]
+            None
         };
-        let mut new_offsets = Vec::with_capacity(new_heights.len());
-        for h in &new_heights {
-            new_offsets.push(y);
-            y += *h;
-        }
-        cache
-            .line_y_offsets
-            .splice(block_start..old_block_end, new_offsets);
-
-        if height_delta.abs() > px(0.001) {
-            for offset in &mut cache.line_y_offsets[block_end..] {
-                *offset += height_delta;
+        let new_disclosure = (!(block_start..block_end).contains(&active_line.index()))
+            .then_some(active_line.index());
+        let affected_rows = [
+            old_disclosure,
+            new_disclosure,
+            quote_edge_rows[0],
+            quote_edge_rows[1],
+        ];
+        for (slot, candidate) in affected_rows.into_iter().enumerate() {
+            let Some(line_idx) = candidate.filter(|&idx| idx < buf_len) else {
+                continue;
+            };
+            if affected_rows[..slot].contains(&candidate) {
+                continue;
             }
-            cache.total_height += height_delta;
+            let parsed = &cache.parsed_lines[line_idx];
+            let source_line = SourceLine::new(line_idx);
+            let lcx = self.line_layout_ctx(
+                parsed,
+                source_line == active_line,
+                cache.separators.get(line_idx).copied().unwrap_or(false),
+                active_col,
+                content_width,
+                source_line,
+                active_math_block,
+                active_mermaid_block,
+            );
+            let height = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
+            if height != cache.line_heights[line_idx] {
+                cache.line_heights[line_idx] = height;
+                rebuild_from = Some(rebuild_from.map_or(line_idx, |start| start.min(line_idx)));
+            }
         }
 
-        cache.separators = if self.render_mode == RenderMode::Source {
-            Vec::new()
-        } else {
-            crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
-        };
+        if let Some(start) = rebuild_from {
+            let mut y = if start == block_start {
+                block_y
+            } else {
+                cache.line_y_offsets[start]
+            };
+            for idx in start..cache.line_heights.len() {
+                cache.line_y_offsets[idx] = y;
+                y += cache.line_heights[idx];
+            }
+            cache.total_height = y + px(24.0);
+        }
 
         cache.buffer_version = self.buffer.version();
+        cache.buffer_revision = self.buffer.revision();
         cache.lines_len = buf_len;
         cache.active_line = active_line;
         cache.active_col = active_col;
@@ -1525,4 +1624,214 @@ pub struct ScrollbarMetrics {
     pub thumb_y: Pixels,
     pub thumb_h: Pixels,
     pub has_overflow: bool,
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::{Editor, QuoteProjection, RenderMode, SourceLine, compute_content_width};
+    use crate::buffer::{Position, Selection, TextBuffer};
+    use gpui::px;
+    use std::sync::Arc;
+
+    #[gpui::test]
+    fn normalized_blank_quote_edits_require_a_separator_state_rebuild(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (editor, cx) = cx.add_window_view(|_window, cx| {
+            Editor::new_with_buffer(
+                TextBuffer::from_str("old active\n\n> ## heading\n> \n\n\nlast", None),
+                cx,
+            )
+        });
+        cx.update(|_window, cx| {
+            editor.update(cx, |ed, _| {
+                ed.render_mode = RenderMode::LivePreview;
+                let mut cache = (*ed.layout_snapshot()).clone();
+                ed.buffer.set_cursor(Position::new(SourceLine::new(3), 2));
+                ed.buffer.insert_text("text");
+                assert!(!ed.try_incremental_layout_update(
+                    &mut cache,
+                    ed.buffer.last_edit_delta().unwrap(),
+                    ed.disclosure_position().line,
+                    compute_content_width(ed.viewport_bounds.size.width, ed.render_mode),
+                    Arc::new(QuoteProjection::from_source(&ed.buffer)),
+                ));
+                let after = ed.layout_snapshot();
+                ed.invalidate_layout_cache();
+                let full = ed.layout_snapshot();
+                assert_eq!(after.parsed_lines, full.parsed_lines);
+                assert_eq!(after.line_heights, full.line_heights);
+                assert_eq!(after.line_y_offsets, full.line_y_offsets);
+                assert_eq!(after.separators, full.separators);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn unshared_local_layout_updates_reuse_unchanged_parsed_text(cx: &mut gpui::TestAppContext) {
+        let (editor, cx) = cx.add_window_view(|_window, cx| {
+            Editor::new_with_buffer(TextBuffer::from_str("first\n\nedit here\n\nlast", None), cx)
+        });
+        cx.update(|_window, cx| {
+            editor.update(cx, |ed, _| {
+                let before = ed.layout_snapshot();
+                let unchanged = before.parsed_lines[0].raw_text.as_ptr();
+                drop(before);
+                ed.buffer
+                    .record_single_line_edit(SourceLine::new(2), |line, _| {
+                        line.push_str(" changed")
+                    });
+                let after = ed.layout_snapshot();
+                assert_eq!(after.parsed_lines[0].raw_text.as_ptr(), unchanged);
+                assert_eq!(after.parsed_lines[2].raw_text, "edit here changed");
+                let retained = after.parsed_lines.clone();
+                drop(after);
+                ed.buffer
+                    .record_single_line_edit(SourceLine::new(2), |line, _| line.push_str(" again"));
+                assert_eq!(
+                    ed.layout_snapshot().parsed_lines[2].raw_text,
+                    "edit here changed again"
+                );
+                assert_eq!(retained[2].raw_text, "edit here changed");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn cursor_jump_and_local_edit_match_full_layout_without_full_document_scan(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let content = "**a long bold heading with markers that change wrapping**\n\nmiddle paragraph\n\nedit this **bold text** with wrapping\nfollowing paragraph\n\nlast **paragraph** with a long line";
+        let (editor, cx) = cx.add_window_view(|_window, cx| {
+            Editor::new_with_buffer(TextBuffer::from_str(content, None), cx)
+        });
+        cx.update(|_window, cx| {
+            editor.update(cx, |ed, _| {
+                for mode in [RenderMode::Source, RenderMode::LivePreview] {
+                    for (old_line, edit_line, replacement, delete_next_line) in [
+                        (0, 4, "extra words ", false),
+                        (7, 2, "inserted\nnew ", false),
+                        (0, 4, "joined ", true),
+                    ] {
+                        ed.buffer = TextBuffer::from_str(content, None);
+                        ed.render_mode = mode;
+                        ed.viewport_bounds.size = gpui::size(px(260.0), px(600.0));
+                        ed.buffer.set_cursor(Position::new(SourceLine::new(old_line), 0));
+                        ed.invalidate_layout_cache();
+                        let mut cache = (*ed.layout_snapshot()).clone();
+                        ed.buffer.set_cursor(Position::new(SourceLine::new(edit_line), 0));
+                        if delete_next_line {
+                            ed.buffer.set_selection(Selection {
+                                anchor: Position::new(SourceLine::new(edit_line), 0),
+                                head: Position::new(SourceLine::new(edit_line + 1), 0),
+                            });
+                        }
+                        ed.buffer.insert_text(replacement);
+                        let active_line = ed.disclosure_position().line;
+                        let projection = Arc::new(QuoteProjection::from_source(&ed.buffer));
+                        assert!(ed.try_incremental_layout_update(
+                            &mut cache,
+                            ed.buffer.last_edit_delta().unwrap(),
+                            active_line,
+                            compute_content_width(ed.viewport_bounds.size.width, mode),
+                            projection,
+                        ), "cursor jump should permit a local layout update ({mode:?}, {old_line} -> {edit_line})");
+                        ed.invalidate_layout_cache();
+                        let full = ed.layout_snapshot();
+                        assert_eq!(cache.parsed_lines, full.parsed_lines);
+                        assert_eq!(cache.line_heights, full.line_heights);
+                        assert_eq!(cache.line_y_offsets, full.line_y_offsets);
+                        assert_eq!(cache.total_height, full.total_height);
+                        assert_eq!(cache.separators, full.separators);
+                        assert_eq!(cache.quote_ranges, full.quote_ranges);
+                    }
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn cursor_jump_and_edit_preserve_preview_geometry_and_old_snapshots(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (editor, cx) = cx.add_window_view(|_window, cx| Editor::new(cx));
+        cx.update(|_window, cx| {
+            editor.update(cx, |ed, _| {
+                for (content, preview_line, paragraph_line) in [
+                    ("$$\nx^2\n$$\n\nparagraph", 1, 4),
+                    ("```mermaid\nflowchart LR\nA --> B\n```\n\nparagraph", 2, 5),
+                ] {
+                    for (old_line, edit_line) in [
+                        (preview_line, paragraph_line),
+                        (paragraph_line, preview_line),
+                    ] {
+                        ed.buffer = TextBuffer::from_str(content, None);
+                        ed.render_mode = RenderMode::LivePreview;
+                        ed.viewport_bounds.size = gpui::size(px(260.0), px(600.0));
+                        ed.buffer
+                            .set_cursor(Position::new(SourceLine::new(old_line), 0));
+                        ed.invalidate_layout_cache();
+                        let before = ed.layout_snapshot();
+                        let before_lines = before.quote_projection.normalized_lines().to_vec();
+                        ed.buffer
+                            .set_cursor(Position::new(SourceLine::new(edit_line), 0));
+                        ed.buffer.insert_text(" ");
+                        let after = ed.layout_snapshot();
+                        ed.invalidate_layout_cache();
+                        let full = ed.layout_snapshot();
+                        assert_eq!(after.parsed_lines, full.parsed_lines);
+                        assert_eq!(after.line_heights, full.line_heights);
+                        assert_eq!(after.line_y_offsets, full.line_y_offsets);
+                        assert_eq!(after.total_height, full.total_height);
+                        assert_eq!(before.quote_projection.normalized_lines(), before_lines);
+                    }
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn cursor_jump_edits_match_full_layout_for_quotes_tables_and_code(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (editor, cx) = cx.add_window_view(|_window, cx| Editor::new(cx));
+        cx.update(|_window, cx| {
+            editor.update(cx, |ed, _| {
+                for mode in [RenderMode::Source, RenderMode::LivePreview] {
+                    for (content, edit_line, edit_col) in [
+                        ("old **active text**\n\n> 引用 **内容**\n> 引用第二行\n\nlast", 2, 2),
+                        ("old **active text**\n\n| Name | Value |\n| --- | --- |\n| row | 界🙂 |\n| end | data |\n\nlast", 4, 2),
+                        ("old **active text**\n\n```text\nfirst\nedit code\n```\n\nlast", 4, 2),
+                        ("old **active text**\n\n> ## quoted heading\n> paragraph\n\nlast", 3, 0),
+                        ("old **active text**\n\n> paragraph\n> ## quoted heading\n\nlast", 2, 0),
+                    ] {
+                        ed.buffer = TextBuffer::from_str(content, None);
+                        ed.render_mode = mode;
+                        ed.viewport_bounds.size = gpui::size(px(260.0), px(600.0));
+                        ed.invalidate_layout_cache();
+                        let before = ed.layout_snapshot();
+                        let before_parsed = before.parsed_lines.clone();
+                        let mut cache = (*before).clone();
+                        ed.buffer.set_cursor(Position::new(SourceLine::new(edit_line), edit_col));
+                        ed.buffer.insert_text("changed ");
+                        let projection = Arc::new(QuoteProjection::from_source(&ed.buffer));
+                        assert!(ed.try_incremental_layout_update(
+                            &mut cache,
+                            ed.buffer.last_edit_delta().unwrap(),
+                            ed.disclosure_position().line,
+                            compute_content_width(ed.viewport_bounds.size.width, mode),
+                            projection,
+                        ));
+                        ed.invalidate_layout_cache();
+                        let full = ed.layout_snapshot();
+                        assert_eq!(cache.parsed_lines, full.parsed_lines);
+                        assert_eq!(cache.line_heights, full.line_heights);
+                        assert_eq!(cache.line_y_offsets, full.line_y_offsets);
+                        assert_eq!(cache.total_height, full.total_height);
+                        assert_eq!(before.parsed_lines, before_parsed);
+                    }
+                }
+            });
+        });
+    }
 }
