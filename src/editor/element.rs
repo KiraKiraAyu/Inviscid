@@ -1,5 +1,6 @@
 use gpui::*;
 
+use crate::buffer::LineSource;
 use crate::editor::render::{render_live_line_content, render_source_line};
 use crate::editor::shaping::compute_content_width;
 use crate::editor::{Editor, LineRenderContext, RenderMode};
@@ -268,7 +269,7 @@ impl Element for EditorElement {
                         let line_el = render_line_element(
                             source_line,
                             parsed,
-                            &editor.buffer.lines(),
+                            &editor.buffer,
                             &lrc,
                             &editor_entity,
                         );
@@ -453,7 +454,7 @@ impl Element for EditorElement {
 fn render_line_element(
     source_line: crate::buffer::SourceLine,
     parsed: &crate::markdown::ParsedLine,
-    lines: &[String],
+    lines: &(impl LineSource + ?Sized),
     lrc: &LineRenderContext,
     editor: &Entity<Editor>,
 ) -> AnyElement {

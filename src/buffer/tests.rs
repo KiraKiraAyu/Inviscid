@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn rope_hot_path_utf16_queries_do_not_build_markdown_indexes() {
+    let content = format!("{}a🙂界\nlast", "prefix\n".repeat(200));
+    let buffer = TextBuffer::from_str(&content, None);
+    let start = 200 * 7;
+    let pos = SourcePosition::new(SourceLine::new(200), 2);
+    assert_eq!(buffer.pos_to_utf16_offset(pos), start + 3);
+    assert_eq!(
+        buffer.utf16_offset_to_pos(start + 2),
+        SourcePosition::new(SourceLine::new(200), 1)
+    );
+    assert!(buffer.line_index_cache.borrow().is_none());
+    assert_eq!(buffer.full_line_materializations(), 0);
+}
+
+#[test]
+fn rope_hot_path_word_count_stays_incremental_through_history() {
+    let mut buffer = TextBuffer::from_str(&"one two\n".repeat(200), None);
+    assert_eq!(buffer.word_count(), 400);
+    buffer.record_single_line_edit(SourceLine::new(100), |line, _| {
+        *line = "你\u{2003}🙂 three".into();
+    });
+    assert_eq!(buffer.word_count(), 401);
+    buffer.undo();
+    assert_eq!(buffer.word_count(), 400);
+    buffer.redo();
+    assert_eq!(buffer.word_count(), 401);
+    assert_eq!(buffer.full_line_materializations(), 0);
+}
+
+#[test]
 fn rope_stays_in_sync_with_unicode_edits_and_history() {
     let mut buf = TextBuffer::from_str("first\n第二", None);
     assert_eq!(buf.rope.to_string(), "first\n第二");

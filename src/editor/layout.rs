@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::{Editor, RenderMode};
-use crate::buffer::SourceLine;
+use crate::buffer::{LineSource, SourceLine};
 use crate::editor::shaping::compute_content_width;
 use crate::markdown::prefix::is_fence_line;
 use crate::markdown::{BlockKind, MarkdownScanner, ParsedLine, QuoteProjection};
@@ -432,7 +432,7 @@ impl<'a> LineLayoutContext<'a> {
 
 /// Computes the layout height in pixels for a single document line.
 pub fn get_line_layout_height(
-    lines: &[String],
+    lines: &(impl LineSource + ?Sized),
     idx: usize,
     parsed: &ParsedLine,
     lcx: LineLayoutContext,
@@ -631,11 +631,21 @@ pub fn get_line_layout_height(
             );
             let source_height =
                 source_line_height * source_visual_lines as f32 + typo.padding_vertical;
-            let preview_height = if idx > 0 && lines[idx - 1].trim() == "$$" {
-                let close_idx = (idx + 1..lines.len()).find(|&line| lines[line].trim() == "$$");
+            let preview_height = if idx > 0
+                && lines.source_line(SourceLine::new(idx - 1)).trim() == "$$"
+            {
+                let close_idx = (idx + 1..lines.line_count())
+                    .find(|&line| lines.source_line(SourceLine::new(line)).trim() == "$$");
                 close_idx
                     .and_then(|close_idx| {
-                        crate::math::prepare_latex(&lines[idx..close_idx].join("\n"), true)
+                        let mut source = String::new();
+                        for line in idx..close_idx {
+                            if line > idx {
+                                source.push('\n');
+                            }
+                            source.push_str(&lines.source_line(SourceLine::new(line)));
+                        }
+                        crate::math::prepare_latex(&source, true)
                     })
                     .map(|math| {
                         crate::editor::shaping::math_render_size(&math, px(lcx.font_size)).height
@@ -687,11 +697,15 @@ pub fn get_line_layout_height(
             if *is_delimiter {
                 px(0.0)
             } else {
-                let is_last = idx + 1 >= lines.len()
-                    || !lines[idx + 1].contains('|')
-                    || lines[idx + 1].trim().is_empty()
-                    || lines[idx + 1].trim_start().starts_with('#')
-                    || lines[idx + 1].trim_start().starts_with("```");
+                let is_last = if idx + 1 >= lines.line_count() {
+                    true
+                } else {
+                    let next = lines.source_line(SourceLine::new(idx + 1));
+                    !next.contains('|')
+                        || next.trim().is_empty()
+                        || next.trim_start().starts_with('#')
+                        || next.trim_start().starts_with("```")
+                };
                 let row_h = crate::editor::shaping::calculate_table_row_height(
                     cells,
                     *is_header,
@@ -886,7 +900,7 @@ impl Editor {
             if buffer_matches && current_cache.quote_projection.len() == self.buffer.line_count() {
                 current_cache.quote_projection.clone()
             } else {
-                Arc::new(QuoteProjection::from_lines(&self.buffer.lines()))
+                Arc::new(QuoteProjection::from_source(&self.buffer))
             };
         let active_math_block =
             self.active_math_block_with_projection(active_line, &quote_projection);
@@ -941,7 +955,7 @@ impl Editor {
                     active_math_block,
                     active_mermaid_block,
                 );
-                get_line_layout_height(&self.buffer.lines(), active_line_idx, parsed, lcx)
+                get_line_layout_height(&self.buffer, active_line_idx, parsed, lcx)
             } else {
                 px(24.0)
             };
@@ -1009,7 +1023,7 @@ impl Editor {
                         active_math_block,
                         active_mermaid_block,
                     );
-                    get_line_layout_height(&self.buffer.lines(), line_idx, parsed, lcx)
+                    get_line_layout_height(&self.buffer, line_idx, parsed, lcx)
                 } else {
                     px(24.0)
                 }
@@ -1083,7 +1097,13 @@ impl Editor {
             && current_cache.line_y_offsets.len() == current_cache.lines_len
         {
             let mut cache = (*current_cache).clone();
-            if self.try_incremental_layout_update(&mut cache, delta, active_line, content_width) {
+            if self.try_incremental_layout_update(
+                &mut cache,
+                delta,
+                active_line,
+                content_width,
+                quote_projection.clone(),
+            ) {
                 *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
@@ -1097,10 +1117,8 @@ impl Editor {
         {
             current_cache.parsed_lines.clone()
         } else {
-            let mut scanned = MarkdownScanner::scan_document_with_projection(
-                &self.buffer.lines(),
-                &quote_projection,
-            );
+            let mut scanned =
+                MarkdownScanner::scan_document_with_projection(&self.buffer, &quote_projection);
             self.project_ime_preedit(0, &mut scanned);
             Arc::new(scanned)
         };
@@ -1129,7 +1147,7 @@ impl Editor {
                 active_math_block,
                 active_mermaid_block,
             );
-            let h = get_line_layout_height(&self.buffer.lines(), idx, parsed, lcx);
+            let h = get_line_layout_height(&self.buffer, idx, parsed, lcx);
             line_y_offsets.push(y);
             line_heights.push(h);
             y += h;
@@ -1177,9 +1195,10 @@ impl Editor {
         delta: crate::buffer::EditDelta,
         active_line: SourceLine,
         content_width: Pixels,
+        quote_projection: Arc<QuoteProjection>,
     ) -> bool {
-        let buf_lines = self.buffer.lines();
-        let buf_len = buf_lines.len();
+        let buf_lines = &self.buffer;
+        let buf_len = buf_lines.line_count();
         let cache_len = cache.parsed_lines.len();
         let edit_start_idx = delta.start_line.index();
 
@@ -1196,7 +1215,6 @@ impl Editor {
         }) {
             return false;
         }
-        let quote_projection = Arc::new(QuoteProjection::from_lines(&buf_lines));
         let active_col = self.disclosure_col();
         let active_math_block =
             self.active_math_block_with_projection(active_line, &quote_projection);
@@ -1225,8 +1243,9 @@ impl Editor {
                 return false;
             }
         }
-        for line in &buf_lines[edit_start_idx..edit_start_idx + delta.new_line_count] {
-            let structural_line = crate::markdown::strip_quote_prefix(line).trim_start();
+        for idx in edit_start_idx..edit_start_idx + delta.new_line_count {
+            let line = buf_lines.source_line(SourceLine::new(idx));
+            let structural_line = crate::markdown::strip_quote_prefix(&line).trim_start();
             if structural_line.starts_with("```") || structural_line.trim() == "$$" {
                 return false;
             }
@@ -1249,7 +1268,8 @@ impl Editor {
                     return false;
                 }
             }
-            for line in &buf_lines[edit_start_idx..edit_start_idx + delta.new_line_count] {
+            for idx in edit_start_idx..edit_start_idx + delta.new_line_count {
+                let line = buf_lines.source_line(SourceLine::new(idx));
                 if line.trim().is_empty() {
                     return false;
                 }
@@ -1259,8 +1279,8 @@ impl Editor {
         let mut block_start = edit_start_idx;
         if in_code_block {
             while block_start > 0 {
-                let prev_trimmed =
-                    crate::markdown::strip_quote_prefix(&buf_lines[block_start - 1]).trim_start();
+                let previous = buf_lines.source_line(SourceLine::new(block_start - 1));
+                let prev_trimmed = crate::markdown::strip_quote_prefix(&previous).trim_start();
                 if is_fence_line(prev_trimmed) {
                     break;
                 }
@@ -1278,9 +1298,14 @@ impl Editor {
                 block_start -= 1;
             }
         } else {
-            while block_start > 0 && !buf_lines[block_start - 1].trim().is_empty() {
-                let prev_trimmed =
-                    crate::markdown::strip_quote_prefix(&buf_lines[block_start - 1]).trim_start();
+            while block_start > 0
+                && !buf_lines
+                    .source_line(SourceLine::new(block_start - 1))
+                    .trim()
+                    .is_empty()
+            {
+                let previous = buf_lines.source_line(SourceLine::new(block_start - 1));
+                let prev_trimmed = crate::markdown::strip_quote_prefix(&previous).trim_start();
                 if is_fence_line(prev_trimmed) || prev_trimmed.starts_with('#') {
                     break;
                 }
@@ -1291,8 +1316,8 @@ impl Editor {
         let mut block_end = edit_start_idx + delta.new_line_count;
         if in_code_block {
             while block_end < buf_len {
-                let next_trimmed =
-                    crate::markdown::strip_quote_prefix(&buf_lines[block_end]).trim_start();
+                let next = buf_lines.source_line(SourceLine::new(block_end));
+                let next_trimmed = crate::markdown::strip_quote_prefix(&next).trim_start();
                 if is_fence_line(next_trimmed) {
                     break;
                 }
@@ -1300,17 +1325,25 @@ impl Editor {
             }
         } else if in_math_block {
             while block_end < buf_len {
-                let is_close =
-                    crate::markdown::strip_quote_prefix(&buf_lines[block_end]).trim() == "$$";
+                let is_close = crate::markdown::strip_quote_prefix(
+                    &buf_lines.source_line(SourceLine::new(block_end)),
+                )
+                .trim()
+                    == "$$";
                 block_end += 1;
                 if is_close {
                     break;
                 }
             }
         } else {
-            while block_end < buf_len && !buf_lines[block_end].trim().is_empty() {
-                let next_trimmed =
-                    crate::markdown::strip_quote_prefix(&buf_lines[block_end]).trim_start();
+            while block_end < buf_len
+                && !buf_lines
+                    .source_line(SourceLine::new(block_end))
+                    .trim()
+                    .is_empty()
+            {
+                let next = buf_lines.source_line(SourceLine::new(block_end));
+                let next_trimmed = crate::markdown::strip_quote_prefix(&next).trim_start();
                 if is_fence_line(next_trimmed) || next_trimmed.starts_with('#') {
                     break;
                 }
@@ -1331,7 +1364,7 @@ impl Editor {
         }
 
         let mut new_parsed = MarkdownScanner::scan_range_with_projection_with_state(
-            &buf_lines,
+            buf_lines,
             &quote_projection,
             block_start..block_end,
             in_code_block,
@@ -1363,7 +1396,7 @@ impl Editor {
                 active_math_block,
                 active_mermaid_block,
             );
-            let h = get_line_layout_height(&buf_lines, line_idx, parsed, lcx);
+            let h = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
             new_heights.push(h);
             new_height_sum += h;
         }

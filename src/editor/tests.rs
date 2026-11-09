@@ -2333,6 +2333,114 @@ fn test_scroll_to_cursor_keeps_cursor_within_comfort_margin(cx: &mut gpui::TestA
     });
 }
 
+#[gpui::test]
+fn rope_hot_path_layout_reads_lines_without_materializing_the_document(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::buffer::{SourceLine, TextBuffer};
+    use gpui::{Bounds, point, px, size};
+
+    let content = "# Heading\n\nParagraph with **bold** text\nnext line\n\n> quoted text\n";
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(content, None), cx)
+    });
+    cx.update(|_window, cx| {
+        editor.update(cx, |editor, _cx| {
+            editor.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(800.0), px(600.0)),
+            };
+            for mode in [super::RenderMode::Source, super::RenderMode::LivePreview] {
+                editor.render_mode = mode;
+                editor.invalidate_layout_cache();
+                let before = editor.buffer.full_line_materializations();
+                editor.ensure_layout_cache();
+                assert_eq!(editor.buffer.full_line_materializations(), before);
+                editor
+                    .buffer
+                    .record_single_line_edit(SourceLine::new(2), |line, _| {
+                        line.push_str(" edited");
+                    });
+                editor.ensure_layout_cache();
+                assert_eq!(editor.buffer.full_line_materializations(), before);
+            }
+        });
+    });
+}
+
+fn assert_rope_scroll_frames_do_not_copy_document(
+    cx: &mut gpui::TestAppContext,
+    mode: super::RenderMode,
+) {
+    use crate::buffer::TextBuffer;
+    use gpui::size;
+
+    let content = (0..5_000)
+        .map(|line| match line % 10 {
+            0 => format!("## Section {line}"),
+            2 => "> Quoted text with **emphasis**".to_owned(),
+            4 => "| Name | Value |".to_owned(),
+            5 => "| --- | --- |".to_owned(),
+            6 => "| Unicode | 界🙂 |".to_owned(),
+            1 | 3 | 7 => String::new(),
+            _ => format!("Paragraph {line} with **bold** and ordinary text."),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(&content, None), cx)
+    });
+    cx.simulate_resize(size(px(800.0), px(600.0)));
+    cx.update(|_window, cx| {
+        editor.update(cx, |editor, _cx| {
+            editor.render_mode = mode;
+            editor.has_explicit_render_mode = true;
+            editor.invalidate_layout_cache();
+        });
+    });
+    // Settle the viewport and window text system before checking cache reuse.
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+
+    for fraction in [0.0, 0.5, 1.0, 0.5, 0.0] {
+        cx.update(|window, cx| {
+            let (before, cached_layout) = editor.update(cx, |editor, _cx| {
+                let layout = editor.layout_snapshot();
+                let max_scroll =
+                    (layout.total_height - editor.viewport_bounds.size.height).max(px(0.0));
+                editor.scroll.set_direct(max_scroll * fraction, max_scroll);
+                (editor.buffer.full_line_materializations(), layout)
+            });
+            window.refresh();
+            window.draw(cx).clear();
+            let editor = editor.read(cx);
+            assert!(editor.viewport_bounds.size.height > px(0.0));
+            assert!(!editor.layout_snapshot().parsed_lines.is_empty());
+            assert_eq!(
+                editor.buffer.full_line_materializations(),
+                before,
+                "scroll painting must not materialize the entire document ({mode:?})"
+            );
+            assert!(std::sync::Arc::ptr_eq(
+                &cached_layout,
+                &editor.layout_snapshot(),
+            ));
+        });
+    }
+}
+
+#[gpui::test]
+fn rope_scroll_frames_source_do_not_copy_document(cx: &mut gpui::TestAppContext) {
+    assert_rope_scroll_frames_do_not_copy_document(cx, super::RenderMode::Source);
+}
+
+#[gpui::test]
+fn rope_scroll_frames_live_preview_do_not_copy_document(cx: &mut gpui::TestAppContext) {
+    assert_rope_scroll_frames_do_not_copy_document(cx, super::RenderMode::LivePreview);
+}
+
 /// The incremental layout path (`Editor::ensure_layout_cache` after an edit) must produce exactly
 /// the same layout as a full rebuild of the same edited content.
 #[gpui::test]

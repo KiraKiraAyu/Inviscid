@@ -1,6 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
+use crate::buffer::{LineSource, SourceLine};
 use crate::markdown::{BlockKind, ParsedLine, table};
 use crate::theme::Theme;
 use crate::ui::{Icon, IconName, IconSize};
@@ -13,7 +14,7 @@ use super::shaping::render_shaped_line;
 pub fn render_live_line_content(
     source_line: crate::buffer::SourceLine,
     parsed: &ParsedLine,
-    lines: &[String],
+    lines: &(impl LineSource + ?Sized),
     lrc: &LineRenderContext,
     editor: Option<&Entity<Editor>>,
 ) -> AnyElement {
@@ -453,9 +454,12 @@ pub fn render_live_line_content(
                     gpui::transparent_black()
                 };
 
-                let is_last_row = line_idx + 1 >= lines.len()
-                    || !lines[line_idx + 1].contains('|')
-                    || lines[line_idx + 1].trim().is_empty();
+                let is_last_row = if line_idx + 1 >= lines.line_count() {
+                    true
+                } else {
+                    let next = lines.source_line(SourceLine::new(line_idx + 1));
+                    !next.contains('|') || next.trim().is_empty()
+                };
 
                 row_elem = row_elem.border_b_1().bg(row_bg);
                 if is_last_row {

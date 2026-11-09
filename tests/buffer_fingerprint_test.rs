@@ -1,6 +1,10 @@
 use inviscid::buffer::{Position, Selection, SourceLine, TextBuffer, compute_lines_hash};
 
 fn assert_fingerprint(buffer: &TextBuffer) {
+    assert_eq!(
+        buffer.word_count(),
+        buffer.to_string_normalized().split_whitespace().count()
+    );
     let snapshot = buffer.saved_baseline_snapshot();
     assert_eq!(
         snapshot.content_hash,

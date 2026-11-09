@@ -5,7 +5,7 @@ use super::prefix::{
 };
 use super::table::{is_table_delimiter_row, parse_table_alignments, parse_table_row_cells};
 use super::types::{BlockKind, ParsedLine, QuoteContext, TableAlignment};
-use crate::buffer::SourceLine;
+use crate::buffer::{LineSource, SourceLine};
 
 fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
     lines
@@ -58,17 +58,20 @@ pub struct QuoteProjection {
 
 impl QuoteProjection {
     pub fn from_lines(lines: &[String]) -> Self {
+        Self::from_source(lines)
+    }
+
+    pub fn from_source(lines: &(impl LineSource + ?Sized)) -> Self {
         let top_level_fences = top_level_fenced_lines(lines);
-        let mut normalized = Vec::with_capacity(lines.len());
-        let mut quote_prefixes = Vec::with_capacity(lines.len());
-        for (idx, line) in lines.iter().enumerate() {
-            if !top_level_fences[idx]
-                && let Some((prefix_len, content)) = quoted_content(line)
-            {
+        let mut normalized = Vec::with_capacity(lines.line_count());
+        let mut quote_prefixes = Vec::with_capacity(lines.line_count());
+        for (idx, fenced) in top_level_fences.iter().copied().enumerate() {
+            let line = lines.source_line(SourceLine::new(idx));
+            if !fenced && let Some((prefix_len, content)) = quoted_content(&line) {
                 normalized.push(content.to_string());
                 quote_prefixes.push(Some(prefix_len));
             } else {
-                normalized.push(line.clone());
+                normalized.push(line.into_owned());
                 quote_prefixes.push(None);
             }
         }
@@ -277,12 +280,13 @@ fn quoted_content(line: &str) -> Option<(usize, &str)> {
     (prefix_len > 0).then_some((prefix_len, &line[prefix_len..]))
 }
 
-fn top_level_fenced_lines(lines: &[String]) -> Vec<bool> {
-    let mut fenced = vec![false; lines.len()];
+fn top_level_fenced_lines(lines: &(impl LineSource + ?Sized)) -> Vec<bool> {
+    let mut fenced = vec![false; lines.line_count()];
     let mut open_idx = None;
 
-    for (idx, line) in lines.iter().enumerate() {
-        if !is_fence_line(line) {
+    for idx in 0..lines.line_count() {
+        let line = lines.source_line(SourceLine::new(idx));
+        if !is_fence_line(&line) {
             continue;
         }
         if let Some(start) = open_idx.take() {
@@ -312,10 +316,16 @@ impl MarkdownScanner {
     }
 
     pub(crate) fn scan_document_with_projection(
-        lines: &[String],
+        lines: &(impl LineSource + ?Sized),
         projection: &QuoteProjection,
     ) -> Vec<ParsedLine> {
-        Self::scan_range_with_projection_with_state(lines, projection, 0..lines.len(), false, false)
+        Self::scan_range_with_projection_with_state(
+            lines,
+            projection,
+            0..lines.line_count(),
+            false,
+            false,
+        )
     }
 
     pub fn scan_range(
@@ -339,7 +349,7 @@ impl MarkdownScanner {
     }
 
     pub(crate) fn scan_range_with_projection_with_state(
-        lines: &[String],
+        lines: &(impl LineSource + ?Sized),
         projection: &QuoteProjection,
         range: std::ops::Range<usize>,
         initial_in_code_fence: bool,
@@ -356,7 +366,7 @@ impl MarkdownScanner {
     }
 
     fn scan_normalized_range_with_state(
-        source_lines: &[String],
+        source_lines: &(impl LineSource + ?Sized),
         lines: &[String],
         quote_prefixes: &[Option<usize>],
         range: std::ops::Range<usize>,
@@ -704,13 +714,13 @@ impl MarkdownScanner {
 
         for (parsed, source_idx) in result.iter_mut().zip(range) {
             if let Some(prefix_bytes) = quote_prefixes.get(source_idx).copied().flatten() {
-                let source = &source_lines[source_idx];
+                let source = source_lines.source_line(SourceLine::new(source_idx));
                 let prefix_chars = source[..prefix_bytes].chars().count();
                 parsed.quote = Some(QuoteContext {
-                    depth: quote_depth(source),
+                    depth: quote_depth(&source),
                     content_indent: leading_indent_len(&lines[source_idx]),
                     is_start: source_idx == 0 || quote_prefixes[source_idx - 1].is_none(),
-                    is_end: source_idx + 1 == source_lines.len()
+                    is_end: source_idx + 1 == source_lines.line_count()
                         || quote_prefixes[source_idx + 1].is_none(),
                 });
                 shift_spans(&mut parsed.spans, prefix_chars);
@@ -722,7 +732,7 @@ impl MarkdownScanner {
                         (0, prefix_chars),
                     ),
                 );
-                parsed.raw_text = source.clone();
+                parsed.raw_text = source.into_owned();
             }
         }
 
@@ -796,9 +806,9 @@ pub(crate) fn compute_syntactic_separators_with_projection(
     separators
 }
 
-pub fn is_syntactic_separator(lines: &[String], source_line: SourceLine) -> bool {
+pub fn is_syntactic_separator(lines: &(impl LineSource + ?Sized), source_line: SourceLine) -> bool {
     let idx = source_line.index();
-    if idx == 0 || idx >= lines.len() {
+    if idx == 0 || idx >= lines.line_count() {
         return false;
     }
 
@@ -807,8 +817,9 @@ pub fn is_syntactic_separator(lines: &[String], source_line: SourceLine) -> bool
     let mut prev_is_separator = false;
     let top_level_fences = top_level_fenced_lines(lines);
 
-    for (i, raw_line) in lines.iter().enumerate().take(idx + 1) {
-        let line = projected_line(raw_line, top_level_fences[i]);
+    for (i, fenced) in top_level_fences.iter().copied().enumerate().take(idx + 1) {
+        let raw_line = lines.source_line(SourceLine::new(i));
+        let line = projected_line(&raw_line, fenced);
         let is_fence = is_fence_line(line);
         if is_fence {
             in_fence = !in_fence;

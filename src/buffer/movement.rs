@@ -94,7 +94,6 @@ pub(crate) struct LineIndex {
     syntactic_separators: Vec<bool>,
     fence_pairs: Vec<(crate::buffer::SourceLine, crate::buffer::SourceLine)>,
     math_pairs: Vec<(crate::buffer::SourceLine, crate::buffer::SourceLine)>,
-    pub(crate) line_utf16_offsets: Vec<usize>,
 }
 
 impl LineIndex {
@@ -103,14 +102,8 @@ impl LineIndex {
 
         let mut fence_pairs = Vec::new();
         let mut open: Option<usize> = None;
-        let mut line_utf16_offsets = Vec::with_capacity(lines.len());
-        let mut current_offset = 0;
 
         for (i, line) in lines.iter().enumerate() {
-            line_utf16_offsets.push(current_offset);
-            let line_len: usize = line.chars().map(|c| c.len_utf16()).sum();
-            current_offset += line_len + 1;
-
             if line.trim_start().starts_with("```") {
                 match open {
                     Some(open_idx) => {
@@ -130,22 +123,7 @@ impl LineIndex {
             syntactic_separators,
             fence_pairs,
             math_pairs: crate::markdown::math_block_pairs(lines),
-            line_utf16_offsets,
         }
-    }
-
-    pub(crate) fn line_utf16_offset(&self, line_idx: usize) -> usize {
-        self.line_utf16_offsets.get(line_idx).copied().unwrap_or(0)
-    }
-
-    pub(crate) fn utf16_offset_to_line(&self, offset: usize) -> usize {
-        if self.line_utf16_offsets.is_empty() {
-            return 0;
-        }
-        self.line_utf16_offsets
-            .partition_point(|&o| o <= offset)
-            .saturating_sub(1)
-            .min(self.line_utf16_offsets.len() - 1)
     }
 
     fn fence_state(&self, target_line: crate::buffer::SourceLine) -> (bool, bool) {

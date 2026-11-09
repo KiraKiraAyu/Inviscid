@@ -1,5 +1,7 @@
 use ropey::Rope;
-use std::cell::{Cell, RefCell};
+#[cfg(test)]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ops::{Index, IndexMut, Range, RangeFrom, RangeInclusive};
 use std::path::{Path, PathBuf};
@@ -9,10 +11,12 @@ mod fingerprint;
 pub mod movement;
 pub mod operations;
 pub mod primitives;
+mod source;
 #[cfg(test)]
 pub mod tests;
 
 pub use primitives::*;
+pub use source::LineSource;
 
 /// A document's source lines. Indexing requires a source-coordinate value.
 ///
@@ -338,7 +342,9 @@ pub struct TextBuffer {
 
     pub(in crate::buffer) line_index_cache: RefCell<Option<movement::LineIndex>>,
     pub(in crate::buffer) last_edit_delta: Option<EditDelta>,
-    cached_word_count: Cell<Option<(u64, usize)>>,
+    total_word_count: usize,
+    #[cfg(test)]
+    full_line_materializations: Cell<usize>,
 }
 
 impl Default for TextBuffer {
@@ -429,7 +435,9 @@ impl TextBuffer {
             is_empty_doc,
             line_index_cache: RefCell::new(None),
             last_edit_delta: None,
-            cached_word_count: Cell::new(None),
+            total_word_count: normalized.split_whitespace().count(),
+            #[cfg(test)]
+            full_line_materializations: Cell::new(0),
         }
     }
 
@@ -574,6 +582,9 @@ impl TextBuffer {
     }
 
     pub fn to_lines(&self) -> Vec<String> {
+        #[cfg(test)]
+        self.full_line_materializations
+            .set(self.full_line_materializations.get() + 1);
         if self.is_empty_doc {
             return vec![String::new(), String::new()];
         }
@@ -589,6 +600,11 @@ impl TextBuffer {
         } else {
             self.rope.len_lines()
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn full_line_materializations(&self) -> usize {
+        self.full_line_materializations.get()
     }
 
     #[inline]
@@ -667,9 +683,13 @@ impl TextBuffer {
     }
 
     pub fn line_len(&self, source_line: SourceLine) -> usize {
-        self.line_text(source_line)
-            .map(|line| line.chars().count())
-            .unwrap_or(0)
+        if self.is_empty_doc {
+            return 0;
+        }
+        self.rope.get_line(source_line.index()).map_or(0, |line| {
+            line.len_chars()
+                - usize::from(line.len_chars() > 0 && line.char(line.len_chars() - 1) == '\n')
+        })
     }
 
     pub fn clamp_position(&self, pos: Position) -> Position {
@@ -721,18 +741,7 @@ impl TextBuffer {
     }
 
     pub fn word_count(&self) -> usize {
-        if let Some((rev, count)) = self.cached_word_count.get()
-            && rev == self.revision
-        {
-            return count;
-        }
-        let count = self
-            .to_lines()
-            .iter()
-            .map(|line| line.split_whitespace().count())
-            .sum();
-        self.cached_word_count.set(Some((self.revision, count)));
-        count
+        self.total_word_count
     }
 
     #[inline]
@@ -741,49 +750,21 @@ impl TextBuffer {
     }
 
     pub fn pos_to_utf16_offset(&self, pos: SourcePosition) -> usize {
-        if self.line_count() == 0 {
-            return 0;
+        if self.is_empty_doc {
+            // Preserve the editor's two virtual lines in an empty document.
+            return pos.line.index().min(1);
         }
-        let line_idx = pos.line.index().min(self.line_count() - 1);
-        let line_start = self.line_index().line_utf16_offset(line_idx);
-
-        if let Some(line) = self.line_text(SourceLine::new(line_idx)) {
-            let col_offset: usize = line.chars().take(pos.col).map(|c| c.len_utf16()).sum();
-            line_start + col_offset
-        } else {
-            line_start
-        }
+        let char_idx = self.position_to_rope_char(pos.to_position());
+        self.rope.char_to_utf16_cu(char_idx)
     }
 
     pub fn utf16_offset_to_pos(&self, offset: usize) -> SourcePosition {
-        if self.line_count() == 0 {
-            return SourcePosition::new(SourceLine::new(0), 0);
+        if self.is_empty_doc {
+            return SourcePosition::new(SourceLine::new(usize::from(offset > 0)), 0);
         }
-        let target_line_idx = self.line_index().utf16_offset_to_line(offset);
-        let target_line = SourceLine::new(target_line_idx);
-        let line_start = self.line_index().line_utf16_offset(target_line_idx);
-        let rel_offset = offset.saturating_sub(line_start);
-
-        if let Some(line) = self.line_text(SourceLine::new(target_line_idx)) {
-            let line_utf16_len: usize = line.chars().map(|c| c.len_utf16()).sum();
-            if rel_offset <= line_utf16_len {
-                let mut char_count = 0;
-                let mut current_u16 = 0;
-                for c in line.chars() {
-                    let u16_len = c.len_utf16();
-                    if current_u16 + u16_len > rel_offset {
-                        break;
-                    }
-                    current_u16 += u16_len;
-                    char_count += 1;
-                }
-                return SourcePosition::new(target_line, char_count);
-            }
-            if target_line_idx == self.line_count() - 1 {
-                return SourcePosition::new(target_line, line.chars().count());
-            }
-        }
-        SourcePosition::new(target_line, 0)
+        let offset = offset.min(self.rope.len_utf16_cu());
+        let char_idx = self.rope.utf16_cu_to_char(offset);
+        SourcePosition::from_position(self.rope_char_to_position(char_idx))
     }
 
     pub fn selected_utf16_range(&self) -> (Range<usize>, bool) {
@@ -1076,6 +1057,15 @@ impl TextBuffer {
         replaced_lines: &[String],
         inserted_lines: &[String],
     ) {
+        let removed_words: usize = replaced_lines
+            .iter()
+            .map(|line| line.split_whitespace().count())
+            .sum();
+        let inserted_words: usize = inserted_lines
+            .iter()
+            .map(|line| line.split_whitespace().count())
+            .sum();
+        self.total_word_count = self.total_word_count - removed_words + inserted_words;
         self.line_fingerprints
             .update(&self.rope, start_line.index(), replaced_lines.len());
         self.revision = self.revision.wrapping_add(1);
