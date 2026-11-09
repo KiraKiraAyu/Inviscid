@@ -1113,8 +1113,7 @@ impl Editor {
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.lines_len == current_cache.parsed_lines.len()
-            && current_cache.metrics.heights.len() == current_cache.lines_len
-            && current_cache.metrics.offsets.len() == current_cache.lines_len
+            && current_cache.metrics.len() == current_cache.lines_len
         {
             // Release our read handle so an unshared cache can be updated in place.
             // Arc::make_mut preserves snapshots retained by other readers.
@@ -1451,13 +1450,9 @@ impl Editor {
             new_heights.push(h);
         }
 
-        let block_y = cache
+        let mut rebuild_from = cache
             .metrics
-            .offsets
-            .get(block_start)
-            .copied()
-            .unwrap_or(cache.total_height - DOCUMENT_BOTTOM_PADDING);
-        let mut rebuild_from = (cache.metrics.heights[block_start..old_block_end] != new_heights)
+            .splice(block_start..old_block_end, new_heights)
             .then_some(block_start);
         let mut quote_edge_rows = [None, None];
         {
@@ -1486,18 +1481,6 @@ impl Editor {
                 }
             }
         }
-        if rebuild_from.is_some() {
-            cache.metrics.offsets.splice(
-                block_start..old_block_end,
-                std::iter::repeat_n(block_y, new_heights.len()),
-            );
-        }
-        cache
-            .metrics
-            .as_parts_mut()
-            .0
-            .splice(block_start..old_block_end, new_heights);
-
         // Map the former disclosure row through any inserted/deleted lines.
         // Both old and new rows can lie outside the reparsed block.
         let old_active_idx = cache.active_line.index();
@@ -1536,23 +1519,15 @@ impl Editor {
                 active_mermaid_block,
             );
             let height = self.measure_line_layout_height(line_idx, parsed, lcx);
-            if height != cache.metrics.heights[line_idx] {
-                cache.metrics.heights[line_idx] = height;
+            if Some(height) != cache.metrics.height(line_idx) {
+                cache.metrics.set_height(line_idx, height);
                 rebuild_from = Some(rebuild_from.map_or(line_idx, |start| start.min(line_idx)));
             }
         }
 
         if let Some(start) = rebuild_from {
-            let mut y = if start == block_start {
-                block_y
-            } else {
-                cache.metrics.offsets[start]
-            };
-            for idx in start..cache.metrics.heights.len() {
-                cache.metrics.offsets[idx] = y;
-                y += cache.metrics.heights[idx];
-            }
-            cache.total_height = y + DOCUMENT_BOTTOM_PADDING;
+            cache.metrics.rebuild_from(start);
+            cache.total_height = cache.metrics.total_height();
         }
 
         cache.buffer_version = self.buffer.version();

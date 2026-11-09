@@ -26,6 +26,17 @@ impl LineMetrics {
         self.heights[line] = height;
     }
 
+    /// Returns whether geometry changed. Rebuild offsets after all height edits.
+    pub fn splice(&mut self, range: Range<usize>, heights: Vec<Pixels>) -> bool {
+        let changed = self.heights[range.clone()] != heights;
+        if changed {
+            self.offsets
+                .splice(range.clone(), std::iter::repeat_n(px(0.0), heights.len()));
+        }
+        self.heights.splice(range, heights);
+        changed
+    }
+
     pub fn rebuild_from(&mut self, start: usize) {
         let mut y = if start == 0 {
             DOCUMENT_TOP_PADDING
@@ -92,10 +103,6 @@ impl LineMetrics {
             Some((height, top)) => *top + *height + DOCUMENT_BOTTOM_PADDING,
             None => EMPTY_DOCUMENT_HEIGHT,
         }
-    }
-
-    pub(super) fn as_parts_mut(&mut self) -> (&mut Vec<Pixels>, &mut Vec<Pixels>) {
-        (&mut self.heights, &mut self.offsets)
     }
 }
 
@@ -169,5 +176,27 @@ mod tests {
         let mut empty = LineMetrics::from_heights(Vec::new());
         empty.rebuild_from(0);
         assert_eq!(empty.total_height(), px(48.0));
+    }
+
+    #[test]
+    fn splices_preserve_geometry_across_insert_delete_and_replace() {
+        let mut metrics = LineMetrics::from_heights(vec![px(10.0), px(20.0), px(30.0)]);
+        for (range, replacement, expected) in [
+            (
+                1..2,
+                vec![px(0.0), px(5.0)],
+                vec![px(10.0), px(0.0), px(5.0), px(30.0)],
+            ),
+            (0..2, vec![], vec![px(5.0), px(30.0)]),
+            (2..2, vec![px(40.0)], vec![px(5.0), px(30.0), px(40.0)]),
+            (0..3, vec![], vec![]),
+            (0..0, vec![px(7.0)], vec![px(7.0)]),
+        ] {
+            let start = range.start;
+            assert!(metrics.splice(range, replacement));
+            metrics.rebuild_from(start);
+            assert_eq!(metrics, LineMetrics::from_heights(expected));
+        }
+        assert!(!metrics.splice(0..1, vec![px(7.0)]));
     }
 }
