@@ -198,6 +198,7 @@ pub struct Editor {
     pub(crate) is_read_only: bool,
 
     pub(crate) auto_save_task: Option<Task<()>>,
+    fingerprint_task: Option<Task<()>>,
     pub(crate) auto_save_delay: std::time::Duration,
     pub(crate) file_watch_task: Option<Task<()>>,
     pub(crate) external_change: ExternalChangeState,
@@ -493,6 +494,7 @@ impl Editor {
             display_map: DisplayMap::new(),
             is_read_only: false,
             auto_save_task: None,
+            fingerprint_task: None,
             auto_save_delay: std::time::Duration::from_millis(1000),
             file_watch_task: None,
             external_change: ExternalChangeState::None,
@@ -505,15 +507,43 @@ impl Editor {
             needs_focus_after_find: false,
         };
         editor.reset_cursor_blink(cx);
+        editor.schedule_fingerprints(cx);
         editor.start_file_watcher(cx);
         editor
+    }
+
+    fn schedule_fingerprints(&mut self, cx: &mut Context<Self>) {
+        if self.fingerprint_task.is_some() {
+            return;
+        }
+        let Some(job) = self.buffer.fingerprint_job() else {
+            return;
+        };
+        let revision = self.buffer.revision();
+        let work = cx.background_executor().spawn(async move { job.run() });
+        self.fingerprint_task = Some(cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |editor, cx| {
+                editor.fingerprint_task = None;
+                let dirty = editor.is_dirty();
+                if !editor.buffer.install_fingerprints(result, revision) {
+                    editor.schedule_fingerprints(cx);
+                }
+                if editor.is_dirty() != dirty {
+                    cx.emit(EditorEvent::DirtyChanged(editor.is_dirty()));
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     pub fn new_with_path(path: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut load_error = None;
         let buffer = if path.exists() && is_whitelisted_extension(&path) {
             match std::fs::read_to_string(&path) {
-                Ok(content) => TextBuffer::from_str(&content, Some(path)),
+                Ok(content) => {
+                    TextBuffer::from_bytes(content.as_bytes(), Some(path)).expect("validated UTF-8")
+                }
                 Err(e) => {
                     eprintln!("Failed to read file {:?}: {}", path, e);
                     load_error = Some(format!("Could not open file: {e}"));
@@ -752,6 +782,7 @@ impl Editor {
             cx.emit(EditorEvent::CursorMoved);
         }
         if self.buffer.version() != prev_version {
+            self.schedule_fingerprints(cx);
             self.schedule_auto_save_if_needed(cx);
         }
     }
@@ -913,7 +944,10 @@ impl Editor {
             .ok()
             .and_then(|m| m.modified().ok());
         self.reset_find_search();
-        self.buffer = TextBuffer::from_str(&content, Some(path));
+        self.fingerprint_task = None;
+        self.buffer =
+            TextBuffer::from_bytes(content.as_bytes(), Some(path)).expect("validated UTF-8");
+        self.schedule_fingerprints(cx);
         self.load_error = None;
         self.refresh_find_matches(cx);
         self.sync_find_bar(cx);

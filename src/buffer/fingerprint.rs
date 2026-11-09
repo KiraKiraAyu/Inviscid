@@ -9,6 +9,76 @@ const BLOCK_SIZE: usize = 64;
 const HASH_BASE: u64 = 0x9e37_79b1_85eb_ca87;
 type Link = Option<Arc<Node>>;
 
+#[derive(Clone, Debug)]
+pub(super) enum FingerprintState {
+    Pending { baseline: Option<Rope> },
+    Ready(LineFingerprints),
+}
+
+/// Immutable, GPUI-independent work that may be run on a background executor.
+pub struct FingerprintJob {
+    rope: Rope,
+    baseline: Option<Rope>,
+    revision: u64,
+    baseline_revision: u64,
+}
+
+pub struct FingerprintResult {
+    fingerprints: LineFingerprints,
+    baseline_hash: Option<u64>,
+    revision: u64,
+    baseline_revision: u64,
+}
+
+impl FingerprintJob {
+    pub fn run(self) -> FingerprintResult {
+        let fingerprints = LineFingerprints::new(&self.rope);
+        let baseline_hash = self.baseline.map(|baseline| {
+            if self.revision == self.baseline_revision {
+                fingerprints.content_hash()
+            } else {
+                LineFingerprints::new(&baseline).content_hash()
+            }
+        });
+        FingerprintResult {
+            fingerprints,
+            baseline_hash,
+            revision: self.revision,
+            baseline_revision: self.baseline_revision,
+        }
+    }
+}
+
+impl super::TextBuffer {
+    pub fn fingerprint_job(&self) -> Option<FingerprintJob> {
+        match &self.line_fingerprints {
+            FingerprintState::Pending { baseline } => Some(FingerprintJob {
+                rope: self.rope.clone(),
+                baseline: baseline.clone(),
+                revision: self.revision,
+                baseline_revision: self.saved_baseline.revision,
+            }),
+            FingerprintState::Ready(_) => None,
+        }
+    }
+
+    pub fn install_fingerprints(&mut self, result: FingerprintResult, revision: u64) -> bool {
+        if self.revision != revision
+            || result.revision != revision
+            || result.baseline_revision != self.saved_baseline.revision
+            || !matches!(self.line_fingerprints, FingerprintState::Pending { .. })
+        {
+            return false;
+        }
+        if let Some(hash) = result.baseline_hash {
+            self.saved_baseline.content_hash = hash;
+        }
+        self.line_fingerprints = FingerprintState::Ready(result.fingerprints);
+        self.update_dirty_state();
+        true
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Summary {
     hash: u64,

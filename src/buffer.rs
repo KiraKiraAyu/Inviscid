@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
 mod fingerprint;
+#[cfg(test)]
+mod fingerprint_loading_tests;
 mod loading;
 pub mod movement;
 pub mod operations;
@@ -17,6 +19,7 @@ mod structure_index;
 #[cfg(test)]
 pub mod tests;
 
+pub use fingerprint::{FingerprintJob, FingerprintResult};
 pub use primitives::*;
 pub use source::LineSource;
 
@@ -336,7 +339,7 @@ pub struct TextBuffer {
     redo_stack: VecDeque<UndoStep>,
 
     saved_baseline: SavedBaseline,
-    line_fingerprints: fingerprint::LineFingerprints,
+    line_fingerprints: fingerprint::FingerprintState,
     pub(in crate::buffer) version: usize,
     pub(in crate::buffer) revision: u64,
     last_edit_time: Option<Instant>,
@@ -404,7 +407,11 @@ impl TextBuffer {
     }
 
     pub fn from_str(content: &str, file_path: Option<PathBuf>) -> Self {
-        Self::from_bytes(content.as_bytes(), file_path).expect("str is valid UTF-8")
+        let mut buffer =
+            Self::from_bytes(content.as_bytes(), file_path).expect("str is valid UTF-8");
+        let result = buffer.fingerprint_job().unwrap().run();
+        buffer.install_fingerprints(result, buffer.revision);
+        buffer
     }
 
     fn from_rope(
@@ -414,8 +421,9 @@ impl TextBuffer {
         file_path: Option<PathBuf>,
     ) -> Self {
         let is_empty_doc = rope.len_chars() == 0;
-        let line_fingerprints = fingerprint::LineFingerprints::new(&rope);
-        let saved_content_hash = line_fingerprints.content_hash();
+        let line_fingerprints = fingerprint::FingerprintState::Pending {
+            baseline: Some(rope.clone()),
+        };
         let saved_line_count = if is_empty_doc { 2 } else { rope.len_lines() };
         let baseline_char_count = rope.len_chars();
 
@@ -430,7 +438,7 @@ impl TextBuffer {
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
             saved_baseline: SavedBaseline {
-                content_hash: saved_content_hash,
+                content_hash: 0,
                 revision: 0,
                 line_count: saved_line_count,
                 char_count: baseline_char_count,
@@ -887,6 +895,9 @@ impl TextBuffer {
     }
 
     pub fn mark_saved_as(&mut self, baseline: SavedBaseline) {
+        if let fingerprint::FingerprintState::Pending { baseline } = &mut self.line_fingerprints {
+            *baseline = None;
+        }
         self.saved_baseline = baseline;
         self.update_dirty_state();
     }
@@ -907,6 +918,14 @@ impl TextBuffer {
             return;
         }
 
+        if matches!(
+            self.line_fingerprints,
+            fingerprint::FingerprintState::Pending { .. }
+        ) {
+            self.is_dirty = true;
+            return;
+        }
+
         if self.line_count() != self.saved_baseline.line_count
             || self.char_count() != self.saved_baseline.char_count
             || self.is_empty_doc != self.saved_baseline.is_empty_doc
@@ -920,7 +939,12 @@ impl TextBuffer {
     }
 
     fn compute_content_hash(&self) -> u64 {
-        self.line_fingerprints.content_hash()
+        match &self.line_fingerprints {
+            fingerprint::FingerprintState::Ready(fingerprints) => fingerprints.content_hash(),
+            fingerprint::FingerprintState::Pending { .. } => {
+                fingerprint::LineFingerprints::new(&self.rope).content_hash()
+            }
+        }
     }
 
     fn apply_content_metrics(
@@ -1079,8 +1103,9 @@ impl TextBuffer {
             .map(|line| line.split_whitespace().count())
             .sum();
         self.total_word_count = self.total_word_count - removed_words + inserted_words;
-        self.line_fingerprints
-            .update(&self.rope, start_line.index(), replaced_lines.len());
+        if let fingerprint::FingerprintState::Ready(fingerprints) = &mut self.line_fingerprints {
+            fingerprints.update(&self.rope, start_line.index(), replaced_lines.len());
+        }
         self.revision = self.revision.wrapping_add(1);
         self.last_edit_delta = Some(EditDelta {
             start_line,

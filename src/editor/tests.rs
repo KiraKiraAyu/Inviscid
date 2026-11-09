@@ -5,6 +5,29 @@ use crate::markdown::{MarkdownScanner, is_syntactic_separator};
 use gpui::px;
 
 #[gpui::test]
+fn background_fingerprints_retry_after_edits_and_finish_idle(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    let buffer = crate::buffer::TextBuffer::from_bytes(b"first\nsecond", None).unwrap();
+    let editor = cx.new(|cx| super::Editor::new_with_buffer(buffer, cx));
+    editor.update(cx, |editor, cx| {
+        assert!(editor.fingerprint_task.is_some());
+        editor.track_buffer_change(cx, |editor| {
+            editor
+                .buffer
+                .record_single_line_edit(SourceLine::new(0), |line, _| *line = "other".into());
+            editor.buffer.undo();
+        });
+        assert!(editor.is_dirty());
+    });
+    cx.run_until_parked();
+    editor.read_with(cx, |editor, _| {
+        assert!(editor.fingerprint_task.is_none());
+        assert!(editor.buffer.fingerprint_job().is_none());
+        assert!(!editor.is_dirty());
+    });
+}
+
+#[gpui::test]
 fn invalid_utf8_load_cannot_edit_or_overwrite_file(cx: &mut gpui::TestAppContext) {
     use gpui::AppContext;
     let dir = tempfile::tempdir().unwrap();
