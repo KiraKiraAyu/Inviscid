@@ -167,6 +167,9 @@ impl Render for StatusBar {
                                 })
                                 .child(if is_dirty { "Unsaved" } else { "Saved" }),
                         )
+                        .when_some(meta.load_error.as_ref(), |this, error| {
+                            this.child(div().child(error.clone()))
+                        })
                         .when(
                             meta.external_change != ExternalChangeState::None,
                             |this| {
@@ -297,6 +300,7 @@ mod tests {
 
         // Test set_meta
         let meta = EditorStatusMeta {
+            load_error: None,
             is_dirty: false,
             external_change: ExternalChangeState::None,
             cursor_pos: crate::buffer::Position {

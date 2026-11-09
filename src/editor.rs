@@ -150,6 +150,7 @@ pub struct HoveredLink {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditorStatusMeta {
+    pub load_error: Option<String>,
     pub is_dirty: bool,
     pub external_change: ExternalChangeState,
     pub cursor_pos: Position,
@@ -168,6 +169,7 @@ pub enum ExternalChangeState {
 }
 
 pub struct Editor {
+    load_error: Option<String>,
     pub(in crate::editor) buffer: TextBuffer,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) render_mode: RenderMode,
@@ -460,6 +462,7 @@ impl Editor {
             .file_path()
             .and_then(|path| Self::read_file_hash(path).ok());
         let mut editor = Self {
+            load_error: None,
             buffer,
             focus_handle,
             render_mode: default_mode,
@@ -507,11 +510,13 @@ impl Editor {
     }
 
     pub fn new_with_path(path: PathBuf, cx: &mut Context<Self>) -> Self {
+        let mut load_error = None;
         let buffer = if path.exists() && is_whitelisted_extension(&path) {
             match std::fs::read_to_string(&path) {
                 Ok(content) => TextBuffer::from_str(&content, Some(path)),
                 Err(e) => {
                     eprintln!("Failed to read file {:?}: {}", path, e);
+                    load_error = Some(format!("Could not open file: {e}"));
                     TextBuffer::from_str("", Some(path))
                 }
             }
@@ -519,6 +524,7 @@ impl Editor {
             TextBuffer::from_str("", Some(path))
         };
         let mut editor = Self::new_with_buffer(buffer, cx);
+        editor.load_error = load_error;
         let mtime = editor
             .buffer
             .file_path()
@@ -539,12 +545,12 @@ impl Editor {
 
     #[inline]
     pub fn is_read_only(&self) -> bool {
-        self.is_read_only
+        self.is_read_only || self.load_error.is_some()
     }
 
     #[inline]
     pub fn can_edit(&self) -> bool {
-        self.is_editable() && !self.is_read_only
+        self.is_editable() && !self.is_read_only()
     }
 
     pub fn set_read_only(&mut self, is_read_only: bool) {
@@ -638,6 +644,7 @@ impl Editor {
             return None;
         }
         Some(EditorStatusMeta {
+            load_error: self.load_error.clone(),
             is_dirty: self.buffer.is_dirty(),
             external_change: self.external_change,
             cursor_pos: self.buffer.cursor_pos(),
@@ -907,6 +914,7 @@ impl Editor {
             .and_then(|m| m.modified().ok());
         self.reset_find_search();
         self.buffer = TextBuffer::from_str(&content, Some(path));
+        self.load_error = None;
         self.refresh_find_matches(cx);
         self.sync_find_bar(cx);
         self.buffer.set_last_saved_mtime(mtime);
@@ -970,6 +978,10 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> Task<Result<(), std::io::Error>> {
         self.auto_save_task = None;
+        if !self.can_edit() {
+            return cx
+                .spawn(async move |_this, _cx| Err(std::io::Error::other("File is not editable")));
+        }
         match crate::fs::save_document_chunks(&path, self.buffer.chunks_with_line_ending()) {
             Ok(saved_mtime) => {
                 let content_hash = Self::hash_file_content(&self.buffer.to_string_content());

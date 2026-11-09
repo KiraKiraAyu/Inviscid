@@ -5,6 +5,27 @@ use crate::markdown::{MarkdownScanner, is_syntactic_separator};
 use gpui::px;
 
 #[gpui::test]
+fn invalid_utf8_load_cannot_edit_or_overwrite_file(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("invalid.md");
+    let original = [0xff, 0xfe, b'x'];
+    std::fs::write(&path, original).unwrap();
+    let editor = cx.new(|cx| super::Editor::new_with_path(path.clone(), cx));
+    editor.update(cx, |editor, cx| {
+        assert!(!editor.can_edit());
+        editor.set_read_only(false);
+        editor.toggle_read_only();
+        editor.toggle_read_only();
+        assert!(!editor.can_edit());
+        assert!(editor.save_file_async(cx).is_err());
+        editor.save_file_as_async(path.clone(), cx).detach();
+    });
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[gpui::test]
 fn large_document_layout_work_guards(cx: &mut gpui::TestAppContext) {
     use crate::buffer::{Position, TextBuffer};
     use crate::editor::{Editor, LayoutStats};
