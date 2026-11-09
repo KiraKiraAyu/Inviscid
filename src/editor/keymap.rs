@@ -213,9 +213,6 @@ impl Editor {
                 });
             }))
             .on_action(cx.listener(|this, _: &Backspace, _, cx| {
-                if this.edit_key_belongs_to_ime() {
-                    return;
-                }
                 let is_source = this.render_mode == RenderMode::Source;
                 this.perform_edit(cx, |this| {
                     if is_source || !this.buffer.table_backspace() {
@@ -224,9 +221,6 @@ impl Editor {
                 });
             }))
             .on_action(cx.listener(|this, _: &Delete, _, cx| {
-                if this.edit_key_belongs_to_ime() {
-                    return;
-                }
                 let is_source = this.render_mode == RenderMode::Source;
                 this.perform_edit(cx, |this| {
                     this.buffer.delete_forward_mode(is_source);

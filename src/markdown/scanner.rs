@@ -801,13 +801,13 @@ pub fn compute_syntactic_separators(lines: &[String]) -> Vec<bool> {
             in_fence = !in_fence;
         }
 
-        let is_sep = if i == 0 || !line.trim().is_empty() || in_fence {
-            false
-        } else if previous_nonempty {
-            true
-        } else {
-            !prev_is_separator
-        };
+        let is_sep = is_separator_line(
+            i,
+            line.trim().is_empty(),
+            in_fence,
+            previous_nonempty,
+            prev_is_separator,
+        );
 
         separators[i] = is_sep;
         prev_is_separator = is_sep;
@@ -815,6 +815,41 @@ pub fn compute_syntactic_separators(lines: &[String]) -> Vec<bool> {
     }
 
     separators
+}
+
+/// Returns whether the blank run directly before `block_line` ends with a
+/// syntactic separator according to the source projection's alternating rule.
+pub(crate) fn blank_run_before_ends_with_separator(
+    lines: &(impl LineSource + ?Sized),
+    block_line: SourceLine,
+) -> bool {
+    let mut run_start = block_line.index();
+    while run_start > 0 {
+        let line = lines.source_line(SourceLine::new(run_start - 1));
+        if !projected_line(&line, false).trim().is_empty() {
+            break;
+        }
+        run_start -= 1;
+    }
+
+    let mut previous_nonempty = run_start > 0;
+    let mut previous_separator = false;
+    for index in run_start..block_line.index() {
+        previous_separator =
+            is_separator_line(index, true, false, previous_nonempty, previous_separator);
+        previous_nonempty = false;
+    }
+    previous_separator
+}
+
+fn is_separator_line(
+    index: usize,
+    is_blank: bool,
+    in_fence: bool,
+    previous_nonempty: bool,
+    previous_separator: bool,
+) -> bool {
+    index != 0 && is_blank && !in_fence && (previous_nonempty || !previous_separator)
 }
 
 pub(crate) fn compute_syntactic_separators_with_projection(
@@ -834,13 +869,13 @@ pub(crate) fn compute_syntactic_separators_with_projection(
             in_fence = !in_fence;
         }
 
-        let is_sep = if i == 0 || !line.trim().is_empty() || in_fence {
-            false
-        } else if !lines[i - 1].trim().is_empty() {
-            true
-        } else {
-            !prev_is_separator
-        };
+        let is_sep = is_separator_line(
+            i,
+            line.trim().is_empty(),
+            in_fence,
+            i > 0 && !lines[i - 1].trim().is_empty(),
+            prev_is_separator,
+        );
 
         separators[i] = is_sep;
         prev_is_separator = is_sep;
@@ -868,13 +903,13 @@ pub fn is_syntactic_separator(lines: &(impl LineSource + ?Sized), source_line: S
             in_fence = !in_fence;
         }
 
-        prev_is_separator = if i == 0 || !line.trim().is_empty() || in_fence {
-            false
-        } else if previous_nonempty {
-            true
-        } else {
-            !prev_is_separator
-        };
+        prev_is_separator = is_separator_line(
+            i,
+            line.trim().is_empty(),
+            in_fence,
+            previous_nonempty,
+            prev_is_separator,
+        );
         previous_nonempty = !line.trim().is_empty();
     }
 
@@ -899,13 +934,13 @@ pub(crate) fn is_syntactic_separator_with_projection(
             in_fence = !in_fence;
         }
 
-        prev_is_separator = if i == 0 || !line.trim().is_empty() || in_fence {
-            false
-        } else if !lines[i - 1].trim().is_empty() {
-            true
-        } else {
-            !prev_is_separator
-        };
+        prev_is_separator = is_separator_line(
+            i,
+            line.trim().is_empty(),
+            in_fence,
+            i > 0 && !lines[i - 1].trim().is_empty(),
+            prev_is_separator,
+        );
     }
 
     prev_is_separator

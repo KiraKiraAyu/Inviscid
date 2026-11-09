@@ -90,7 +90,7 @@ def rename_directory(source, destination):
             time.sleep(0.1)
 
 
-def prepare(destination, patch, archive):
+def prepare(destination, patches, archive):
     """Return whether a verified source tree was created or regenerated."""
     destination = Path(destination).absolute()
     if destination.is_symlink():
@@ -98,8 +98,8 @@ def prepare(destination, patch, archive):
     if digest(archive) != ARCHIVE_SHA256:
         raise PreparationError(f'GPUI archive SHA-256 mismatch: {archive}')
     # Normalize checkout line endings; git apply always receives the canonical diff.
-    patch_text = patch.read_text(encoding='utf-8')
-    patch_hash = hashlib.sha256(patch_text.encode('utf-8')).hexdigest()
+    patch_texts = [patch.read_text(encoding='utf-8') for patch in patches]
+    patch_hash = hashlib.sha256(json.dumps(patch_texts).encode('utf-8')).hexdigest()
     if destination.exists():
         try:
             stamp = json.loads((destination / STAMP).read_text(encoding='utf-8'))
@@ -122,9 +122,10 @@ def prepare(destination, patch, archive):
         manifest = tomllib.loads((source / 'Cargo.toml').read_text(encoding='utf-8'))
         if (manifest['package']['name'], manifest['package']['version']) != ('gpui', VERSION):
             raise PreparationError('Crate manifest does not match the pinned GPUI version')
-        staged_patch = staging / 'local.patch'
-        staged_patch.write_text(patch_text, encoding='utf-8', newline='\n')
-        apply_patch(source, staged_patch, staging)
+        for index, (patch, patch_text) in enumerate(zip(patches, patch_texts)):
+            staged_patch = staging / f'{index}-{patch.name}'
+            staged_patch.write_text(patch_text, encoding='utf-8', newline='\n')
+            apply_patch(source, staged_patch, staging)
         stamp = {'archive_sha256': ARCHIVE_SHA256, 'patch_sha256': patch_hash,
                  'files': tree_hashes(source)}
         (source / STAMP).write_text(json.dumps(stamp, indent=2) + '\n', encoding='utf-8')
@@ -178,7 +179,9 @@ def main():
     arguments = parser.parse_args()
     try:
         archive = find_archive(arguments.archive, arguments.offline)
-        changed = prepare(ROOT / 'vendor/gpui', Path(__file__).with_name('windows-frame-upload.patch'), archive)
+        patches = [Path(__file__).with_name(name) for name in (
+            'windows-frame-upload.patch', 'windows-ime-input.patch')]
+        changed = prepare(ROOT / 'vendor/gpui', patches, archive)
     except (PreparationError, OSError, tarfile.TarError, ValueError, KeyError) as error:
         parser.exit(1, f'GPUI preparation failed: {error}\n')
     print('GPUI prepared.' if changed else 'GPUI already prepared; source hashes verified.')

@@ -1,6 +1,6 @@
-# GPUI Windows Frame Upload Patch
+# GPUI Windows Patches
 
-This directory contains a vendor patch and reproducible preparation script for [`gpui`](https://crates.io/crates/gpui) (`0.2.2`).
+This directory contains an ordered patch series and reproducible preparation script for [`gpui`](https://crates.io/crates/gpui) (`0.2.2`).
 
 The materialized source in `vendor/gpui` is gitignored and treated as an ephemeral build artifact consumed locally by `Cargo.toml`.
 
@@ -88,8 +88,38 @@ All tests and measurements were conducted on Windows (2026-11-08) comparing defa
   cargo test --manifest-path vendor/gpui/Cargo.toml --target-dir target --lib --features test-support mono_upload_tests -j 1 --config profile.dev.debug=0 -- --test-threads=1
   ```
 
-## 5. Maintenance & Upstream Strategy
+## 5. IME Key Ownership
 
-- **Single Source of Truth**: Never edit `vendor/gpui/` manually. `prepare.py` records cryptographic checksums in `.inviscid-patch.json` and will refuse to run against a modified or unmanaged directory. All modifications must be made via `windows-frame-upload.patch`.
-- **Minimal Surface**: Keep the patch scope strictly confined to the Windows DirectX batching fix and associated invariant tests.
-- **Exit Criteria**: This patch is a stopgap. As soon as upstream `gpui` lands an equivalent frame-upload or descriptor-indexing optimization for DirectX 11, `vendor/gpui` and this `patches/gpui/` directory should be removed in favor of the official crates.io release.
+`windows-ime-input.patch` fixes the Windows input boundary independently of the renderer patch.
+Upstream GPUI recovers the original key from `VK_PROCESSKEY` using `ImmGetVirtualKey` and can
+dispatch it as an application action after the IME has already cleared or committed its preedit.
+For example, cancelling the final preedit letter with Backspace can also delete committed text.
+
+The patch routes processed keys to `TranslateMessage` before decoding application actions,
+with the original message unchanged and without holding a window-state borrow during translation.
+It also prevents processed keys from becoming application KeyUp/system-key events. Active
+compositions retain the existing platform ownership behavior. No editor clock, timeout, or
+pending swallow token is involved, so the next independent key is handled normally.
+
+The Win32 contract is documented in [ImmGetVirtualKey](https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immgetvirtualkey)
+and [WM_KEYDOWN](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-keydown).
+
+Four platform regression tests cover processed keys after cancellation/commit, active
+composition editing/navigation, and the next independent key. Application tests cover both
+cancellation APIs, explicit/fallback UTF-16 ranges, CJK/emoji, and normal Backspace after cancellation.
+These simulate the input contract; they do not substitute for a manual Rime session.
+
+```powershell
+python patches/gpui/prepare.py --offline
+# Reuse the application's resolved versions for standalone GPUI tests. This generated
+# lockfile is intentionally excluded from the source integrity stamp.
+Copy-Item Cargo.lock vendor/gpui/Cargo.lock
+cargo test --offline --manifest-path vendor/gpui/Cargo.toml --target-dir target --lib --features test-support ime_key_ownership_tests -j 1 --config profile.dev.debug=0 -- --test-threads=1
+cargo test --offline --lib ime_ -j 1 --config profile.dev.debug=0 -- --test-threads=1
+```
+
+## 6. Maintenance & Upstream Strategy
+
+- **Single Source of Truth**: Never edit `vendor/gpui/` manually. `prepare.py` records cryptographic checksums in `.inviscid-patch.json` and will refuse to run against a modified or unmanaged directory. Modify the relevant tracked patch, then regenerate. The ordered series is hashed and applied atomically; a failed patch leaves the existing tree intact.
+- **Minimal Surface**: Keep the DirectX upload and Windows IME changes in separate patches with their own regression tests.
+- **Exit Criteria**: Remove each patch when the pinned upstream release contains its equivalent fix. Remove the preparation tooling and Cargo override once neither patch is needed.

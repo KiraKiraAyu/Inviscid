@@ -1,0 +1,105 @@
+--- a/src/platform/windows/events.rs
++++ b/src/platform/windows/events.rs
+@@ -370,6 +370,20 @@
+     // It's a known bug that you can't trigger `ctrl-shift-0`. See:
+     // https://superuser.com/questions/1455762/ctrl-shift-number-key-combination-has-stopped-working-for-a-few-numbers
+     fn handle_keydown_msg(&self, handle: HWND, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
++        // VK_PROCESSKEY already belongs to the IME, even if a synchronous
++        // composition callback cleared the marked range before this message.
++        // Translate the original message once; never replay its recovered key
++        // as an application action. Translation can reenter the input handler,
++        // so do not hold the window-state borrow here.
++        let is_composing = self
++            .with_input_handler(|input_handler| input_handler.marked_text_range())
++            .flatten()
++            .is_some();
++        if key_down_is_ime_owned(VIRTUAL_KEY(wparam.loword()), is_composing) {
++            translate_message(handle, wparam, lparam);
++            return Some(0);
++        }
++
+         let mut lock = self.state.borrow_mut();
+         let Some(input) = handle_key_event(handle, wparam, lparam, &mut lock, |keystroke| {
+             PlatformInput::KeyDown(KeyDownEvent {
+@@ -380,15 +394,6 @@
+             return Some(1);
+         };
+         drop(lock);
+-
+-        let is_composing = self
+-            .with_input_handler(|input_handler| input_handler.marked_text_range())
+-            .flatten()
+-            .is_some();
+-        if is_composing {
+-            translate_message(handle, wparam, lparam);
+-            return Some(0);
+-        }
+ 
+         let Some(mut func) = self.state.borrow_mut().callbacks.input.take() else {
+             return Some(1);
+@@ -1341,12 +1346,9 @@
+                 capslock,
+             }))
+         }
++        // Processed IME keys must not leak through KeyUp or system-key paths either.
++        VK_PROCESSKEY => None,
+         vkey => {
+-            let vkey = if vkey == VK_PROCESSKEY {
+-                VIRTUAL_KEY(unsafe { ImmGetVirtualKey(handle) } as u16)
+-            } else {
+-                vkey
+-            };
+             let keystroke = parse_normal_key(vkey, lparam, modifiers)?;
+             Some(f(keystroke))
+         }
+@@ -1561,3 +1563,50 @@
+         .log_err();
+     }
+ }
++
++// Keep key ownership independent of editor actions and composition callback timing.
++fn key_down_is_ime_owned(virtual_key: VIRTUAL_KEY, has_marked_text: bool) -> bool {
++    virtual_key == VK_PROCESSKEY || has_marked_text
++}
++
++#[cfg(test)]
++mod ime_key_ownership_tests {
++    use super::{
++        VK_BACK, VK_DELETE, VK_ESCAPE, VK_LEFT, VK_PROCESSKEY, VK_RETURN, VK_RIGHT, VK_SPACE,
++        VK_TAB, key_down_is_ime_owned,
++    };
++
++    #[test]
++    fn processed_key_stays_with_ime_after_preedit_is_cleared() {
++        assert!(key_down_is_ime_owned(VK_PROCESSKEY, true));
++        // Cancellation can remove the marked range before WM_KEYDOWN arrives.
++        assert!(key_down_is_ime_owned(VK_PROCESSKEY, false));
++    }
++
++    #[test]
++    fn processed_key_stays_with_ime_after_commit() {
++        // Enter/Space can commit before the processed key reaches the window.
++        assert!(key_down_is_ime_owned(VK_PROCESSKEY, false));
++        assert!(!key_down_is_ime_owned(VK_RETURN, false));
++        assert!(!key_down_is_ime_owned(VK_SPACE, false));
++    }
++
++    #[test]
++    fn active_preedit_owns_editing_and_navigation_keys() {
++        for key in [
++            VK_BACK, VK_DELETE, VK_RETURN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_TAB,
++        ] {
++            assert!(key_down_is_ime_owned(key, true), "{key:?}");
++        }
++    }
++
++    #[test]
++    fn cancellation_leaves_no_token_to_swallow_the_next_key() {
++        assert!(key_down_is_ime_owned(VK_PROCESSKEY, false));
++        for key in [
++            VK_BACK, VK_DELETE, VK_RETURN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_TAB,
++        ] {
++            assert!(!key_down_is_ime_owned(key, false), "{key:?}");
++        }
++    }
++}

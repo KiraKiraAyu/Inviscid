@@ -1,12 +1,7 @@
 use gpui::*;
 use std::ops::Range;
-use std::time::{Duration, Instant};
 
 use super::{Editor, RenderMode};
-
-/// Grace window to recognize an edit key (e.g. Backspace) that the platform IME already consumed
-/// when clearing a single-character preedit before forwarding `WM_KEYDOWN`.
-const IME_CONSUMED_KEY_GRACE: Duration = Duration::from_millis(20);
 
 impl Editor {
     pub(crate) fn is_selection_disclosure(&self) -> bool {
@@ -26,25 +21,6 @@ impl Editor {
 
     pub(crate) fn disclosure_col(&self) -> usize {
         self.disclosure_position().col
-    }
-
-    fn note_ime_preedit_cleared(&mut self) {
-        self.ime_consumed_edit_key_at = Some(Instant::now());
-    }
-
-    fn ime_cleared_existing_preedit(&self, range_utf16: Option<&Range<usize>>, text: &str) -> bool {
-        range_utf16.is_none() && text.is_empty() && self.marked_range.is_some()
-    }
-
-    fn take_ime_consumed_edit_key(&mut self) -> bool {
-        self.ime_consumed_edit_key_at
-            .take()
-            .is_some_and(|at| at.elapsed() <= IME_CONSUMED_KEY_GRACE)
-    }
-
-    pub(crate) fn edit_key_belongs_to_ime(&mut self) -> bool {
-        let consumed = self.take_ime_consumed_edit_key();
-        self.marked_range.is_some() || consumed
     }
 }
 
@@ -96,9 +72,6 @@ impl EntityInputHandler for Editor {
     ) {
         if !self.can_edit() {
             return;
-        }
-        if self.ime_cleared_existing_preedit(range_utf16.as_ref(), text) {
-            self.note_ime_preedit_cleared();
         }
         let had_marked = self.marked_range.is_some();
         let fallback_marked = self.marked_range.take();
@@ -155,9 +128,6 @@ impl EntityInputHandler for Editor {
     ) {
         if !self.can_edit() {
             return;
-        }
-        if self.ime_cleared_existing_preedit(range_utf16.as_ref(), new_text) {
-            self.note_ime_preedit_cleared();
         }
         let fallback_marked = self.marked_range.clone();
 

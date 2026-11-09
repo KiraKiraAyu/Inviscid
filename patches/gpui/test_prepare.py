@@ -53,7 +53,35 @@ class PreparationTests(unittest.TestCase):
         return path
 
     def prepare(self, patch_path=None):
-        return subject.prepare(self.destination, patch_path or self.patch, self.archive)
+        return subject.prepare(self.destination, [patch_path or self.patch], self.archive)
+
+    def test_patch_series_is_ordered_and_reproducible(self):
+        second = self.make_patch(3, 'second.patch')
+        second.write_bytes(second.read_bytes().replace(b'-pub const VALUE: u8 = 1;',
+                                                       b'-pub const VALUE: u8 = 2;'))
+        patches = [self.patch, second]
+        self.assertTrue(subject.prepare(self.destination, patches, self.archive))
+        self.assertEqual((self.destination / 'src/lib.rs').read_bytes(),
+                         b'pub const VALUE: u8 = 3;\n')
+        self.assertFalse(subject.prepare(self.destination, patches, self.archive))
+        before = self.contents()
+        with self.assertRaises(subject.PreparationError):
+            subject.prepare(self.destination, list(reversed(patches)), self.archive)
+        self.assertEqual(self.contents(), before)
+
+        second.write_bytes(second.read_bytes().replace(b'+pub const VALUE: u8 = 3;',
+                                                       b'+pub const VALUE: u8 = 4;'))
+        self.assertTrue(subject.prepare(self.destination, patches, self.archive))
+        self.assertEqual((self.destination / 'src/lib.rs').read_bytes(),
+                         b'pub const VALUE: u8 = 4;\n')
+
+    def test_failed_second_patch_preserves_existing_output(self):
+        self.prepare()
+        before = self.contents()
+        conflicting = self.make_patch(3, 'conflicting.patch')
+        with self.assertRaises(subject.PreparationError):
+            subject.prepare(self.destination, [self.patch, conflicting], self.archive)
+        self.assertEqual(self.contents(), before)
 
     def contents(self):
         return {path.relative_to(self.destination): path.read_bytes()
@@ -223,7 +251,8 @@ class PreparationTests(unittest.TestCase):
         locate.assert_called_once_with(self.archive, True)
         materialize.assert_called_once_with(
             project / 'vendor/gpui',
-            Path(subject.__file__).with_name('windows-frame-upload.patch'), self.archive)
+            [Path(subject.__file__).with_name('windows-frame-upload.patch'),
+             Path(subject.__file__).with_name('windows-ime-input.patch')], self.archive)
 
     def test_explicit_archive_bypasses_cache_lookup_and_download(self):
         with patch.object(subject, 'urlopen') as network:

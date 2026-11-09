@@ -1229,3 +1229,33 @@ fn quote_projection_local_updates_match_rebuild_across_fence_and_quote_transitio
         }
     }
 }
+#[test]
+fn blank_run_terminal_separator_classification_matches_projection() {
+    use crate::buffer::SourceLine;
+
+    for prefix in [
+        "",
+        "body\n",
+        "body\n\n",
+        "body\n\n\n",
+        "\n",
+        "\n\n",
+        "\n\n\n",
+    ] {
+        for suffix in ["# heading", "paragraph", "## next"] {
+            let source = format!("{prefix}{suffix}");
+            let lines: Vec<String> = source.split('\n').map(str::to_owned).collect();
+            let block_line = SourceLine::new(lines.len() - 1);
+            let expected = if block_line.index() > 0 && lines[block_line.index() - 1].is_empty() {
+                is_syntactic_separator(&lines, block_line - 1)
+            } else {
+                false
+            };
+            assert_eq!(
+                blank_run_before_ends_with_separator(&lines, block_line),
+                expected,
+                "{source:?}",
+            );
+        }
+    }
+}

@@ -3679,64 +3679,159 @@ fn test_ime_composition_reserves_width_and_wraps(cx: &mut gpui::TestAppContext) 
     });
 }
 
-/// Verifies that the Backspace key event that empties an IME composition is not replayed on the document.
 #[gpui::test]
-fn test_ime_consumed_backspace_is_not_replayed_on_document(cx: &mut gpui::TestAppContext) {
+fn heading_enter_keeps_source_block_separators_across_modes(cx: &mut gpui::TestAppContext) {
+    use super::{RenderMode, actions::Newline};
     use crate::buffer::{Position, TextBuffer};
     use gpui::EntityInputHandler;
 
     let (editor, cx) = cx.add_window_view(|_window, cx| {
-        super::Editor::new_with_buffer(TextBuffer::from_str("中文", None), cx)
+        super::Editor::new_with_buffer(TextBuffer::from_str("# 参考", None), cx)
+    });
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.set_render_mode(RenderMode::LivePreview, cx);
+            ed.buffer.set_cursor(Position::new(SourceLine::new(0), 2));
+            window.focus(&ed.focus_handle);
+        });
     });
     cx.run_until_parked();
+    for count in 1..=3 {
+        cx.dispatch_action(Newline);
+        cx.update(|_window, cx| {
+            editor.update(cx, |ed, cx| {
+                let expected = format!("{}# 参考", "\n".repeat(2 * count));
+                assert_eq!(ed.buffer.to_string_normalized(), expected);
+                assert_eq!(
+                    ed.buffer.cursor_pos(),
+                    Position::new(SourceLine::new(2 * count), 2)
+                );
+                let selection = ed.buffer.selection();
+                ed.set_render_mode(RenderMode::Source, cx);
+                assert_eq!(ed.buffer.to_string_normalized(), expected);
+                let incremental = ed.layout_snapshot();
+                ed.invalidate_layout_cache();
+                let full = ed.layout_snapshot();
+                assert_eq!(
+                    incremental.parsed_lines.as_ref(),
+                    full.parsed_lines.as_ref()
+                );
+                for index in 0..count {
+                    assert!(
+                        ed.buffer
+                            .line_text(SourceLine::new(2 * index))
+                            .unwrap()
+                            .is_empty()
+                    );
+                    assert!(
+                        ed.buffer
+                            .line_text(SourceLine::new(2 * index + 1))
+                            .unwrap()
+                            .is_empty()
+                    );
+                }
+                ed.set_render_mode(RenderMode::LivePreview, cx);
+                assert_eq!(ed.buffer.to_string_normalized(), expected);
+                assert_eq!(ed.buffer.selection(), selection);
+                ed.undo(cx);
+                let before = format!("{}# 参考", "\n".repeat(2 * (count - 1)));
+                assert_eq!(ed.buffer.to_string_normalized(), before);
+                ed.redo(cx);
+                assert_eq!(ed.buffer.to_string_normalized(), expected);
+            });
+        });
+    }
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.buffer.set_cursor(Position::new(SourceLine::new(4), 0));
+            // Input through the same boundary as committed IME/keyboard text.
+            ed.replace_text_in_range(None, "前言", window, cx);
+            assert_eq!(ed.buffer.to_string_normalized(), "\n\n\n\n前言\n\n# 参考");
+            ed.set_render_mode(RenderMode::Source, cx);
+            assert_eq!(ed.buffer.line_text(SourceLine::new(5)).as_deref(), Some(""));
+            ed.set_render_mode(RenderMode::LivePreview, cx);
+            assert_eq!(ed.buffer.to_string_normalized(), "\n\n\n\n前言\n\n# 参考");
+        });
+    });
+}
 
+#[gpui::test]
+fn ime_cancel_does_not_swallow_next_independent_backspace(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use gpui::EntityInputHandler;
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str("# 参考", None), cx)
+    });
     cx.update(|window, cx| {
         editor.update(cx, |ed, _cx| {
-            ed.buffer_mut()
-                .set_cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
-
-            // 1. Start composition with "n" as marked text.
-            ed.replace_and_mark_text_in_range(None, "n", Some(1..1), window, _cx);
-            assert_eq!(
-                ed.buffer_mut()
-                    .line(crate::buffer::SourceLine::new(0))
-                    .unwrap(),
-                "中文n"
-            );
-            assert!(ed.marked_range.is_some());
-            assert!(
-                ed.edit_key_belongs_to_ime(),
-                "a live composition owns the key"
-            );
-
-            // 2. Backspace clears the preedit and publishes the empty composition before the key action runs.
-            ed.replace_and_mark_text_in_range(None, "", None, window, _cx);
-            assert_eq!(
-                ed.buffer_mut()
-                    .line(crate::buffer::SourceLine::new(0))
-                    .unwrap(),
-                "中文",
-                "the pending letter is removed, the confirmed characters are not"
-            );
+            ed.buffer.set_cursor(Position::new(SourceLine::new(0), 4));
+            window.focus(&ed.focus_handle);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.replace_and_mark_text_in_range(None, "n", Some(1..1), window, cx);
+            assert_eq!(ed.buffer.to_string_normalized(), "# 参考n");
+            ed.replace_and_mark_text_in_range(None, "", None, window, cx);
+            assert_eq!(ed.buffer.to_string_normalized(), "# 参考");
             assert!(ed.marked_range.is_none());
+        });
+    });
+    // The platform owns the processed IME key. The next editor action is a new key,
+    // even if it arrives immediately after cancellation.
+    cx.dispatch_action(super::actions::Backspace);
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _cx| {
+            assert_eq!(ed.buffer.to_string_normalized(), "# 参");
+        });
+    });
+}
 
-            // 3. The follow-up key event is recognized once and consumed.
-            assert!(
-                ed.edit_key_belongs_to_ime(),
-                "the key press that emptied the preedit must not reach the document"
-            );
-            assert!(
-                !ed.edit_key_belongs_to_ime(),
-                "the consumed-key token must not linger beyond its own key press"
-            );
+/// Platform callbacks may cancel via either replacement API, with explicit or marked ranges.
+#[gpui::test]
+fn ime_cancellation_only_replaces_marked_text(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use gpui::EntityInputHandler;
 
-            ed.ime_consumed_edit_key_at =
-                Some(std::time::Instant::now() - std::time::Duration::from_millis(500));
-            assert!(!ed.edit_key_belongs_to_ime());
-            assert!(
-                ed.ime_consumed_edit_key_at.is_none(),
-                "a stale token is consumed rather than left behind"
-            );
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str("", None), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, cx| {
+            for mode in [super::RenderMode::Source, super::RenderMode::LivePreview] {
+                for committed in ["# 参考", "# 🦀参考"] {
+                    for explicit_range in [false, true] {
+                        for cancel_with_mark in [false, true] {
+                            ed.buffer = TextBuffer::from_str(committed, None);
+                            ed.invalidate_layout_cache();
+                            ed.set_render_mode(mode, cx);
+                            ed.buffer.set_cursor(Position::new(
+                                SourceLine::new(0),
+                                committed.chars().count(),
+                            ));
+                            let start = committed.encode_utf16().count();
+                            ed.replace_and_mark_text_in_range(None, "n", Some(1..1), window, cx);
+                            assert_eq!(ed.marked_range, Some(start..start + 1));
+                            let range = explicit_range.then_some(start..start + 1);
+                            if cancel_with_mark {
+                                ed.replace_and_mark_text_in_range(range, "", None, window, cx);
+                            } else {
+                                ed.replace_text_in_range(range, "", window, cx);
+                            }
+                            assert_eq!(ed.buffer.to_string_normalized(), committed);
+                            assert!(ed.marked_range.is_none());
+                            assert_eq!(ed.buffer.cursor_pos().col, committed.chars().count());
+                            ed.replace_and_mark_text_in_range(None, "n", Some(1..1), window, cx);
+                            ed.replace_text_in_range(None, "你", window, cx);
+                            assert_eq!(ed.buffer.to_string_normalized(), format!("{committed}你"));
+                            assert!(ed.marked_range.is_none());
+                        }
+                    }
+                }
+            }
         });
     });
 }

@@ -502,10 +502,10 @@ fn test_heading_enter() {
     let mut buf = TextBuffer::from_str("# Welcome to Inviscid", None);
     buf.selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(0), 2));
     buf.insert_newline();
-    assert_eq!(buf.to_lines(), vec!["", "# Welcome to Inviscid"]);
+    assert_eq!(buf.to_lines(), vec!["", "", "# Welcome to Inviscid"]);
     assert_eq!(
         buf.selection.head,
-        Position::new(crate::buffer::SourceLine::new(1), 2)
+        Position::new(crate::buffer::SourceLine::new(2), 2)
     );
 
     let mut buf2 = TextBuffer::from_str("# Welcome to Inviscid", None);
@@ -516,6 +516,118 @@ fn test_heading_enter() {
         buf2.selection.head,
         Position::new(crate::buffer::SourceLine::new(2), 0)
     );
+}
+
+#[test]
+fn block_start_enter_preserves_source_separators() {
+    for (prefix, added_lines, editable_offset) in [
+        ("", 2, 0),
+        ("正文\n\n", 2, 0),
+        ("\n\n", 2, 0),
+        ("正文\n", 3, 1),
+        ("\n", 3, 1),
+        ("正文\n\n\n", 3, 1),
+    ] {
+        for (block, col) in [("# 参考", 2), ("参考", 0)] {
+            let original = format!("{prefix}{block}\n\n尾段");
+            let mut buffer = TextBuffer::from_str(&original, None);
+            let at = SourceLine::new(prefix.chars().filter(|&ch| ch == '\n').count());
+            let selection = Selection::cursor(Position::new(at, col));
+            buffer.set_selection(selection);
+            let materializations = buffer.full_line_materializations();
+            buffer.insert_newline_mode(false);
+            assert_eq!(buffer.full_line_materializations(), materializations);
+            let expected = format!("{prefix}{}{block}\n\n尾段", "\n".repeat(added_lines));
+            assert_eq!(buffer.to_string_normalized(), expected);
+            let expected_cursor = if block.starts_with('#') {
+                Position::new(at + added_lines, 2)
+            } else {
+                Position::new(at + editable_offset, 0)
+            };
+            assert_eq!(buffer.cursor_pos(), expected_cursor);
+            buffer.undo();
+            assert_eq!(buffer.to_string_normalized(), original);
+            assert_eq!(buffer.selection(), selection);
+            buffer.redo();
+            assert_eq!(buffer.to_string_normalized(), expected);
+
+            // Empty paragraphs are real blocks. Filling one must never attach
+            // its text to the preceding block or the following heading/paragraph.
+            let editable = at + editable_offset;
+            buffer.set_cursor(Position::new(editable, 0));
+            buffer.insert_text("新段落");
+            assert_eq!(buffer.line_text(editable).as_deref(), Some("新段落"));
+            if editable.index() > 0 {
+                assert_eq!(
+                    buffer.line_text(editable.saturating_sub(1)).as_deref(),
+                    Some("")
+                );
+            }
+            assert_eq!(buffer.line_text(editable + 1).as_deref(), Some(""));
+            assert_eq!(buffer.line_text(editable + 2).as_deref(), Some(block));
+        }
+    }
+}
+
+#[test]
+fn heading_start_repeated_enter_keeps_a_separator_after_every_empty_block() {
+    for col in 0..=2 {
+        let mut buffer = TextBuffer::from_str("# 参考", None);
+        buffer.set_cursor(Position::new(SourceLine::new(0), col));
+        for count in 1..=3 {
+            buffer.insert_newline_mode(false);
+            let expected = format!("{}# 参考", "\n".repeat(2 * count));
+            assert_eq!(buffer.to_string_normalized(), expected);
+            assert_eq!(
+                buffer.cursor_pos(),
+                Position::new(SourceLine::new(2 * count), 2)
+            );
+            for index in 0..count {
+                let mut filled = TextBuffer::from_str(&expected, None);
+                filled.set_cursor(Position::new(SourceLine::new(2 * index), 0));
+                filled.insert_text("段落");
+                let lines = filled.to_lines();
+                assert_eq!(lines[2 * index + 1], "");
+                if index > 0 {
+                    assert_eq!(lines[2 * index - 1], "");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn block_start_enter_selection_uses_the_same_source_edit() {
+    for prefix in ["", "正文\n\n", "正文\n", "\n", "\n\n"] {
+        for (block, col) in [("# 参考", 2), ("参考", 0)] {
+            let at = SourceLine::new(prefix.chars().filter(|&ch| ch == '\n').count());
+            let mut cursor_edit = TextBuffer::from_str(&format!("{prefix}{block}"), None);
+            cursor_edit.set_cursor(Position::new(at, col));
+            cursor_edit.insert_newline_mode(false);
+            let byte = block.char_indices().nth(col).unwrap().0;
+            let original = format!("{prefix}{}x{}", &block[..byte], &block[byte..]);
+            let mut selected = TextBuffer::from_str(&original, None);
+            let selection = Selection {
+                anchor: Position::new(at, col),
+                head: Position::new(at, col + 1),
+            };
+            selected.set_selection(selection);
+            selected.insert_newline_mode(false);
+            assert_eq!(
+                selected.to_string_normalized(),
+                cursor_edit.to_string_normalized()
+            );
+            assert_eq!(selected.selection(), cursor_edit.selection());
+            selected.undo();
+            assert_eq!(selected.to_string_normalized(), original);
+            assert_eq!(selected.selection(), selection);
+            selected.redo();
+            assert_eq!(
+                selected.to_string_normalized(),
+                cursor_edit.to_string_normalized()
+            );
+        }
+    }
 }
 
 #[test]

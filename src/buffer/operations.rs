@@ -1,7 +1,7 @@
 use super::char_col_to_byte_offset;
 use super::movement::{is_closing_code_fence_lines, is_in_code_fence_lines};
 use super::primitives::{Position, Selection};
-use super::{SourceLines, TextBuffer};
+use super::{LineSource, SourceLine, SourceLines, TextBuffer};
 use crate::markdown::{
     BlockPrefix, current_indent_relative, get_smart_continuation_prefix, indent_col,
     is_thematic_break, list_marker, parse_block_prefix, parse_heading_prefix, quote_prefix_len,
@@ -120,6 +120,32 @@ fn delete_range_internal(lines: &mut SourceLines, (start, end): (Position, Posit
     }
 
     ensure_min_empty_lines(lines);
+}
+
+/// Inserts an empty block before an unfenced block. Each empty block occupies
+/// an editable source line followed by its own blank separator, regardless of
+/// whether the following block is a heading or a paragraph.
+struct PrependBlockPlan {
+    inserted_line_count: usize,
+    editable_line: SourceLine,
+    following_line: SourceLine,
+}
+
+fn prepend_block_plan(
+    lines: &(impl LineSource + ?Sized),
+    block_line: SourceLine,
+) -> PrependBlockPlan {
+    let has_separator_before =
+        crate::markdown::blank_run_before_ends_with_separator(lines, block_line);
+    // Insert [empty block, separator] when the preceding source already has
+    // its separator. Otherwise insert [separator, empty block, separator].
+    let editable_offset = usize::from(block_line.index() > 0 && !has_separator_before);
+    let inserted_line_count = editable_offset + 2;
+    PrependBlockPlan {
+        inserted_line_count,
+        editable_line: block_line + editable_offset,
+        following_line: block_line + inserted_line_count,
+    }
 }
 
 fn append_block_below_buffer(
@@ -771,11 +797,12 @@ impl TextBuffer {
             } else if let Some((_level, prefix_len)) = parse_heading_prefix(trimmed) {
                 let actual_prefix_len = leading_spaces + prefix_len;
                 if col <= actual_prefix_len {
+                    let plan = prepend_block_plan(self, pos.line);
                     self.replace_line_range(
                         pos.line,
                         0,
-                        vec![String::new()],
-                        Selection::cursor(Position::new(pos.line + 1, actual_prefix_len)),
+                        vec![String::new(); plan.inserted_line_count],
+                        Selection::cursor(Position::new(plan.following_line, actual_prefix_len)),
                     );
                 } else if col >= current_chars_len {
                     append_block_below_buffer(self, pos.line);
@@ -828,11 +855,12 @@ impl TextBuffer {
                 );
                 return;
             } else if col == 0 {
+                let plan = prepend_block_plan(self, pos.line);
                 self.replace_line_range(
                     pos.line,
                     0,
-                    vec![String::new(), String::new()],
-                    Selection::cursor(Position::new(pos.line, 0)),
+                    vec![String::new(); plan.inserted_line_count],
+                    Selection::cursor(Position::new(plan.editable_line, 0)),
                 );
                 return;
             } else if col >= current_chars_len {
@@ -933,8 +961,11 @@ impl TextBuffer {
                 let actual_prefix_len = leading_spaces + prefix_len;
 
                 if col <= actual_prefix_len {
-                    lines.insert_source_line(pos.line, String::new());
-                    *sel = Selection::cursor(Position::new(pos.line + 1, actual_prefix_len));
+                    let plan = prepend_block_plan(lines.as_slice(), pos.line);
+                    for _ in 0..plan.inserted_line_count {
+                        lines.insert_source_line(pos.line, String::new());
+                    }
+                    *sel = Selection::cursor(Position::new(plan.following_line, actual_prefix_len));
                 } else if col >= current_chars_len {
                     let target = append_block_below(lines, pos.line);
                     *sel = Selection::cursor(Position::new(target, 0));
@@ -976,9 +1007,11 @@ impl TextBuffer {
                 lines.insert_source_line(pos.line + 1, right);
                 *sel = Selection::cursor(Position::new(pos.line + 1, 0));
             } else if col == 0 {
-                lines.insert_source_line(pos.line, String::new());
-                lines.insert_source_line(pos.line + 1, String::new());
-                *sel = Selection::cursor(Position::new(pos.line, 0));
+                let plan = prepend_block_plan(lines.as_slice(), pos.line);
+                for _ in 0..plan.inserted_line_count {
+                    lines.insert_source_line(pos.line, String::new());
+                }
+                *sel = Selection::cursor(Position::new(plan.editable_line, 0));
             } else if col >= current_chars_len {
                 let target = append_block_below(lines, pos.line);
                 *sel = Selection::cursor(Position::new(target, 0));
