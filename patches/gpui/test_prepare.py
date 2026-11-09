@@ -252,7 +252,8 @@ class PreparationTests(unittest.TestCase):
         materialize.assert_called_once_with(
             project / 'vendor/gpui',
             [Path(subject.__file__).with_name('windows-frame-upload.patch'),
-             Path(subject.__file__).with_name('windows-ime-input.patch')], self.archive)
+             Path(subject.__file__).with_name('windows-ime-input.patch'),
+             Path(subject.__file__).with_name('windows-text-baseline.patch')], self.archive)
 
     def test_explicit_archive_bypasses_cache_lookup_and_download(self):
         with patch.object(subject, 'urlopen') as network:

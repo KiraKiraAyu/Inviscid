@@ -1,0 +1,177 @@
+diff --git a/src/text_system/line.rs b/src/text_system/line.rs
+--- a/src/text_system/line.rs
++++ b/src/text_system/line.rs
+@@ -204,15 +204,14 @@ fn paint_line(
+         ),
+     );
+     window.paint_layer(line_bounds, |window| {
+-        let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
+-        let baseline_offset = point(px(0.), padding_top + layout.ascent);
++        let text_system = cx.text_system().clone();
++        let baseline_offset = line_baseline_offset(layout, line_height, &text_system);
+         let mut decoration_runs = decoration_runs.iter();
+         let mut wraps = wrap_boundaries.iter().peekable();
+         let mut run_end = 0;
+         let mut color = black();
+         let mut current_underline: Option<(Point<Pixels>, UnderlineStyle)> = None;
+         let mut current_strikethrough: Option<(Point<Pixels>, StrikethroughStyle)> = None;
+-        let text_system = cx.text_system().clone();
+         let mut glyph_origin = point(
+             aligned_origin_x(
+                 origin,
+@@ -589,3 +588,129 @@ fn aligned_origin_x(
+         TextAlign::Right => origin.x + align_width - line_width,
+     }
+ }
++
++fn has_mixed_fonts(layout: &LineLayout) -> bool {
++    let Some(first) = layout.runs.first() else {
++        return false;
++    };
++    layout
++        .runs
++        .iter()
++        .skip(1)
++        .any(|run| run.font_id != first.font_id)
++}
++
++fn stable_baseline_offset(line_height: Pixels, ascent: Pixels, descent: Pixels) -> Point<Pixels> {
++    let padding_top = (line_height - ascent - descent) / 2.;
++    point(px(0.), padding_top + ascent)
++}
++
++fn line_baseline_offset(
++    layout: &LineLayout,
++    line_height: Pixels,
++    text_system: &crate::TextSystem,
++) -> Point<Pixels> {
++    // DirectWrite layouts already carry stable metrics from the requested font.
++    if !cfg!(target_os = "windows") && has_mixed_fonts(layout) {
++        let run = &layout.runs[0];
++        stable_baseline_offset(
++            line_height,
++            text_system.ascent(run.font_id, layout.font_size),
++            text_system.descent(run.font_id, layout.font_size),
++        )
++    } else {
++        stable_baseline_offset(line_height, layout.ascent, layout.descent)
++    }
++}
++
++#[cfg(test)]
++mod baseline_tests {
++    use super::*;
++
++    #[test]
++    fn baseline_only_changes_for_mixed_fonts() {
++        let layout = LineLayout {
++            runs: vec![
++                crate::ShapedRun {
++                    font_id: crate::FontId(1),
++                    glyphs: Vec::new(),
++                },
++                crate::ShapedRun {
++                    font_id: crate::FontId(1),
++                    glyphs: Vec::new(),
++                },
++            ],
++            ..Default::default()
++        };
++        assert!(!has_mixed_fonts(&layout));
++
++        let mixed = LineLayout {
++            runs: vec![
++                layout.runs[0].clone(),
++                crate::ShapedRun {
++                    font_id: crate::FontId(2),
++                    glyphs: Vec::new(),
++                },
++            ],
++            ..Default::default()
++        };
++        assert!(has_mixed_fonts(&mixed));
++    }
++}
++
++#[cfg(all(test, target_os = "windows"))]
++mod windows_baseline_tests {
++    use super::*;
++    use crate::{Font, FontRun, FontWeight, PlatformTextSystem};
++
++    #[test]
++    fn windows_baseline_is_stable_when_editing_cjk_text() {
++        let devices = crate::platform::DirectXDevices::new().unwrap();
++        let system = Arc::new(crate::platform::DirectWriteTextSystem::new(&devices).unwrap());
++        let text_system = crate::TextSystem::new(system.clone());
++        let cjk = "\u{4e2d}\u{6587}\u{6bb5}\u{843d}";
++        let edits = [
++            cjk.to_string(),
++            format!("a{cjk}"),
++            format!("\u{4e2d}a\u{6587}\u{6bb5}\u{843d}"),
++            format!("{cjk}a"),
++            format!("{cjk}\u{1f600}"),
++            cjk.to_string(),
++        ];
++        for family in ["Segoe UI", "Consolas"] {
++            for weight in [FontWeight::NORMAL, FontWeight::BOLD] {
++                let font_id = system
++                    .font_id(&Font {
++                        weight,
++                        ..crate::font(family)
++                    })
++                    .unwrap();
++                let metrics = system.font_metrics(font_id);
++                for font_size in [px(15.0), px(24.0), px(32.0)] {
++                    let expected_ascent = metrics.ascent(font_size);
++                    let expected_descent = -metrics.descent(font_size);
++                    for text in &edits {
++                        let layout = system.layout_line(
++                            text,
++                            font_size,
++                            &[FontRun { len: text.len(), font_id }],
++                        );
++                        assert!(!layout.runs.is_empty(), "native shaping must execute");
++                        assert_eq!(
++                            (layout.ascent, layout.descent),
++                            (expected_ascent, expected_descent),
++                            "baseline metrics changed for {family} {weight:?} {font_size:?}: {text}"
++                        );
++                        for line_height in [font_size, font_size * 1.6, font_size * 2.0] {
++                            assert_eq!(
++                                line_baseline_offset(&layout, line_height, &text_system).y,
++                                (line_height + expected_ascent - expected_descent) / 2.0,
++                                "painted baseline changed for {family}: {text}"
++                            );
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
+diff --git a/src/platform/windows/direct_write.rs b/src/platform/windows/direct_write.rs
+--- a/src/platform/windows/direct_write.rs
++++ b/src/platform/windows/direct_write.rs
+@@ -606,16 +606,15 @@ impl DirectWriteState {
+             };
+ 
+             let mut first_run = true;
+-            let mut ascent = Pixels::default();
+-            let mut descent = Pixels::default();
++            // Anchor the line box to the requested font. Fallback glyphs must
++            // not move existing text when the script mix changes during editing.
++            let metrics = self.font_metrics(font_runs[0].font_id);
++            let ascent = metrics.ascent(font_size);
++            // FontMetrics uses a signed descent; LineLayout stores its magnitude.
++            let descent = -metrics.descent(font_size);
+             for run in font_runs {
+                 if first_run {
+                     first_run = false;
+-                    let mut metrics = vec![DWRITE_LINE_METRICS::default(); 4];
+-                    let mut line_count = 0u32;
+-                    text_layout.GetLineMetrics(Some(&mut metrics), &mut line_count as _)?;
+-                    ascent = px(metrics[0].baseline);
+-                    descent = px(metrics[0].height - metrics[0].baseline);
+                     continue;
+                 }
+                 let font_info = &self.fonts[run.font_id.0];
