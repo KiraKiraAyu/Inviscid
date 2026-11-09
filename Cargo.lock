@@ -3111,6 +3111,7 @@ dependencies = [
  "embed-resource",
  "futures",
  "gpui",
+ "gpui_sum_tree",
  "ignore",
  "image",
  "latex-rust",
