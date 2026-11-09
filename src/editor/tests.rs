@@ -4765,6 +4765,103 @@ fn test_find_matches_follow_edits(cx: &mut gpui::TestAppContext) {
     });
 }
 
+#[gpui::test]
+fn find_updates_literal_matches_from_the_edited_lines(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, Selection};
+    use crate::search::{SearchOptions, SearchQuery};
+
+    let content = (0..5_000)
+        .map(|line| format!("row {line} needle"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&content, None), cx)
+    });
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(
+                Some(SearchQuery::new("needle", SearchOptions::default()).unwrap()),
+                cx,
+            );
+            let materializations = ed.buffer.full_line_materializations();
+            let changed_line = 2_500;
+            ed.buffer
+                .set_cursor(Position::new(SourceLine::new(changed_line), 0));
+            ed.perform_edit(cx, |ed| {
+                ed.buffer.replace_line_range(
+                    SourceLine::new(changed_line),
+                    1,
+                    vec![
+                        format!("row {changed_line} changed"),
+                        format!("row {changed_line} needle"),
+                    ],
+                    Selection::cursor(Position::new(SourceLine::new(changed_line), 0)),
+                );
+            });
+
+            assert_eq!(ed.buffer.full_line_materializations(), materializations);
+            assert_eq!(ed.find_state().match_count(), 5_000);
+            assert_eq!(ed.search_highlights(SourceLine::new(changed_line)).len(), 0);
+            assert_eq!(
+                ed.search_highlights(SourceLine::new(changed_line + 1))
+                    .len(),
+                1
+            );
+            assert_eq!(
+                ed.search_highlights(SourceLine::new(changed_line + 2))
+                    .len(),
+                1
+            );
+        });
+    });
+}
+
+#[gpui::test]
+fn regex_find_refresh_keeps_the_full_document_fallback(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, Selection};
+    use crate::search::{SearchOptions, SearchQuery};
+
+    let content = (0..100)
+        .map(|line| format!("row {line} needle"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&content, None), cx)
+    });
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.set_find_query(
+                Some(
+                    SearchQuery::new(
+                        "needle",
+                        SearchOptions {
+                            use_regex: true,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                ),
+                cx,
+            );
+            let materializations = ed.buffer.full_line_materializations();
+            ed.buffer.set_cursor(Position::new(SourceLine::new(50), 0));
+            ed.perform_edit(cx, |ed| {
+                ed.buffer.replace_line_range(
+                    SourceLine::new(50),
+                    1,
+                    vec!["row 50 changed".to_string()],
+                    Selection::cursor(Position::new(SourceLine::new(50), 0)),
+                );
+            });
+
+            assert!(ed.buffer.full_line_materializations() > materializations);
+            assert_eq!(ed.find_state().match_count(), 99);
+        });
+    });
+}
+
 #[test]
 fn layout_y_hit_testing_returns_source_lines_across_variable_heights() {
     use crate::editor::layout::DocumentLayoutCache;

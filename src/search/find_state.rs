@@ -51,6 +51,10 @@ impl FindState {
         &self.matches
     }
 
+    pub fn revision(&self) -> Option<u64> {
+        self.revision
+    }
+
     pub fn match_count(&self) -> usize {
         self.matches.len()
     }

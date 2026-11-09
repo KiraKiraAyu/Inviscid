@@ -1,6 +1,7 @@
 use gpui::{AppContext, Context, Entity, Subscription, Window};
 
-use crate::search::{FindState, SearchQuery, find_matches};
+use crate::buffer::{Position, SourceLine};
+use crate::search::{FindState, SearchMatch, SearchQuery, find_matches};
 
 use super::find_bar::{FindBar, FindBarEvent, FindBarMatches};
 use super::{Editor, HighlightKind, LineHighlight};
@@ -142,11 +143,71 @@ impl Editor {
         let Some(query) = self.find_state.query() else {
             return;
         };
-        let text = self.buffer.lines().join("\n");
-        let matches = find_matches(&text, query, MAX_FIND_MATCHES);
+        let matches = self.incremental_find_matches(query).unwrap_or_else(|| {
+            let text = self.buffer.lines().join("\n");
+            find_matches(&text, query, MAX_FIND_MATCHES)
+        });
         let anchor = self.buffer.selection().start();
         self.find_state
             .set_matches(matches, self.buffer.revision(), anchor);
+    }
+
+    fn incremental_find_matches(&self, query: &SearchQuery) -> Option<Vec<SearchMatch>> {
+        if query.options().use_regex || query.raw().contains('\n') {
+            return None;
+        }
+
+        let previous_revision = self.find_state.revision()?;
+        if previous_revision.wrapping_add(1) != self.buffer.revision() {
+            return None;
+        }
+
+        let delta = self.buffer.last_edit_delta()?;
+        let old_matches = self.find_state.matches();
+        if old_matches.len() >= MAX_FIND_MATCHES {
+            return None;
+        }
+
+        let start = delta.start_line.index();
+        let old_end = start.checked_add(delta.old_line_count)?;
+        let line_delta = isize::try_from(delta.new_line_count)
+            .ok()?
+            .checked_sub(isize::try_from(delta.old_line_count).ok()?)?;
+        let new_end = start.checked_add(delta.new_line_count)?;
+        let mut before = Vec::with_capacity(old_matches.len());
+        let mut after = Vec::with_capacity(old_matches.len());
+
+        for found in old_matches {
+            if found.end.line.index() < start {
+                before.push(*found);
+            } else if found.start.line.index() >= old_end {
+                let start_line = found.start.line.index().checked_add_signed(line_delta)?;
+                let end_line = found.end.line.index().checked_add_signed(line_delta)?;
+                after.push(SearchMatch::new(
+                    Position::new(SourceLine::new(start_line), found.start.col),
+                    Position::new(SourceLine::new(end_line), found.end.col),
+                ));
+            }
+        }
+
+        let mut changed = Vec::new();
+        for line in start..new_end {
+            let line = SourceLine::new(line);
+            let text = self.buffer.line_text(line)?;
+            for mut found in find_matches(&text, query, MAX_FIND_MATCHES) {
+                found.start.line = line;
+                found.end.line = line;
+                changed.push(found);
+                if before.len() + changed.len() + after.len() >= MAX_FIND_MATCHES {
+                    return None;
+                }
+            }
+        }
+
+        let mut matches = before;
+        matches.extend(changed);
+        matches.extend(after);
+        Some(matches)
     }
 
     pub(crate) fn sync_find_bar(&self, cx: &mut Context<Self>) {
