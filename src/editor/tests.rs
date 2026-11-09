@@ -65,9 +65,68 @@ fn large_document_layout_work_guards(cx: &mut gpui::TestAppContext) {
                     full_rebuilds: 0,
                     lines_scanned: 0,
                     lines_measured: 20,
-                    cache_deep_clones: 10,
+                    cache_deep_clones: 0,
                 }
             );
+        });
+    });
+}
+
+#[gpui::test]
+fn cursor_layout_updates_reuse_storage_and_preserve_retained_snapshots(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::editor::{Editor, LayoutStats, RenderMode};
+    use std::sync::Arc;
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| Editor::new(cx));
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _| {
+            for mode in [RenderMode::Source, RenderMode::LivePreview] {
+                ed.buffer = TextBuffer::from_str(
+                    "# heading\n\ntext **bold** and `code`\n\n> quote\n> ## heading\n\nlast",
+                    None,
+                );
+                ed.render_mode = mode;
+                ed.invalidate_layout_cache();
+                let snapshot = ed.layout_snapshot();
+                let cache_ptr = Arc::as_ptr(&snapshot);
+                drop(snapshot);
+                ed.layout_stats.set(LayoutStats::default());
+                ed.buffer.set_cursor(Position::new(SourceLine::new(0), 1));
+                let moved = ed.layout_snapshot();
+                assert_eq!(Arc::as_ptr(&moved), cache_ptr);
+                assert_eq!(ed.layout_stats.get().cache_deep_clones, 0);
+                drop(moved);
+
+                let mut seed = 0x5eed_u64;
+                for step in 0..100 {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let line = (seed >> 32) as usize % ed.buffer.line_count();
+                    let col =
+                        ((seed >> 16) as usize % 4).min(ed.buffer.line_len(SourceLine::new(line)));
+                    let retained = ed.layout_snapshot();
+                    let old_metrics = retained.metrics.clone();
+                    let old_active = (retained.active_line, retained.active_col);
+                    ed.buffer
+                        .set_cursor(Position::new(SourceLine::new(line), col));
+                    if step % 7 == 0 {
+                        ed.buffer.insert_text("x");
+                    }
+                    let incremental = ed.layout_snapshot();
+                    assert_eq!(retained.metrics, old_metrics);
+                    assert_eq!((retained.active_line, retained.active_col), old_active);
+                    ed.invalidate_layout_cache();
+                    let eager = ed.layout_snapshot();
+                    assert_eq!(
+                        incremental.metrics, eager.metrics,
+                        "step {step}, mode {mode:?}"
+                    );
+                    assert_eq!(incremental.total_height, eager.total_height);
+                    assert_eq!(incremental.parsed_lines, eager.parsed_lines);
+                }
+            }
         });
     });
 }

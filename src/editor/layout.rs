@@ -962,12 +962,16 @@ impl Editor {
             && current_cache.metrics.len() == current_cache.parsed_lines.len()
             && active_line.index() < current_cache.metrics.len()
         {
+            drop(current_cache);
+            let mut cached = self.layout_cache.borrow_mut();
             #[cfg(test)]
-            self.layout_stats.update(|mut stats| {
-                stats.cache_deep_clones += 1;
-                stats
-            });
-            let mut cache = (*current_cache).clone();
+            if Arc::strong_count(&cached) > 1 {
+                self.layout_stats.update(|mut stats| {
+                    stats.cache_deep_clones += 1;
+                    stats
+                });
+            }
+            let cache = Arc::make_mut(&mut cached);
             let active_line_idx = active_line.index();
             let is_sep = if cache.separators.len() == cache.lines_len {
                 cache
@@ -1002,7 +1006,6 @@ impl Editor {
                 cache.active_col = active_col;
                 cache.active_math_block = active_math_block;
                 cache.active_mermaid_block = active_mermaid_block;
-                *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
 
@@ -1012,7 +1015,6 @@ impl Editor {
             cache.active_col = active_col;
             cache.active_math_block = active_math_block;
             cache.active_mermaid_block = active_mermaid_block;
-            *self.layout_cache.borrow_mut() = Arc::new(cache);
             return;
         }
 
@@ -1026,21 +1028,29 @@ impl Editor {
             && current_cache.active_math_block == active_math_block
             && cached_active_mermaid_block == active_mermaid_block
         {
+            drop(current_cache);
+            let mut cached = self.layout_cache.borrow_mut();
             #[cfg(test)]
-            self.layout_stats.update(|mut stats| {
-                stats.cache_deep_clones += 1;
-                stats
-            });
-            let mut cache = (*current_cache).clone();
+            if Arc::strong_count(&cached) > 1 {
+                self.layout_stats.update(|mut stats| {
+                    stats.cache_deep_clones += 1;
+                    stats
+                });
+            }
+            let cache = Arc::make_mut(&mut cached);
             let old_active = cache.active_line;
             let new_active = active_line;
 
             let separators = if self.render_mode == RenderMode::Source {
-                Vec::new()
+                std::borrow::Cow::Borrowed(&[][..])
             } else if cache.separators.len() == cache.lines_len {
-                cache.separators.clone()
+                std::borrow::Cow::Borrowed(cache.separators.as_slice())
             } else {
-                crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
+                std::borrow::Cow::Owned(
+                    crate::markdown::compute_syntactic_separators_with_projection(
+                        &quote_projection,
+                    ),
+                )
             };
 
             let calc_h = |source_line: SourceLine, is_active: bool| -> Pixels {
@@ -1084,7 +1094,6 @@ impl Editor {
                 cache.active_col = active_col;
                 cache.active_math_block = active_math_block;
                 cache.active_mermaid_block = active_mermaid_block;
-                *self.layout_cache.borrow_mut() = Arc::new(cache);
                 return;
             }
 
@@ -1102,7 +1111,6 @@ impl Editor {
             cache.active_col = active_col;
             cache.active_math_block = active_math_block;
             cache.active_mermaid_block = active_mermaid_block;
-            *self.layout_cache.borrow_mut() = Arc::new(cache);
             return;
         }
 
