@@ -33,6 +33,7 @@ pub mod find_bar;
 pub mod input_handler;
 pub mod keymap;
 pub mod layout;
+pub mod line_metrics;
 pub mod mouse;
 pub mod navigation;
 pub mod render;

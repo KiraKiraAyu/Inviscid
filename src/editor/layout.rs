@@ -3,6 +3,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::line_metrics::{DOCUMENT_BOTTOM_PADDING, DOCUMENT_TOP_PADDING, EMPTY_DOCUMENT_HEIGHT};
 use super::{Editor, RenderMode};
 use crate::buffer::{LineSource, SourceLine};
 use crate::editor::shaping::compute_content_width;
@@ -198,8 +199,7 @@ pub struct DocumentLayoutCache {
     pub line_height: f32,
     pub soft_wrap: bool,
     pub parsed_lines: Arc<Vec<ParsedLine>>,
-    pub line_heights: Vec<Pixels>,
-    pub line_y_offsets: Vec<Pixels>,
+    pub metrics: super::line_metrics::LineMetrics,
     pub space_width: Pixels,
     pub total_height: Pixels,
     pub separators: Vec<bool>,
@@ -227,8 +227,7 @@ impl Default for DocumentLayoutCache {
             line_height: 1.6,
             soft_wrap: true,
             parsed_lines: Arc::new(Vec::new()),
-            line_heights: Vec::new(),
-            line_y_offsets: Vec::new(),
+            metrics: Default::default(),
             space_width: px(0.0),
             total_height: px(0.0),
             separators: Vec::new(),
@@ -259,38 +258,17 @@ impl DocumentLayoutCache {
     }
 
     pub fn source_line_y_range(&self, source_line: SourceLine) -> Option<(Pixels, Pixels)> {
-        let top = *self.line_y_offsets.get(source_line.index())?;
-        let height = *self.line_heights.get(source_line.index())?;
-        Some((top, top + height))
+        self.metrics.y_range(source_line.index())
     }
 
     /// Source rows intersecting the viewport, including a partially visible tall row.
     /// Collapsed rows within the range must be skipped by the renderer.
     pub(crate) fn visible_source_lines(&self, top: Pixels, height: Pixels) -> Range<usize> {
-        if height <= px(0.0) || self.line_y_offsets.is_empty() {
-            return 0..0;
-        }
-        let end = self.line_y_offsets.partition_point(|&y| y < top + height);
-        let mut start = self
-            .line_y_offsets
-            .partition_point(|&y| y <= top)
-            .saturating_sub(1);
-        if self.line_y_offsets[start] + self.line_heights[start] <= top {
-            start += 1;
-        }
-        start.min(end)..end
+        self.metrics.visible_lines(top, height)
     }
 
     pub fn source_line_at_y(&self, y: Pixels) -> Option<SourceLine> {
-        if self.line_y_offsets.is_empty() {
-            return None;
-        }
-        let index = self
-            .line_y_offsets
-            .partition_point(|&line_y| line_y <= y)
-            .saturating_sub(1)
-            .min(self.line_y_offsets.len() - 1);
-        Some(SourceLine::new(index))
+        self.metrics.line_at_y(y).map(SourceLine::new)
     }
 }
 
@@ -981,8 +959,8 @@ impl Editor {
             && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.active_line == active_line
             && !current_cache.parsed_lines.is_empty()
-            && current_cache.line_heights.len() == current_cache.parsed_lines.len()
-            && active_line.index() < current_cache.line_heights.len()
+            && current_cache.metrics.heights.len() == current_cache.parsed_lines.len()
+            && active_line.index() < current_cache.metrics.heights.len()
         {
             #[cfg(test)]
             self.layout_stats.update(|mut stats| {
@@ -1019,7 +997,7 @@ impl Editor {
                 px(24.0)
             };
 
-            let old_h = cache.line_heights[active_line_idx];
+            let old_h = cache.metrics.heights[active_line_idx];
             if (new_h - old_h).abs() < px(0.01) {
                 cache.active_col = active_col;
                 cache.active_math_block = active_math_block;
@@ -1028,16 +1006,16 @@ impl Editor {
                 return;
             }
 
-            cache.line_heights[active_line_idx] = new_h;
-            let mut y = cache.line_y_offsets[active_line_idx] + new_h;
-            for idx in (active_line_idx + 1)..cache.line_heights.len() {
-                cache.line_y_offsets[idx] = y;
-                y += cache.line_heights[idx];
+            cache.metrics.heights[active_line_idx] = new_h;
+            let mut y = cache.metrics.offsets[active_line_idx] + new_h;
+            for idx in (active_line_idx + 1)..cache.metrics.heights.len() {
+                cache.metrics.offsets[idx] = y;
+                y += cache.metrics.heights[idx];
             }
-            cache.total_height = if cache.line_heights.is_empty() {
-                px(48.0)
+            cache.total_height = if cache.metrics.heights.is_empty() {
+                EMPTY_DOCUMENT_HEIGHT
             } else {
-                y + px(24.0)
+                y + DOCUMENT_BOTTOM_PADDING
             };
             cache.active_col = active_col;
             cache.active_math_block = active_math_block;
@@ -1052,7 +1030,7 @@ impl Editor {
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
             && !current_cache.parsed_lines.is_empty()
-            && current_cache.line_heights.len() == current_cache.parsed_lines.len()
+            && current_cache.metrics.heights.len() == current_cache.parsed_lines.len()
             && current_cache.active_math_block == active_math_block
             && cached_active_mermaid_block == active_mermaid_block
         {
@@ -1100,13 +1078,15 @@ impl Editor {
             let new_active_idx = new_active.index();
             let old_diff = old_active_new_h
                 - cache
-                    .line_heights
+                    .metrics
+                    .heights
                     .get(old_active_idx)
                     .copied()
                     .unwrap_or(old_active_new_h);
             let new_diff = new_active_new_h
                 - cache
-                    .line_heights
+                    .metrics
+                    .heights
                     .get(new_active_idx)
                     .copied()
                     .unwrap_or(new_active_new_h);
@@ -1120,28 +1100,28 @@ impl Editor {
                 return;
             }
 
-            if old_active_idx < cache.line_heights.len() {
-                cache.line_heights[old_active_idx] = old_active_new_h;
+            if old_active_idx < cache.metrics.heights.len() {
+                cache.metrics.heights[old_active_idx] = old_active_new_h;
             }
-            if new_active_idx < cache.line_heights.len() {
-                cache.line_heights[new_active_idx] = new_active_new_h;
+            if new_active_idx < cache.metrics.heights.len() {
+                cache.metrics.heights[new_active_idx] = new_active_new_h;
             }
 
             let start_rebuild = old_active_idx.min(new_active_idx);
             let mut y = if start_rebuild == 0 {
-                px(24.0)
+                DOCUMENT_TOP_PADDING
             } else {
-                cache.line_y_offsets[start_rebuild]
+                cache.metrics.offsets[start_rebuild]
             };
 
-            for idx in start_rebuild..cache.line_heights.len() {
-                cache.line_y_offsets[idx] = y;
-                y += cache.line_heights[idx];
+            for idx in start_rebuild..cache.metrics.heights.len() {
+                cache.metrics.offsets[idx] = y;
+                y += cache.metrics.heights[idx];
             }
-            cache.total_height = if cache.line_heights.is_empty() {
-                px(48.0)
+            cache.total_height = if cache.metrics.heights.is_empty() {
+                EMPTY_DOCUMENT_HEIGHT
             } else {
-                y + px(24.0)
+                y + DOCUMENT_BOTTOM_PADDING
             };
             cache.active_line = active_line;
             cache.active_col = active_col;
@@ -1158,8 +1138,8 @@ impl Editor {
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.lines_len == current_cache.parsed_lines.len()
-            && current_cache.line_heights.len() == current_cache.lines_len
-            && current_cache.line_y_offsets.len() == current_cache.lines_len
+            && current_cache.metrics.heights.len() == current_cache.lines_len
+            && current_cache.metrics.offsets.len() == current_cache.lines_len
         {
             // Release our read handle so an unshared cache can be updated in place.
             // Arc::make_mut preserves snapshots retained by other readers.
@@ -1216,7 +1196,7 @@ impl Editor {
 
         let mut line_heights = Vec::with_capacity(parsed_doc.len());
         let mut line_y_offsets = Vec::with_capacity(parsed_doc.len());
-        let mut y = px(24.0);
+        let mut y = DOCUMENT_TOP_PADDING;
 
         for (idx, parsed) in parsed_doc.iter().enumerate() {
             let source_line = SourceLine::new(idx);
@@ -1239,9 +1219,9 @@ impl Editor {
         }
 
         let total_height = if line_heights.is_empty() {
-            px(48.0)
+            EMPTY_DOCUMENT_HEIGHT
         } else {
-            y + px(24.0)
+            y + DOCUMENT_BOTTOM_PADDING
         };
         let parsed_quote_ranges = quote_ranges(&parsed_doc);
 
@@ -1263,8 +1243,10 @@ impl Editor {
             line_height: self.line_height,
             soft_wrap: self.soft_wrap,
             parsed_lines: parsed_doc,
-            line_heights,
-            line_y_offsets,
+            metrics: super::line_metrics::LineMetrics {
+                heights: line_heights,
+                offsets: line_y_offsets,
+            },
             space_width: self.space_width(),
             total_height,
             separators,
@@ -1505,12 +1487,13 @@ impl Editor {
         }
 
         let block_y = cache
-            .line_y_offsets
+            .metrics
+            .offsets
             .get(block_start)
             .copied()
-            .unwrap_or(cache.total_height - px(24.0));
-        let mut rebuild_from =
-            (cache.line_heights[block_start..old_block_end] != new_heights).then_some(block_start);
+            .unwrap_or(cache.total_height - DOCUMENT_BOTTOM_PADDING);
+        let mut rebuild_from = (cache.metrics.heights[block_start..old_block_end] != new_heights)
+            .then_some(block_start);
         let mut quote_edge_rows = [None, None];
         {
             let parsed_lines = Arc::make_mut(&mut cache.parsed_lines);
@@ -1539,13 +1522,15 @@ impl Editor {
             }
         }
         if rebuild_from.is_some() {
-            cache.line_y_offsets.splice(
+            cache.metrics.offsets.splice(
                 block_start..old_block_end,
                 std::iter::repeat_n(block_y, new_heights.len()),
             );
         }
         cache
-            .line_heights
+            .metrics
+            .as_parts_mut()
+            .0
             .splice(block_start..old_block_end, new_heights);
 
         // Map the former disclosure row through any inserted/deleted lines.
@@ -1586,8 +1571,8 @@ impl Editor {
                 active_mermaid_block,
             );
             let height = self.measure_line_layout_height(line_idx, parsed, lcx);
-            if height != cache.line_heights[line_idx] {
-                cache.line_heights[line_idx] = height;
+            if height != cache.metrics.heights[line_idx] {
+                cache.metrics.heights[line_idx] = height;
                 rebuild_from = Some(rebuild_from.map_or(line_idx, |start| start.min(line_idx)));
             }
         }
@@ -1596,13 +1581,13 @@ impl Editor {
             let mut y = if start == block_start {
                 block_y
             } else {
-                cache.line_y_offsets[start]
+                cache.metrics.offsets[start]
             };
-            for idx in start..cache.line_heights.len() {
-                cache.line_y_offsets[idx] = y;
-                y += cache.line_heights[idx];
+            for idx in start..cache.metrics.heights.len() {
+                cache.metrics.offsets[idx] = y;
+                y += cache.metrics.heights[idx];
             }
-            cache.total_height = y + px(24.0);
+            cache.total_height = y + DOCUMENT_BOTTOM_PADDING;
         }
 
         cache.buffer_version = self.buffer.version();
@@ -1623,7 +1608,7 @@ impl Editor {
         let layout = self.layout_snapshot();
         layout.source_line_y_range(target_line).unwrap_or_else(|| {
             let total = layout.total_height;
-            ((total - px(24.0)).max(px(0.0)), total)
+            ((total - DOCUMENT_BOTTOM_PADDING).max(px(0.0)), total)
         })
     }
 
@@ -1704,31 +1689,29 @@ mod incremental_tests {
     #[test]
     fn viewport_line_range_matches_intersections_including_tall_and_collapsed_rows() {
         let cache = super::DocumentLayoutCache {
-            line_y_offsets: [24.0, 24.0, 56.0, 56.0, 1056.0, 1056.0, 1080.0]
-                .into_iter()
-                .map(px)
-                .collect(),
-            line_heights: [0.0, 32.0, 0.0, 1000.0, 0.0, 24.0, 0.0]
-                .into_iter()
-                .map(px)
-                .collect(),
+            metrics: crate::editor::line_metrics::LineMetrics::from_heights(
+                [0.0, 32.0, 0.0, 1000.0, 0.0, 24.0, 0.0]
+                    .into_iter()
+                    .map(px)
+                    .collect(),
+            ),
             ..Default::default()
         };
         for top in (-20..1120).step_by(17) {
             for height in [0.0, 1.0, 23.0, 100.0, 999.0] {
                 let top = px(top as f32);
                 let height = px(height);
-                let expected: Vec<_> = (0..cache.line_heights.len())
+                let expected: Vec<_> = (0..cache.metrics.heights.len())
                     .filter(|&idx| {
                         height > px(0.0)
-                            && cache.line_heights[idx] > px(0.0)
-                            && cache.line_y_offsets[idx] < top + height
-                            && cache.line_y_offsets[idx] + cache.line_heights[idx] > top
+                            && cache.metrics.heights[idx] > px(0.0)
+                            && cache.metrics.offsets[idx] < top + height
+                            && cache.metrics.offsets[idx] + cache.metrics.heights[idx] > top
                     })
                     .collect();
                 let actual: Vec<_> = cache
                     .visible_source_lines(top, height)
-                    .filter(|&idx| cache.line_heights[idx] > px(0.0))
+                    .filter(|&idx| cache.metrics.heights[idx] > px(0.0))
                     .collect();
                 assert_eq!(actual, expected, "viewport {top:?} + {height:?}");
             }
@@ -1766,8 +1749,8 @@ mod incremental_tests {
                 ed.invalidate_layout_cache();
                 let full = ed.layout_snapshot();
                 assert_eq!(after.parsed_lines, full.parsed_lines);
-                assert_eq!(after.line_heights, full.line_heights);
-                assert_eq!(after.line_y_offsets, full.line_y_offsets);
+                assert_eq!(after.metrics.heights, full.metrics.heights);
+                assert_eq!(after.metrics.offsets, full.metrics.offsets);
                 assert_eq!(after.separators, full.separators);
             });
         });
@@ -1845,8 +1828,8 @@ mod incremental_tests {
                         ed.invalidate_layout_cache();
                         let full = ed.layout_snapshot();
                         assert_eq!(cache.parsed_lines, full.parsed_lines);
-                        assert_eq!(cache.line_heights, full.line_heights);
-                        assert_eq!(cache.line_y_offsets, full.line_y_offsets);
+                        assert_eq!(cache.metrics.heights, full.metrics.heights);
+                        assert_eq!(cache.metrics.offsets, full.metrics.offsets);
                         assert_eq!(cache.total_height, full.total_height);
                         assert_eq!(cache.separators, full.separators);
                         assert_eq!(cache.quote_ranges, full.quote_ranges);
@@ -1886,8 +1869,8 @@ mod incremental_tests {
                         ed.invalidate_layout_cache();
                         let full = ed.layout_snapshot();
                         assert_eq!(after.parsed_lines, full.parsed_lines);
-                        assert_eq!(after.line_heights, full.line_heights);
-                        assert_eq!(after.line_y_offsets, full.line_y_offsets);
+                        assert_eq!(after.metrics.heights, full.metrics.heights);
+                        assert_eq!(after.metrics.offsets, full.metrics.offsets);
                         assert_eq!(after.total_height, full.total_height);
                         assert_eq!(before.quote_projection.normalized_lines(), before_lines);
                     }
@@ -1931,8 +1914,8 @@ mod incremental_tests {
                         ed.invalidate_layout_cache();
                         let full = ed.layout_snapshot();
                         assert_eq!(cache.parsed_lines, full.parsed_lines);
-                        assert_eq!(cache.line_heights, full.line_heights);
-                        assert_eq!(cache.line_y_offsets, full.line_y_offsets);
+                        assert_eq!(cache.metrics.heights, full.metrics.heights);
+                        assert_eq!(cache.metrics.offsets, full.metrics.offsets);
                         assert_eq!(cache.total_height, full.total_height);
                         assert_eq!(before.parsed_lines, before_parsed);
                     }

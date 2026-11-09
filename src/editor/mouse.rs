@@ -42,11 +42,11 @@ fn visual_anchor_for_hidden_line(
     let idx = line.index();
     let previous = (0..idx).rev().find(|&i| {
         layout
-            .line_heights
-            .get(i)
-            .is_some_and(|height| *height > px(0.0))
+            .metrics
+            .height(i)
+            .is_some_and(|height| height > px(0.0))
     });
-    let next = (idx + 1..layout.line_heights.len()).find(|&i| layout.line_heights[i] > px(0.0));
+    let next = layout.metrics.next_visible_line_after(idx);
     let anchor = previous.or(next)?;
     match &layout.parsed_lines[anchor].kind {
         BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => (0..=anchor)

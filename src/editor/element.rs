@@ -162,12 +162,11 @@ impl Element for EditorElement {
                                 .take_while(|range| range.start < visible_end)
                             {
                                 let group_bottom = layout
-                                    .line_y_offsets
-                                    .get(quote_range.end)
-                                    .copied()
+                                    .metrics
+                                    .top(quote_range.end)
                                     .unwrap_or(layout.total_height - px(24.0));
                                 let group_height =
-                                    group_bottom - layout.line_y_offsets[quote_range.start];
+                                    group_bottom - layout.metrics.top(quote_range.start).unwrap();
                                 let quote_indent = layout
                                     .indent_px(crate::buffer::SourceLine::new(quote_range.start));
                                 let panel = div()
@@ -177,7 +176,7 @@ impl Element for EditorElement {
                                     .border_color(theme.quote_border)
                                     .bg(theme.quote_bg);
                                 let panel_y = bounds.origin.y
-                                    + layout.line_y_offsets[quote_range.start]
+                                    + layout.metrics.top(quote_range.start).unwrap()
                                     - scroll_top;
                                 lines_to_prepaint.push((
                                     panel.into_any_element(),
@@ -196,7 +195,7 @@ impl Element for EditorElement {
 
                     for line_idx in visible_start..visible_end {
                         let source_line = crate::buffer::SourceLine::new(line_idx);
-                        if layout.line_heights[line_idx] <= px(0.0) {
+                        if layout.metrics.height(line_idx).unwrap() <= px(0.0) {
                             continue;
                         }
                         let parsed = &layout.parsed_lines[line_idx];
@@ -265,11 +264,7 @@ impl Element for EditorElement {
                             &editor_entity,
                         );
 
-                        let line_y_in_doc = layout
-                            .line_y_offsets
-                            .get(line_idx)
-                            .copied()
-                            .unwrap_or(px(24.0));
+                        let line_y_in_doc = layout.metrics.top(line_idx).unwrap_or(px(24.0));
                         let line_screen_y = bounds.origin.y + line_y_in_doc - scroll_top;
                         let line_origin = point(container_x, line_screen_y);
 

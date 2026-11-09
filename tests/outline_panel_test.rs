@@ -66,8 +66,9 @@ fn outline_tracks_active_document_and_jumps_to_heading() {
     let editor = workspace.read_with(cx, |workspace, _| {
         workspace.active_editor().unwrap().clone()
     });
-    let second_heading_y =
-        editor.read_with(cx, |editor, _| editor.layout_snapshot().line_y_offsets[2]);
+    let second_heading_y = editor.read_with(cx, |editor, _| {
+        editor.layout_snapshot().metrics.top(2).unwrap()
+    });
     let wheel_event = ScrollWheelEvent {
         delta: ScrollDelta::Pixels(gpui::Point::new(px(0.0), -second_heading_y)),
         ..Default::default()
