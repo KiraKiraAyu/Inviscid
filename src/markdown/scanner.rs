@@ -16,7 +16,7 @@ fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
 }
 
 fn is_math_delimiter(line: &str) -> bool {
-    line.trim() == "$$"
+    super::structure::classify(line).is_math_delim
 }
 
 fn is_mermaid_info(info: &str) -> bool {
@@ -330,7 +330,7 @@ fn top_level_fenced_lines(lines: &(impl LineSource + ?Sized)) -> Vec<bool> {
     let mut open_idx = None;
 
     for (idx, line) in lines.source_lines().enumerate() {
-        if !is_fence_line(&line) {
+        if !super::structure::classify(&line).is_fence {
             continue;
         }
         if let Some(start) = open_idx.take() {

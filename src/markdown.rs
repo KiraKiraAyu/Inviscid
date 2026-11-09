@@ -4,6 +4,7 @@ pub mod inline;
 pub mod outline;
 pub mod prefix;
 pub mod scanner;
+pub(crate) mod structure;
 pub mod table;
 pub mod types;
 

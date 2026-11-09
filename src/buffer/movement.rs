@@ -104,7 +104,7 @@ impl LineIndex {
         let mut open: Option<usize> = None;
 
         for (i, line) in lines.iter().enumerate() {
-            if line.trim_start().starts_with("```") {
+            if crate::markdown::structure::classify(line).is_fence {
                 match open {
                     Some(open_idx) => {
                         fence_pairs.push((

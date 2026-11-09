@@ -1271,9 +1271,10 @@ impl Editor {
         }
 
         for line in &cache.parsed_lines[edit_start_idx..edit_start_idx + delta.old_line_count] {
-            if crate::markdown::strip_quote_prefix(&line.raw_text)
-                .trim_start()
-                .starts_with("```")
+            if crate::markdown::structure::classify(crate::markdown::strip_quote_prefix(
+                &line.raw_text,
+            ))
+            .is_fence
                 || matches!(
                     line.kind,
                     BlockKind::CodeBlock { .. }
@@ -1286,8 +1287,9 @@ impl Editor {
         }
         for idx in edit_start_idx..edit_start_idx + delta.new_line_count {
             let line = buf_lines.source_line(SourceLine::new(idx));
-            let structural_line = crate::markdown::strip_quote_prefix(&line).trim_start();
-            if structural_line.starts_with("```") || structural_line.trim() == "$$" {
+            let structure =
+                crate::markdown::structure::classify(crate::markdown::strip_quote_prefix(&line));
+            if structure.is_fence || structure.is_math_delim {
                 return false;
             }
         }
