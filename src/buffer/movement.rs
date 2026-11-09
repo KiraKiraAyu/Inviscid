@@ -91,76 +91,151 @@ pub fn is_in_code_fence_lines(lines: &[String], target_line: crate::buffer::Sour
 #[derive(Clone, Debug)]
 pub(crate) struct LineIndex {
     version: usize,
-    syntactic_separators: Vec<bool>,
-    fence_pairs: Vec<(crate::buffer::SourceLine, crate::buffer::SourceLine)>,
-    math_pairs: Vec<(crate::buffer::SourceLine, crate::buffer::SourceLine)>,
+    revision: u64,
+    structure: super::structure_index::StructureIndex,
+    syntactic_separators: std::cell::RefCell<Option<Vec<bool>>>,
 }
 
 impl LineIndex {
-    fn build(version: usize, lines: &[String]) -> Self {
-        let syntactic_separators = compute_syntactic_separators(lines);
-
-        let mut fence_pairs = Vec::new();
-        let mut open: Option<usize> = None;
-
-        for (i, line) in lines.iter().enumerate() {
-            if crate::markdown::structure::classify(line).is_fence {
-                match open {
-                    Some(open_idx) => {
-                        fence_pairs.push((
-                            crate::buffer::SourceLine::new(open_idx),
-                            crate::buffer::SourceLine::new(i),
-                        ));
-                        open = None;
-                    }
-                    None => open = Some(i),
-                }
-            }
-        }
-
+    fn build(buffer: &TextBuffer) -> Self {
         Self {
-            version,
-            syntactic_separators,
-            fence_pairs,
-            math_pairs: crate::markdown::math_block_pairs(lines),
+            version: buffer.version,
+            revision: buffer.revision,
+            structure: super::structure_index::StructureIndex::new(buffer),
+            syntactic_separators: Default::default(),
         }
     }
 
-    fn fence_state(&self, target_line: crate::buffer::SourceLine) -> (bool, bool) {
-        for &(open_idx, close_idx) in &self.fence_pairs {
-            if target_line == open_idx {
-                return (true, false);
-            } else if target_line == close_idx {
-                return (false, true);
-            } else if target_line > open_idx && target_line < close_idx {
-                return (true, false);
-            }
+    fn update(&mut self, buffer: &TextBuffer) {
+        if self.version.checked_add(1) == Some(buffer.version)
+            && self.revision.checked_add(1) == Some(buffer.revision)
+            && let Some(delta) = buffer.last_edit_delta
+            && delta.start_line.index() + delta.old_line_count <= self.structure.len()
+            && self.structure.len() - delta.old_line_count + delta.new_line_count
+                == buffer.line_count()
+        {
+            let start = delta.start_line.index();
+            self.structure.splice(
+                start..start + delta.old_line_count,
+                buffer,
+                start..start + delta.new_line_count,
+            );
+            self.version = buffer.version;
+            self.revision = buffer.revision;
+            *self.syntactic_separators.get_mut() = None;
+        } else {
+            *self = Self::build(buffer);
         }
-        (false, false)
+    }
+
+    #[cfg(test)]
+    pub(super) fn classified_lines(&self) -> usize {
+        self.structure.classified_lines
     }
 
     fn is_in_fence(&self, target_line: crate::buffer::SourceLine) -> bool {
-        self.fence_state(target_line).0
+        self.structure.fence_state(target_line).0
     }
 
     fn is_closing_fence(&self, target_line: crate::buffer::SourceLine) -> bool {
-        self.fence_state(target_line).1
+        self.structure.fence_state(target_line).1
     }
 
     fn math_pair(
         &self,
         target_line: crate::buffer::SourceLine,
     ) -> Option<(crate::buffer::SourceLine, crate::buffer::SourceLine)> {
-        self.math_pairs
-            .iter()
-            .copied()
-            .find(|&(start, end)| (start..=end).contains(&target_line))
+        self.structure.math_pair(target_line)
     }
 
     fn is_math_delimiter(&self, target_line: crate::buffer::SourceLine) -> bool {
-        self.math_pairs
-            .iter()
-            .any(|&(start, end)| target_line == start || target_line == end)
+        self.structure.is_math_delimiter(target_line)
+    }
+
+    fn is_separator(&self, buffer: &TextBuffer, line: usize) -> bool {
+        // Separator localization is separate from the fence/math index. Build
+        // this table only for navigation commands that actually need it.
+        let mut separators = self.syntactic_separators.borrow_mut();
+        separators
+            .get_or_insert_with(|| compute_syntactic_separators(buffer))
+            .get(line)
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod structure_cache_tests {
+    use super::*;
+    use crate::buffer::{LineSource, SourceLine};
+
+    fn assert_matches_full_scan(buffer: &TextBuffer) {
+        let lines: Vec<_> = buffer
+            .source_lines()
+            .map(|line| line.into_owned())
+            .collect();
+        let math = crate::markdown::math_block_pairs(&lines);
+        let separators = compute_syntactic_separators(&lines);
+        let index = buffer.line_index();
+        for (row, separator) in separators.into_iter().enumerate() {
+            let line = SourceLine::new(row);
+            let fence = code_fence_status(&lines, line);
+            assert_eq!(index.is_in_fence(line), fence.0);
+            assert_eq!(index.is_closing_fence(line), fence.1);
+            assert_eq!(
+                index.math_pair(line),
+                math.iter()
+                    .copied()
+                    .find(|&(start, end)| (start..=end).contains(&line))
+            );
+            assert_eq!(
+                index.is_math_delimiter(line),
+                math.iter()
+                    .any(|&(start, end)| line == start || line == end)
+            );
+            assert_eq!(index.is_separator(buffer, row), separator);
+        }
+    }
+
+    #[test]
+    fn undo_branch_with_reused_version_rejects_stale_index() {
+        let mut buffer = TextBuffer::from_str("```\nx\n```", None);
+        buffer.record_single_line_edit(SourceLine::new(0), |line, _| *line = "text".into());
+        assert!(!buffer.is_in_code_fence(SourceLine::new(1)));
+        let cached_version = buffer.version;
+        buffer.undo();
+        buffer.record_single_line_edit(SourceLine::new(1), |line, _| *line = "$$".into());
+        assert_eq!(buffer.version, cached_version);
+        assert!(buffer.is_in_code_fence(SourceLine::new(1)));
+        assert_matches_full_scan(&buffer);
+    }
+
+    #[test]
+    fn history_skipped_versions_and_empty_transitions_match_full_scan() {
+        let mut buffer = TextBuffer::from_str("", None);
+        assert_matches_full_scan(&buffer);
+        buffer.insert_text("$$\nx\n$$\n> ```\n> $$\n> ```");
+        assert_matches_full_scan(&buffer);
+        let snapshot = buffer.clone();
+        buffer.record_single_line_edit(SourceLine::new(0), |line, _| *line = "```".into());
+        buffer.record_single_line_edit(SourceLine::new(1), |line, _| *line = "```".into());
+        assert_matches_full_scan(&buffer);
+        assert_matches_full_scan(&snapshot);
+        buffer.undo();
+        assert_matches_full_scan(&buffer);
+        buffer.redo();
+        assert_matches_full_scan(&buffer);
+        buffer.replace_line_range(
+            SourceLine::new(0),
+            buffer.line_count(),
+            vec![String::new(), String::new()],
+            Selection::cursor(Position::new(SourceLine::new(0), 0)),
+        );
+        assert_matches_full_scan(&buffer);
+        buffer.undo();
+        assert_matches_full_scan(&buffer);
+        buffer.redo();
+        assert_matches_full_scan(&buffer);
     }
 }
 
@@ -204,13 +279,20 @@ impl TextBuffer {
             let cache = self.line_index_cache.borrow();
             if let Some(index) = cache.as_ref()
                 && index.version == self.version
+                && index.revision == self.revision
             {
                 return Ref::map(cache, |c| c.as_ref().unwrap());
             }
         }
 
-        *self.line_index_cache.borrow_mut() =
-            Some(LineIndex::build(self.version, &self.to_lines()));
+        {
+            let mut cache = self.line_index_cache.borrow_mut();
+            if let Some(index) = cache.as_mut() {
+                index.update(self);
+            } else {
+                *cache = Some(LineIndex::build(self));
+            }
+        }
 
         let cache = self.line_index_cache.borrow();
         Ref::map(cache, |c| c.as_ref().unwrap())
@@ -231,11 +313,7 @@ impl TextBuffer {
                 crate::buffer::SourceLine::new(line) > start
                     && crate::buffer::SourceLine::new(line) < end
             });
-        let is_separator = index
-            .syntactic_separators
-            .get(line)
-            .copied()
-            .unwrap_or(false);
+        let is_separator = index.is_separator(self, line);
         !crate::markdown::table::is_table_delimiter_row(
             &self
                 .line_text(crate::buffer::SourceLine::new(line))

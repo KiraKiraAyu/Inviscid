@@ -12,6 +12,7 @@ pub mod movement;
 pub mod operations;
 pub mod primitives;
 mod source;
+mod structure_index;
 #[cfg(test)]
 pub mod tests;
 
@@ -1074,7 +1075,6 @@ impl TextBuffer {
         self.line_fingerprints
             .update(&self.rope, start_line.index(), replaced_lines.len());
         self.revision = self.revision.wrapping_add(1);
-        *self.line_index_cache.borrow_mut() = None;
         self.last_edit_delta = Some(EditDelta {
             start_line,
             old_line_count: replaced_lines.len(),
