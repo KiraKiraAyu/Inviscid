@@ -4,6 +4,74 @@ use crate::markdown::{MarkdownScanner, is_syntactic_separator};
 
 use gpui::px;
 
+#[gpui::test]
+fn large_document_layout_work_guards(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::editor::{Editor, LayoutStats};
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| Editor::new(cx));
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, _| {
+            let content = (0..20_000)
+                .map(|line| if line % 2 == 0 { "paragraph" } else { "" })
+                .collect::<Vec<_>>()
+                .join("\n");
+            for insertion in ["x", "\n", "```"] {
+                ed.buffer = TextBuffer::from_str(&content, None);
+                ed.buffer
+                    .set_cursor(Position::new(SourceLine::new(10_000), 0));
+                ed.invalidate_layout_cache();
+                ed.layout_stats.set(LayoutStats::default());
+                ed.ensure_layout_cache();
+                assert_eq!(
+                    ed.layout_stats.get(),
+                    LayoutStats {
+                        full_rebuilds: 1,
+                        lines_scanned: 20_000,
+                        lines_measured: 20_000,
+                        cache_deep_clones: 0,
+                    }
+                );
+                ed.layout_stats.set(LayoutStats::default());
+                ed.buffer.insert_text(insertion);
+                ed.ensure_layout_cache();
+                let stats = ed.layout_stats.get();
+                if insertion == "x" {
+                    assert_eq!(stats.full_rebuilds, 0);
+                    assert_eq!(stats.lines_scanned, 1);
+                    assert_eq!(stats.lines_measured, 1);
+                } else {
+                    assert_eq!(stats.full_rebuilds, 1);
+                    assert_eq!(stats.lines_scanned, ed.buffer.line_count());
+                    assert_eq!(stats.lines_measured, ed.buffer.line_count());
+                }
+                assert_eq!(stats.cache_deep_clones, 0);
+            }
+
+            ed.buffer = TextBuffer::from_str(&content, None);
+            ed.buffer
+                .set_cursor(Position::new(SourceLine::new(10_000), 0));
+            ed.invalidate_layout_cache();
+            ed.ensure_layout_cache();
+            ed.layout_stats.set(LayoutStats::default());
+            for line in 10_001..10_011 {
+                ed.buffer
+                    .set_cursor(Position::new(SourceLine::new(line), 0));
+                ed.ensure_layout_cache();
+            }
+            assert_eq!(
+                ed.layout_stats.get(),
+                LayoutStats {
+                    full_rebuilds: 0,
+                    lines_scanned: 0,
+                    lines_measured: 20,
+                    cache_deep_clones: 10,
+                }
+            );
+        });
+    });
+}
+
 #[test]
 fn math_editing_expands_all_source_lines_and_hides_both_delimiters() {
     let lines = vec!["$$".into(), "x +".into(), "y".into(), "$$".into()];

@@ -768,6 +768,20 @@ fn blockquote_edge_spacing(quote: crate::markdown::QuoteContext) -> Pixels {
 }
 
 impl Editor {
+    fn measure_line_layout_height(
+        &self,
+        idx: usize,
+        parsed: &ParsedLine,
+        lcx: LineLayoutContext,
+    ) -> Pixels {
+        #[cfg(test)]
+        self.layout_stats.update(|mut stats| {
+            stats.lines_measured += 1;
+            stats
+        });
+        get_line_layout_height(&self.buffer, idx, parsed, lcx)
+    }
+
     /// Marks active IME preedit text so it participates in line shaping and receives an underline.
     fn project_ime_preedit(&self, first_line: usize, parsed_lines: &mut [ParsedLine]) {
         let Some(marked) = self.marked_range.clone() else {
@@ -970,6 +984,11 @@ impl Editor {
             && current_cache.line_heights.len() == current_cache.parsed_lines.len()
             && active_line.index() < current_cache.line_heights.len()
         {
+            #[cfg(test)]
+            self.layout_stats.update(|mut stats| {
+                stats.cache_deep_clones += 1;
+                stats
+            });
             let mut cache = (*current_cache).clone();
             let active_line_idx = active_line.index();
             let is_sep = if cache.separators.len() == cache.lines_len {
@@ -995,7 +1014,7 @@ impl Editor {
                     active_math_block,
                     active_mermaid_block,
                 );
-                get_line_layout_height(&self.buffer, active_line_idx, parsed, lcx)
+                self.measure_line_layout_height(active_line_idx, parsed, lcx)
             } else {
                 px(24.0)
             };
@@ -1037,6 +1056,11 @@ impl Editor {
             && current_cache.active_math_block == active_math_block
             && cached_active_mermaid_block == active_mermaid_block
         {
+            #[cfg(test)]
+            self.layout_stats.update(|mut stats| {
+                stats.cache_deep_clones += 1;
+                stats
+            });
             let mut cache = (*current_cache).clone();
             let old_active = cache.active_line;
             let new_active = active_line;
@@ -1063,7 +1087,7 @@ impl Editor {
                         active_math_block,
                         active_mermaid_block,
                     );
-                    get_line_layout_height(&self.buffer, line_idx, parsed, lcx)
+                    self.measure_line_layout_height(line_idx, parsed, lcx)
                 } else {
                     px(24.0)
                 }
@@ -1141,6 +1165,13 @@ impl Editor {
             // Arc::make_mut preserves snapshots retained by other readers.
             drop(current_cache);
             let mut cached = self.layout_cache.borrow_mut();
+            #[cfg(test)]
+            if Arc::strong_count(&cached) > 1 {
+                self.layout_stats.update(|mut stats| {
+                    stats.cache_deep_clones += 1;
+                    stats
+                });
+            }
             if self.try_incremental_layout_update(
                 Arc::make_mut(&mut cached),
                 delta,
@@ -1153,6 +1184,11 @@ impl Editor {
         }
 
         // Full layout rebuild
+        #[cfg(test)]
+        self.layout_stats.update(|mut stats| {
+            stats.full_rebuilds += 1;
+            stats
+        });
         let current_cache = self.layout_cache.borrow().clone();
         let parsed_doc = if buffer_matches
             && view_matches
@@ -1164,6 +1200,11 @@ impl Editor {
             let mut scanned =
                 MarkdownScanner::scan_document_with_projection(&self.buffer, &quote_projection);
             self.project_ime_preedit(0, &mut scanned);
+            #[cfg(test)]
+            self.layout_stats.update(|mut stats| {
+                stats.lines_scanned += scanned.len();
+                stats
+            });
             Arc::new(scanned)
         };
 
@@ -1191,7 +1232,7 @@ impl Editor {
                 active_math_block,
                 active_mermaid_block,
             );
-            let h = get_line_layout_height(&self.buffer, idx, parsed, lcx);
+            let h = self.measure_line_layout_height(idx, parsed, lcx);
             line_y_offsets.push(y);
             line_heights.push(h);
             y += h;
@@ -1424,6 +1465,11 @@ impl Editor {
             in_code_block,
             false,
         );
+        #[cfg(test)]
+        self.layout_stats.update(|mut stats| {
+            stats.lines_scanned += new_parsed.len();
+            stats
+        });
         if new_parsed.len() != block_end - block_start {
             return false;
         }
@@ -1454,7 +1500,7 @@ impl Editor {
                 active_math_block,
                 active_mermaid_block,
             );
-            let h = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
+            let h = self.measure_line_layout_height(line_idx, parsed, lcx);
             new_heights.push(h);
         }
 
@@ -1539,7 +1585,7 @@ impl Editor {
                 active_math_block,
                 active_mermaid_block,
             );
-            let height = get_line_layout_height(buf_lines, line_idx, parsed, lcx);
+            let height = self.measure_line_layout_height(line_idx, parsed, lcx);
             if height != cache.line_heights[line_idx] {
                 cache.line_heights[line_idx] = height;
                 rebuild_from = Some(rebuild_from.map_or(line_idx, |start| start.min(line_idx)));

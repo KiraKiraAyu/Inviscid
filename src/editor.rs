@@ -1,6 +1,15 @@
 use gpui::*;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LayoutStats {
+    pub full_rebuilds: usize,
+    pub lines_scanned: usize,
+    pub lines_measured: usize,
+    pub cache_deep_clones: usize,
+}
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -180,6 +189,8 @@ pub struct Editor {
     pub(crate) _async_update_task: Option<Task<()>>,
 
     pub(crate) layout_cache: RefCell<Arc<DocumentLayoutCache>>,
+    #[cfg(test)]
+    pub(crate) layout_stats: std::cell::Cell<LayoutStats>,
     pub(crate) display_map: DisplayMap,
     pub(crate) is_read_only: bool,
 
@@ -473,6 +484,8 @@ impl Editor {
             drag_scroll_task: None,
             _async_update_task: Some(async_update_task),
             layout_cache: RefCell::new(Arc::new(DocumentLayoutCache::default())),
+            #[cfg(test)]
+            layout_stats: std::cell::Cell::new(LayoutStats::default()),
             display_map: DisplayMap::new(),
             is_read_only: false,
             auto_save_task: None,
