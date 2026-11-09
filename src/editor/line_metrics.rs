@@ -18,12 +18,24 @@ impl LineMetrics {
             offsets: vec![px(0.0); heights.len()],
             heights,
         };
-        let mut y = DOCUMENT_TOP_PADDING;
-        for (top, height) in metrics.offsets.iter_mut().zip(&metrics.heights) {
-            *top = y;
-            y += *height;
-        }
+        metrics.rebuild_from(0);
         metrics
+    }
+
+    pub fn set_height(&mut self, line: usize, height: Pixels) {
+        self.heights[line] = height;
+    }
+
+    pub fn rebuild_from(&mut self, start: usize) {
+        let mut y = if start == 0 {
+            DOCUMENT_TOP_PADDING
+        } else {
+            self.offsets[start - 1] + self.heights[start - 1]
+        };
+        for line in start..self.len() {
+            self.offsets[line] = y;
+            y += self.heights[line];
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -139,5 +151,23 @@ mod tests {
                 assert_eq!(actual, expected, "viewport {top:?} + {height:?}");
             }
         }
+    }
+
+    #[test]
+    fn height_updates_rebuild_only_the_requested_suffix() {
+        let mut metrics = LineMetrics::from_heights(vec![px(10.0), px(20.0), px(30.0)]);
+        metrics.set_height(1, px(0.0));
+        metrics.rebuild_from(1);
+        assert_eq!(
+            metrics,
+            LineMetrics::from_heights(vec![px(10.0), px(0.0), px(30.0)])
+        );
+        metrics.set_height(0, px(40.0));
+        metrics.rebuild_from(0);
+        assert_eq!(metrics.top(2), Some(px(64.0)));
+        assert_eq!(metrics.total_height(), px(118.0));
+        let mut empty = LineMetrics::from_heights(Vec::new());
+        empty.rebuild_from(0);
+        assert_eq!(empty.total_height(), px(48.0));
     }
 }

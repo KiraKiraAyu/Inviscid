@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::line_metrics::{DOCUMENT_BOTTOM_PADDING, DOCUMENT_TOP_PADDING, EMPTY_DOCUMENT_HEIGHT};
+use super::line_metrics::{DOCUMENT_BOTTOM_PADDING, LineMetrics};
 use super::{Editor, RenderMode};
 use crate::buffer::{LineSource, SourceLine};
 use crate::editor::shaping::compute_content_width;
@@ -959,8 +959,8 @@ impl Editor {
             && current_cache.syntax_cache_version == current_syntax_v
             && current_cache.active_line == active_line
             && !current_cache.parsed_lines.is_empty()
-            && current_cache.metrics.heights.len() == current_cache.parsed_lines.len()
-            && active_line.index() < current_cache.metrics.heights.len()
+            && current_cache.metrics.len() == current_cache.parsed_lines.len()
+            && active_line.index() < current_cache.metrics.len()
         {
             #[cfg(test)]
             self.layout_stats.update(|mut stats| {
@@ -997,7 +997,7 @@ impl Editor {
                 px(24.0)
             };
 
-            let old_h = cache.metrics.heights[active_line_idx];
+            let old_h = cache.metrics.height(active_line_idx).unwrap();
             if (new_h - old_h).abs() < px(0.01) {
                 cache.active_col = active_col;
                 cache.active_math_block = active_math_block;
@@ -1006,17 +1006,9 @@ impl Editor {
                 return;
             }
 
-            cache.metrics.heights[active_line_idx] = new_h;
-            let mut y = cache.metrics.offsets[active_line_idx] + new_h;
-            for idx in (active_line_idx + 1)..cache.metrics.heights.len() {
-                cache.metrics.offsets[idx] = y;
-                y += cache.metrics.heights[idx];
-            }
-            cache.total_height = if cache.metrics.heights.is_empty() {
-                EMPTY_DOCUMENT_HEIGHT
-            } else {
-                y + DOCUMENT_BOTTOM_PADDING
-            };
+            cache.metrics.set_height(active_line_idx, new_h);
+            cache.metrics.rebuild_from(active_line_idx);
+            cache.total_height = cache.metrics.total_height();
             cache.active_col = active_col;
             cache.active_math_block = active_math_block;
             cache.active_mermaid_block = active_mermaid_block;
@@ -1030,7 +1022,7 @@ impl Editor {
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
             && !current_cache.parsed_lines.is_empty()
-            && current_cache.metrics.heights.len() == current_cache.parsed_lines.len()
+            && current_cache.metrics.len() == current_cache.parsed_lines.len()
             && current_cache.active_math_block == active_math_block
             && cached_active_mermaid_block == active_mermaid_block
         {
@@ -1079,16 +1071,12 @@ impl Editor {
             let old_diff = old_active_new_h
                 - cache
                     .metrics
-                    .heights
-                    .get(old_active_idx)
-                    .copied()
+                    .height(old_active_idx)
                     .unwrap_or(old_active_new_h);
             let new_diff = new_active_new_h
                 - cache
                     .metrics
-                    .heights
-                    .get(new_active_idx)
-                    .copied()
+                    .height(new_active_idx)
                     .unwrap_or(new_active_new_h);
 
             if old_diff.abs() < px(0.01) && new_diff.abs() < px(0.01) {
@@ -1100,29 +1088,16 @@ impl Editor {
                 return;
             }
 
-            if old_active_idx < cache.metrics.heights.len() {
-                cache.metrics.heights[old_active_idx] = old_active_new_h;
+            if old_active_idx < cache.metrics.len() {
+                cache.metrics.set_height(old_active_idx, old_active_new_h);
             }
-            if new_active_idx < cache.metrics.heights.len() {
-                cache.metrics.heights[new_active_idx] = new_active_new_h;
+            if new_active_idx < cache.metrics.len() {
+                cache.metrics.set_height(new_active_idx, new_active_new_h);
             }
 
             let start_rebuild = old_active_idx.min(new_active_idx);
-            let mut y = if start_rebuild == 0 {
-                DOCUMENT_TOP_PADDING
-            } else {
-                cache.metrics.offsets[start_rebuild]
-            };
-
-            for idx in start_rebuild..cache.metrics.heights.len() {
-                cache.metrics.offsets[idx] = y;
-                y += cache.metrics.heights[idx];
-            }
-            cache.total_height = if cache.metrics.heights.is_empty() {
-                EMPTY_DOCUMENT_HEIGHT
-            } else {
-                y + DOCUMENT_BOTTOM_PADDING
-            };
+            cache.metrics.rebuild_from(start_rebuild);
+            cache.total_height = cache.metrics.total_height();
             cache.active_line = active_line;
             cache.active_col = active_col;
             cache.active_math_block = active_math_block;
@@ -1195,8 +1170,6 @@ impl Editor {
         };
 
         let mut line_heights = Vec::with_capacity(parsed_doc.len());
-        let mut line_y_offsets = Vec::with_capacity(parsed_doc.len());
-        let mut y = DOCUMENT_TOP_PADDING;
 
         for (idx, parsed) in parsed_doc.iter().enumerate() {
             let source_line = SourceLine::new(idx);
@@ -1213,16 +1186,11 @@ impl Editor {
                 active_mermaid_block,
             );
             let h = self.measure_line_layout_height(idx, parsed, lcx);
-            line_y_offsets.push(y);
             line_heights.push(h);
-            y += h;
         }
 
-        let total_height = if line_heights.is_empty() {
-            EMPTY_DOCUMENT_HEIGHT
-        } else {
-            y + DOCUMENT_BOTTOM_PADDING
-        };
+        let metrics = LineMetrics::from_heights(line_heights);
+        let total_height = metrics.total_height();
         let parsed_quote_ranges = quote_ranges(&parsed_doc);
 
         let new_cache = DocumentLayoutCache {
@@ -1243,10 +1211,7 @@ impl Editor {
             line_height: self.line_height,
             soft_wrap: self.soft_wrap,
             parsed_lines: parsed_doc,
-            metrics: super::line_metrics::LineMetrics {
-                heights: line_heights,
-                offsets: line_y_offsets,
-            },
+            metrics,
             space_width: self.space_width(),
             total_height,
             separators,
