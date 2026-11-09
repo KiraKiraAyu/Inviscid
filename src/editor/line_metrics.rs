@@ -189,6 +189,10 @@ impl LineMetrics {
         );
     }
 
+    pub fn set_estimate(&mut self, height: Pixels) {
+        self.estimate = Fixed::from_pixels(height);
+    }
+
     pub fn set_measured(&mut self, range: Range<usize>, heights: Vec<Pixels>) {
         assert_eq!(range.len(), heights.len());
         self.splice(range, heights);

@@ -29,6 +29,9 @@ pub const BOTTOM_OVERSCROLL: Pixels = px(96.0);
 pub(crate) const LAZY_LAYOUT_MIN_LINES: usize = 20_000;
 const LAYOUT_OVERSCAN_LINES: usize = 32;
 
+#[cfg(test)]
+mod lazy_tests;
+
 pub(crate) fn quote_ranges(parsed_lines: &[ParsedLine]) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut start = None;
@@ -1097,9 +1100,53 @@ impl Editor {
             return;
         }
 
-        // Same line, only cursor column changed in Live Preview
         self.layout_epoch
             .set(self.layout_epoch.get().wrapping_add(1));
+
+        if buffer_matches
+            && !view_matches
+            && current_cache.metrics.len() >= LAZY_LAYOUT_MIN_LINES
+            && current_cache.render_mode == self.render_mode
+            && current_cache.doc_path.as_deref() == self.buffer.file_path()
+            && current_cache.image_cache_version == current_img_v
+            && current_cache.syntax_cache_version == current_syntax_v
+        {
+            let scroll_top = self.scroll.current_scroll_top + self.layout_scroll_adjustment.get();
+            let anchor = current_cache.metrics.line_at_y(scroll_top);
+            let old_top = anchor.and_then(|line| current_cache.metrics.top(line));
+            drop(current_cache);
+            let mut cached = self.layout_cache.borrow_mut();
+            let cache = Arc::make_mut(&mut cached);
+            cache
+                .metrics
+                .set_estimate(px(self.font_size * self.line_height));
+            cache.metrics.mark_unmeasured(0..cache.metrics.len());
+            for region in self.display_map.fold_map().folded_regions() {
+                let start = (region.start_line.index() + 1).min(cache.metrics.len());
+                let end = (region.end_line.index() + 1).min(cache.metrics.len());
+                cache.metrics.set_uniform_measured(start..end, px(0.0));
+            }
+            if let Some((old_top, new_top)) =
+                old_top.zip(anchor.and_then(|line| cache.metrics.top(line)))
+            {
+                self.layout_scroll_adjustment
+                    .set(self.layout_scroll_adjustment.get() + new_top - old_top);
+            }
+            cache.content_width = content_width;
+            cache.font_size = self.font_size;
+            cache.line_height = self.line_height;
+            cache.soft_wrap = self.soft_wrap;
+            cache.fold_version = self.display_map.version();
+            cache.active_line = active_line;
+            cache.active_col = active_col;
+            cache.active_math_block = active_math_block;
+            cache.active_mermaid_block = active_mermaid_block;
+            cache.space_width = self.space_width();
+            self.measure_viewport(cache);
+            return;
+        }
+
+        // Same line, only cursor column changed in Live Preview
         if buffer_matches
             && view_matches
             && current_cache.image_cache_version == current_img_v
