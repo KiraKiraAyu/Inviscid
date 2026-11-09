@@ -909,6 +909,62 @@ impl Editor {
         Some(cache.quote_projection.clone())
     }
 
+    fn parse_range(
+        &self,
+        range: Range<usize>,
+        projection: &QuoteProjection,
+        in_code_block: bool,
+    ) -> Vec<ParsedLine> {
+        let mut parsed = if range == (0..self.buffer.line_count()) && !in_code_block {
+            MarkdownScanner::scan_document_with_projection(&self.buffer, projection)
+        } else {
+            MarkdownScanner::scan_range_with_projection_with_state(
+                &self.buffer,
+                projection,
+                range.clone(),
+                in_code_block,
+                false,
+            )
+        };
+        self.project_ime_preedit(range.start, &mut parsed);
+        #[cfg(test)]
+        self.layout_stats.update(|mut stats| {
+            stats.lines_scanned += parsed.len();
+            stats
+        });
+        parsed
+    }
+
+    fn measure_range(
+        &self,
+        range: Range<usize>,
+        parsed: &[ParsedLine],
+        separators: &[bool],
+        content_width: Pixels,
+        active_math_block: Option<(SourceLine, SourceLine)>,
+        active_mermaid_block: Option<(SourceLine, SourceLine)>,
+    ) -> Vec<Pixels> {
+        assert_eq!(range.len(), parsed.len());
+        let disclosure = self.disclosure_position();
+        range
+            .zip(parsed)
+            .map(|(idx, parsed)| {
+                let source_line = SourceLine::new(idx);
+                let lcx = self.line_layout_ctx(
+                    parsed,
+                    source_line == disclosure.line,
+                    separators.get(idx).copied().unwrap_or(false),
+                    disclosure.col,
+                    content_width,
+                    source_line,
+                    active_math_block,
+                    active_mermaid_block,
+                );
+                self.measure_line_layout_height(idx, parsed, lcx)
+            })
+            .collect()
+    }
+
     pub fn ensure_layout_cache(&self) {
         let viewport = self.viewport_bounds_val();
         let content_width = compute_content_width(viewport.size.width, self.render_mode);
@@ -1153,15 +1209,7 @@ impl Editor {
         {
             current_cache.parsed_lines.clone()
         } else {
-            let mut scanned =
-                MarkdownScanner::scan_document_with_projection(&self.buffer, &quote_projection);
-            self.project_ime_preedit(0, &mut scanned);
-            #[cfg(test)]
-            self.layout_stats.update(|mut stats| {
-                stats.lines_scanned += scanned.len();
-                stats
-            });
-            Arc::new(scanned)
+            Arc::new(self.parse_range(0..self.buffer.line_count(), &quote_projection, false))
         };
 
         let separators = if self.render_mode == RenderMode::Source {
@@ -1170,25 +1218,14 @@ impl Editor {
             crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
         };
 
-        let mut line_heights = Vec::with_capacity(parsed_doc.len());
-
-        for (idx, parsed) in parsed_doc.iter().enumerate() {
-            let source_line = SourceLine::new(idx);
-            let is_active = source_line == active_line;
-            let is_sep = separators.get(idx).copied().unwrap_or(false);
-            let lcx = self.line_layout_ctx(
-                parsed,
-                is_active,
-                is_sep,
-                active_col,
-                content_width,
-                source_line,
-                active_math_block,
-                active_mermaid_block,
-            );
-            let h = self.measure_line_layout_height(idx, parsed, lcx);
-            line_heights.push(h);
-        }
+        let line_heights = self.measure_range(
+            0..parsed_doc.len(),
+            &parsed_doc,
+            &separators,
+            content_width,
+            active_math_block,
+            active_mermaid_block,
+        );
 
         let metrics = LineMetrics::from_heights(line_heights);
 
@@ -1408,51 +1445,28 @@ impl Editor {
             return false;
         }
 
-        let mut new_parsed = MarkdownScanner::scan_range_with_projection_with_state(
-            buf_lines,
-            &quote_projection,
-            block_start..block_end,
-            in_code_block,
-            false,
-        );
-        #[cfg(test)]
-        self.layout_stats.update(|mut stats| {
-            stats.lines_scanned += new_parsed.len();
-            stats
-        });
+        let new_parsed = self.parse_range(block_start..block_end, &quote_projection, in_code_block);
         if new_parsed.len() != block_end - block_start {
             return false;
         }
-        self.project_ime_preedit(block_start, &mut new_parsed);
 
         cache.separators = if self.render_mode == RenderMode::Source {
             Vec::new()
         } else {
             crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
         };
-        let mut new_heights = Vec::with_capacity(new_parsed.len());
-        for (i, parsed) in new_parsed.iter().enumerate() {
-            let line_idx = block_start + i;
-            let source_line = SourceLine::new(line_idx);
-            let is_active = source_line == active_line;
-            let is_sep = if in_code_block {
-                false
+        let new_heights = self.measure_range(
+            block_start..block_end,
+            &new_parsed,
+            if in_code_block {
+                &[]
             } else {
-                cache.separators.get(line_idx).copied().unwrap_or(false)
-            };
-            let lcx = self.line_layout_ctx(
-                parsed,
-                is_active,
-                is_sep,
-                active_col,
-                content_width,
-                source_line,
-                active_math_block,
-                active_mermaid_block,
-            );
-            let h = self.measure_line_layout_height(line_idx, parsed, lcx);
-            new_heights.push(h);
-        }
+                &cache.separators
+            },
+            content_width,
+            active_math_block,
+            active_mermaid_block,
+        );
 
         cache
             .metrics
