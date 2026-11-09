@@ -101,13 +101,12 @@ impl OutlinePanel {
         entries: &[OutlineItem],
         line: Option<SourceLine>,
     ) -> Option<SourceLine> {
-        line.and_then(|line| {
-            entries
-                .iter()
-                .rev()
-                .find(|entry| entry.source_line <= line)
-                .map(|entry| entry.source_line)
-        })
+        let line = line?;
+        let index = entries.partition_point(|entry| entry.source_line <= line);
+        index
+            .checked_sub(1)
+            .and_then(|index| entries.get(index))
+            .map(|entry| entry.source_line)
     }
 
     fn select(&mut self, line: SourceLine, cx: &mut Context<Self>) {

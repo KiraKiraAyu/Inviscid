@@ -2372,6 +2372,33 @@ fn rope_hot_path_layout_reads_lines_without_materializing_the_document(
 }
 
 #[gpui::test]
+fn live_preview_drag_does_not_materialize_the_document(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::TextBuffer;
+    use gpui::{Bounds, point, px, size};
+
+    let content = format!("{}# Final heading", "paragraph text\n\n".repeat(2_000));
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(&content, None), cx)
+    });
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.render_mode = super::RenderMode::LivePreview;
+            editor.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(800.0), px(600.0)),
+            };
+            editor.ensure_layout_cache();
+            let before = editor.buffer.full_line_materializations();
+            editor.is_dragging = true;
+            for y in [px(40.0), px(70.0), px(100.0), px(130.0)] {
+                editor.handle_drag_move(point(px(100.0), y), window, cx);
+            }
+            assert_eq!(editor.buffer.full_line_materializations(), before);
+        });
+    });
+}
+
+#[gpui::test]
 fn tail_edit_blank_lines_reuse_prefix_layout(cx: &mut gpui::TestAppContext) {
     use crate::buffer::TextBuffer;
     use gpui::AppContext;

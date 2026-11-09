@@ -442,12 +442,15 @@ impl Workspace {
                             let pos = tab_editor.read(cx).cursor_pos();
                             this.status_bar
                                 .update(cx, |sb, cx| sb.set_cursor_pos(pos, cx));
+                            if this.outline_visible {
+                                this.outline_panel.update(cx, |panel, cx| {
+                                    panel.set_active_line(Some(pos.line), cx)
+                                });
+                            }
                         } else {
                             last_status_version = current_version;
                             let meta = tab_editor.read(cx).status_meta();
                             this.status_bar.update(cx, |sb, cx| sb.set_meta(meta, cx));
-                        }
-                        if this.active_editor() == Some(&tab_editor) {
                             this.sync_outline_panel(cx);
                         }
                     }

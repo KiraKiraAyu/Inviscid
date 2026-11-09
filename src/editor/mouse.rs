@@ -6,6 +6,80 @@ use crate::editor::element::EditorElement;
 
 use super::{Editor, RenderMode};
 
+fn parsed_math_block_range(
+    parsed_lines: &[crate::markdown::ParsedLine],
+    line: SourceLine,
+) -> Option<(SourceLine, SourceLine)> {
+    use crate::markdown::BlockKind;
+
+    let line_idx = line.index();
+    match &parsed_lines.get(line_idx)?.kind {
+        BlockKind::MathBlock { .. } | BlockKind::MathBlockContent => {}
+        _ => return None,
+    }
+
+    let start_idx = (0..=line_idx).rev().find(|&idx| {
+        matches!(
+            parsed_lines[idx].kind,
+            BlockKind::MathBlock { is_start: true }
+        )
+    })?;
+    let end_idx = (start_idx + 1..parsed_lines.len()).find(|&idx| {
+        matches!(
+            parsed_lines[idx].kind,
+            BlockKind::MathBlock { is_start: false }
+        )
+    })?;
+    Some((SourceLine::new(start_idx), SourceLine::new(end_idx)))
+}
+
+fn visual_anchor_for_hidden_line(
+    layout: &crate::editor::layout::DocumentLayoutCache,
+    line: SourceLine,
+) -> Option<SourceLine> {
+    use crate::markdown::BlockKind;
+
+    let idx = line.index();
+    let previous = (0..idx).rev().find(|&i| {
+        layout
+            .line_heights
+            .get(i)
+            .is_some_and(|height| *height > px(0.0))
+    });
+    let next = (idx + 1..layout.line_heights.len()).find(|&i| layout.line_heights[i] > px(0.0));
+    let anchor = previous.or(next)?;
+    match &layout.parsed_lines[anchor].kind {
+        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => (0..=anchor)
+            .rev()
+            .find(|&i| {
+                matches!(
+                    layout.parsed_lines[i].kind,
+                    BlockKind::CodeBlock {
+                        is_fence_start: true
+                    } | BlockKind::MermaidBlock {
+                        is_fence_start: true
+                    }
+                )
+            })
+            .map(SourceLine::new),
+        BlockKind::Table {
+            is_header: false, ..
+        } => (0..=anchor)
+            .rev()
+            .find(|&i| {
+                matches!(
+                    layout.parsed_lines[i].kind,
+                    BlockKind::Table {
+                        is_header: true,
+                        ..
+                    }
+                )
+            })
+            .map(SourceLine::new),
+        _ => Some(SourceLine::new(anchor)),
+    }
+}
+
 impl Editor {
     /// Resolves target line and buffer column, and if clicking in empty bottom area after a trailing code block, appends a new paragraph
     pub fn find_pos_for_mouse_point_mut(
@@ -124,25 +198,29 @@ impl Editor {
 
         if !exact_only && self.render_mode != RenderMode::Source {
             let disclosure_line = self.disclosure_position().line;
-            let active_math_block =
-                crate::markdown::math_block_range(&self.buffer.lines(), disclosure_line);
+            let active_math_block = parsed_math_block_range(&layout.parsed_lines, disclosure_line);
             if active_math_block
                 .is_some_and(|(start, end)| source_line >= start && source_line <= end)
             {
                 // Preserve source rows while the split formula editor is open.
-            } else if let Some((start, _)) =
-                crate::markdown::math_block_range(&self.buffer.lines(), source_line)
-            {
-                source_line = start;
             } else {
-                let vdoc = crate::markdown::VisualDocument::from_parsed(
-                    &self.buffer.lines(),
-                    &layout.parsed_lines,
-                );
-                let vpos =
-                    vdoc.source_to_visual(crate::buffer::SourcePosition::new(source_line, 0));
-                let spos = vdoc.visual_to_source(vpos);
-                source_line = spos.line;
+                match parsed_math_block_range(&layout.parsed_lines, source_line) {
+                    Some((start, _)) => source_line = start,
+                    None if layout.separators.get(source_line.index()) == Some(&true)
+                        || matches!(
+                            layout.parsed_lines[source_line.index()].kind,
+                            crate::markdown::BlockKind::Table {
+                                is_delimiter: true,
+                                ..
+                            }
+                        ) =>
+                    {
+                        if let Some(anchor) = visual_anchor_for_hidden_line(&layout, source_line) {
+                            source_line = anchor;
+                        }
+                    }
+                    None => {}
+                }
             }
         }
 
