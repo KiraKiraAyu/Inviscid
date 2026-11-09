@@ -2003,6 +2003,7 @@ fn test_clicking_display_math_enters_source_and_preview_editing(cx: &mut gpui::T
                 size: size(px(1000.0), px(800.0)),
             };
             editor.ensure_layout_cache();
+            let before = editor.buffer.full_line_materializations();
             let formula_bounds =
                 editor.line_screen_bounds(SourceLine::new(1), editor.viewport_bounds);
             let click = point(
@@ -2014,10 +2015,12 @@ fn test_clicking_display_math_enters_source_and_preview_editing(cx: &mut gpui::T
                 editor.find_pos_for_mouse_point(click, window),
                 Position::new(crate::buffer::SourceLine::new(2), 0)
             );
+            assert_eq!(editor.buffer.full_line_materializations(), before);
             assert_eq!(
                 editor.find_pos_for_mouse_point_mut(click, window),
                 Position::new(crate::buffer::SourceLine::new(2), 0)
             );
+            assert_eq!(editor.buffer.full_line_materializations(), before);
             editor
                 .buffer_mut()
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(2), 0));
@@ -2393,6 +2396,78 @@ fn live_preview_drag_does_not_materialize_the_document(cx: &mut gpui::TestAppCon
             for y in [px(40.0), px(70.0), px(100.0), px(130.0)] {
                 editor.handle_drag_move(point(px(100.0), y), window, cx);
             }
+            assert_eq!(editor.buffer.full_line_materializations(), before);
+        });
+    });
+}
+
+#[gpui::test]
+fn live_preview_vertical_navigation_does_not_materialize_the_document(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::buffer::{Position, SourceLine, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::theme::ThemeManager;
+    use gpui::{Bounds, point, px, size};
+
+    let config = AppConfig::default().with_theme("Dracula");
+    let theme_manager = ThemeManager::from_config(&config);
+    cx.update(|cx| {
+        cx.set_global(theme_manager);
+        cx.set_global(config);
+    });
+
+    let content = (0..1_000)
+        .map(|index| format!("Paragraph {index}\n\n"))
+        .collect::<String>();
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(&content, None), cx)
+    });
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, _cx| {
+            editor.render_mode = super::RenderMode::LivePreview;
+            editor.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(800.0), px(600.0)),
+            };
+            editor
+                .buffer
+                .set_cursor(Position::new(SourceLine::new(0), 0));
+            editor.ensure_layout_cache();
+            let before = editor.buffer.full_line_materializations();
+
+            editor.move_down(false, window);
+            assert_eq!(editor.buffer.cursor_pos().line, SourceLine::new(2));
+            editor.move_up(false, window);
+            assert_eq!(editor.buffer.cursor_pos().line, SourceLine::new(0));
+            assert_eq!(editor.buffer.full_line_materializations(), before);
+        });
+    });
+}
+
+#[gpui::test]
+fn switching_to_live_preview_does_not_materialize_the_document(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, SourceLine, TextBuffer};
+
+    let content = format!("# Heading\n\n{}Tail", "Paragraph\n\n".repeat(1_000));
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(&content, None), cx)
+    });
+    cx.update(|_window, cx| {
+        editor.update(cx, |editor, _cx| {
+            editor.render_mode = super::RenderMode::Source;
+            editor
+                .buffer
+                .set_cursor(Position::new(SourceLine::new(1), 0));
+            editor.ensure_layout_cache();
+            let before = editor.buffer.full_line_materializations();
+
+            editor.normalize_cursor_for_mode(super::RenderMode::LivePreview);
+
+            assert_eq!(
+                editor.buffer.cursor_pos(),
+                Position::new(SourceLine::new(0), 2)
+            );
             assert_eq!(editor.buffer.full_line_materializations(), before);
         });
     });

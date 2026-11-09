@@ -1,7 +1,7 @@
 use super::scanner::compute_syntactic_separators;
 use super::types::{BlockKind, ParsedLine};
 use crate::buffer::{
-    ProjectedBlockIndex, ProjectedLine, ProjectedLineCount, SourceLine, SourcePosition,
+    LineSource, ProjectedBlockIndex, ProjectedLine, ProjectedLineCount, SourceLine, SourcePosition,
 };
 use std::ops::Index;
 
@@ -130,8 +130,13 @@ impl VisualDocument {
         Self::from_parsed(lines, &parsed)
     }
 
-    pub fn from_parsed(lines: &[String], parsed_lines: &[ParsedLine]) -> Self {
-        if lines.is_empty() || parsed_lines.is_empty() {
+    pub fn from_parsed(lines: &(impl LineSource + ?Sized), parsed_lines: &[ParsedLine]) -> Self {
+        let separators = compute_syntactic_separators(lines);
+        Self::from_parsed_with_separators(parsed_lines, &separators)
+    }
+
+    pub fn from_parsed_with_separators(parsed_lines: &[ParsedLine], separators: &[bool]) -> Self {
+        if parsed_lines.is_empty() {
             return Self {
                 blocks: VisualBlocks(vec![VisualBlock::Paragraph {
                     source_line: SourceLine::new(0),
@@ -141,7 +146,6 @@ impl VisualDocument {
 
         let mut blocks = VisualBlocks::default();
         let mut idx = 0;
-        let separators = compute_syntactic_separators(lines);
 
         while idx < parsed_lines.len() {
             let parsed = &parsed_lines[idx];

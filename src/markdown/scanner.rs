@@ -173,7 +173,7 @@ pub(crate) fn math_block_pairs(lines: &[String]) -> Vec<(SourceLine, SourceLine)
 }
 
 pub(crate) fn math_block_range(
-    lines: &[String],
+    lines: &(impl LineSource + ?Sized),
     target_line: SourceLine,
 ) -> Option<(SourceLine, SourceLine)> {
     let target_idx = target_line.index();
@@ -181,8 +181,9 @@ pub(crate) fn math_block_range(
     let mut open_idx = None;
     let top_level_fences = top_level_fenced_lines(lines);
 
-    for (idx, raw_line) in lines.iter().enumerate() {
-        let line = projected_line(raw_line, top_level_fences[idx]);
+    for idx in 0..lines.line_count() {
+        let raw_line = lines.source_line(SourceLine::new(idx));
+        let line = projected_line(&raw_line, top_level_fences[idx]);
         if is_fence_line(line) {
             in_code_fence = !in_code_fence;
         } else if !in_code_fence && is_math_delimiter(line) {
@@ -783,9 +784,9 @@ impl MarkdownScanner {
     }
 }
 
-pub fn compute_syntactic_separators(lines: &[String]) -> Vec<bool> {
-    let mut separators = vec![false; lines.len()];
-    if lines.is_empty() {
+pub fn compute_syntactic_separators(lines: &(impl LineSource + ?Sized)) -> Vec<bool> {
+    let mut separators = vec![false; lines.line_count()];
+    if lines.line_count() == 0 {
         return separators;
     }
 
@@ -794,8 +795,9 @@ pub fn compute_syntactic_separators(lines: &[String]) -> Vec<bool> {
     let mut prev_is_separator = false;
     let top_level_fences = top_level_fenced_lines(lines);
 
-    for (i, raw_line) in lines.iter().enumerate() {
-        let line = projected_line(raw_line, top_level_fences[i]);
+    for (i, separator) in separators.iter_mut().enumerate() {
+        let raw_line = lines.source_line(SourceLine::new(i));
+        let line = projected_line(&raw_line, top_level_fences[i]);
         let is_fence = is_fence_line(line);
         if is_fence {
             in_fence = !in_fence;
@@ -809,7 +811,7 @@ pub fn compute_syntactic_separators(lines: &[String]) -> Vec<bool> {
             prev_is_separator,
         );
 
-        separators[i] = is_sep;
+        *separator = is_sep;
         prev_is_separator = is_sep;
         previous_nonempty = !line.trim().is_empty();
     }

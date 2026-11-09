@@ -1074,7 +1074,7 @@ impl TextBuffer {
         &mut self,
         start_line: crate::buffer::SourceLine,
     ) -> Option<Position> {
-        let (start, end) = crate::markdown::math_block_range(&self.to_lines(), start_line)?;
+        let (start, end) = crate::markdown::math_block_range(self, start_line)?;
         if start != start_line {
             return None;
         }

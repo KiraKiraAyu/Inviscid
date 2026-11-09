@@ -251,7 +251,7 @@ impl Editor {
                     crate::markdown::BlockKind::MathBlock { is_start: true }
                 )
                 && let Some((start, end)) =
-                    crate::markdown::math_block_range(&self.buffer.lines(), target_line)
+                    parsed_math_block_range(&layout.parsed_lines, target_line)
                 && start == target_line
                 && end > start
             {
@@ -364,7 +364,8 @@ impl Editor {
         if self.render_mode == RenderMode::Source {
             return None;
         }
-        let (start, end) = crate::markdown::math_block_range(&self.buffer.lines(), source_line)?;
+        let layout = self.layout_snapshot();
+        let (start, end) = parsed_math_block_range(&layout.parsed_lines, source_line)?;
         (start < source_line && source_line < end).then_some((
             Position::new(start + 1, 0),
             Position::new(

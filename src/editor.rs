@@ -639,7 +639,11 @@ impl Editor {
 
         let layout = self.layout_snapshot();
         let pos = self.buffer.cursor_pos();
-        let vdoc = VisualDocument::from_parsed(&self.buffer.lines(), &layout.parsed_lines);
+        let vdoc = if layout.separators.len() == layout.parsed_lines.len() {
+            VisualDocument::from_parsed_with_separators(&layout.parsed_lines, &layout.separators)
+        } else {
+            VisualDocument::from_parsed(&self.buffer, &layout.parsed_lines)
+        };
         let vpos = vdoc.source_to_visual(crate::buffer::SourcePosition::from_position(pos));
         let mut target_pos = vdoc.visual_to_source(vpos).to_position();
 
