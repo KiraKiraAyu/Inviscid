@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn tail_edit_cursor_normalization_does_not_materialize_document() {
+    let content = format!("{}\nTail", "paragraph\n".repeat(5_000));
+    let mut buffer = TextBuffer::from_str(&content, None);
+    buffer.move_to_doc_end(false);
+    for text in ["a", "界", "🙂", "\n", "next"] {
+        buffer.ensure_cursor_not_on_math_delimiter(false);
+        buffer.insert_text(text);
+        buffer.ensure_cursor_not_on_math_delimiter(false);
+    }
+    assert_eq!(buffer.full_line_materializations(), 0);
+    assert!(buffer.line_index_cache.borrow().is_none());
+}
+
+#[test]
 fn rope_hot_path_utf16_queries_do_not_build_markdown_indexes() {
     let content = format!("{}a🙂界\nlast", "prefix\n".repeat(200));
     let buffer = TextBuffer::from_str(&content, None);

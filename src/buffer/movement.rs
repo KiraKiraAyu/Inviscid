@@ -171,6 +171,14 @@ impl TextBuffer {
         }
 
         let pos = self.selection.head;
+        // Only a delimiter can require cursor normalization. Ordinary typing
+        // must not rebuild the document-wide navigation index after every edit.
+        if self
+            .line_text(pos.line)
+            .is_none_or(|line| crate::markdown::strip_quote_prefix(&line).trim() != "$$")
+        {
+            return;
+        }
         let index = self.line_index();
         let Some((start, end)) = index.math_pair(pos.line) else {
             return;

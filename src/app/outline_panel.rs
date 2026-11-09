@@ -2,7 +2,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use crate::buffer::SourceLine;
-use crate::markdown::{OutlineItem, collect_outline};
+use crate::markdown::{OutlineItem, ParsedLine, collect_outline, collect_outline_from_parsed};
 use crate::theme::ThemeManager;
 use crate::ui::dock_panel::{self, LIST_VERTICAL_PADDING};
 use crate::ui::tokens::FontSize;
@@ -55,6 +55,27 @@ impl OutlinePanel {
         cx: &mut Context<Self>,
     ) {
         let entries = collect_outline(lines);
+        self.set_entries(entries, active_line, editor_focus_handle, cx);
+    }
+
+    pub(crate) fn set_parsed_document(
+        &mut self,
+        parsed_lines: &[ParsedLine],
+        active_line: Option<SourceLine>,
+        editor_focus_handle: Option<FocusHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        let entries = collect_outline_from_parsed(parsed_lines);
+        self.set_entries(entries, active_line, editor_focus_handle, cx);
+    }
+
+    fn set_entries(
+        &mut self,
+        entries: Vec<OutlineItem>,
+        active_line: Option<SourceLine>,
+        editor_focus_handle: Option<FocusHandle>,
+        cx: &mut Context<Self>,
+    ) {
         let active_heading = Self::heading_at_or_before(&entries, active_line);
         if self.entries == entries
             && self.active_line == active_heading

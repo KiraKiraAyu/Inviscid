@@ -2371,6 +2371,97 @@ fn rope_hot_path_layout_reads_lines_without_materializing_the_document(
     });
 }
 
+#[gpui::test]
+fn tail_edit_blank_lines_reuse_prefix_layout(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::TextBuffer;
+    use gpui::AppContext;
+    for mode in [super::RenderMode::Source, super::RenderMode::LivePreview] {
+        for tail in ["", "Tail"] {
+            for text in ["x", "\n"] {
+                let content = format!(
+                    "# Unchanged heading\n\n{}\n{tail}",
+                    "paragraph\n\n".repeat(50)
+                );
+                let editor = cx.new(|cx| {
+                    super::Editor::new_with_buffer(TextBuffer::from_str(&content, None), cx)
+                });
+                editor.update(cx, |ed, _| {
+                    ed.render_mode = mode;
+                    ed.buffer.move_to_doc_end(false);
+                    ed.ensure_layout_cache();
+                    let (prefix, syntax_version, image_version) = {
+                        let layout = ed.layout_snapshot();
+                        (layout.parsed_lines[0].raw_text.as_ptr(), layout.syntax_cache_version, layout.image_cache_version)
+                    };
+                    ed.buffer.insert_text(text);
+                    let incremental = ed.layout_snapshot();
+                    // Background resource completion legitimately invalidates layout.
+                    if incremental.syntax_cache_version == syntax_version
+                        && incremental.image_cache_version == image_version
+                    {
+                        assert_eq!(incremental.parsed_lines[0].raw_text.as_ptr(), prefix,
+                            "ordinary tail edits must retain parsed prefix: {mode:?}, tail={tail:?}, text={text:?}");
+                    }
+                    ed.invalidate_layout_cache();
+                    let rebuilt = ed.layout_snapshot();
+                    assert_eq!(incremental.parsed_lines, rebuilt.parsed_lines);
+                    assert_eq!(incremental.line_heights, rebuilt.line_heights);
+                    assert_eq!(incremental.line_y_offsets, rebuilt.line_y_offsets);
+                    assert_eq!(incremental.total_height, rebuilt.total_height);
+                });
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn tail_edit_layout_matches_rebuild_across_block_boundaries(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::TextBuffer;
+    use gpui::AppContext;
+    let tails = [
+        "paragraph\n",
+        "paragraph\n\n",
+        "# Heading\n",
+        "> quote\n",
+        "> quote\n> ",
+        "- list\n",
+        "| A | B |\n| --- | --- |\n| a | b |\n",
+        "```text\ncode\n```\n",
+        "```text\ncode\n",
+        "$$\nx\n$$\n",
+        "$$\nx\n",
+    ];
+    for mode in [super::RenderMode::Source, super::RenderMode::LivePreview] {
+        for tail in tails {
+            for text in ["x", "\n", "> quote", "\n\n"] {
+                let content = format!("# Prefix\n\n{tail}");
+                let editor = cx.new(|cx| {
+                    super::Editor::new_with_buffer(TextBuffer::from_str(&content, None), cx)
+                });
+                editor.update(cx, |ed, _| {
+                    ed.render_mode = mode;
+                    ed.buffer.move_to_doc_end(false);
+                    ed.ensure_layout_cache();
+                    ed.buffer.insert_text(text);
+                    let incremental = ed.layout_snapshot();
+                    ed.invalidate_layout_cache();
+                    let rebuilt = ed.layout_snapshot();
+                    assert_eq!(
+                        incremental.parsed_lines, rebuilt.parsed_lines,
+                        "{mode:?}, {tail:?}, {text:?}"
+                    );
+                    assert_eq!(
+                        incremental.line_heights, rebuilt.line_heights,
+                        "{mode:?}, {tail:?}, {text:?}"
+                    );
+                    assert_eq!(incremental.line_y_offsets, rebuilt.line_y_offsets);
+                    assert_eq!(incremental.total_height, rebuilt.total_height);
+                });
+            }
+        }
+    }
+}
+
 fn assert_rope_scroll_frames_do_not_copy_document(
     cx: &mut gpui::TestAppContext,
     mode: super::RenderMode,

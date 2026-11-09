@@ -1166,7 +1166,9 @@ impl Workspace {
         self.status_bar.update(cx, |status_bar, cx| {
             status_bar.set_outline_visible(self.outline_visible, cx)
         });
-        if !self.outline_visible {
+        if self.outline_visible {
+            self.sync_outline_panel(cx);
+        } else {
             self.focus_active_editor(window, cx);
         }
         cx.notify();
@@ -1215,19 +1217,27 @@ impl Workspace {
     }
 
     fn sync_outline_panel(&mut self, cx: &mut Context<Self>) {
-        let (lines, active_line, editor_focus_handle) = self
+        // Hidden outlines catch up when opened; input events should not parse
+        // an invisible panel's document on the UI thread.
+        if !self.outline_visible {
+            return;
+        }
+        let (layout, active_line, editor_focus_handle) = self
             .active_editor()
             .map(|editor| {
                 let editor = editor.read(cx);
                 (
-                    editor.buffer().to_lines(),
+                    Some(editor.layout_snapshot()),
                     Some(editor.cursor_pos().line),
                     Some(editor.focus_handle(cx)),
                 )
             })
             .unwrap_or_default();
         self.outline_panel.update(cx, |panel, cx| {
-            panel.set_document(&lines, active_line, editor_focus_handle, cx)
+            let parsed_lines = layout
+                .as_ref()
+                .map_or(&[][..], |layout| layout.parsed_lines.as_slice());
+            panel.set_parsed_document(parsed_lines, active_line, editor_focus_handle, cx)
         });
     }
 
@@ -1477,6 +1487,86 @@ mod tests {
         ed1.read_with(cx, |ed, _| {
             assert!(!ed.is_find_bar_visible());
         });
+    }
+
+    #[gpui::test]
+    fn tail_edit_hidden_outline_does_not_materialize_document(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let (ws, cx) = cx.add_window_view(|_, cx| Workspace::new(None, cx));
+        ws.update(cx, |ws, cx| ws.new_tab(cx));
+        let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+        editor.update(cx, |editor, _| {
+            editor
+                .buffer_mut()
+                .insert_text(&format!("# Heading\n\n{}Tail", "paragraph\n".repeat(500)));
+        });
+        let before = editor.read_with(cx, |editor, _| editor.buffer().full_line_materializations());
+        ws.update(cx, |ws, cx| {
+            assert!(!ws.outline_visible);
+            ws.sync_outline_panel(cx);
+        });
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.buffer().full_line_materializations()),
+            before
+        );
+    }
+
+    #[gpui::test]
+    fn tail_edit_input_handler_does_not_copy_document(cx: &mut TestAppContext) {
+        use gpui::EntityInputHandler;
+        init_globals(cx);
+        let (ws, cx) = cx.add_window_view(|_, cx| Workspace::new(None, cx));
+        ws.update(cx, |ws, cx| ws.new_tab(cx));
+        let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+        editor.update(cx, |editor, _| {
+            editor
+                .buffer_mut()
+                .insert_text(&format!("# Heading\n\n{}Tail", "paragraph\n\n".repeat(500)));
+            editor.ensure_layout_cache();
+        });
+        let before = editor.read_with(cx, |editor, _| editor.buffer().full_line_materializations());
+        for text in ["x", "界", "🙂"] {
+            cx.update(|window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.replace_text_in_range(None, text, window, cx);
+                })
+            });
+        }
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.buffer().full_line_materializations()),
+            before
+        );
+    }
+
+    #[gpui::test]
+    fn tail_edit_visible_outline_reuses_parsed_document(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let (ws, cx) = cx.add_window_view(|_, cx| Workspace::new(None, cx));
+        ws.update(cx, |ws, cx| ws.new_tab(cx));
+        let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+        editor.update(cx, |editor, _| {
+            editor
+                .buffer_mut()
+                .insert_text("# First\n\nparagraph\n\n## Last");
+            editor.ensure_layout_cache();
+        });
+        let before = editor.read_with(cx, |editor, _| editor.buffer().full_line_materializations());
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.toggle_outline_panel(window, cx)));
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.outline_panel.read(cx).entries().len(), 2);
+        });
+        editor.update(cx, |editor, _| {
+            editor.buffer_mut().insert_text(" edited");
+            editor.ensure_layout_cache();
+        });
+        ws.update(cx, |ws, cx| ws.sync_outline_panel(cx));
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.outline_panel.read(cx).entries()[1].title, "Last edited");
+        });
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.buffer().full_line_materializations()),
+            before
+        );
     }
 
     #[gpui::test]

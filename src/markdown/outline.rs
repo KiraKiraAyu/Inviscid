@@ -14,6 +14,13 @@ pub struct OutlineItem {
 /// Scans Markdown source lines into the headings shown by the outline panel.
 pub fn collect_outline(lines: &[String]) -> Vec<OutlineItem> {
     let parsed_lines = super::scanner::MarkdownScanner::scan_document(lines);
+    collect_outline_from_parsed(&parsed_lines)
+}
+
+/// Reuses the editor's parsed document without copying or reparsing source text.
+pub(crate) fn collect_outline_from_parsed(
+    parsed_lines: &[super::types::ParsedLine],
+) -> Vec<OutlineItem> {
     let mut anchor_counts = HashMap::<String, usize>::new();
 
     parsed_lines

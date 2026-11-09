@@ -1314,7 +1314,12 @@ impl Editor {
                 BlockKind::MathBlockContent
             );
 
-        if !in_code_block {
+        // At EOF, blank lines cannot change a following block's interpretation.
+        // Keep edits to the final paragraph/blank lines incremental; internal
+        // separators still take the conservative full-rebuild path.
+        let edits_document_tail = edit_start_idx + delta.old_line_count == cache_len
+            && edit_start_idx + delta.new_line_count == buf_len;
+        if !in_code_block && !edits_document_tail {
             for line in &cache.parsed_lines[edit_start_idx..edit_start_idx + delta.old_line_count] {
                 let content = if line.quote.is_some() {
                     crate::markdown::strip_quote_prefix(&line.raw_text)
