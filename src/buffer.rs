@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
 mod fingerprint;
+mod loading;
 pub mod movement;
 pub mod operations;
 pub mod primitives;
@@ -403,10 +404,16 @@ impl TextBuffer {
     }
 
     pub fn from_str(content: &str, file_path: Option<PathBuf>) -> Self {
-        let line_ending = LineEnding::detect(content);
-        let normalized = content.replace("\r\n", "\n");
-        let is_empty_doc = normalized.is_empty();
-        let rope = Rope::from_str(&normalized);
+        Self::from_bytes(content.as_bytes(), file_path).expect("str is valid UTF-8")
+    }
+
+    fn from_rope(
+        rope: Rope,
+        line_ending: LineEnding,
+        total_word_count: usize,
+        file_path: Option<PathBuf>,
+    ) -> Self {
+        let is_empty_doc = rope.len_chars() == 0;
         let line_fingerprints = fingerprint::LineFingerprints::new(&rope);
         let saved_content_hash = line_fingerprints.content_hash();
         let saved_line_count = if is_empty_doc { 2 } else { rope.len_lines() };
@@ -436,7 +443,7 @@ impl TextBuffer {
             is_empty_doc,
             line_index_cache: RefCell::new(None),
             last_edit_delta: None,
-            total_word_count: normalized.split_whitespace().count(),
+            total_word_count,
             #[cfg(test)]
             full_line_materializations: Cell::new(0),
         }
