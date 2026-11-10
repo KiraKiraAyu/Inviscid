@@ -77,8 +77,17 @@ impl ContextLessSummary for LineSummary {
 
 struct Lines(usize);
 struct Height(Pixels);
+struct PreciseHeight(f64);
 struct VisibleLines(usize);
 struct Unmeasured(usize);
+
+impl<'a> SeekTarget<'a, LineSummary, LineSummary> for PreciseHeight {
+    fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
+        self.0
+            .partial_cmp(&(24.0 + location.height.0 as f64 / 1024.0))
+            .unwrap_or(Ordering::Less)
+    }
+}
 
 impl<'a> SeekTarget<'a, LineSummary, LineSummary> for Unmeasured {
     fn cmp(&self, location: &LineSummary, (): ()) -> Ordering {
@@ -130,6 +139,112 @@ impl Default for LineMetrics {
 }
 
 impl LineMetrics {
+    pub(crate) fn top_precise(&self, line: usize) -> Option<f64> {
+        if line >= self.len() {
+            return None;
+        }
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Lines(line), Bias::Right);
+        let height = cursor.start().height.0
+            + (line - cursor.start().lines) as i64 * cursor.item()?.height.0;
+        Some(24.0 + height as f64 / 1024.0)
+    }
+
+    pub(crate) fn total_height_precise(&self) -> f64 {
+        48.0 + self.tree.summary().height.0 as f64 / 1024.0
+    }
+
+    pub(crate) fn top_relative(&self, line: usize, origin: Option<usize>) -> Option<Pixels> {
+        match origin {
+            Some(origin) => Some(px((self.top_precise(line)?
+                - self.top_precise(origin.min(self.len().checked_sub(1)?))?)
+                as f32)),
+            None => self.top(line),
+        }
+    }
+
+    pub(crate) fn line_at_precise_y(&self, y: f64) -> Option<usize> {
+        if self.is_empty() {
+            return None;
+        }
+        if y < 24.0 || y.is_nan() {
+            return Some(0);
+        }
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&PreciseHeight(y), Bias::Right);
+        let offset = cursor
+            .item()
+            .map(|item| {
+                let top = 24.0 + cursor.start().height.0 as f64 / 1024.0;
+                if item.height.0 == 0 {
+                    item.count - 1
+                } else {
+                    (((y - top) * 1024.0 / item.height.0 as f64).floor() as usize)
+                        .min(item.count - 1)
+                }
+            })
+            .unwrap_or(0);
+        Some((cursor.start().lines + offset).min(self.len() - 1))
+    }
+
+    pub(crate) fn line_at_relative_y(&self, origin: Option<usize>, y: Pixels) -> Option<usize> {
+        match origin {
+            Some(origin) => self.line_at_precise_y(
+                self.top_precise(origin.min(self.len().checked_sub(1)?))? + f64::from(f32::from(y)),
+            ),
+            None => self.line_at_y(y),
+        }
+    }
+
+    pub(crate) fn visible_lines_relative(
+        &self,
+        origin: Option<usize>,
+        top: Pixels,
+        height: Pixels,
+    ) -> Range<usize> {
+        let Some(origin) = origin else {
+            return self.visible_lines(top, height);
+        };
+        if height <= px(0.0) || self.is_empty() {
+            return 0..0;
+        }
+        let origin_y = self.top_precise(origin.min(self.len() - 1)).unwrap();
+        let top = origin_y + f64::from(f32::from(top));
+        let bottom = top + f64::from(f32::from(height));
+        let end = if bottom <= 24.0 || bottom.is_nan() {
+            0
+        } else {
+            let mut cursor = self.tree.cursor::<LineSummary>(());
+            cursor.seek(&PreciseHeight(bottom), Bias::Left);
+            cursor.start().lines
+                + cursor
+                    .item()
+                    .map(|item| {
+                        let prefix = cursor.start().height.0;
+                        let mut low = 0;
+                        let mut high = item.count;
+                        while low < high {
+                            let mid = low + (high - low) / 2;
+                            let y = 24.0 + (prefix + mid as i64 * item.height.0) as f64 / 1024.0;
+                            if y < bottom {
+                                low = mid + 1;
+                            } else {
+                                high = mid;
+                            }
+                        }
+                        low
+                    })
+                    .unwrap_or(0)
+        };
+        let mut start = self.line_at_precise_y(top).unwrap();
+        if self.top_precise(start).unwrap() + f64::from(f32::from(self.height(start).unwrap()))
+            <= top
+        {
+            start += 1;
+        }
+        start.min(end)..end
+    }
+
     pub fn from_heights(heights: Vec<Pixels>) -> Self {
         Self {
             tree: SumTree::from_iter(

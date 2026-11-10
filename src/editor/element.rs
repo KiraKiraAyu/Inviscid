@@ -125,7 +125,15 @@ impl Element for EditorElement {
                     // Heights are already known: prepare only rows intersecting the viewport.
                     let scroll_top = editor.scroll.current_scroll_top;
                     let scroll_h = bounds.size.height;
-                    let visible = layout.visible_source_lines(scroll_top, scroll_h);
+                    let visible = if editor.scroll.anchor_line.is_some() {
+                        layout.metrics.visible_lines_relative(
+                            editor.scroll.anchor_line,
+                            scroll_top,
+                            scroll_h,
+                        )
+                    } else {
+                        layout.visible_source_lines(scroll_top, scroll_h)
+                    };
                     let visible_start = visible.start;
                     let visible_end = visible.end;
 
@@ -165,10 +173,16 @@ impl Element for EditorElement {
                             {
                                 let group_bottom = layout
                                     .metrics
-                                    .top(quote_range.end)
-                                    .unwrap_or(layout.metrics.total_height() - px(24.0));
-                                let group_height =
-                                    group_bottom - layout.metrics.top(quote_range.start).unwrap();
+                                    .top_relative(quote_range.end, editor.scroll.anchor_line)
+                                    .unwrap_or(px((layout.metrics.total_height_precise()
+                                        - 24.0
+                                        - editor.scroll_origin_y())
+                                        as f32));
+                                let group_height = group_bottom
+                                    - layout
+                                        .metrics
+                                        .top_relative(quote_range.start, editor.scroll.anchor_line)
+                                        .unwrap();
                                 let quote_indent = layout
                                     .indent_px(crate::buffer::SourceLine::new(quote_range.start));
                                 let panel = div()
@@ -178,7 +192,10 @@ impl Element for EditorElement {
                                     .border_color(theme.quote_border)
                                     .bg(theme.quote_bg);
                                 let panel_y = bounds.origin.y
-                                    + layout.metrics.top(quote_range.start).unwrap()
+                                    + layout
+                                        .metrics
+                                        .top_relative(quote_range.start, editor.scroll.anchor_line)
+                                        .unwrap()
                                     - scroll_top;
                                 lines_to_prepaint.push((
                                     panel.into_any_element(),
@@ -266,7 +283,10 @@ impl Element for EditorElement {
                             &editor_entity,
                         );
 
-                        let line_y_in_doc = layout.metrics.top(line_idx).unwrap_or(px(24.0));
+                        let line_y_in_doc = layout
+                            .metrics
+                            .top_relative(line_idx, editor.scroll.anchor_line)
+                            .unwrap_or(px(24.0));
                         let line_screen_y = bounds.origin.y + line_y_in_doc - scroll_top;
                         let line_origin = point(container_x, line_screen_y);
 

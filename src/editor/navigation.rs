@@ -347,8 +347,9 @@ impl Editor {
 
     /// Automatically adjusts the scroll viewport to keep the active cursor comfortably within view (Autoscroll)
     pub fn scroll_to_cursor(&mut self) {
+        self.prepare_viewport_layout();
         let cursor_line = self.buffer.cursor_pos().line;
-        let (line_top, line_bottom) = self.get_line_y_range(cursor_line);
+        let (line_top, line_bottom) = self.line_scroll_y_range(cursor_line);
 
         let viewport_height = self.viewport_height();
 
@@ -359,14 +360,15 @@ impl Editor {
 
         if line_top < scroll_top + margin {
             // Cursor is above the top visible comfort line -> scroll UP
-            new_scroll_top = (line_top - margin).max(px(0.0));
+            new_scroll_top = (line_top - margin).max(self.scroll.min_scroll_top);
         } else if line_bottom > scroll_top + viewport_height - margin {
             // If the element is taller than the viewport, ensure the top of the element is visible
             let element_height = line_bottom - line_top;
             if element_height > viewport_height - margin * 2.0 {
-                new_scroll_top = (line_top - margin).max(px(0.0));
+                new_scroll_top = (line_top - margin).max(self.scroll.min_scroll_top);
             } else {
-                new_scroll_top = (line_bottom + margin - viewport_height).max(px(0.0));
+                new_scroll_top =
+                    (line_bottom + margin - viewport_height).max(self.scroll.min_scroll_top);
             }
         }
 

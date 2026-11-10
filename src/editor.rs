@@ -39,6 +39,7 @@ pub mod mouse;
 pub mod navigation;
 mod pending_layout;
 pub mod render;
+mod scroll_anchor;
 pub mod shaping;
 #[cfg(test)]
 mod tests;
@@ -66,6 +67,8 @@ pub fn is_whitelisted_extension(path: &Path) -> bool {
 
 #[derive(Clone, Debug)]
 pub struct ScrollState {
+    // When present, physics offsets are relative to this source row's top.
+    pub(crate) anchor_line: Option<usize>,
     pub physics: crate::ui::SmoothScrollPhysics,
     pub is_scrollbar_dragging: bool,
     pub scrollbar_drag_start_y: Option<Pixels>,
@@ -98,6 +101,7 @@ impl Default for ScrollState {
 impl ScrollState {
     pub fn new() -> Self {
         Self {
+            anchor_line: None,
             physics: crate::ui::SmoothScrollPhysics::new(),
             is_scrollbar_dragging: false,
             scrollbar_drag_start_y: None,

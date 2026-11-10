@@ -38,6 +38,8 @@ pub fn cubic_ease_out(
 /// Smooth scroll state supporting direct 1:1 touchpad displacement and cubic ease-out wheel steps.
 #[derive(Clone, Debug)]
 pub struct SmoothScrollPhysics {
+    /// Lower bound in the caller's coordinate system, zero for absolute scrolling.
+    pub min_scroll_top: Pixels,
     pub current_scroll_top: Pixels,
     pub target_scroll_top: Pixels,
     pub anim_start_scroll_top: Pixels,
@@ -61,6 +63,7 @@ impl SmoothScrollPhysics {
 
     pub fn new() -> Self {
         Self {
+            min_scroll_top: px(0.0),
             current_scroll_top: px(0.0),
             target_scroll_top: px(0.0),
             anim_start_scroll_top: px(0.0),
@@ -72,7 +75,8 @@ impl SmoothScrollPhysics {
     /// Direct 1:1 displacement (used for precision touchpads and thumb dragging).
     /// Bases movement on current visual position and cancels in-flight animation.
     pub fn scroll_direct(&mut self, delta: Pixels, max_scroll: Pixels) {
-        self.current_scroll_top = (self.current_scroll_top - delta).clamp(px(0.0), max_scroll);
+        self.current_scroll_top = (self.current_scroll_top - delta)
+            .clamp(self.min_scroll_top, max_scroll.max(self.min_scroll_top));
         self.target_scroll_top = self.current_scroll_top;
         self.anim_start_scroll_top = self.current_scroll_top;
         self.anim_start_time = None;
@@ -80,7 +84,7 @@ impl SmoothScrollPhysics {
 
     /// Sets the position directly with clamping (e.g. scrollbar thumb drag).
     pub fn set_direct(&mut self, position: Pixels, max_scroll: Pixels) {
-        let clamped = position.clamp(px(0.0), max_scroll);
+        let clamped = position.clamp(self.min_scroll_top, max_scroll.max(self.min_scroll_top));
         self.current_scroll_top = clamped;
         self.target_scroll_top = clamped;
         self.anim_start_scroll_top = clamped;
@@ -111,7 +115,8 @@ impl SmoothScrollPhysics {
             self.target_scroll_top
         };
 
-        let new_target = (base - delta).clamp(px(0.0), max_scroll);
+        let new_target =
+            (base - delta).clamp(self.min_scroll_top, max_scroll.max(self.min_scroll_top));
         if (new_target - self.current_scroll_top).abs() < px(0.5) {
             self.target_scroll_top = new_target;
             self.current_scroll_top = new_target;
@@ -126,7 +131,7 @@ impl SmoothScrollPhysics {
 
     /// Programmatic target movement (e.g. scroll cursor or item into view).
     pub fn set_target_scroll_top(&mut self, target: Pixels, max_scroll: Pixels) {
-        let clamped = target.clamp(px(0.0), max_scroll);
+        let clamped = target.clamp(self.min_scroll_top, max_scroll.max(self.min_scroll_top));
         if (clamped - self.current_scroll_top).abs() > px(0.5) {
             self.target_scroll_top = clamped;
             self.anim_start_scroll_top = self.current_scroll_top;

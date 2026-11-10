@@ -984,8 +984,11 @@ impl Editor {
         range: Range<usize>,
     ) {
         let scroll_top = self.scroll.current_scroll_top + self.layout_scroll_adjustment.get();
-        let anchor = cache.metrics.line_at_y(scroll_top);
-        let old_top = anchor.and_then(|line| cache.metrics.top(line));
+        let anchor = cache
+            .metrics
+            .line_at_relative_y(self.scroll.anchor_line, scroll_top);
+        let old_top =
+            anchor.and_then(|line| cache.metrics.top_relative(line, self.scroll.anchor_line));
         let mut from = range.start;
         while let Some(start) = cache
             .metrics
@@ -1004,8 +1007,8 @@ impl Editor {
             cache.metrics.set_measured(start..end, heights);
             from = end;
         }
-        if let Some((old_top, new_top)) =
-            old_top.zip(anchor.and_then(|line| cache.metrics.top(line)))
+        if let Some((old_top, new_top)) = old_top
+            .zip(anchor.and_then(|line| cache.metrics.top_relative(line, self.scroll.anchor_line)))
         {
             self.layout_scroll_adjustment
                 .set(self.layout_scroll_adjustment.get() + new_top - old_top);
@@ -1016,7 +1019,8 @@ impl Editor {
         if cache.metrics.unmeasured_count() == 0 {
             return;
         }
-        let visible = cache.metrics.visible_lines(
+        let visible = cache.metrics.visible_lines_relative(
+            self.scroll.anchor_line,
             self.scroll.current_scroll_top + self.layout_scroll_adjustment.get(),
             self.viewport_height(),
         );
@@ -1037,6 +1041,7 @@ impl Editor {
             }
         }
         self.apply_layout_scroll_adjustment();
+        self.rebase_scroll();
     }
 
     pub(super) fn apply_layout_scroll_adjustment(&mut self) {
@@ -1055,8 +1060,8 @@ impl Editor {
             let len = cache.metrics.len();
             self.measure_pending_range(Arc::make_mut(&mut cache), 0..len);
         }
-        self.scroll
-            .compensate_layout(self.layout_scroll_adjustment.replace(px(0.0)));
+        self.apply_layout_scroll_adjustment();
+        self.rebase_scroll();
     }
 
     pub fn ensure_layout_cache(&self) {
@@ -1112,8 +1117,14 @@ impl Editor {
             && current_cache.syntax_cache_version == current_syntax_v
         {
             let scroll_top = self.scroll.current_scroll_top + self.layout_scroll_adjustment.get();
-            let anchor = current_cache.metrics.line_at_y(scroll_top);
-            let old_top = anchor.and_then(|line| current_cache.metrics.top(line));
+            let anchor = current_cache
+                .metrics
+                .line_at_relative_y(self.scroll.anchor_line, scroll_top);
+            let old_top = anchor.and_then(|line| {
+                current_cache
+                    .metrics
+                    .top_relative(line, self.scroll.anchor_line)
+            });
             drop(current_cache);
             let mut cached = self.layout_cache.borrow_mut();
             let cache = Arc::make_mut(&mut cached);
@@ -1126,9 +1137,9 @@ impl Editor {
                 let end = (region.end_line.index() + 1).min(cache.metrics.len());
                 cache.metrics.set_uniform_measured(start..end, px(0.0));
             }
-            if let Some((old_top, new_top)) =
-                old_top.zip(anchor.and_then(|line| cache.metrics.top(line)))
-            {
+            if let Some((old_top, new_top)) = old_top.zip(
+                anchor.and_then(|line| cache.metrics.top_relative(line, self.scroll.anchor_line)),
+            ) {
                 self.layout_scroll_adjustment
                     .set(self.layout_scroll_adjustment.get() + new_top - old_top);
             }
@@ -1728,8 +1739,10 @@ impl Editor {
 
     #[inline]
     pub fn get_max_scroll_top(&self) -> Pixels {
-        self.scrollbar_metrics(self.viewport_height(), self.get_total_content_height())
-            .max_scroll
+        px((f64::from(f32::from(
+            self.scrollbar_metrics(self.viewport_height(), self.get_total_content_height())
+                .max_scroll,
+        )) - self.scroll_origin_y()) as f32)
     }
 
     pub(crate) fn scrollbar_metrics(
@@ -1756,7 +1769,10 @@ impl Editor {
         };
 
         let thumb_y = if max_scroll > px(0.0) {
-            let scroll_ratio = (self.scroll.current_scroll_top / max_scroll).clamp(0.0, 1.0);
+            let scroll_ratio = ((self.scroll_origin_y()
+                + f64::from(f32::from(self.scroll.current_scroll_top)))
+                / f64::from(f32::from(max_scroll)))
+            .clamp(0.0, 1.0) as f32;
             scroll_ratio * (track_h - thumb_h)
         } else {
             px(0.0)

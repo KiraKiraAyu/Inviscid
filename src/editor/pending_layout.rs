@@ -66,6 +66,7 @@ impl Editor {
             cache.metrics.unmeasured_count() > 0
         };
         self.apply_layout_scroll_adjustment();
+        self.rebase_scroll();
         pending
     }
 }

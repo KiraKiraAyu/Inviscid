@@ -94,7 +94,7 @@ impl Editor {
         let total_h = self.layout_snapshot().metrics.total_height();
         let viewport = self.viewport_bounds_val();
         let scroll_top = self.scroll.current_scroll_top;
-        let doc_y = point.y - viewport.origin.y + scroll_top;
+        let doc_y = point.y - viewport.origin.y + scroll_top + px(self.scroll_origin_y() as f32);
 
         if self.can_edit()
             && doc_y > total_h - px(16.0)
@@ -148,11 +148,15 @@ impl Editor {
         } else {
             px(0.0)
         };
-        let (line_doc_top, line_doc_bottom) = layout
-            .source_line_y_range(source_line)
-            .unwrap_or((px(24.0), px(48.0)));
+        let line_doc_top = layout
+            .metrics
+            .top_relative(source_line.index(), self.scroll.anchor_line)
+            .unwrap_or(px(24.0));
         let line_top = viewport.origin.y + line_doc_top - self.scroll.current_scroll_top;
-        let line_h = line_doc_bottom - line_doc_top;
+        let line_h = layout
+            .metrics
+            .height(source_line.index())
+            .unwrap_or(px(24.0));
         Bounds {
             origin: gpui::point(container_x + left_offset, line_top),
             size: size((content_width - left_offset).max(px(0.0)), line_h),
@@ -173,8 +177,12 @@ impl Editor {
         let viewport = self.viewport_bounds_val();
         let scroll_top = self.scroll.current_scroll_top;
 
-        let doc_y = (point.y - viewport.origin.y + scroll_top).max(px(0.0));
-        let mut source_line = layout.source_line_at_y(doc_y)?;
+        let doc_y = point.y - viewport.origin.y + scroll_top;
+        let mut source_line = SourceLine::new(
+            layout
+                .metrics
+                .line_at_relative_y(self.scroll.anchor_line, doc_y)?,
+        );
         source_line = source_line.min(SourceLine::new(self.buffer.line_count() - 1));
 
         if self.is_line_folded(source_line)
@@ -190,7 +198,10 @@ impl Editor {
         }
 
         if exact_only {
-            let (top, bottom) = layout.source_line_y_range(source_line)?;
+            let top = layout
+                .metrics
+                .top_relative(source_line.index(), self.scroll.anchor_line)?;
+            let bottom = top + layout.metrics.height(source_line.index())?;
             if doc_y < top || doc_y > bottom {
                 return None;
             }
@@ -431,8 +442,9 @@ impl Editor {
                 if available_track > px(0.0) {
                     let scroll_delta = (dy / available_track) * metrics.max_scroll;
                     self.scroll_task = None;
-                    self.scroll
-                        .set_direct(start_scroll + scroll_delta, metrics.max_scroll);
+                    self.set_scroll_document_y(
+                        self.scroll_origin_y() + f64::from(f32::from(start_scroll + scroll_delta)),
+                    );
                     self.scroll.last_scroll_action = std::time::Instant::now();
                     cx.emit(EditorEvent::ScrollChanged);
                     cx.notify();
@@ -470,7 +482,7 @@ impl Editor {
         let new_top = if mouse_y < top_edge {
             let dist = f32::from(top_edge - mouse_y).max(0.0);
             let speed = px((dist / 40.0 * 20.0 + 8.0).min(50.0));
-            (self.scroll.target_scroll_top - speed).max(px(0.0))
+            (self.scroll.target_scroll_top - speed).max(self.scroll.min_scroll_top)
         } else if mouse_y > bottom_edge {
             let max_scroll = self.get_max_scroll_top();
             let dist = f32::from(mouse_y - bottom_edge).max(0.0);
@@ -481,8 +493,8 @@ impl Editor {
         };
 
         if (new_top - self.scroll.target_scroll_top).abs() > px(0.1) {
-            self.scroll.target_scroll_top = new_top;
-            self.scroll.current_scroll_top = new_top;
+            let max = self.get_max_scroll_top();
+            self.scroll.set_direct(new_top, max);
             self.scroll.last_scroll_action = std::time::Instant::now();
             true
         } else {
@@ -735,7 +747,7 @@ impl Editor {
             let ratio = (rel_y / track_h).clamp(0.0, 1.0);
             let target = ratio * metrics.max_scroll;
             self.scroll_task = None;
-            self.scroll.set_direct(target, metrics.max_scroll);
+            self.set_scroll_document_y(f64::from(f32::from(target)));
             self.scroll.last_scroll_action = std::time::Instant::now();
             cx.emit(EditorEvent::ScrollChanged);
         }
