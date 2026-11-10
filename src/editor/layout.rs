@@ -207,9 +207,9 @@ pub struct DocumentLayoutCache {
     pub parsed_lines: Arc<Vec<ParsedLine>>,
     pub metrics: super::line_metrics::LineMetrics,
     pub space_width: Pixels,
-    pub separators: Vec<bool>,
+    pub separators: Arc<Vec<bool>>,
     pub quote_projection: Arc<QuoteProjection>,
-    pub quote_ranges: Vec<Range<usize>>,
+    pub quote_ranges: Arc<Vec<Range<usize>>>,
 }
 
 impl Default for DocumentLayoutCache {
@@ -234,9 +234,9 @@ impl Default for DocumentLayoutCache {
             parsed_lines: Arc::new(Vec::new()),
             metrics: Default::default(),
             space_width: px(0.0),
-            separators: Vec::new(),
+            separators: Arc::default(),
             quote_projection: Arc::new(QuoteProjection::default()),
-            quote_ranges: Vec::new(),
+            quote_ranges: Arc::default(),
         }
     }
 }
@@ -890,6 +890,8 @@ impl Editor {
         if self.render_mode == RenderMode::Source {
             return None;
         }
+        #[cfg(test)]
+        self.layout_validation_scans.update(|count| count + 1);
         crate::markdown::math_block_range_with_projection(projection, active_line)
             .filter(|(start, end)| active_line > *start && active_line < *end)
     }
@@ -902,6 +904,8 @@ impl Editor {
         if self.render_mode == RenderMode::Source {
             return None;
         }
+        #[cfg(test)]
+        self.layout_validation_scans.update(|count| count + 1);
         crate::markdown::mermaid_block_range_with_projection(projection, active_line)
     }
 
@@ -1072,6 +1076,22 @@ impl Editor {
         let active_col = disclosure_position.col;
         let current_img_v = crate::http::image_cache_version();
         let current_syntax_v = crate::syntax::syntax_cache_version();
+
+        // Derived block state cannot change while its inputs and disclosure position match.
+        {
+            let cache = self.layout_cache.borrow();
+            if cache.buffer_version == self.buffer.version()
+                && cache.buffer_revision == self.buffer.revision()
+                && cache.lines_len == self.buffer.line_count()
+                && self.cache_matches_view(&cache, content_width)
+                && cache.image_cache_version == current_img_v
+                && cache.syntax_cache_version == current_syntax_v
+                && cache.active_line == active_line
+                && (self.render_mode == RenderMode::Source || cache.active_col == active_col)
+            {
+                return;
+            }
+        }
 
         let updated_projection = self.try_update_quote_projection();
         let current_cache = self.layout_cache.borrow().clone();
@@ -1405,9 +1425,9 @@ impl Editor {
             metrics,
             space_width: self.space_width(),
 
-            separators,
+            separators: separators.into(),
             quote_projection,
-            quote_ranges: parsed_quote_ranges,
+            quote_ranges: parsed_quote_ranges.into(),
         };
 
         for region in self.display_map.fold_map().folded_regions() {
@@ -1610,11 +1630,11 @@ impl Editor {
             return false;
         }
 
-        cache.separators = if self.render_mode == RenderMode::Source {
+        cache.separators = Arc::new(if self.render_mode == RenderMode::Source {
             Vec::new()
         } else {
             crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
-        };
+        });
         let new_heights = self.measure_range(
             block_start..block_end,
             &new_parsed,
@@ -1709,7 +1729,7 @@ impl Editor {
         cache.active_math_block = active_math_block;
         cache.active_mermaid_block = active_mermaid_block;
         cache.quote_projection = quote_projection;
-        cache.quote_ranges = quote_ranges(&cache.parsed_lines);
+        cache.quote_ranges = quote_ranges(&cache.parsed_lines).into();
         cache.fold_version = self.display_map.version();
 
         true

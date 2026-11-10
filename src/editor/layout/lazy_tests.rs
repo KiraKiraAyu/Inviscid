@@ -4,6 +4,24 @@ use gpui::{AppContext, Bounds, point, px, size};
 use std::sync::Arc;
 
 #[gpui::test]
+fn viewport_updates_reuse_validation_and_separator_storage(cx: &mut gpui::TestAppContext) {
+    let text = "paragraph\n".repeat(20_000);
+    let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
+    editor.update(cx, |ed, cx| {
+        ed.ensure_layout_cache();
+        let old = ed.layout_snapshot();
+        ed.layout_validation_scans.set(0);
+        ed.scroll.set_direct(px(1200.0), px(100_000.0));
+        ed.prepare_viewport_layout();
+        ed.schedule_layout_measurement(cx);
+        let current = ed.layout_snapshot();
+        assert_eq!(ed.layout_validation_scans.get(), 0);
+        assert_eq!(old.separators.as_ptr(), current.separators.as_ptr());
+        assert!(Arc::ptr_eq(&old.quote_ranges, &current.quote_ranges));
+    });
+}
+
+#[gpui::test]
 fn view_changes_reuse_parsing_and_measure_only_viewport(cx: &mut gpui::TestAppContext) {
     let text = "# heading\n\n> quote\n> next\n\n| a | b |\n| --- | --- |\n| c | d |\n\nparagraph with words\n".repeat(2100);
     let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));

@@ -344,14 +344,23 @@ impl LineMetrics {
                 measured: true,
             })
             .collect::<Vec<_>>();
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Lines(range.start), Bias::Right);
+        let mut run_offset = range.start - cursor.start().lines;
         let unchanged = range.len() == items.len()
-            && items.iter().enumerate().all(|(offset, item)| {
-                let mut cursor = self.tree.cursor::<LineSummary>(());
-                cursor.seek(&Lines(range.start + offset), Bias::Right);
-                cursor
-                    .item()
-                    .is_some_and(|old| old.height == item.height && old.measured)
+            && items.iter().all(|item| {
+                let Some(old) = cursor.item() else {
+                    return false;
+                };
+                let equal = old.height == item.height && old.measured;
+                run_offset += 1;
+                if run_offset == old.count {
+                    cursor.next();
+                    run_offset = 0;
+                }
+                equal
             });
+        drop(cursor);
         if unchanged {
             return false;
         }
@@ -545,6 +554,19 @@ mod vec_metrics;
 mod tests {
     use super::vec_metrics::VecMetrics;
     use super::*;
+
+    #[test]
+    fn unchanged_bulk_height_update_visits_rows_linearly() {
+        let heights = vec![px(24.0); 5000];
+        let mut metrics = LineMetrics::from_heights(heights.clone());
+        SUMMARY_WORK.set(0);
+        assert!(!metrics.splice(0..5000, heights));
+        assert!(
+            SUMMARY_WORK.get() < 50_000,
+            "{} tree operations",
+            SUMMARY_WORK.get()
+        );
+    }
 
     #[test]
     fn estimated_runs_split_and_keep_old_snapshots() {

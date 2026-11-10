@@ -208,6 +208,8 @@ pub struct Editor {
     layout_notifier: crate::sync::VersionedNotifier,
     #[cfg(test)]
     pub(crate) layout_stats: std::cell::Cell<LayoutStats>,
+    #[cfg(test)]
+    layout_validation_scans: std::cell::Cell<usize>,
     pub(crate) display_map: DisplayMap,
     pub(crate) is_read_only: bool,
 
@@ -529,6 +531,8 @@ impl Editor {
             layout_notifier,
             #[cfg(test)]
             layout_stats: std::cell::Cell::new(LayoutStats::default()),
+            #[cfg(test)]
+            layout_validation_scans: std::cell::Cell::new(0),
             display_map: DisplayMap::new(),
             is_read_only: false,
             auto_save_task: None,

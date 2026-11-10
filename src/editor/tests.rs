@@ -1579,11 +1579,11 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         metrics: Default::default(),
         space_width: px(0.0),
 
-        separators: Vec::new(),
+        separators: Default::default(),
         quote_projection: std::sync::Arc::new(crate::markdown::QuoteProjection::from_lines(
             &buf.lines(),
         )),
-        quote_ranges: Vec::new(),
+        quote_ranges: Default::default(),
     };
 
     for (idx, parsed) in parsed_doc.iter().enumerate() {
@@ -1749,11 +1749,11 @@ fn test_folding_layout_height_and_navigation() {
         metrics: Default::default(),
         space_width: px(0.0),
 
-        separators: Vec::new(),
+        separators: Default::default(),
         quote_projection: std::sync::Arc::new(crate::markdown::QuoteProjection::from_lines(
             &buf.lines(),
         )),
-        quote_ranges: Vec::new(),
+        quote_ranges: Default::default(),
     };
 
     for (idx, parsed) in parsed_doc.iter().enumerate() {
@@ -1839,11 +1839,11 @@ fn test_folding_layout_height_and_navigation() {
         metrics: Default::default(),
         space_width: px(0.0),
 
-        separators: Vec::new(),
+        separators: Default::default(),
         quote_projection: std::sync::Arc::new(crate::markdown::QuoteProjection::from_lines(
             &buf.lines(),
         )),
-        quote_ranges: Vec::new(),
+        quote_ranges: Default::default(),
     };
 
     for (idx, parsed) in parsed_doc.iter().enumerate() {
