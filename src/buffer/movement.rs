@@ -97,6 +97,10 @@ pub(crate) struct LineIndex {
 }
 
 impl LineIndex {
+    pub(crate) fn structure_snapshot(&self) -> super::StructureIndex {
+        self.structure.clone()
+    }
+
     fn build(buffer: &TextBuffer) -> Self {
         Self {
             version: buffer.version,

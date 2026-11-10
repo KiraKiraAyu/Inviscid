@@ -13,6 +13,7 @@ mod fingerprint_loading_tests;
 mod loading;
 pub mod movement;
 pub mod operations;
+mod parser_summary;
 pub mod primitives;
 mod source;
 mod structure_index;
@@ -22,6 +23,7 @@ pub mod tests;
 pub use fingerprint::{FingerprintJob, FingerprintResult};
 pub use primitives::*;
 pub use source::LineSource;
+pub(crate) use structure_index::StructureIndex;
 
 /// A document's source lines. Indexing requires a source-coordinate value.
 ///

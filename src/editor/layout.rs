@@ -929,24 +929,25 @@ impl Editor {
     fn parse_range(
         &self,
         range: Range<usize>,
-        projection: &QuoteProjection,
-        in_code_block: bool,
+        _projection: &QuoteProjection,
+        _in_code_block: bool,
     ) -> Vec<ParsedLine> {
-        let mut parsed = if range == (0..self.buffer.line_count()) && !in_code_block {
-            MarkdownScanner::scan_document_with_projection(&self.buffer, projection)
+        let (window, parsed) = MarkdownScanner::scan_window(&self.buffer, range.clone());
+        #[cfg(test)]
+        let scanned = parsed.len();
+        let mut parsed = if window == range {
+            parsed
         } else {
-            MarkdownScanner::scan_range_with_projection_with_state(
-                &self.buffer,
-                projection,
-                range.clone(),
-                in_code_block,
-                false,
-            )
+            parsed
+                .into_iter()
+                .skip(range.start - window.start)
+                .take(range.len())
+                .collect()
         };
         self.project_ime_preedit(range.start, &mut parsed);
         #[cfg(test)]
         self.layout_stats.update(|mut stats| {
-            stats.lines_scanned += parsed.len();
+            stats.lines_scanned += scanned;
             stats
         });
         parsed

@@ -1,20 +1,28 @@
 use super::{LineSource, SourceLine};
 use crate::markdown::structure::{LineStructure, classify};
-use gpui_sum_tree::{Bias, ContextLessSummary, Item, SeekTarget, SumTree};
+use gpui_sum_tree::{Bias, ContextLessSummary, Dimension, Item, SeekTarget, SumTree};
+use std::sync::Arc;
 use std::{cmp::Ordering, ops::Range};
 
 #[derive(Clone, Debug)]
 struct StructureLine {
     raw: LineStructure,
     projected: LineStructure,
+    parser: Option<Arc<super::parser_summary::ParserEffects>>,
 }
 
 impl StructureLine {
     fn new(line: &str) -> Self {
         let raw = classify(line);
+        let projected = classify(&line[raw.quote_prefix..]);
         Self {
-            projected: classify(&line[raw.quote_prefix..]),
+            projected,
             raw,
+            parser: (raw.is_fence
+                || raw.is_math_delim
+                || projected.is_fence
+                || projected.is_math_delim)
+                .then(|| Arc::new(super::parser_summary::ParserEffects::line(raw, projected))),
         }
     }
 }
@@ -66,6 +74,7 @@ impl MathSummary {
 
 #[derive(Clone, Debug, Default)]
 struct StructureSummary {
+    parser: Option<Arc<super::parser_summary::ParserEffects>>,
     lines: usize,
     fences: usize,
     normal: MathSummary,
@@ -83,6 +92,7 @@ impl Item for StructureLine {
         let normal = MathSummary::line(self, false);
         let projected = MathSummary::line(self, true);
         StructureSummary {
+            parser: self.parser.clone(),
             lines: 1,
             fences: usize::from(self.raw.is_fence),
             through_last_fence: if self.raw.is_fence {
@@ -107,6 +117,19 @@ impl ContextLessSummary for StructureSummary {
     }
 
     fn add_summary(&mut self, other: &Self) {
+        if let Some(other) = &other.parser {
+            if let Some(parser) = &mut self.parser {
+                Arc::make_mut(parser).append(other);
+            } else {
+                self.parser = Some(other.clone());
+            }
+        }
+        self.add_navigation(other);
+    }
+}
+
+impl StructureSummary {
+    fn add_navigation(&mut self, other: &Self) {
         if other.fences > 0 {
             self.through_last_fence = self.normal.clone();
             self.through_last_fence.append(&other.through_last_fence);
@@ -122,6 +145,35 @@ impl ContextLessSummary for StructureSummary {
 }
 
 struct Lines(usize);
+#[derive(Clone, Default)]
+struct Navigation(StructureSummary);
+
+impl<'a> Dimension<'a, StructureSummary> for Navigation {
+    fn zero((): ()) -> Self {
+        Self::default()
+    }
+    fn add_summary(&mut self, summary: &'a StructureSummary, (): ()) {
+        self.0.add_navigation(summary);
+    }
+}
+
+impl<'a> SeekTarget<'a, StructureSummary, Navigation> for Lines {
+    fn cmp(&self, location: &Navigation, (): ()) -> Ordering {
+        Ord::cmp(&self.0, &location.0.lines)
+    }
+}
+
+impl<'a> SeekTarget<'a, StructureSummary, Navigation> for Fences {
+    fn cmp(&self, location: &Navigation, (): ()) -> Ordering {
+        Ord::cmp(&self.0, &location.0.fences)
+    }
+}
+
+impl<'a> SeekTarget<'a, StructureSummary, Navigation> for MathDelims<'_> {
+    fn cmp(&self, location: &Navigation, (): ()) -> Ordering {
+        Ord::cmp(&self.count, &self.index.math_count(&location.0))
+    }
+}
 struct Fences(usize);
 struct MathDelims<'a> {
     count: usize,
@@ -147,14 +199,14 @@ impl<'a> SeekTarget<'a, StructureSummary, StructureSummary> for MathDelims<'_> {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct StructureIndex {
+pub(crate) struct StructureIndex {
     tree: SumTree<StructureLine>,
     #[cfg(test)]
     pub(super) classified_lines: usize,
 }
 
 impl StructureIndex {
-    pub(super) fn new(source: &(impl LineSource + ?Sized)) -> Self {
+    pub(crate) fn new(source: &(impl LineSource + ?Sized)) -> Self {
         Self {
             tree: SumTree::from_iter(
                 source.source_lines().map(|line| StructureLine::new(&line)),
@@ -165,7 +217,7 @@ impl StructureIndex {
         }
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.tree.summary().lines
     }
 
@@ -193,23 +245,31 @@ impl StructureIndex {
     }
 
     fn math_count(&self, prefix: &StructureSummary) -> usize {
+        self.effective(prefix).math_delims
+    }
+
+    fn effective(&self, prefix: &StructureSummary) -> Effect {
         let fences = self.tree.summary().fences;
         if fences % 2 == 1 && prefix.fences == fences {
             let before = prefix.through_last_fence.0[0];
-            before.math_delims + prefix.after_last_fence.0[before.state].math_delims
+            let after = prefix.after_last_fence.0[before.state];
+            Effect {
+                state: after.state,
+                math_delims: before.math_delims + after.math_delims,
+            }
         } else {
-            prefix.normal.0[0].math_delims
+            prefix.normal.0[0]
         }
     }
 
     fn fence_line(&self, ordinal: usize) -> usize {
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let mut cursor = self.tree.cursor::<Navigation>(());
         cursor.seek(&Fences(ordinal), Bias::Right);
-        cursor.start().lines
+        cursor.start().0.lines
     }
 
     fn math_line(&self, ordinal: usize) -> usize {
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let mut cursor = self.tree.cursor::<Navigation>(());
         cursor.seek(
             &MathDelims {
                 count: ordinal,
@@ -217,16 +277,16 @@ impl StructureIndex {
             },
             Bias::Right,
         );
-        cursor.start().lines
+        cursor.start().0.lines
     }
 
-    pub(super) fn fence_state(&self, line: SourceLine) -> (bool, bool) {
+    pub(crate) fn fence_state(&self, line: SourceLine) -> (bool, bool) {
         if line.index() >= self.len() {
             return (false, false);
         }
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let mut cursor = self.tree.cursor::<Navigation>(());
         cursor.seek(&Lines(line.index()), Bias::Right);
-        let before = cursor.start().fences;
+        let before = cursor.start().0.fences;
         let is_fence = cursor.item().unwrap().raw.is_fence;
         let pair = before / 2 * 2;
         if pair + 1 >= self.tree.summary().fences {
@@ -239,14 +299,14 @@ impl StructureIndex {
         }
     }
 
-    pub(super) fn math_pair(&self, line: SourceLine) -> Option<(SourceLine, SourceLine)> {
+    pub(crate) fn math_pair(&self, line: SourceLine) -> Option<(SourceLine, SourceLine)> {
         if line.index() >= self.len() {
             return None;
         }
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let mut cursor = self.tree.cursor::<Navigation>(());
         cursor.seek(&Lines(line.index()), Bias::Right);
-        let before = self.math_count(cursor.start());
-        let is_delim = self.math_count(&cursor.end()) > before;
+        let before = self.math_count(&cursor.start().0);
+        let is_delim = self.math_count(&cursor.end().0) > before;
         if !is_delim && before % 2 == 0 {
             return None;
         }
@@ -264,12 +324,140 @@ impl StructureIndex {
         self.math_pair(line)
             .is_some_and(|(start, end)| line == start || line == end)
     }
+
+    pub(crate) fn quote_prefix(&self, line: SourceLine) -> usize {
+        let (inside, closing) = self.fence_state(line);
+        if inside || closing {
+            return 0;
+        }
+        let mut cursor = self.tree.cursor::<Navigation>(());
+        cursor.seek(&Lines(line.index()), Bias::Right);
+        cursor.item().map_or(0, |item| item.raw.quote_prefix)
+    }
+
+    fn parser_segment(&self, range: Range<usize>) -> super::parser_summary::ParserSummary {
+        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        cursor.seek(&Lines(range.start), Bias::Right);
+        let raw_before = cursor.start().fences;
+        let summary: StructureSummary = cursor.summary(&Lines(range.end), Bias::Right);
+        let Some(parser) = summary.parser else {
+            return Default::default();
+        };
+        let fences = self.tree.summary().fences;
+        if fences % 2 == 1 && raw_before + summary.fences == fences {
+            if summary.fences == 0 {
+                return parser.projected.clone();
+            }
+            let mut result = parser.through_last_fence[raw_before % 2].clone();
+            result.append(&parser.after_last_fence);
+            result
+        } else {
+            parser.normal[raw_before % 2].clone()
+        }
+    }
+
+    fn parser_effect(&self, prefix: &StructureSummary) -> super::parser_summary::ParseEffect {
+        let before = self.parser_segment(0..prefix.lines);
+        let after = self.parser_segment(prefix.lines..self.len());
+        before.with_suffix(after.lookahead)
+    }
+
+    pub(crate) fn parser_pair(&self, line: SourceLine) -> Option<(SourceLine, SourceLine)> {
+        self.tree.summary().parser.as_ref()?;
+        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        cursor.seek(&Lines(line.index()), Bias::Right);
+        cursor.item()?;
+        let before = self.parser_effect(cursor.start());
+        let after = self.parser_effect(&cursor.end());
+        let ordinal = if before.starts > before.ends {
+            before.starts - 1
+        } else if after.starts > before.starts {
+            before.starts
+        } else {
+            return None;
+        };
+        let locate = |closing| {
+            let mut cursor = self.tree.cursor::<StructureSummary>(());
+            cursor.seek(
+                &ParserBoundary {
+                    ordinal,
+                    closing,
+                    index: self,
+                },
+                Bias::Right,
+            );
+            SourceLine::new(cursor.start().lines)
+        };
+        Some((locate(false), locate(true)))
+    }
+
+    pub(crate) fn math_lookahead_end(&self, from: usize) -> Option<usize> {
+        if !self.parser_segment(from..self.len()).lookahead.has_math() {
+            return None;
+        }
+        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        cursor.seek(&MathLookahead { from, index: self }, Bias::Right);
+        Some(cursor.start().lines)
+    }
+}
+
+struct MathLookahead<'a> {
+    from: usize,
+    index: &'a StructureIndex,
+}
+
+impl<'a> SeekTarget<'a, StructureSummary, StructureSummary> for MathLookahead<'_> {
+    fn cmp(&self, location: &StructureSummary, (): ()) -> Ordering {
+        let found = location.lines > self.from
+            && self
+                .index
+                .parser_segment(self.from..location.lines)
+                .lookahead
+                .has_math();
+        Ord::cmp(&0, &usize::from(found))
+    }
+}
+
+struct ParserBoundary<'a> {
+    ordinal: usize,
+    closing: bool,
+    index: &'a StructureIndex,
+}
+
+impl<'a> SeekTarget<'a, StructureSummary, StructureSummary> for ParserBoundary<'_> {
+    fn cmp(&self, location: &StructureSummary, (): ()) -> Ordering {
+        let effect = self.index.parser_effect(location);
+        Ord::cmp(
+            &self.ordinal,
+            &if self.closing {
+                effect.ends
+            } else {
+                effect.starts
+            },
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::buffer::{LineSource, SourceLine, TextBuffer};
+
+    #[test]
+    fn navigation_queries_do_not_compose_parser_transitions() {
+        let lines: Vec<String> = "```\nx\n```\n$$\nx\n$$\n"
+            .repeat(20)
+            .split('\n')
+            .map(str::to_owned)
+            .collect();
+        let index = StructureIndex::new(&lines);
+        super::super::parser_summary::COMPOSITIONS.set(0);
+        for row in 0..lines.len() {
+            index.fence_state(SourceLine::new(row));
+            index.math_pair(SourceLine::new(row));
+        }
+        assert_eq!(super::super::parser_summary::COMPOSITIONS.get(), 0);
+    }
 
     /// The former LineIndex build/query implementation, retained as an oracle.
     struct VecIndex {

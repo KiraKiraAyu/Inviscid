@@ -7,6 +7,8 @@ use super::table::{is_table_delimiter_row, parse_table_alignments, parse_table_r
 use super::types::{BlockKind, ParsedLine, QuoteContext, TableAlignment};
 use crate::buffer::{EditDelta, LineSource, SourceLine};
 
+mod window;
+
 fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
     lines
         .get(from_idx..)?
@@ -354,9 +356,107 @@ fn shift_spans(spans: &mut [InlineSpan], offset: usize) {
 
 pub struct MarkdownScanner;
 
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use crate::buffer::TextBuffer;
+
+    #[test]
+    fn indexed_windows_match_whole_document_at_every_block_boundary() {
+        for text in [
+            "before\nplain\nafter\n",
+            "before\n```rust\nlet a = 1;\n> literal\n```\nafter",
+            "before\n> ```rust\n> let a = 1;\n> ```\n> tail\nafter",
+            "before\n$$\nx + y\n$$\nafter",
+            "before\n> $$\n> x + y\n> $$\nafter",
+            "before\n| a | b |\n| --- | --- |\n| c | d |\n| e | f |\nafter",
+            "before\n> | a | b |\n> | --- | --- |\n> | c | d |\nafter",
+            "before\n```mermaid\ngraph TD\nA --> B\n```\nafter",
+            "before\n> outer\n> > inner\n> \n> tail\nafter",
+            "before\n```\n> unmatched\n$$\nx\n$$",
+            "before\n$$\n```\nx\n$$\n```\n$$\nafter",
+        ] {
+            let buffer = TextBuffer::from_str(text, None);
+            let whole = MarkdownScanner::scan_document(&buffer.lines());
+            for start in 0..buffer.line_count() {
+                for width in [1, 2, 4] {
+                    let requested = start..(start + width).min(buffer.line_count());
+                    let (range, parsed) = MarkdownScanner::scan_window(&buffer, requested.clone());
+                    assert!(range.start <= requested.start && range.end >= requested.end);
+                    assert_eq!(
+                        parsed,
+                        whole[range.clone()],
+                        "{text:?}, {requested:?} => {range:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_paragraph_window_does_not_expand_to_document_edges() {
+        let buffer = TextBuffer::from_str(&"paragraph\n".repeat(20_000), None);
+        let (range, parsed) = MarkdownScanner::scan_window(&buffer, 10_000..10_064);
+        assert_eq!(range, 10_000..10_064);
+        assert_eq!(parsed.len(), 64);
+    }
+
+    #[test]
+    fn indexed_windows_match_fixed_seed_mixed_documents() {
+        let mut seed = 0x7193_4a62_u64;
+        let tokens = [
+            "text",
+            "",
+            "```",
+            "```rust",
+            "$$",
+            "x",
+            "> text",
+            "> ```",
+            "> $$",
+            "| a | b |",
+            "| --- | --- |",
+            "# title",
+            "- item",
+            "---",
+        ];
+        for _ in 0..40 {
+            let lines: Vec<String> = (0..30)
+                .map(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    tokens[(seed >> 32) as usize % tokens.len()].to_owned()
+                })
+                .collect();
+            let buffer = TextBuffer::from_str(&lines.join("\n"), None);
+            let whole = MarkdownScanner::scan_document(&lines);
+            for row in 0..lines.len() {
+                let (range, parsed) = MarkdownScanner::scan_window(&buffer, row..row + 1);
+                for (offset, actual) in parsed.iter().enumerate() {
+                    assert!(
+                        actual == &whole[range.start + offset],
+                        "source {lines:?}, request {row}, window {range:?}, mismatch {}: {:?} vs {:?}",
+                        range.start + offset,
+                        actual.kind,
+                        whole[range.start + offset].kind
+                    );
+                }
+            }
+        }
+    }
+}
+
 impl MarkdownScanner {
+    pub(crate) fn scan_window(
+        buffer: &crate::buffer::TextBuffer,
+        range: std::ops::Range<usize>,
+    ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
+        let index = buffer.line_index().structure_snapshot();
+        window::scan(buffer, &index, range)
+    }
+
     pub fn scan_document(lines: &[String]) -> Vec<ParsedLine> {
-        Self::scan_range(lines, 0..lines.len(), false)
+        let projection = QuoteProjection::from_lines(lines);
+        Self::scan_document_with_projection(lines, &projection)
     }
 
     pub(crate) fn scan_document_with_projection(
