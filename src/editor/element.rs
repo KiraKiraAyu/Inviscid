@@ -217,7 +217,8 @@ impl Element for EditorElement {
                         if layout.metrics.height(line_idx).unwrap() <= px(0.0) {
                             continue;
                         }
-                        let parsed = &layout.parsed_lines[line_idx];
+                        let row = layout.parsed_lines.row(line_idx).unwrap();
+                        let parsed = &*row;
 
                         let is_active_line = source_line == cursor_line;
                         let is_disclosure_line = source_line == disclosure_position.line;

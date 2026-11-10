@@ -22,7 +22,7 @@ pub mod tests;
 
 pub use fingerprint::{FingerprintJob, FingerprintResult};
 pub use primitives::*;
-pub use source::LineSource;
+pub use source::{LineSource, SourceSnapshot};
 pub(crate) use structure_index::StructureIndex;
 
 /// A document's source lines. Indexing requires a source-coordinate value.

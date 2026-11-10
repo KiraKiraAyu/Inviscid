@@ -7,26 +7,26 @@ use crate::editor::element::EditorElement;
 use super::{Editor, RenderMode};
 
 fn parsed_math_block_range(
-    parsed_lines: &[crate::markdown::ParsedLine],
+    parsed_lines: &super::parsed_line_store::ParsedLineStore,
     line: SourceLine,
 ) -> Option<(SourceLine, SourceLine)> {
     use crate::markdown::BlockKind;
 
     let line_idx = line.index();
-    match &parsed_lines.get(line_idx)?.kind {
+    match &parsed_lines.row(line_idx)?.kind {
         BlockKind::MathBlock { .. } | BlockKind::MathBlockContent => {}
         _ => return None,
     }
 
     let start_idx = (0..=line_idx).rev().find(|&idx| {
         matches!(
-            parsed_lines[idx].kind,
+            parsed_lines.row(idx).unwrap().kind,
             BlockKind::MathBlock { is_start: true }
         )
     })?;
     let end_idx = (start_idx + 1..parsed_lines.len()).find(|&idx| {
         matches!(
-            parsed_lines[idx].kind,
+            parsed_lines.row(idx).unwrap().kind,
             BlockKind::MathBlock { is_start: false }
         )
     })?;
@@ -48,12 +48,12 @@ fn visual_anchor_for_hidden_line(
     });
     let next = layout.metrics.next_visible_line_after(idx);
     let anchor = previous.or(next)?;
-    match &layout.parsed_lines[anchor].kind {
+    match &layout.parsed_lines.row(anchor)?.kind {
         BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => (0..=anchor)
             .rev()
             .find(|&i| {
                 matches!(
-                    layout.parsed_lines[i].kind,
+                    layout.parsed_lines.row(i).unwrap().kind,
                     BlockKind::CodeBlock {
                         is_fence_start: true
                     } | BlockKind::MermaidBlock {
@@ -68,7 +68,7 @@ fn visual_anchor_for_hidden_line(
             .rev()
             .find(|&i| {
                 matches!(
-                    layout.parsed_lines[i].kind,
+                    layout.parsed_lines.row(i).unwrap().kind,
                     BlockKind::Table {
                         is_header: true,
                         ..
@@ -109,7 +109,7 @@ impl Editor {
             && self
                 .layout_snapshot()
                 .parsed_lines
-                .get(start_line.index())
+                .row(start_line.index())
                 .is_some_and(|line| {
                     matches!(
                         line.kind,
@@ -138,7 +138,8 @@ impl Editor {
             viewport.origin.x + (viewport.size.width - content_width).max(px(0.0)) / 2.0;
         let left_offset = if self.render_mode == RenderMode::Source {
             crate::editor::layout::SOURCE_GUTTER_WIDTH
-        } else if let Some(parsed) = layout.parsed_lines.get(source_line.index()) {
+        } else if let Some(row) = layout.parsed_lines.row(source_line.index()) {
+            let parsed = &*row;
             crate::editor::shaping::get_parsed_line_left_offset(
                 parsed,
                 self.render_mode,
@@ -219,7 +220,7 @@ impl Editor {
                     Some((start, _)) => source_line = start,
                     None if layout.separators.get(source_line.index()) == Some(&true)
                         || matches!(
-                            layout.parsed_lines[source_line.index()].kind,
+                            layout.parsed_lines.row(source_line.index())?.kind,
                             crate::markdown::BlockKind::Table {
                                 is_delimiter: true,
                                 ..
@@ -254,7 +255,8 @@ impl Editor {
         let target_line_idx = target_line.index();
 
         let layout = self.layout_snapshot();
-        if let Some(parsed) = layout.parsed_lines.get(target_line_idx) {
+        if let Some(row) = layout.parsed_lines.row(target_line_idx) {
+            let parsed = &*row;
             let is_source = self.render_mode == RenderMode::Source;
             if !is_source
                 && matches!(
@@ -329,7 +331,7 @@ impl Editor {
         let line_idx = source_line.index();
         let layout = self.layout_snapshot();
         if !matches!(
-            &layout.parsed_lines.get(line_idx)?.kind,
+            &layout.parsed_lines.row(line_idx)?.kind,
             crate::markdown::BlockKind::CodeBlockContent
                 | crate::markdown::BlockKind::MermaidBlockContent
         ) {
@@ -339,7 +341,7 @@ impl Editor {
         let mut start_line = line_idx;
         while start_line > 0
             && matches!(
-                &layout.parsed_lines[start_line - 1].kind,
+                &layout.parsed_lines.row(start_line - 1)?.kind,
                 crate::markdown::BlockKind::CodeBlockContent
                     | crate::markdown::BlockKind::MermaidBlockContent
             )
@@ -350,7 +352,7 @@ impl Editor {
         let mut end_line = line_idx;
         while end_line + 1 < layout.parsed_lines.len()
             && matches!(
-                &layout.parsed_lines[end_line + 1].kind,
+                &layout.parsed_lines.row(end_line + 1)?.kind,
                 crate::markdown::BlockKind::CodeBlockContent
                     | crate::markdown::BlockKind::MermaidBlockContent
             )
@@ -607,7 +609,8 @@ impl Editor {
     ) -> Option<super::HoveredLink> {
         let (line_idx, rel_point, line_bounds) = self.find_line_at_point(point, true)?;
         let layout = self.layout_snapshot();
-        let parsed = layout.parsed_lines.get(line_idx.index())?;
+        let row = layout.parsed_lines.row(line_idx.index())?;
+        let parsed = &*row;
 
         let is_source = self.render_mode == RenderMode::Source;
 

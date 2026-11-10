@@ -164,7 +164,8 @@ impl EntityInputHandler for Editor {
         };
 
         let layout = self.layout_snapshot();
-        if let Some(parsed) = layout.parsed_lines.get(start_pos.line.index()) {
+        if let Some(row) = layout.parsed_lines.row(start_pos.line.index()) {
+            let parsed = &*row;
             let line_bounds = self.line_screen_bounds(start_pos.line, element_bounds);
             let is_active_caret = true;
             let theme = cx

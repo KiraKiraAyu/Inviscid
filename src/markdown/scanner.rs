@@ -454,6 +454,14 @@ impl MarkdownScanner {
         window::scan(buffer, &index, range)
     }
 
+    pub(crate) fn scan_snapshot_window(
+        source: &crate::buffer::SourceSnapshot,
+        index: &crate::buffer::StructureIndex,
+        range: std::ops::Range<usize>,
+    ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
+        window::scan(source, index, range)
+    }
+
     pub fn scan_document(lines: &[String]) -> Vec<ParsedLine> {
         let projection = QuoteProjection::from_lines(lines);
         Self::scan_document_with_projection(lines, &projection)

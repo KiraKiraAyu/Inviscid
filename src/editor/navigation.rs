@@ -86,7 +86,8 @@ impl Editor {
             return px(0.0);
         }
         let layout = self.layout_snapshot();
-        if let Some(parsed) = layout.parsed_lines.get(pos.line.index()) {
+        if let Some(row) = layout.parsed_lines.row(pos.line.index()) {
+            let parsed = &*row;
             let is_active_caret = self.is_active_disclosure_line(pos.line, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
@@ -120,7 +121,8 @@ impl Editor {
             return (0, 1);
         }
         let layout = self.layout_snapshot();
-        if let Some(parsed) = layout.parsed_lines.get(pos.line.index()) {
+        if let Some(row) = layout.parsed_lines.row(pos.line.index()) {
+            let parsed = &*row;
             let is_active_caret = self.is_active_disclosure_line(pos.line, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
@@ -151,7 +153,8 @@ impl Editor {
             return 0;
         }
         let layout = self.layout_snapshot();
-        if let Some(parsed) = layout.parsed_lines.get(line_idx) {
+        if let Some(row) = layout.parsed_lines.row(line_idx) {
+            let parsed = &*row;
             let is_active_caret = self.is_active_disclosure_line(source_line, window);
             let (font_size, line_height, wrap_width, scx) =
                 self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
@@ -193,7 +196,7 @@ impl Editor {
         &self,
         current_line: crate::buffer::SourceLine,
         is_down: bool,
-        parsed_lines: &[crate::markdown::ParsedLine],
+        parsed_lines: &super::parsed_line_store::ParsedLineStore,
         separators: &[bool],
     ) -> Option<crate::buffer::SourceLine> {
         let mut search_from_line = current_line;
@@ -211,7 +214,7 @@ impl Editor {
 
             search_from_line = candidate_line;
             let is_hidden_line = parsed_lines
-                .get(candidate_line.index())
+                .row(candidate_line.index())
                 .is_some_and(|line| {
                     separators.get(candidate_line.index()) == Some(&true)
                         || matches!(

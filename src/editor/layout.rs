@@ -255,9 +255,10 @@ impl DocumentLayoutCache {
     /// Single source of truth dynamically derived from `parsed_lines` and `space_width`.
     #[inline]
     pub fn indent_px(&self, source_line: SourceLine) -> Pixels {
-        let Some(parsed) = self.parsed_lines.get(source_line.index()) else {
+        let Some(row) = self.parsed_lines.row(source_line.index()) else {
             return px(0.0);
         };
+        let parsed = &*row;
         Self::compute_indent_px(parsed, self.render_mode, self.space_width)
     }
 
@@ -932,9 +933,24 @@ impl Editor {
         _projection: &QuoteProjection,
         _in_code_block: bool,
     ) -> Vec<ParsedLine> {
-        let (window, parsed) = MarkdownScanner::scan_window(&self.buffer, range.clone());
         #[cfg(test)]
-        let scanned = parsed.len();
+        let mut scanned = 0;
+        let (window, parsed) = if range == (0..self.buffer.line_count()) {
+            let result = MarkdownScanner::scan_window(&self.buffer, range.clone());
+            #[cfg(test)]
+            {
+                scanned += result.1.len();
+            }
+            result
+        } else {
+            let store = super::parsed_line_store::ParsedLineStore::windowed(&self.buffer);
+            let parsed = store.read_range(range.clone()).to_vec();
+            #[cfg(test)]
+            {
+                scanned += store.resident_rows();
+            }
+            (range.clone(), parsed)
+        };
         let mut parsed = if window == range {
             parsed
         } else {

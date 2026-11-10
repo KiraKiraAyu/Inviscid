@@ -1,5 +1,5 @@
 use super::{SourceLine, TextBuffer};
-use ropey::RopeSlice;
+use ropey::{Rope, RopeBuilder, RopeSlice};
 use std::borrow::Cow;
 
 /// Read-only access to logical source lines without materializing a document.
@@ -8,6 +8,20 @@ pub trait LineSource {
     fn line_count(&self) -> usize;
     /// Returns a line without its trailing LF. Panics for an out-of-bounds line.
     fn source_line(&self, line: SourceLine) -> Cow<'_, str>;
+
+    fn source_snapshot(&self) -> SourceSnapshot {
+        let mut builder = RopeBuilder::new();
+        for (index, line) in self.source_lines().enumerate() {
+            if index > 0 {
+                builder.append("\n");
+            }
+            builder.append(&line);
+        }
+        SourceSnapshot {
+            rope: builder.finish(),
+            lines: self.line_count(),
+        }
+    }
 
     /// Visits logical lines in order, without repeating indexed lookups.
     fn source_lines(&self) -> impl Iterator<Item = Cow<'_, str>> {
@@ -58,6 +72,12 @@ impl<const N: usize> LineSource for [String; N] {
 }
 
 impl LineSource for TextBuffer {
+    fn source_snapshot(&self) -> SourceSnapshot {
+        SourceSnapshot {
+            rope: self.rope.clone(),
+            lines: self.line_count(),
+        }
+    }
     fn line_count(&self) -> usize {
         self.line_count()
     }
@@ -86,6 +106,26 @@ impl LineSource for TextBuffer {
             })
             .map(rope_line_content);
         empty_lines.chain(rope_lines)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SourceSnapshot {
+    rope: Rope,
+    lines: usize,
+}
+
+impl LineSource for SourceSnapshot {
+    fn line_count(&self) -> usize {
+        self.lines
+    }
+
+    fn source_line(&self, line: SourceLine) -> Cow<'_, str> {
+        assert!(line.index() < self.lines);
+        if self.rope.len_chars() == 0 {
+            return Cow::Borrowed("");
+        }
+        rope_line_content(self.rope.line(line.index()))
     }
 }
 
