@@ -31,6 +31,7 @@ impl StructureLine {
 struct Effect {
     state: usize,
     math_delims: usize,
+    code_fences: usize,
 }
 
 /// A segment's effect for each incoming (raw fence, projected fence) parity.
@@ -42,6 +43,7 @@ impl Default for MathSummary {
         Self(std::array::from_fn(|state| Effect {
             state,
             math_delims: 0,
+            code_fences: 0,
         }))
     }
 }
@@ -59,6 +61,7 @@ impl MathSummary {
             Effect {
                 state: state ^ (usize::from(line.raw.is_fence) * 2) ^ usize::from(syntax.is_fence),
                 math_delims: usize::from(!in_code && !syntax.is_fence && syntax.is_math_delim),
+                code_fences: usize::from(syntax.is_fence),
             }
         }))
     }
@@ -68,6 +71,7 @@ impl MathSummary {
             let next = other.0[effect.state];
             effect.state = next.state;
             effect.math_delims += next.math_delims;
+            effect.code_fences += next.code_fences;
         }
     }
 }
@@ -221,7 +225,7 @@ impl StructureIndex {
         self.tree.summary().lines
     }
 
-    pub(super) fn splice(
+    pub(crate) fn splice(
         &mut self,
         old: Range<usize>,
         source: &(impl LineSource + ?Sized),
@@ -256,6 +260,7 @@ impl StructureIndex {
             Effect {
                 state: after.state,
                 math_delims: before.math_delims + after.math_delims,
+                code_fences: before.code_fences + after.code_fences,
             }
         } else {
             prefix.normal.0[0]
@@ -391,6 +396,36 @@ impl StructureIndex {
         Some((locate(false), locate(true)))
     }
 
+    pub(crate) fn projected_fence_pair(
+        &self,
+        line: SourceLine,
+    ) -> Option<(SourceLine, SourceLine)> {
+        let mut cursor = self.tree.cursor::<Navigation>(());
+        cursor.seek(&Lines(line.index()), Bias::Right);
+        cursor.item()?;
+        let before = self.effective(&cursor.start().0).code_fences;
+        let delimiter = self.effective(&cursor.end().0).code_fences > before;
+        if !delimiter && before % 2 == 0 {
+            return None;
+        }
+        let pair = before / 2 * 2;
+        if pair + 1 >= self.effective(self.tree.summary()).code_fences {
+            return None;
+        }
+        let locate = |ordinal| {
+            let mut cursor = self.tree.cursor::<Navigation>(());
+            cursor.seek(
+                &ProjectedFences {
+                    ordinal,
+                    index: self,
+                },
+                Bias::Right,
+            );
+            SourceLine::new(cursor.start().0.lines)
+        };
+        Some((locate(pair), locate(pair + 1)))
+    }
+
     pub(crate) fn math_lookahead_end(&self, from: usize) -> Option<usize> {
         if !self.parser_segment(from..self.len()).lookahead.has_math() {
             return None;
@@ -398,6 +433,19 @@ impl StructureIndex {
         let mut cursor = self.tree.cursor::<StructureSummary>(());
         cursor.seek(&MathLookahead { from, index: self }, Bias::Right);
         Some(cursor.start().lines)
+    }
+}
+
+struct ProjectedFences<'a> {
+    ordinal: usize,
+    index: &'a StructureIndex,
+}
+impl<'a> SeekTarget<'a, StructureSummary, Navigation> for ProjectedFences<'_> {
+    fn cmp(&self, location: &Navigation, (): ()) -> Ordering {
+        Ord::cmp(
+            &self.ordinal,
+            &self.index.effective(&location.0).code_fences,
+        )
     }
 }
 

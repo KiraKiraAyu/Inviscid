@@ -1,11 +1,15 @@
-use super::indent::{leading_indent_len, quote_depth, quote_prefix_len};
+#[cfg(test)]
+use super::indent::quote_prefix_len;
+use super::indent::{leading_indent_len, quote_depth};
 use super::inline::{InlineSpan, parse_inline_spans};
 use super::prefix::{
     BlockPrefix, fence_info, is_fence_line, is_thematic_break, parse_block_prefix,
 };
 use super::table::{is_table_delimiter_row, parse_table_alignments, parse_table_row_cells};
 use super::types::{BlockKind, ParsedLine, QuoteContext, TableAlignment};
-use crate::buffer::{EditDelta, LineSource, SourceLine};
+#[cfg(test)]
+use crate::buffer::EditDelta;
+use crate::buffer::{LineSource, SourceLine};
 
 mod window;
 
@@ -52,18 +56,16 @@ fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usiz
     None
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
-pub struct QuoteProjection {
+struct VecQuoteProjection {
     normalized: Vec<String>,
     quote_prefixes: Vec<Option<usize>>,
     top_level_fences: Vec<bool>,
 }
 
-impl QuoteProjection {
-    pub fn from_lines(lines: &[String]) -> Self {
-        Self::from_source(lines)
-    }
-
+#[cfg(test)]
+impl VecQuoteProjection {
     pub fn from_source(lines: &(impl LineSource + ?Sized)) -> Self {
         let top_level_fences = top_level_fenced_lines(lines);
         let mut normalized = Vec::with_capacity(lines.line_count());
@@ -90,6 +92,7 @@ impl QuoteProjection {
         &mut self,
         lines: &(impl LineSource + ?Sized),
         delta: EditDelta,
+        raw_updates: &mut Vec<(usize, String)>,
     ) -> bool {
         let start = delta.start_line.index();
         let Some(end) = start.checked_add(delta.old_line_count) else {
@@ -114,6 +117,7 @@ impl QuoteProjection {
             return false;
         }
         for (idx, line) in (start..end).zip(changed) {
+            raw_updates.push((idx, line.to_string()));
             if !self.top_level_fences[idx]
                 && let Some((prefix_len, content)) = quoted_content(&line)
             {
@@ -128,23 +132,89 @@ impl QuoteProjection {
     }
 
     #[inline]
-    pub fn normalized_lines(&self) -> &[String] {
-        &self.normalized
-    }
-
-    #[inline]
-    pub fn quote_prefixes(&self) -> &[Option<usize>] {
-        &self.quote_prefixes
-    }
-
-    #[inline]
     pub fn len(&self) -> usize {
         self.normalized.len()
     }
+}
 
-    #[inline]
+/// Immutable source projection; normalized text is borrowed or produced one row at a time.
+#[derive(Clone, Debug)]
+pub struct QuoteProjection {
+    source: crate::buffer::SourceSnapshot,
+    index: crate::buffer::StructureIndex,
+    #[cfg(test)]
+    oracle: VecQuoteProjection,
+}
+
+impl Default for QuoteProjection {
+    fn default() -> Self {
+        Self::from_lines(&[])
+    }
+}
+
+impl QuoteProjection {
+    pub fn from_lines(lines: &[String]) -> Self {
+        Self::from_source(lines)
+    }
+
+    pub fn from_source(source: &(impl LineSource + ?Sized)) -> Self {
+        let snapshot = source.source_snapshot();
+        Self {
+            index: snapshot.structure_index(),
+            source: snapshot,
+            #[cfg(test)]
+            oracle: VecQuoteProjection::from_source(source),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.source.line_count()
+    }
     pub fn is_empty(&self) -> bool {
-        self.normalized.is_empty()
+        self.len() == 0
+    }
+
+    pub fn quote_prefix(&self, row: usize) -> Option<usize> {
+        let prefix = self.index.quote_prefix(SourceLine::new(row));
+        (prefix > 0).then_some(prefix)
+    }
+
+    pub fn normalized_line(&self, row: usize) -> std::borrow::Cow<'_, str> {
+        let line = self.source.source_line(SourceLine::new(row));
+        let prefix = self.quote_prefix(row).unwrap_or(0);
+        match line {
+            std::borrow::Cow::Borrowed(text) => std::borrow::Cow::Borrowed(&text[prefix..]),
+            std::borrow::Cow::Owned(text) if prefix == 0 => std::borrow::Cow::Owned(text),
+            std::borrow::Cow::Owned(text) => std::borrow::Cow::Owned(text[prefix..].to_owned()),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn normalized_lines(&self) -> &[String] {
+        &self.oracle.normalized
+    }
+    #[cfg(test)]
+    pub fn quote_prefixes(&self) -> &[Option<usize>] {
+        &self.oracle.quote_prefixes
+    }
+    #[cfg(test)]
+    pub(crate) fn try_update_source(
+        &mut self,
+        source: &(impl LineSource + ?Sized),
+        delta: EditDelta,
+    ) -> bool {
+        let mut changes = Vec::new();
+        if !self.oracle.try_update_source(source, delta, &mut changes) {
+            return false;
+        }
+        self.source.replace_rows(&changes);
+        let start = delta.start_line.index();
+        self.index.splice(
+            start..start + delta.old_line_count,
+            &self.source,
+            start..start + delta.new_line_count,
+        );
+        true
     }
 }
 
@@ -216,9 +286,10 @@ pub(crate) fn math_block_range_with_projection(
     projection: &QuoteProjection,
     target_line: SourceLine,
 ) -> Option<(SourceLine, SourceLine)> {
-    math_block_range_normalized(projection.normalized_lines(), target_line)
+    projection.index.math_pair(target_line)
 }
 
+#[cfg(test)]
 fn math_block_range_normalized(
     lines: &[String],
     target_line: SourceLine,
@@ -282,26 +353,12 @@ pub(crate) fn mermaid_block_range_with_projection(
     projection: &QuoteProjection,
     target_line: SourceLine,
 ) -> Option<(SourceLine, SourceLine)> {
-    let target_idx = target_line.index();
-    let mut open_fence: Option<(usize, bool)> = None;
-
-    for (idx, line) in projection.normalized_lines().iter().enumerate() {
-        if let Some(info) = fence_info(line) {
-            if let Some((start, is_mermaid)) = open_fence.take() {
-                if is_mermaid && (start..=idx).contains(&target_idx) {
-                    return Some((SourceLine::new(start), SourceLine::new(idx)));
-                }
-            } else {
-                open_fence = Some((idx, is_mermaid_info(info)));
-            }
-        }
-    }
-
-    None
+    let pair = projection.index.projected_fence_pair(target_line)?;
+    is_mermaid_fence(&projection.normalized_line(pair.0.index())).then_some(pair)
 }
 
-fn math_block_state_before(lines: &[String], end_idx: usize) -> bool {
-    math_block_range_normalized(lines, SourceLine::new(end_idx))
+fn math_block_state_before(projection: &QuoteProjection, end_idx: usize) -> bool {
+    math_block_range_with_projection(projection, SourceLine::new(end_idx))
         .is_some_and(|(start, _)| start.index() < end_idx)
 }
 
@@ -322,6 +379,7 @@ fn highlight_fenced_slice(
     (content_start, spans)
 }
 
+#[cfg(test)]
 fn quoted_content(line: &str) -> Option<(usize, &str)> {
     let prefix_len = quote_prefix_len(line);
     (prefix_len > 0).then_some((prefix_len, &line[prefix_len..]))
@@ -360,6 +418,38 @@ pub struct MarkdownScanner;
 mod window_tests {
     use super::*;
     use crate::buffer::TextBuffer;
+
+    #[test]
+    fn source_projection_reads_rows_without_storing_normalized_strings() {
+        let mut buffer = TextBuffer::from_str("before\n```\n> literal\n```\n> quoted", None);
+        let projection = QuoteProjection::from_source(&buffer);
+        assert_eq!(projection.normalized_line(2), "> literal");
+        assert_eq!(projection.normalized_line(4), "quoted");
+        assert_eq!(projection.quote_prefix(2), None);
+        assert_eq!(projection.quote_prefix(4), Some(2));
+        buffer.record_single_line_edit(SourceLine::new(3), |line, _| line.clear());
+        let edited = QuoteProjection::from_source(&buffer);
+        assert_eq!(edited.normalized_line(2), "literal");
+        assert_eq!(projection.normalized_line(2), "> literal");
+        assert_eq!(edited.normalized_line(4), "quoted");
+        for row in 0..edited.len() {
+            let line = SourceLine::new(row);
+            assert_eq!(
+                math_block_range_with_projection(&edited, line),
+                math_block_range_normalized(edited.normalized_lines(), line)
+            );
+        }
+    }
+
+    #[test]
+    fn projection_updates_empty_document_logical_rows() {
+        let mut buffer = TextBuffer::new();
+        let mut projection = QuoteProjection::from_source(&buffer);
+        buffer.set_cursor(crate::buffer::Position::new(SourceLine::new(1), 0));
+        buffer.insert_text("text");
+        assert!(projection.try_update_source(&buffer, buffer.last_edit_delta().unwrap()));
+        assert_eq!(projection.normalized_line(1), "text");
+    }
 
     #[test]
     fn indexed_windows_match_whole_document_at_every_block_boundary() {
@@ -489,7 +579,7 @@ impl MarkdownScanner {
         let initial_in_math_block = if initial_in_code_fence {
             false
         } else {
-            math_block_state_before(projection.normalized_lines(), range.start)
+            math_block_state_before(&projection, range.start)
         };
         Self::scan_range_with_projection_with_state(
             lines,
@@ -507,10 +597,16 @@ impl MarkdownScanner {
         initial_in_code_fence: bool,
         initial_in_math_block: bool,
     ) -> Vec<ParsedLine> {
+        let normalized: Vec<String> = (0..projection.len())
+            .map(|row| projection.normalized_line(row).into_owned())
+            .collect();
+        let prefixes: Vec<Option<usize>> = (0..projection.len())
+            .map(|row| projection.quote_prefix(row))
+            .collect();
         Self::scan_normalized_range_with_state(
             lines,
-            projection.normalized_lines(),
-            projection.quote_prefixes(),
+            &normalized,
+            &prefixes,
             range,
             initial_in_code_fence,
             initial_in_math_block,
@@ -965,17 +1061,18 @@ fn is_separator_line(
 pub(crate) fn compute_syntactic_separators_with_projection(
     projection: &QuoteProjection,
 ) -> Vec<bool> {
-    let lines = projection.normalized_lines();
-    let mut separators = vec![false; lines.len()];
-    if lines.is_empty() {
+    let mut separators = vec![false; projection.len()];
+    if projection.is_empty() {
         return separators;
     }
 
     let mut in_fence = false;
     let mut prev_is_separator = false;
+    let mut previous_nonempty = false;
 
-    for (i, line) in lines.iter().enumerate() {
-        if is_fence_line(line) {
+    for (i, separator) in separators.iter_mut().enumerate() {
+        let line = projection.normalized_line(i);
+        if is_fence_line(&line) {
             in_fence = !in_fence;
         }
 
@@ -983,12 +1080,13 @@ pub(crate) fn compute_syntactic_separators_with_projection(
             i,
             line.trim().is_empty(),
             in_fence,
-            i > 0 && !lines[i - 1].trim().is_empty(),
+            previous_nonempty,
             prev_is_separator,
         );
 
-        separators[i] = is_sep;
+        *separator = is_sep;
         prev_is_separator = is_sep;
+        previous_nonempty = !line.trim().is_empty();
     }
 
     separators
@@ -1030,17 +1128,18 @@ pub(crate) fn is_syntactic_separator_with_projection(
     projection: &QuoteProjection,
     source_line: SourceLine,
 ) -> bool {
-    let lines = projection.normalized_lines();
     let idx = source_line.index();
-    if idx == 0 || idx >= lines.len() || !lines[idx].trim().is_empty() {
+    if idx == 0 || idx >= projection.len() || !projection.normalized_line(idx).trim().is_empty() {
         return false;
     }
 
     let mut in_fence = false;
     let mut prev_is_separator = false;
+    let mut previous_nonempty = false;
 
-    for (i, line) in lines.iter().enumerate().take(idx + 1) {
-        if is_fence_line(line) {
+    for i in 0..=idx {
+        let line = projection.normalized_line(i);
+        if is_fence_line(&line) {
             in_fence = !in_fence;
         }
 
@@ -1048,9 +1147,10 @@ pub(crate) fn is_syntactic_separator_with_projection(
             i,
             line.trim().is_empty(),
             in_fence,
-            i > 0 && !lines[i - 1].trim().is_empty(),
+            previous_nonempty,
             prev_is_separator,
         );
+        previous_nonempty = !line.trim().is_empty();
     }
 
     prev_is_separator

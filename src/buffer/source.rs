@@ -20,6 +20,7 @@ pub trait LineSource {
         SourceSnapshot {
             rope: builder.finish(),
             lines: self.line_count(),
+            structure: None,
         }
     }
 
@@ -76,6 +77,7 @@ impl LineSource for TextBuffer {
         SourceSnapshot {
             rope: self.rope.clone(),
             lines: self.line_count(),
+            structure: Some(self.line_index().structure_snapshot()),
         }
     }
     fn line_count(&self) -> usize {
@@ -113,6 +115,33 @@ impl LineSource for TextBuffer {
 pub struct SourceSnapshot {
     rope: Rope,
     lines: usize,
+    structure: Option<super::StructureIndex>,
+}
+
+impl SourceSnapshot {
+    #[cfg(test)]
+    pub(crate) fn replace_rows(&mut self, changes: &[(usize, String)]) {
+        while self.rope.len_lines() < self.lines {
+            self.rope.insert(self.rope.len_chars(), "\n");
+        }
+        for (row, text) in changes.iter().rev() {
+            let start = self.rope.line_to_char(*row);
+            let end = if row + 1 < self.rope.len_lines() {
+                self.rope.line_to_char(row + 1) - 1
+            } else {
+                self.rope.len_chars()
+            };
+            self.rope.remove(start..end);
+            self.rope.insert(start, text);
+        }
+        self.structure = None;
+    }
+
+    pub(crate) fn structure_index(&self) -> super::StructureIndex {
+        self.structure
+            .clone()
+            .unwrap_or_else(|| super::StructureIndex::new(self))
+    }
 }
 
 impl LineSource for SourceSnapshot {

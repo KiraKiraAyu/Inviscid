@@ -911,6 +911,7 @@ impl Editor {
     }
 
     /// Reuse projection storage only when no reader retains the old snapshot.
+    #[cfg(test)]
     fn try_update_quote_projection(&self) -> Option<Arc<QuoteProjection>> {
         let delta = self.buffer.last_edit_delta()?;
         let mut cached = self.layout_cache.borrow_mut();
@@ -1110,7 +1111,10 @@ impl Editor {
             }
         }
 
+        #[cfg(test)]
         let updated_projection = self.try_update_quote_projection();
+        #[cfg(not(test))]
+        let updated_projection: Option<Arc<QuoteProjection>> = None;
         let current_cache = self.layout_cache.borrow().clone();
         let view_matches = self.cache_matches_view(&current_cache, content_width);
         let buffer_matches = current_cache.buffer_version == self.buffer.version()
@@ -1556,7 +1560,7 @@ impl Editor {
                 }
             }
             for idx in edit_start_idx..edit_start_idx + delta.new_line_count {
-                if quote_projection.normalized_lines()[idx].trim().is_empty() {
+                if quote_projection.normalized_line(idx).trim().is_empty() {
                     return false;
                 }
             }
@@ -1704,9 +1708,8 @@ impl Editor {
                 let Some(quote) = parsed_lines[idx].quote.as_mut() else {
                     continue;
                 };
-                let prefixes = quote_projection.quote_prefixes();
-                let is_start = idx == 0 || prefixes[idx - 1].is_none();
-                let is_end = idx + 1 == buf_len || prefixes[idx + 1].is_none();
+                let is_start = idx == 0 || quote_projection.quote_prefix(idx - 1).is_none();
+                let is_end = idx + 1 == buf_len || quote_projection.quote_prefix(idx + 1).is_none();
                 if quote.is_start != is_start || quote.is_end != is_end {
                     quote.is_start = is_start;
                     quote.is_end = is_end;
