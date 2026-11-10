@@ -1197,7 +1197,7 @@ fn test_mouse_hit_testing_line_index_resolution() {
     ));
 
     let mut cache = crate::editor::layout::DocumentLayoutCache {
-        parsed_lines: parsed_doc.clone(),
+        parsed_lines: parsed_doc.clone().into(),
         ..Default::default()
     };
 
@@ -1282,7 +1282,7 @@ fn test_source_mode_line_index_resolution() {
     ));
 
     let mut cache = crate::editor::layout::DocumentLayoutCache {
-        parsed_lines: parsed_doc.clone(),
+        parsed_lines: parsed_doc.clone().into(),
         render_mode: RenderMode::Source,
         ..Default::default()
     };
@@ -1347,7 +1347,7 @@ fn test_hit_testing_monotonicity_and_strict_boundary_invariants() {
     ));
 
     let mut cache = crate::editor::layout::DocumentLayoutCache {
-        parsed_lines: parsed_doc.clone(),
+        parsed_lines: parsed_doc.clone().into(),
         ..Default::default()
     };
 
@@ -1575,7 +1575,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         font_size: 15.0,
         line_height: 1.6,
         soft_wrap: true,
-        parsed_lines: parsed_doc.clone(),
+        parsed_lines: parsed_doc.clone().into(),
         metrics: Default::default(),
         space_width: px(0.0),
 
@@ -1745,7 +1745,7 @@ fn test_folding_layout_height_and_navigation() {
         font_size: 15.0,
         line_height: 1.6,
         soft_wrap: true,
-        parsed_lines: parsed_doc.clone(),
+        parsed_lines: parsed_doc.clone().into(),
         metrics: Default::default(),
         space_width: px(0.0),
 
@@ -1835,7 +1835,7 @@ fn test_folding_layout_height_and_navigation() {
         font_size: 15.0,
         line_height: 1.6,
         soft_wrap: true,
-        parsed_lines: parsed_doc.clone(),
+        parsed_lines: parsed_doc.clone().into(),
         metrics: Default::default(),
         space_width: px(0.0),
 

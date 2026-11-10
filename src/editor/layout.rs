@@ -204,7 +204,7 @@ pub struct DocumentLayoutCache {
     pub font_size: f32,
     pub line_height: f32,
     pub soft_wrap: bool,
-    pub parsed_lines: Arc<Vec<ParsedLine>>,
+    pub parsed_lines: super::parsed_line_store::ParsedLineStore,
     pub metrics: super::line_metrics::LineMetrics,
     pub space_width: Pixels,
     pub separators: Arc<Vec<bool>>,
@@ -231,7 +231,7 @@ impl Default for DocumentLayoutCache {
             font_size: 15.0,
             line_height: 1.6,
             soft_wrap: true,
-            parsed_lines: Arc::new(Vec::new()),
+            parsed_lines: Default::default(),
             metrics: Default::default(),
             space_width: px(0.0),
             separators: Arc::default(),
@@ -1002,7 +1002,7 @@ impl Editor {
             let end = (start + 32).min(range.end);
             let heights = self.measure_range(
                 start..end,
-                &cache.parsed_lines[start..end],
+                cache.parsed_lines.range(start..end),
                 &cache.separators,
                 cache.content_width,
                 cache.active_math_block,
@@ -1380,7 +1380,7 @@ impl Editor {
         {
             current_cache.parsed_lines.clone()
         } else {
-            Arc::new(self.parse_range(0..self.buffer.line_count(), &quote_projection, false))
+            Arc::new(self.parse_range(0..self.buffer.line_count(), &quote_projection, false)).into()
         };
 
         let separators = if self.render_mode == RenderMode::Source {
@@ -1672,7 +1672,7 @@ impl Editor {
         }
         let mut quote_edge_rows = [None, None];
         {
-            let parsed_lines = Arc::make_mut(&mut cache.parsed_lines);
+            let parsed_lines = cache.parsed_lines.make_mut();
             parsed_lines.splice(block_start..old_block_end, new_parsed);
             // Quote groups can start/end on a neighboring heading excluded
             // from the reparsed block. Its edge padding must change as well.

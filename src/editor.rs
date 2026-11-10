@@ -37,6 +37,7 @@ pub mod line_metrics;
 pub(crate) mod loading;
 pub mod mouse;
 pub mod navigation;
+pub mod parsed_line_store;
 mod pending_layout;
 pub mod render;
 mod scroll_anchor;
