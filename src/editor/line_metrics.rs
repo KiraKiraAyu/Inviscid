@@ -308,6 +308,17 @@ impl LineMetrics {
         self.estimate = Fixed::from_pixels(height);
     }
 
+    pub(crate) fn splice_estimated(&mut self, range: Range<usize>, count: usize) {
+        self.replace_runs(
+            range,
+            (count > 0).then_some(LineItem {
+                count,
+                height: self.estimate,
+                measured: false,
+            }),
+        );
+    }
+
     pub fn set_measured(&mut self, range: Range<usize>, heights: Vec<Pixels>) {
         assert_eq!(range.len(), heights.len());
         self.splice(range, heights);

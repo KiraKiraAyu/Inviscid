@@ -1635,22 +1635,41 @@ impl Editor {
         } else {
             crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
         });
-        let new_heights = self.measure_range(
-            block_start..block_end,
-            &new_parsed,
-            if in_code_block {
-                &[]
-            } else {
-                &cache.separators
-            },
-            content_width,
-            active_math_block,
-            active_mermaid_block,
-        );
-
-        cache
-            .metrics
-            .splice(block_start..old_block_end, new_heights);
+        let lazy_replacement =
+            buf_len >= LAZY_LAYOUT_MIN_LINES && new_parsed.len() > LAYOUT_OVERSCAN_LINES * 4;
+        let scroll_anchor = lazy_replacement
+            .then(|| {
+                let top = self.scroll.current_scroll_top + self.layout_scroll_adjustment.get();
+                let line = cache
+                    .metrics
+                    .line_at_relative_y(self.scroll.anchor_line, top)?;
+                Some((
+                    line,
+                    cache.metrics.top_relative(line, self.scroll.anchor_line)?,
+                ))
+            })
+            .flatten();
+        if lazy_replacement {
+            cache
+                .metrics
+                .splice_estimated(block_start..old_block_end, new_parsed.len());
+        } else {
+            let new_heights = self.measure_range(
+                block_start..block_end,
+                &new_parsed,
+                if in_code_block {
+                    &[]
+                } else {
+                    &cache.separators
+                },
+                content_width,
+                active_math_block,
+                active_mermaid_block,
+            );
+            cache
+                .metrics
+                .splice(block_start..old_block_end, new_heights);
+        }
         let mut quote_edge_rows = [None, None];
         {
             let parsed_lines = Arc::make_mut(&mut cache.parsed_lines);
@@ -1731,6 +1750,34 @@ impl Editor {
         cache.quote_projection = quote_projection;
         cache.quote_ranges = quote_ranges(&cache.parsed_lines).into();
         cache.fold_version = self.display_map.version();
+
+        if lazy_replacement {
+            for region in self.display_map.fold_map().folded_regions() {
+                let start = (region.start_line.index() + 1)
+                    .max(block_start)
+                    .min(block_end);
+                let end = (region.end_line.index() + 1).min(block_end);
+                if start < end {
+                    cache.metrics.set_uniform_measured(start..end, px(0.0));
+                }
+            }
+            if let Some((line, old_top)) = scroll_anchor {
+                let mapped = if line >= edit_start_idx + delta.old_line_count {
+                    line - delta.old_line_count + delta.new_line_count
+                } else if line >= edit_start_idx {
+                    edit_start_idx
+                        + (line - edit_start_idx).min(delta.new_line_count.saturating_sub(1))
+                } else {
+                    line
+                }
+                .min(buf_len - 1);
+                if let Some(new_top) = cache.metrics.top_relative(mapped, self.scroll.anchor_line) {
+                    self.layout_scroll_adjustment
+                        .set(self.layout_scroll_adjustment.get() + new_top - old_top);
+                }
+            }
+            self.measure_viewport(cache);
+        }
 
         true
     }
