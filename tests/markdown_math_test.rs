@@ -50,7 +50,8 @@ fn multiline_display_math_is_grouped_and_preserves_editable_source_lines() {
         "$$".to_string(),
         "After".to_string(),
     ];
-    let parsed = MarkdownScanner::scan_document(&lines);
+    let buffer = inviscid::buffer::TextBuffer::from_str(&lines.join("\n"), None);
+    let (_, parsed) = MarkdownScanner::scan_window(&buffer, 0..lines.len());
 
     assert!(matches!(
         parsed[1].kind,
@@ -77,7 +78,8 @@ fn invalid_and_empty_multiline_math_keep_their_block_boundaries() {
         vec!["$$", "", "$$"],
     ] {
         let lines = source.into_iter().map(str::to_string).collect::<Vec<_>>();
-        let parsed = MarkdownScanner::scan_document(&lines);
+        let buffer = inviscid::buffer::TextBuffer::from_str(&lines.join("\n"), None);
+        let (_, parsed) = MarkdownScanner::scan_window(&buffer, 0..lines.len());
 
         assert!(matches!(
             parsed[0].kind,

@@ -3,11 +3,15 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::line_metrics::{DOCUMENT_BOTTOM_PADDING, LineMetrics};
+use super::line_metrics::DOCUMENT_BOTTOM_PADDING;
+#[cfg(test)]
+use super::line_metrics::LineMetrics;
 use super::{Editor, RenderMode};
 use crate::buffer::{LineSource, SourceLine};
 use crate::editor::shaping::compute_content_width;
-use crate::markdown::{BlockKind, MarkdownScanner, ParsedLine, QuoteProjection};
+#[cfg(test)]
+use crate::markdown::MarkdownScanner;
+use crate::markdown::{BlockKind, ParsedLine, QuoteProjection};
 use crate::theme::Theme;
 
 /// Width reserved for the line-number gutter in Source mode.
@@ -25,12 +29,12 @@ pub const MAX_CONTENT_WIDTH_LIVE: Pixels = px(860.0);
 /// Bottom overscroll buffer allowing the last line to sit comfortably above the window bottom.
 pub const BOTTOM_OVERSCROLL: Pixels = px(96.0);
 
-pub(crate) const LAZY_LAYOUT_MIN_LINES: usize = 20_000;
 const LAYOUT_OVERSCAN_LINES: usize = 32;
 
 #[cfg(test)]
 mod lazy_tests;
 
+#[cfg(test)]
 pub(crate) fn quote_ranges(parsed_lines: &[ParsedLine]) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut start = None;
@@ -206,8 +210,10 @@ pub struct DocumentLayoutCache {
     pub parsed_lines: super::parsed_line_store::ParsedLineStore,
     pub metrics: super::line_metrics::LineMetrics,
     pub space_width: Pixels,
+    #[cfg(test)]
     pub separators: Arc<Vec<bool>>,
     pub quote_projection: Arc<QuoteProjection>,
+    #[cfg(test)]
     pub quote_ranges: Arc<Vec<Range<usize>>>,
 }
 
@@ -233,8 +239,10 @@ impl Default for DocumentLayoutCache {
             parsed_lines: Default::default(),
             metrics: Default::default(),
             space_width: px(0.0),
+            #[cfg(test)]
             separators: Arc::default(),
             quote_projection: Arc::new(QuoteProjection::default()),
+            #[cfg(test)]
             quote_ranges: Arc::default(),
         }
     }
@@ -242,15 +250,14 @@ impl Default for DocumentLayoutCache {
 
 impl DocumentLayoutCache {
     pub(crate) fn separator(&self, line: usize) -> bool {
-        self.separators.get(line).copied().unwrap_or_else(|| {
-            self.render_mode != RenderMode::Source && self.quote_projection.separator(line)
-        })
+        #[cfg(test)]
+        if let Some(value) = self.separators.get(line) {
+            return *value;
+        }
+        self.render_mode != RenderMode::Source && self.quote_projection.separator(line)
     }
 
     pub(crate) fn visible_quote_ranges(&self, range: Range<usize>) -> Vec<Range<usize>> {
-        if !self.parsed_lines.is_windowed() {
-            return self.quote_ranges.as_ref().clone();
-        }
         self.quote_projection.quote_ranges(range)
     }
     #[inline]
@@ -801,9 +808,6 @@ impl Editor {
     }
 
     pub(crate) fn invalidate_layout_cache(&mut self) {
-        self.layout_epoch
-            .set(self.layout_epoch.get().wrapping_add(1));
-        self.layout_task = None;
         *self.layout_cache.borrow_mut() = Arc::new(DocumentLayoutCache::default());
     }
 
@@ -894,93 +898,7 @@ impl Editor {
         .with_text_system(self.text_system.clone())
     }
 
-    fn active_math_block_with_projection(
-        &self,
-        active_line: SourceLine,
-        projection: &QuoteProjection,
-    ) -> Option<(SourceLine, SourceLine)> {
-        if self.render_mode == RenderMode::Source {
-            return None;
-        }
-        #[cfg(test)]
-        self.layout_validation_scans.update(|count| count + 1);
-        crate::markdown::math_block_range_with_projection(projection, active_line)
-            .filter(|(start, end)| active_line > *start && active_line < *end)
-    }
-
-    fn active_mermaid_block_with_projection(
-        &self,
-        active_line: SourceLine,
-        projection: &QuoteProjection,
-    ) -> Option<(SourceLine, SourceLine)> {
-        if self.render_mode == RenderMode::Source {
-            return None;
-        }
-        #[cfg(test)]
-        self.layout_validation_scans.update(|count| count + 1);
-        crate::markdown::mermaid_block_range_with_projection(projection, active_line)
-    }
-
-    /// Reuse projection storage only when no reader retains the old snapshot.
     #[cfg(test)]
-    fn try_update_quote_projection(&self) -> Option<Arc<QuoteProjection>> {
-        let delta = self.buffer.last_edit_delta()?;
-        let mut cached = self.layout_cache.borrow_mut();
-        if cached.buffer_revision.wrapping_add(1) != self.buffer.revision()
-            || cached.quote_projection.len() != cached.lines_len
-        {
-            return None;
-        }
-        let cache = Arc::get_mut(&mut cached)?;
-        let projection = Arc::get_mut(&mut cache.quote_projection)?;
-        let previous = Arc::new(projection.clone());
-        if !projection.try_update_source(&self.buffer, delta) {
-            return None;
-        }
-        Some(std::mem::replace(&mut cache.quote_projection, previous))
-    }
-
-    fn parse_range(
-        &self,
-        range: Range<usize>,
-        _projection: &QuoteProjection,
-        _in_code_block: bool,
-    ) -> Vec<ParsedLine> {
-        #[cfg(test)]
-        let mut scanned = 0;
-        let (window, parsed) = if range == (0..self.buffer.line_count()) {
-            let result = MarkdownScanner::scan_window(&self.buffer, range.clone());
-            #[cfg(test)]
-            {
-                scanned += result.1.len();
-            }
-            result
-        } else {
-            let store = super::parsed_line_store::ParsedLineStore::windowed(&self.buffer);
-            let parsed = store.read_range(range.clone()).to_vec();
-            #[cfg(test)]
-            {
-                scanned += store.resident_rows();
-            }
-            (range.clone(), parsed)
-        };
-        let mut parsed = if window == range {
-            parsed
-        } else {
-            parsed
-                .into_iter()
-                .skip(range.start - window.start)
-                .take(range.len())
-                .collect()
-        };
-        self.project_ime_preedit(range.start, &mut parsed);
-        #[cfg(test)]
-        self.layout_stats.update(|mut stats| {
-            stats.lines_scanned += scanned;
-            stats
-        });
-        parsed
-    }
 
     pub(super) fn measure_range(
         &self,
@@ -1150,405 +1068,14 @@ impl Editor {
     pub fn ensure_layout_cache(&self) {
         let viewport = self.viewport_bounds_val();
         let content_width = compute_content_width(viewport.size.width, self.render_mode);
-        let disclosure_position = self.disclosure_position();
-        let active_line = disclosure_position.line;
-        let active_col = disclosure_position.col;
-        let current_img_v = crate::http::image_cache_version();
-        let current_syntax_v = crate::syntax::syntax_cache_version();
-
-        if self.buffer.line_count() >= LAZY_LAYOUT_MIN_LINES {
-            self.ensure_window_layout(
-                content_width,
-                active_line,
-                active_col,
-                current_img_v,
-                current_syntax_v,
-            );
-            return;
-        }
-
-        // Derived block state cannot change while its inputs and disclosure position match.
-        {
-            let mut cached = self.layout_cache.borrow_mut();
-            if cached.buffer_revision == self.buffer.revision()
-                && cached.lines_len == self.buffer.line_count()
-                && self.cache_matches_view(&cached, content_width)
-                && (cached.image_cache_version != current_img_v
-                    || cached.syntax_cache_version != current_syntax_v)
-            {
-                self.refresh_eager_resources(
-                    Arc::make_mut(&mut cached),
-                    current_img_v,
-                    current_syntax_v,
-                );
-            }
-        }
-        {
-            let cache = self.layout_cache.borrow();
-            if cache.buffer_version == self.buffer.version()
-                && cache.buffer_revision == self.buffer.revision()
-                && cache.lines_len == self.buffer.line_count()
-                && self.cache_matches_view(&cache, content_width)
-                && cache.image_cache_version == current_img_v
-                && cache.syntax_cache_version == current_syntax_v
-                && cache.active_line == active_line
-                && (self.render_mode == RenderMode::Source || cache.active_col == active_col)
-            {
-                return;
-            }
-        }
-
-        #[cfg(test)]
-        let updated_projection = self.try_update_quote_projection();
-        #[cfg(not(test))]
-        let updated_projection: Option<Arc<QuoteProjection>> = None;
-        let current_cache = self.layout_cache.borrow().clone();
-        let view_matches = self.cache_matches_view(&current_cache, content_width);
-        let buffer_matches = current_cache.buffer_version == self.buffer.version()
-            && current_cache.buffer_revision == self.buffer.revision()
-            && current_cache.lines_len == self.buffer.line_count();
-        let quote_projection =
-            if buffer_matches && current_cache.quote_projection.len() == self.buffer.line_count() {
-                current_cache.quote_projection.clone()
-            } else if let Some(projection) = updated_projection {
-                projection
-            } else {
-                Arc::new(QuoteProjection::from_source(&self.buffer))
-            };
-        let active_math_block =
-            self.active_math_block_with_projection(active_line, &quote_projection);
-        let active_mermaid_block =
-            self.active_mermaid_block_with_projection(active_line, &quote_projection);
-        let cached_active_mermaid_block = current_cache.active_mermaid_block;
-
-        if buffer_matches
-            && view_matches
-            && current_cache.image_cache_version == current_img_v
-            && current_cache.syntax_cache_version == current_syntax_v
-            && current_cache.active_line == active_line
-            && current_cache.active_math_block == active_math_block
-            && current_cache.active_mermaid_block == active_mermaid_block
-            && (self.render_mode == RenderMode::Source || current_cache.active_col == active_col)
-        {
-            return;
-        }
-
-        self.layout_epoch
-            .set(self.layout_epoch.get().wrapping_add(1));
-
-        if buffer_matches
-            && !view_matches
-            && current_cache.metrics.len() >= LAZY_LAYOUT_MIN_LINES
-            && current_cache.render_mode == self.render_mode
-            && current_cache.doc_path.as_deref() == self.buffer.file_path()
-            && current_cache.image_cache_version == current_img_v
-            && current_cache.syntax_cache_version == current_syntax_v
-        {
-            let scroll_top = self.scroll.current_scroll_top + self.layout_scroll_adjustment.get();
-            let anchor = current_cache
-                .metrics
-                .line_at_relative_y(self.scroll.anchor_line, scroll_top);
-            let old_top = anchor.and_then(|line| {
-                current_cache
-                    .metrics
-                    .top_relative(line, self.scroll.anchor_line)
-            });
-            drop(current_cache);
-            let mut cached = self.layout_cache.borrow_mut();
-            let cache = Arc::make_mut(&mut cached);
-            cache
-                .metrics
-                .set_estimate(px(self.font_size * self.line_height));
-            cache.metrics.mark_unmeasured(0..cache.metrics.len());
-            for region in self.display_map.fold_map().folded_regions() {
-                let start = (region.start_line.index() + 1).min(cache.metrics.len());
-                let end = (region.end_line.index() + 1).min(cache.metrics.len());
-                cache.metrics.set_uniform_measured(start..end, px(0.0));
-            }
-            if let Some((old_top, new_top)) = old_top.zip(
-                anchor.and_then(|line| cache.metrics.top_relative(line, self.scroll.anchor_line)),
-            ) {
-                self.layout_scroll_adjustment
-                    .set(self.layout_scroll_adjustment.get() + new_top - old_top);
-            }
-            cache.content_width = content_width;
-            cache.font_size = self.font_size;
-            cache.line_height = self.line_height;
-            cache.soft_wrap = self.soft_wrap;
-            cache.fold_version = self.display_map.version();
-            cache.active_line = active_line;
-            cache.active_col = active_col;
-            cache.active_math_block = active_math_block;
-            cache.active_mermaid_block = active_mermaid_block;
-            cache.space_width = self.space_width();
-            self.measure_viewport(cache);
-            return;
-        }
-
-        // Same line, only cursor column changed in Live Preview
-        if buffer_matches
-            && view_matches
-            && current_cache.image_cache_version == current_img_v
-            && current_cache.syntax_cache_version == current_syntax_v
-            && current_cache.active_line == active_line
-            && !current_cache.parsed_lines.is_empty()
-            && current_cache.metrics.len() == current_cache.parsed_lines.len()
-            && active_line.index() < current_cache.metrics.len()
-        {
-            drop(current_cache);
-            let mut cached = self.layout_cache.borrow_mut();
-            #[cfg(test)]
-            if Arc::strong_count(&cached) > 1 {
-                self.layout_stats.update(|mut stats| {
-                    stats.cache_deep_clones += 1;
-                    stats
-                });
-            }
-            let cache = Arc::make_mut(&mut cached);
-            let active_line_idx = active_line.index();
-            let is_sep = if cache.separators.len() == cache.lines_len {
-                cache
-                    .separators
-                    .get(active_line_idx)
-                    .copied()
-                    .unwrap_or(false)
-            } else {
-                crate::markdown::is_syntactic_separator_with_projection(
-                    &quote_projection,
-                    active_line,
-                )
-            };
-            let new_h = if let Some(row) = cache.parsed_lines.get(active_line_idx) {
-                let parsed = &*row;
-                let lcx = self.line_layout_ctx(
-                    parsed,
-                    true,
-                    is_sep,
-                    active_col,
-                    content_width,
-                    active_line,
-                    active_math_block,
-                    active_mermaid_block,
-                );
-                self.measure_line_layout_height(active_line_idx, parsed, lcx)
-            } else {
-                px(24.0)
-            };
-
-            let old_h = cache.metrics.height(active_line_idx).unwrap();
-            if (new_h - old_h).abs() < px(0.01) {
-                cache.active_col = active_col;
-                cache.active_math_block = active_math_block;
-                cache.active_mermaid_block = active_mermaid_block;
-                return;
-            }
-
-            cache.metrics.set_height(active_line_idx, new_h);
-
-            cache.active_col = active_col;
-            cache.active_math_block = active_math_block;
-            cache.active_mermaid_block = active_mermaid_block;
-            return;
-        }
-
-        // Only active_line changed (vertical cursor movement without buffer edit)
-        if buffer_matches
-            && view_matches
-            && current_cache.image_cache_version == current_img_v
-            && current_cache.syntax_cache_version == current_syntax_v
-            && !current_cache.parsed_lines.is_empty()
-            && current_cache.metrics.len() == current_cache.parsed_lines.len()
-            && current_cache.active_math_block == active_math_block
-            && cached_active_mermaid_block == active_mermaid_block
-        {
-            drop(current_cache);
-            let mut cached = self.layout_cache.borrow_mut();
-            #[cfg(test)]
-            if Arc::strong_count(&cached) > 1 {
-                self.layout_stats.update(|mut stats| {
-                    stats.cache_deep_clones += 1;
-                    stats
-                });
-            }
-            let cache = Arc::make_mut(&mut cached);
-            let old_active = cache.active_line;
-            let new_active = active_line;
-
-            let separators = if self.render_mode == RenderMode::Source {
-                std::borrow::Cow::Borrowed(&[][..])
-            } else if cache.separators.len() == cache.lines_len {
-                std::borrow::Cow::Borrowed(cache.separators.as_slice())
-            } else {
-                std::borrow::Cow::Owned(
-                    crate::markdown::compute_syntactic_separators_with_projection(
-                        &quote_projection,
-                    ),
-                )
-            };
-
-            let calc_h = |source_line: SourceLine, is_active: bool| -> Pixels {
-                let line_idx = source_line.index();
-                if let Some(row) = cache.parsed_lines.get(line_idx) {
-                    let parsed = &*row;
-                    let is_sep = separators.get(line_idx).copied().unwrap_or(false);
-                    let lcx = self.line_layout_ctx(
-                        parsed,
-                        is_active,
-                        is_sep,
-                        active_col,
-                        content_width,
-                        source_line,
-                        active_math_block,
-                        active_mermaid_block,
-                    );
-                    self.measure_line_layout_height(line_idx, parsed, lcx)
-                } else {
-                    px(24.0)
-                }
-            };
-
-            let old_active_new_h = calc_h(old_active, false);
-            let new_active_new_h = calc_h(new_active, true);
-
-            let old_active_idx = old_active.index();
-            let new_active_idx = new_active.index();
-            let old_diff = old_active_new_h
-                - cache
-                    .metrics
-                    .height(old_active_idx)
-                    .unwrap_or(old_active_new_h);
-            let new_diff = new_active_new_h
-                - cache
-                    .metrics
-                    .height(new_active_idx)
-                    .unwrap_or(new_active_new_h);
-
-            if old_diff.abs() < px(0.01) && new_diff.abs() < px(0.01) {
-                cache.active_line = active_line;
-                cache.active_col = active_col;
-                cache.active_math_block = active_math_block;
-                cache.active_mermaid_block = active_mermaid_block;
-                return;
-            }
-
-            if old_active_idx < cache.metrics.len() {
-                cache.metrics.set_height(old_active_idx, old_active_new_h);
-            }
-            if new_active_idx < cache.metrics.len() {
-                cache.metrics.set_height(new_active_idx, new_active_new_h);
-            }
-
-            cache.active_line = active_line;
-            cache.active_col = active_col;
-            cache.active_math_block = active_math_block;
-            cache.active_mermaid_block = active_mermaid_block;
-            return;
-        }
-
-        // Incremental block update on intra-block edits
-        if let Some(delta) = self.buffer.last_edit_delta()
-            && current_cache.buffer_revision.wrapping_add(1) == self.buffer.revision()
-            && !current_cache.parsed_lines.is_windowed()
-            && view_matches
-            && current_cache.image_cache_version == current_img_v
-            && current_cache.syntax_cache_version == current_syntax_v
-            && current_cache.lines_len == current_cache.parsed_lines.len()
-            && current_cache.metrics.len() == current_cache.lines_len
-        {
-            // Release our read handle so an unshared cache can be updated in place.
-            // Arc::make_mut preserves snapshots retained by other readers.
-            drop(current_cache);
-            let mut cached = self.layout_cache.borrow_mut();
-            #[cfg(test)]
-            if Arc::strong_count(&cached) > 1 {
-                self.layout_stats.update(|mut stats| {
-                    stats.cache_deep_clones += 1;
-                    stats
-                });
-            }
-            if self.try_incremental_layout_update(
-                Arc::make_mut(&mut cached),
-                delta,
-                active_line,
-                content_width,
-                quote_projection.clone(),
-            ) {
-                return;
-            }
-        }
-
-        // Full layout rebuild
-        #[cfg(test)]
-        self.layout_stats.update(|mut stats| {
-            stats.full_rebuilds += 1;
-            stats
-        });
-        let current_cache = self.layout_cache.borrow().clone();
-        let parsed_doc = if buffer_matches
-            && view_matches
-            && current_cache.syntax_cache_version == current_syntax_v
-            && !current_cache.parsed_lines.is_empty()
-        {
-            current_cache.parsed_lines.clone()
-        } else {
-            Arc::new(self.parse_range(0..self.buffer.line_count(), &quote_projection, false)).into()
-        };
-
-        let separators = if self.render_mode == RenderMode::Source {
-            Vec::new()
-        } else {
-            crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
-        };
-
-        let metrics = if parsed_doc.len() >= LAZY_LAYOUT_MIN_LINES {
-            LineMetrics::estimated(parsed_doc.len(), px(self.font_size * self.line_height))
-        } else {
-            LineMetrics::from_heights(self.measure_range(
-                0..parsed_doc.len(),
-                &parsed_doc,
-                &separators,
-                content_width,
-                active_math_block,
-                active_mermaid_block,
-            ))
-        };
-
-        let parsed_quote_ranges = quote_ranges(&parsed_doc);
-
-        let mut new_cache = DocumentLayoutCache {
-            buffer_version: self.buffer.version(),
-            buffer_revision: self.buffer.revision(),
-            lines_len: self.buffer.line_count(),
-            render_mode: self.render_mode,
+        let disclosure = self.disclosure_position();
+        self.ensure_window_layout(
             content_width,
-            active_line,
-            active_col,
-            active_math_block,
-            active_mermaid_block,
-            doc_path: self.buffer.file_path_buf(),
-            image_cache_version: current_img_v,
-            syntax_cache_version: current_syntax_v,
-            fold_version: self.display_map.version(),
-            font_size: self.font_size,
-            line_height: self.line_height,
-            soft_wrap: self.soft_wrap,
-            parsed_lines: parsed_doc,
-            metrics,
-            space_width: self.space_width(),
-
-            separators: separators.into(),
-            quote_projection,
-            quote_ranges: parsed_quote_ranges.into(),
-        };
-
-        for region in self.display_map.fold_map().folded_regions() {
-            let start = (region.start_line.index() + 1).min(new_cache.metrics.len());
-            let end = (region.end_line.index() + 1).min(new_cache.metrics.len());
-            new_cache.metrics.set_uniform_measured(start..end, px(0.0));
-        }
-        self.measure_viewport(&mut new_cache);
-
-        *self.layout_cache.borrow_mut() = Arc::new(new_cache);
+            disclosure.line,
+            disclosure.col,
+            crate::http::image_cache_version(),
+            crate::syntax::syntax_cache_version(),
+        );
     }
 
     pub fn get_line_y_range(&self, target_line: SourceLine) -> (Pixels, Pixels) {
@@ -1633,10 +1160,9 @@ pub struct ScrollbarMetrics {
 
 #[cfg(test)]
 mod incremental_tests {
-    use super::{Editor, QuoteProjection, RenderMode, SourceLine, compute_content_width};
+    use super::{Editor, RenderMode, SourceLine};
     use crate::buffer::{Position, Selection, TextBuffer};
     use gpui::px;
-    use std::sync::Arc;
 
     #[test]
     fn viewport_line_range_matches_intersections_including_tall_and_collapsed_rows() {
@@ -1686,16 +1212,9 @@ mod incremental_tests {
         cx.update(|_window, cx| {
             editor.update(cx, |ed, _| {
                 ed.render_mode = RenderMode::LivePreview;
-                let mut cache = (*ed.layout_snapshot()).clone();
                 ed.buffer.set_cursor(Position::new(SourceLine::new(3), 2));
                 ed.buffer.insert_text("text");
-                assert!(ed.try_incremental_layout_update(
-                    &mut cache,
-                    ed.buffer.last_edit_delta().unwrap(),
-                    ed.disclosure_position().line,
-                    compute_content_width(ed.viewport_bounds.size.width, ed.render_mode),
-                    Arc::new(QuoteProjection::from_source(&ed.buffer)),
-                ));
+                ed.ensure_layout_cache();
                 let after = ed.layout_snapshot();
                 ed.invalidate_layout_cache();
                 let full = ed.layout_snapshot();
@@ -1708,31 +1227,39 @@ mod incremental_tests {
     }
 
     #[gpui::test]
-    fn unshared_local_layout_updates_reuse_unchanged_parsed_text(cx: &mut gpui::TestAppContext) {
+    fn local_window_updates_preserve_unchanged_text_and_old_snapshots(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (editor, cx) = cx.add_window_view(|_window, cx| {
             Editor::new_with_buffer(TextBuffer::from_str("first\n\nedit here\n\nlast", None), cx)
         });
         cx.update(|_window, cx| {
             editor.update(cx, |ed, _| {
                 let before = ed.layout_snapshot();
-                let unchanged = before.parsed_lines[0].raw_text.as_ptr();
+                let unchanged = before.parsed_lines.row(0).unwrap();
                 drop(before);
                 ed.buffer
                     .record_single_line_edit(SourceLine::new(2), |line, _| {
                         line.push_str(" changed")
                     });
                 let after = ed.layout_snapshot();
-                assert_eq!(after.parsed_lines[0].raw_text.as_ptr(), unchanged);
-                assert_eq!(after.parsed_lines[2].raw_text, "edit here changed");
+                assert_eq!(
+                    after.parsed_lines.row(0).unwrap().raw_text,
+                    unchanged.raw_text
+                );
+                assert_eq!(
+                    after.parsed_lines.row(2).unwrap().raw_text,
+                    "edit here changed"
+                );
                 let retained = after.parsed_lines.clone();
                 drop(after);
                 ed.buffer
                     .record_single_line_edit(SourceLine::new(2), |line, _| line.push_str(" again"));
                 assert_eq!(
-                    ed.layout_snapshot().parsed_lines[2].raw_text,
+                    ed.layout_snapshot().parsed_lines.row(2).unwrap().raw_text,
                     "edit here changed again"
                 );
-                assert_eq!(retained[2].raw_text, "edit here changed");
+                assert_eq!(retained.row(2).unwrap().raw_text, "edit here changed");
             });
         });
     }
@@ -1756,10 +1283,11 @@ mod incremental_tests {
                         ed.buffer = TextBuffer::from_str(content, None);
                         ed.render_mode = mode;
                         ed.viewport_bounds.size = gpui::size(px(260.0), px(600.0));
-                        ed.buffer.set_cursor(Position::new(SourceLine::new(old_line), 0));
+                        ed.buffer
+                            .set_cursor(Position::new(SourceLine::new(old_line), 0));
                         ed.invalidate_layout_cache();
-                        let mut cache = (*ed.layout_snapshot()).clone();
-                        ed.buffer.set_cursor(Position::new(SourceLine::new(edit_line), 0));
+                        ed.buffer
+                            .set_cursor(Position::new(SourceLine::new(edit_line), 0));
                         if delete_next_line {
                             ed.buffer.set_selection(Selection {
                                 anchor: Position::new(SourceLine::new(edit_line), 0),
@@ -1767,15 +1295,8 @@ mod incremental_tests {
                             });
                         }
                         ed.buffer.insert_text(replacement);
-                        let active_line = ed.disclosure_position().line;
-                        let projection = Arc::new(QuoteProjection::from_source(&ed.buffer));
-                        assert!(ed.try_incremental_layout_update(
-                            &mut cache,
-                            ed.buffer.last_edit_delta().unwrap(),
-                            active_line,
-                            compute_content_width(ed.viewport_bounds.size.width, mode),
-                            projection,
-                        ), "cursor jump should permit a local layout update ({mode:?}, {old_line} -> {edit_line})");
+                        ed.ensure_layout_cache();
+                        let cache = ed.layout_snapshot();
                         ed.invalidate_layout_cache();
                         let full = ed.layout_snapshot();
                         assert_eq!(cache.parsed_lines, full.parsed_lines);
@@ -1851,17 +1372,10 @@ mod incremental_tests {
                         ed.invalidate_layout_cache();
                         let before = ed.layout_snapshot();
                         let before_parsed = before.parsed_lines.clone();
-                        let mut cache = (*before).clone();
-                        ed.buffer.set_cursor(Position::new(SourceLine::new(edit_line), edit_col));
+                                                ed.buffer.set_cursor(Position::new(SourceLine::new(edit_line), edit_col));
                         ed.buffer.insert_text("changed ");
-                        let projection = Arc::new(QuoteProjection::from_source(&ed.buffer));
-                        assert!(ed.try_incremental_layout_update(
-                            &mut cache,
-                            ed.buffer.last_edit_delta().unwrap(),
-                            ed.disclosure_position().line,
-                            compute_content_width(ed.viewport_bounds.size.width, mode),
-                            projection,
-                        ));
+                                                ed.ensure_layout_cache();
+                let cache = ed.layout_snapshot();
                         ed.invalidate_layout_cache();
                         let full = ed.layout_snapshot();
                         assert_eq!(cache.parsed_lines, full.parsed_lines);

@@ -68,7 +68,8 @@ fn test_integration_markdown_pipeline_and_ast_projection() {
         "```".to_string(),
     ];
 
-    let ast = MarkdownScanner::scan_document(&doc_lines);
+    let buffer = inviscid::buffer::TextBuffer::from_str(&doc_lines.join("\n"), None);
+    let (_, ast) = MarkdownScanner::scan_window(&buffer, 0..doc_lines.len());
     assert_eq!(ast.len(), 9);
 
     assert!(matches!(

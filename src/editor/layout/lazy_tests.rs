@@ -38,7 +38,7 @@ fn large_structural_edits_converge_to_eager_geometry(cx: &mut gpui::TestAppConte
 }
 
 #[gpui::test]
-fn shrinking_below_lazy_threshold_rebuilds_a_small_eager_snapshot(cx: &mut gpui::TestAppContext) {
+fn shrinking_documents_keep_windowed_parsing(cx: &mut gpui::TestAppContext) {
     let text = "paragraph\n".repeat(20_000);
     let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
     editor.update(cx, |ed, _| {
@@ -50,7 +50,7 @@ fn shrinking_below_lazy_threshold_rebuilds_a_small_eager_snapshot(cx: &mut gpui:
         ed.buffer.insert_text("small");
         ed.prepare_viewport_layout();
         let layout = ed.layout_snapshot();
-        assert!(!layout.parsed_lines.is_windowed());
+        assert!(layout.parsed_lines.is_windowed());
         assert_eq!(layout.metrics, ed.eager_metrics_for_test());
         assert_eq!(old.parsed_lines.row(0).unwrap().raw_text, "paragraph");
     });
@@ -204,6 +204,7 @@ fn structural_edits_match_full_layout_without_rebuilds(cx: &mut gpui::TestAppCon
                     0,
                     "step {step}: {insert:?}"
                 );
+                ed.measure_all_pending_for_test();
                 let layout = ed.layout_snapshot();
                 let eager = ed.eager_metrics_for_test();
                 for row in 0..eager.len() {
@@ -309,13 +310,12 @@ fn editing_a_large_paragraph_keeps_height_measurement_local(cx: &mut gpui::TestA
 fn viewport_updates_reuse_validation_and_separator_storage(cx: &mut gpui::TestAppContext) {
     let text = "paragraph\n".repeat(20_000);
     let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
-    editor.update(cx, |ed, cx| {
+    editor.update(cx, |ed, _cx| {
         ed.ensure_layout_cache();
         let old = ed.layout_snapshot();
         ed.layout_validation_scans.set(0);
         ed.scroll.set_direct(px(1200.0), px(100_000.0));
         ed.prepare_viewport_layout();
-        ed.schedule_layout_measurement(cx);
         let current = ed.layout_snapshot();
         assert_eq!(ed.layout_validation_scans.get(), 0);
         assert_eq!(old.separators.as_ptr(), current.separators.as_ptr());

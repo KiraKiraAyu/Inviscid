@@ -11,13 +11,6 @@ pub(super) fn scan(
     if requested.is_empty() {
         return (requested, Vec::new());
     }
-    if requested == (0..source.line_count()) {
-        let projection = super::QuoteProjection::from_source(source);
-        return (
-            requested,
-            MarkdownScanner::scan_document_with_projection(source, &projection),
-        );
-    }
     let mut range = requested;
     loop {
         let old = range.clone();

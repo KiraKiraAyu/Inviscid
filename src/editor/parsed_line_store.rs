@@ -12,6 +12,7 @@ use resources::Resource;
 /// Parsed source rows shared by immutable layout snapshots.
 #[derive(Clone, Debug, Default)]
 pub struct ParsedLineStore {
+    #[cfg(test)]
     eager: Arc<Vec<ParsedLine>>,
     windows: Option<Arc<WindowStore>>,
     resources: Arc<RefCell<Vec<Resource>>>,
@@ -60,6 +61,7 @@ impl Deref for ParsedRow {
     }
 }
 
+#[cfg(test)]
 impl PartialEq for ParsedLineStore {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len()
@@ -71,6 +73,7 @@ impl ParsedLineStore {
     pub(crate) fn windowed(buffer: &crate::buffer::TextBuffer) -> Self {
         use crate::buffer::LineSource;
         Self {
+            #[cfg(test)]
             eager: Arc::default(),
             windows: Some(Arc::new(WindowStore {
                 source: buffer.source_snapshot(),
@@ -88,10 +91,13 @@ impl ParsedLineStore {
             return None;
         }
         let Some(store) = &self.windows else {
+            #[cfg(test)]
             return Some(ParsedRow {
                 rows: self.eager.clone(),
                 index: line,
             });
+            #[cfg(not(test))]
+            return None;
         };
         let start = line / WINDOW_ROWS * WINDOW_ROWS;
         let window = self.load_window(store, start..(start + WINDOW_ROWS).min(self.len()));
@@ -112,7 +118,10 @@ impl ParsedLineStore {
         assert!(range.start <= range.end && range.end <= self.len());
         let Some(store) = &self.windows else {
             return ParsedSlice {
+                #[cfg(test)]
                 rows: self.eager.clone(),
+                #[cfg(not(test))]
+                rows: Arc::default(),
                 range,
             };
         };
@@ -172,7 +181,7 @@ impl ParsedLineStore {
     }
 
     pub fn resident_rows(&self) -> usize {
-        self.windows.as_ref().map_or(self.eager.len(), |store| {
+        self.windows.as_ref().map_or(self.len(), |store| {
             store
                 .windows
                 .borrow()
@@ -242,29 +251,6 @@ impl ParsedLineStore {
         ranges
     }
 
-    pub(crate) fn update_resources_after_edit(
-        &mut self,
-        delta: crate::buffer::EditDelta,
-        range: Range<usize>,
-    ) {
-        let old_end = range.end - delta.new_line_count + delta.old_line_count;
-        let mut resources = self.resources.borrow().clone();
-        resources.retain_mut(|resource| {
-            if resource.range.end <= range.start {
-                return true;
-            }
-            if resource.range.start < old_end {
-                return false;
-            }
-            resource.range.start =
-                resource.range.start - delta.old_line_count + delta.new_line_count;
-            resource.range.end = resource.range.end - delta.old_line_count + delta.new_line_count;
-            true
-        });
-        resources.extend(Resource::collect(range.start, &self.eager[range]));
-        self.resources = Arc::new(RefCell::new(resources));
-    }
-
     pub(crate) fn take_scanned(&self) -> usize {
         self.windows
             .as_ref()
@@ -281,6 +267,7 @@ impl ParsedLineStore {
     pub fn shares_storage_with(&self, other: &Self) -> bool {
         match (&self.windows, &other.windows) {
             (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            #[cfg(test)]
             (None, None) => Arc::ptr_eq(&self.eager, &other.eager),
             _ => false,
         }
@@ -296,17 +283,29 @@ impl ParsedLineStore {
 
     pub fn len(&self) -> usize {
         use crate::buffer::LineSource;
-        self.windows
-            .as_ref()
-            .map_or(self.eager.len(), |store| store.source.line_count())
+        self.windows.as_ref().map_or_else(
+            || {
+                #[cfg(test)]
+                {
+                    self.eager.len()
+                }
+                #[cfg(not(test))]
+                {
+                    0
+                }
+            },
+            |store| store.source.line_count(),
+        )
     }
 
+    #[cfg(test)]
     pub(crate) fn make_mut(&mut self) -> &mut Vec<ParsedLine> {
         assert!(self.windows.is_none());
         Arc::make_mut(&mut self.eager)
     }
 }
 
+#[cfg(test)]
 impl From<Arc<Vec<ParsedLine>>> for ParsedLineStore {
     fn from(lines: Arc<Vec<ParsedLine>>) -> Self {
         let resources = Arc::new(RefCell::new(Resource::collect(0, &lines)));
@@ -318,7 +317,7 @@ impl From<Arc<Vec<ParsedLine>>> for ParsedLineStore {
     }
 }
 
-// Transitional slice access while consumers migrate to range queries.
+#[cfg(test)]
 impl Deref for ParsedLineStore {
     type Target = Arc<Vec<ParsedLine>>;
 

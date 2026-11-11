@@ -13,8 +13,7 @@ pub struct OutlineItem {
 
 /// Scans Markdown source lines into the headings shown by the outline panel.
 pub fn collect_outline(lines: &[String]) -> Vec<OutlineItem> {
-    let parsed_lines = super::scanner::MarkdownScanner::scan_document(lines);
-    collect_outline_from_parsed(&parsed_lines)
+    collect_outline_from_source(lines)
 }
 
 /// Only headings need inline parsing; body rows stay in the source Rope.
@@ -39,13 +38,6 @@ pub(crate) fn collect_outline_from_source(
         headings.push((row, parsed));
     }
     collect_indexed_headings(headings.iter().map(|(row, parsed)| (*row, parsed)))
-}
-
-/// Reuses the editor's parsed document without copying or reparsing source text.
-pub(crate) fn collect_outline_from_parsed(
-    parsed_lines: &[super::types::ParsedLine],
-) -> Vec<OutlineItem> {
-    collect_indexed_headings(parsed_lines.iter().enumerate())
 }
 
 fn collect_indexed_headings<'a>(

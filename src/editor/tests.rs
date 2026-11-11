@@ -5,6 +5,52 @@ use crate::markdown::{MarkdownScanner, is_syntactic_separator};
 use gpui::px;
 
 #[gpui::test]
+fn ordinary_documents_parse_and_measure_only_the_viewport(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    let text = "paragraph\n".repeat(1404);
+    let editor = cx.new(|cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&text, None), cx)
+    });
+    editor.update(cx, |ed, _| {
+        for mode in [super::RenderMode::Source, super::RenderMode::LivePreview] {
+            ed.render_mode = mode;
+            ed.invalidate_layout_cache();
+            ed.layout_stats.set(super::LayoutStats::default());
+            ed.prepare_viewport_layout();
+            let layout = ed.layout_snapshot();
+            let stats = ed.layout_stats.get();
+            assert!(stats.lines_scanned <= 512, "{stats:?}");
+            assert!(stats.lines_measured <= 128, "{stats:?}");
+            assert!(layout.parsed_lines.is_windowed());
+            assert!(layout.metrics.unmeasured_count() > 1000);
+        }
+    });
+}
+
+#[gpui::test]
+fn idle_frames_do_not_scan_offscreen_rows(cx: &mut gpui::TestAppContext) {
+    let text = "paragraph\n".repeat(1404);
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&text, None), cx)
+    });
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+    });
+    let before = editor.read_with(cx, |ed, _| ed.layout_stats.get());
+    for _ in 0..20 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.run_until_parked();
+    }
+    editor.read_with(cx, |ed, _| {
+        let after = ed.layout_stats.get();
+        assert_eq!(after.lines_scanned, before.lines_scanned);
+        assert_eq!(after.lines_measured, before.lines_measured);
+        assert!(ed.layout_snapshot().metrics.unmeasured_count() > 1000);
+    });
+}
+
+#[gpui::test]
 fn large_document_first_layout_measures_only_viewport(cx: &mut gpui::TestAppContext) {
     use gpui::AppContext;
     let text = vec!["a short paragraph"; 200_000].join("\n");
@@ -2331,7 +2377,7 @@ fn editing_display_math_updates_its_layout_snapshot_and_preview(cx: &mut gpui::T
                 .set_cursor(Position::new(crate::buffer::SourceLine::new(1), 5));
             editor.ensure_layout_cache();
             assert_eq!(
-                editor.layout_snapshot().parsed_lines[0].spans[0]
+                editor.layout_snapshot().parsed_lines.row(0).unwrap().spans[0]
                     .math
                     .as_ref()
                     .unwrap()
@@ -2351,9 +2397,13 @@ fn editing_display_math_updates_its_layout_snapshot_and_preview(cx: &mut gpui::T
 
             let layout = editor.layout_snapshot();
             assert_eq!(layout.buffer_version, editor.buffer().version());
-            assert_eq!(layout.parsed_lines[1].raw_text, "x + y + z");
+            assert_eq!(layout.parsed_lines.row(1).unwrap().raw_text, "x + y + z");
             assert_eq!(
-                layout.parsed_lines[0].spans[0].math.as_ref().unwrap().tex,
+                layout.parsed_lines.row(0).unwrap().spans[0]
+                    .math
+                    .as_ref()
+                    .unwrap()
+                    .tex,
                 "x + y + z"
             );
             assert!(layout.metrics.height(1).unwrap() > gpui::px(0.0));
@@ -2766,18 +2816,20 @@ fn tail_edit_blank_lines_reuse_prefix_layout(cx: &mut gpui::TestAppContext) {
                     ed.ensure_layout_cache();
                     let (prefix, syntax_version, image_version) = {
                         let layout = ed.layout_snapshot();
-                        (layout.parsed_lines[0].raw_text.as_ptr(), layout.syntax_cache_version, layout.image_cache_version)
+                        (layout.parsed_lines.row(0).unwrap(), layout.syntax_cache_version, layout.image_cache_version)
                     };
                     ed.buffer.insert_text(text);
+                    ed.measure_all_pending_for_test();
                     let incremental = ed.layout_snapshot();
                     // Background resource completion legitimately invalidates layout.
                     if incremental.syntax_cache_version == syntax_version
                         && incremental.image_cache_version == image_version
                     {
-                        assert_eq!(incremental.parsed_lines[0].raw_text.as_ptr(), prefix,
-                            "ordinary tail edits must retain parsed prefix: {mode:?}, tail={tail:?}, text={text:?}");
+                        assert_eq!(incremental.parsed_lines.row(0).unwrap().raw_text, prefix.raw_text,
+                            "ordinary tail edits must preserve prefix text: {mode:?}, tail={tail:?}, text={text:?}");
                     }
                     ed.invalidate_layout_cache();
+                    ed.measure_all_pending_for_test();
                     let rebuilt = ed.layout_snapshot();
                     assert_eq!(incremental.parsed_lines, rebuilt.parsed_lines);
                     assert_eq!(incremental.metrics.heights(), rebuilt.metrics.heights());
@@ -2903,8 +2955,8 @@ fn assert_rope_scroll_frames_do_not_copy_document(
                 && cached_layout.syntax_cache_version == current_layout.syntax_cache_version
             {
                 assert!(
-                    std::sync::Arc::ptr_eq(&cached_layout, &current_layout),
-                    "scroll painting must reuse layout while resource versions are stable ({mode:?})"
+                    cached_layout.parsed_lines.shares_storage_with(&current_layout.parsed_lines),
+                    "scroll painting must reuse parsed windows while resource versions are stable ({mode:?})"
                 );
             }
         });
@@ -2950,15 +3002,18 @@ fn scroll_frames_prepare_only_viewport_text(cx: &mut gpui::TestAppContext) {
                     .filter(|(y, height)| **y < bottom && **y + **height > top)
                     .count()
             });
+            let measured_before = editor.read(cx).layout_stats.get().lines_measured;
             preparation_metrics::reset();
             window.refresh();
             window.draw(cx).clear();
             let calls = preparation_metrics::calls();
+            let newly_measured = editor.read(cx).layout_stats.get().lines_measured - measured_before;
             assert!(calls > 0);
             assert!(
-                calls <= visible_lines * 2,
+                calls <= visible_lines * 2 + newly_measured,
                 "scroll prepared {calls} text runs for only {visible_lines} visible lines ({mode:?})"
             );
+            assert!(newly_measured <= visible_lines + 64);
         });
     }
 }
@@ -3029,8 +3084,7 @@ fn test_layout_cache_incremental_update_matches_full_rebuild(cx: &mut gpui::Test
     });
 
     assert_eq!(
-        incremental.parsed_lines.as_ref(),
-        full.parsed_lines.as_ref(),
+        incremental.parsed_lines, full.parsed_lines,
         "incrementally parsed lines must match a full rebuild"
     );
     assert_eq!(
@@ -3061,15 +3115,12 @@ fn local_edit_reuses_unchanged_projection_lines(cx: &mut gpui::TestAppContext) {
     cx.update(|_window, cx| {
         editor.update(cx, |ed, _| {
             let before = ed.layout_snapshot();
-            let unchanged = before.quote_projection.normalized_lines()[0].as_ptr();
+            let unchanged = before.quote_projection.normalized_line(0).into_owned();
             drop(before);
             ed.buffer
                 .record_single_line_edit(SourceLine::new(2), |line, _| line.push_str(" changed"));
             let after = ed.layout_snapshot();
-            assert_eq!(
-                after.quote_projection.normalized_lines()[0].as_ptr(),
-                unchanged
-            );
+            assert_eq!(after.quote_projection.normalized_line(0), unchanged);
             assert_eq!(
                 after.quote_projection.normalized_lines()[2],
                 "quote changed"
@@ -3111,7 +3162,7 @@ fn projection_snapshots_survive_edits_and_skipped_history_revisions(cx: &mut gpu
             let incremental_heights = branched.metrics.heights().clone();
             ed.invalidate_layout_cache();
             let rebuilt = ed.layout_snapshot();
-            assert_eq!(*incremental_lines, *rebuilt.parsed_lines);
+            assert_eq!(incremental_lines, rebuilt.parsed_lines);
             assert_eq!(incremental_heights, rebuilt.metrics.heights());
         });
     });
@@ -3763,7 +3814,7 @@ fn test_line_wrapper_matches_shape_text_across_widths(cx: &mut gpui::TestAppCont
             );
 
             let parsed_lines = &layout.parsed_lines;
-            let line1 = &parsed_lines[1];
+            let line1 = &parsed_lines.row(1).unwrap();
             let vis_text = line1.visible_text(true, 26, false);
             let typo = crate::editor::layout::get_block_typography_with_metrics(
                 &line1.kind,
@@ -3842,7 +3893,10 @@ fn test_ime_composition_pins_disclosure_to_composition_anchor(cx: &mut gpui::Tes
             let before = ed.layout_snapshot();
             let before_height = before.metrics.height(0).unwrap();
             let before_total = before.metrics.total_height();
-            let before_visible = before.parsed_lines[0]
+            let before_visible = before
+                .parsed_lines
+                .row(0)
+                .unwrap()
                 .visible_text(true, line_len, false)
                 .chars()
                 .count();
@@ -3857,7 +3911,11 @@ fn test_ime_composition_pins_disclosure_to_composition_anchor(cx: &mut gpui::Tes
             );
             let during = ed.layout_snapshot();
             let during_visible =
-                during.parsed_lines[0].visible_text(true, ed.disclosure_col(), false);
+                during
+                    .parsed_lines
+                    .row(0)
+                    .unwrap()
+                    .visible_text(true, ed.disclosure_col(), false);
             assert!(
                 during_visible.ends_with("ni"),
                 "the preedit must be included in the shaped line after the visible content"
@@ -3902,7 +3960,10 @@ fn test_ime_composition_on_empty_line_is_inline_and_underlined(cx: &mut gpui::Te
             let before = ed.layout_snapshot();
             let before_height = before.metrics.height(1).unwrap();
             assert!(
-                before.parsed_lines[1]
+                before
+                    .parsed_lines
+                    .row(1)
+                    .unwrap()
                     .visible_text(true, 0, false)
                     .is_empty(),
                 "the fixture line must start empty"
@@ -3912,7 +3973,11 @@ fn test_ime_composition_on_empty_line_is_inline_and_underlined(cx: &mut gpui::Te
 
             let during = ed.layout_snapshot();
             assert_eq!(
-                during.parsed_lines[1].visible_text(true, 0, false),
+                during
+                    .parsed_lines
+                    .row(1)
+                    .unwrap()
+                    .visible_text(true, 0, false),
                 "ni",
                 "an in-flight preedit must participate in line shaping"
             );
@@ -3923,7 +3988,7 @@ fn test_ime_composition_on_empty_line_is_inline_and_underlined(cx: &mut gpui::Te
             );
             assert_eq!(during.metrics.total_height(), before.metrics.total_height());
             let (line, runs) = crate::editor::shaping::build_line_runs(
-                &during.parsed_lines[1].spans,
+                &during.parsed_lines.row(1).unwrap().spans,
                 crate::editor::shaping::LineShapingContext::new(
                     &crate::theme::Theme::default(),
                     None,
@@ -3969,7 +4034,7 @@ fn test_ime_composition_reserves_width_and_wraps(cx: &mut gpui::TestAppContext) 
                          caret_col: usize,
                          tracked_col: usize| {
                 let layout = ed.layout_snapshot();
-                let parsed = &layout.parsed_lines[0];
+                let parsed = &layout.parsed_lines.row(0).unwrap();
                 let disclosure = ed.disclosure_col();
                 let available = crate::editor::shaping::compute_available_line_width_with_mode(
                     crate::editor::shaping::compute_content_width(px(1000.0), ed.render_mode),
@@ -4099,10 +4164,7 @@ fn heading_enter_keeps_source_block_separators_across_modes(cx: &mut gpui::TestA
                 let incremental = ed.layout_snapshot();
                 ed.invalidate_layout_cache();
                 let full = ed.layout_snapshot();
-                assert_eq!(
-                    incremental.parsed_lines.as_ref(),
-                    full.parsed_lines.as_ref()
-                );
+                assert_eq!(incremental.parsed_lines, full.parsed_lines);
                 for index in 0..count {
                     assert!(
                         ed.buffer
@@ -4286,11 +4348,14 @@ fn test_code_block_incremental_edit_and_syntax_cache_invalidation(cx: &mut gpui:
     cx.update(|_window, cx| {
         editor.update(cx, |ed, _cx| {
             let snap1 = ed.layout_snapshot();
-            assert!(snap1.parsed_lines[3].spans.iter().any(|s| {
+            assert!(snap1.parsed_lines.row(3).unwrap().spans.iter().any(|s| {
                 s.text == "\"count\"" && s.syntax_token == Some(SyntaxToken::Variable)
             }));
             assert!(
-                snap1.parsed_lines[3]
+                snap1
+                    .parsed_lines
+                    .row(3)
+                    .unwrap()
                     .spans
                     .iter()
                     .any(|s| { s.text == "1" && s.syntax_token == Some(SyntaxToken::Number) })
@@ -4305,7 +4370,10 @@ fn test_code_block_incremental_edit_and_syntax_cache_invalidation(cx: &mut gpui:
 
             let snap2 = ed.layout_snapshot();
             assert!(
-                snap2.parsed_lines[3]
+                snap2
+                    .parsed_lines
+                    .row(3)
+                    .unwrap()
                     .spans
                     .iter()
                     .any(|s| { s.text == "\"ok\"" && s.syntax_token == Some(SyntaxToken::String) })
@@ -4354,10 +4422,7 @@ fn test_quoted_code_block_incremental_edit_matches_full_rebuild(cx: &mut gpui::T
         (incremental, full)
     });
 
-    assert_eq!(
-        incremental.parsed_lines.as_ref(),
-        full.parsed_lines.as_ref()
-    );
+    assert_eq!(incremental.parsed_lines, full.parsed_lines);
     assert_eq!(incremental.metrics.heights(), full.metrics.heights());
     assert_eq!(incremental.metrics.offsets(), full.metrics.offsets());
 }
@@ -4640,7 +4705,7 @@ fn test_paragraph_with_inline_code_layout_height_matches_shape_text(cx: &mut gpu
             let layout = ed.layout_snapshot();
             assert_eq!(layout.parsed_lines.len(), 2, "Fixture must have exactly 2 lines");
 
-            let parsed_0 = &layout.parsed_lines[0];
+            let parsed_0 = &layout.parsed_lines.row(0).unwrap();
             let typo_0 = crate::editor::layout::get_block_typography_with_metrics(
                 &parsed_0.kind,
                 ed.font_size,

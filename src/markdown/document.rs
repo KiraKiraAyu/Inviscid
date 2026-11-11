@@ -1,7 +1,10 @@
+#[cfg(test)]
 use super::scanner::compute_syntactic_separators;
 use super::types::{BlockKind, ParsedLine};
+#[cfg(test)]
+use crate::buffer::LineSource;
 use crate::buffer::{
-    LineSource, ProjectedBlockIndex, ProjectedLine, ProjectedLineCount, SourceLine, SourcePosition,
+    ProjectedBlockIndex, ProjectedLine, ProjectedLineCount, SourceLine, SourcePosition,
 };
 use std::ops::Index;
 
@@ -130,6 +133,7 @@ impl VisualDocument {
         Self::from_parsed(lines, &parsed)
     }
 
+    #[cfg(test)]
     pub fn from_parsed(lines: &(impl LineSource + ?Sized), parsed_lines: &[ParsedLine]) -> Self {
         let separators = compute_syntactic_separators(lines);
         Self::from_parsed_with_separators(parsed_lines, &separators)

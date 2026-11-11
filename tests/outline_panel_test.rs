@@ -42,6 +42,7 @@ fn outline_tracks_active_document_and_jumps_to_heading() {
             workspace.toggle_outline_panel(window, cx)
         });
     });
+    cx.run_until_parked();
     workspace.read_with(cx, |workspace, cx| {
         assert_eq!(
             workspace.active_sidebar(),

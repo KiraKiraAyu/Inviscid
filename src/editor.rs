@@ -38,7 +38,6 @@ pub(crate) mod loading;
 pub mod mouse;
 pub mod navigation;
 pub mod parsed_line_store;
-mod pending_layout;
 pub mod render;
 mod scroll_anchor;
 pub mod shaping;
@@ -204,10 +203,6 @@ pub struct Editor {
 
     pub(crate) layout_cache: RefCell<Arc<DocumentLayoutCache>>,
     layout_scroll_adjustment: std::cell::Cell<Pixels>,
-    layout_epoch: std::cell::Cell<u64>,
-    layout_task_epoch: u64,
-    layout_task: Option<Task<()>>,
-    layout_notifier: crate::sync::VersionedNotifier,
     #[cfg(test)]
     pub(crate) layout_stats: std::cell::Cell<LayoutStats>,
     #[cfg(test)]
@@ -466,11 +461,7 @@ impl Editor {
 
         let image_rx = crate::http::subscribe_image_updates();
         let syntax_rx = crate::syntax::subscribe_syntax_updates();
-        let layout_notifier = crate::sync::VersionedNotifier::new();
-        let mut async_update_rx = futures::stream::select(
-            futures::stream::select(image_rx, syntax_rx),
-            layout_notifier.subscribe(),
-        );
+        let mut async_update_rx = futures::stream::select(image_rx, syntax_rx);
         let async_update_task = cx.spawn(async move |this, cx| {
             use futures::StreamExt;
             while let Some(_version) = async_update_rx.next().await {
@@ -527,10 +518,6 @@ impl Editor {
             _async_update_task: Some(async_update_task),
             layout_cache: RefCell::new(Arc::new(DocumentLayoutCache::default())),
             layout_scroll_adjustment: std::cell::Cell::new(px(0.0)),
-            layout_epoch: std::cell::Cell::new(0),
-            layout_task_epoch: 0,
-            layout_task: None,
-            layout_notifier,
             #[cfg(test)]
             layout_stats: std::cell::Cell::new(LayoutStats::default()),
             #[cfg(test)]
@@ -737,16 +724,19 @@ impl Editor {
 
         let layout = self.layout_snapshot();
         let pos = self.buffer.cursor_pos();
-        let mut target_pos = if layout.parsed_lines.is_windowed() {
+        let mut target_pos = {
             let mut start = pos.line.index();
-            while start > 0 && layout.separator(start) {
+            while start > 0 && layout.quote_projection.separator(start) {
                 start -= 1;
             }
             let (range, parsed) = crate::markdown::MarkdownScanner::scan_window(
                 &self.buffer,
                 start..(pos.line.index() + 1).min(self.buffer.line_count()),
             );
-            let separators: Vec<bool> = range.clone().map(|row| layout.separator(row)).collect();
+            let separators: Vec<bool> = range
+                .clone()
+                .map(|row| layout.quote_projection.separator(row))
+                .collect();
             let document = VisualDocument::from_parsed_with_separators(&parsed, &separators);
             let local = crate::buffer::SourcePosition::new(
                 crate::buffer::SourceLine::new(pos.line.index() - range.start),
@@ -757,17 +747,6 @@ impl Editor {
                 crate::buffer::SourceLine::new(projected.line.index() + range.start),
                 projected.col,
             )
-        } else {
-            let vdoc = if layout.separators.len() == layout.parsed_lines.len() {
-                VisualDocument::from_parsed_with_separators(
-                    &layout.parsed_lines,
-                    &layout.separators,
-                )
-            } else {
-                VisualDocument::from_parsed(&self.buffer, &layout.parsed_lines)
-            };
-            let vpos = vdoc.source_to_visual(crate::buffer::SourcePosition::from_position(pos));
-            vdoc.visual_to_source(vpos).to_position()
         };
 
         let current_line_str = self.buffer.line_text(target_pos.line).unwrap_or_default();

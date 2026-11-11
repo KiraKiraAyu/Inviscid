@@ -99,10 +99,9 @@ impl Element for EditorElement {
         let is_focused = self.editor.read(cx).focus_handle.is_focused(window);
 
         // Synchronously commit exact Taffy layout bounds to Editor and cancel ghost blink task if unfocused
-        self.editor.update(cx, |editor, cx| {
+        self.editor.update(cx, |editor, _cx| {
             editor.viewport_bounds = bounds;
             editor.prepare_viewport_layout();
-            editor.schedule_layout_measurement(cx);
             if !is_focused && editor.blink_task.is_some() {
                 editor.cursor_opacity = 0.0;
                 editor.blink_task = None;

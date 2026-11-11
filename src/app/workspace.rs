@@ -1273,68 +1273,53 @@ impl Workspace {
         }
         if let Some(entity) = self.active_editor() {
             let editor = entity.read(cx);
-            if editor.buffer().line_count() >= crate::editor::layout::LAZY_LAYOUT_MIN_LINES {
-                use crate::buffer::LineSource;
-                let key = (entity.entity_id(), editor.buffer().revision());
-                let active = Some(editor.cursor_pos().line);
-                if self.outline_source == Some(key) {
-                    self.outline_panel
-                        .update(cx, |panel, cx| panel.set_active_line(active, cx));
-                    return;
-                }
-                let source = editor.buffer().source_snapshot();
-                let focus = Some(editor.focus_handle(cx));
-                self.outline_source = Some(key);
-                self.outline_panel.update(cx, |panel, cx| {
-                    panel.set_entries(Vec::new(), active, focus, cx)
-                });
-                let job = cx
-                    .background_executor()
-                    .spawn(async move { crate::markdown::collect_outline_from_source(&source) });
-                self.outline_task = Some(cx.spawn(async move |workspace, cx| {
-                    let entries = job.await;
-                    let _ = workspace.update(cx, |workspace, cx| {
-                        if workspace.outline_source != Some(key) {
-                            return;
-                        }
-                        let Some(entity) = workspace
-                            .active_editor()
-                            .filter(|entity| entity.entity_id() == key.0)
-                        else {
-                            return;
-                        };
-                        let editor = entity.read(cx);
-                        if editor.buffer().revision() != key.1 {
-                            return;
-                        }
-                        let active = Some(editor.cursor_pos().line);
-                        let focus = Some(editor.focus_handle(cx));
-                        workspace.outline_panel.update(cx, |panel, cx| {
-                            panel.set_entries(entries, active, focus, cx)
-                        });
-                        workspace.outline_task = None;
-                    });
-                }));
+            use crate::buffer::LineSource;
+            let key = (entity.entity_id(), editor.buffer().revision());
+            let active = Some(editor.cursor_pos().line);
+            if self.outline_source == Some(key) {
+                self.outline_panel
+                    .update(cx, |panel, cx| panel.set_active_line(active, cx));
                 return;
             }
+            let source = editor.buffer().source_snapshot();
+            let focus = Some(editor.focus_handle(cx));
+            self.outline_source = Some(key);
+            self.outline_panel.update(cx, |panel, cx| {
+                panel.set_entries(Vec::new(), active, focus, cx)
+            });
+            let job = cx
+                .background_executor()
+                .spawn(async move { crate::markdown::collect_outline_from_source(&source) });
+            self.outline_task = Some(cx.spawn(async move |workspace, cx| {
+                let entries = job.await;
+                let _ = workspace.update(cx, |workspace, cx| {
+                    if workspace.outline_source != Some(key) {
+                        return;
+                    }
+                    let Some(entity) = workspace
+                        .active_editor()
+                        .filter(|entity| entity.entity_id() == key.0)
+                    else {
+                        return;
+                    };
+                    let editor = entity.read(cx);
+                    if editor.buffer().revision() != key.1 {
+                        return;
+                    }
+                    let active = Some(editor.cursor_pos().line);
+                    let focus = Some(editor.focus_handle(cx));
+                    workspace.outline_panel.update(cx, |panel, cx| {
+                        panel.set_entries(entries, active, focus, cx)
+                    });
+                    workspace.outline_task = None;
+                });
+            }));
+            return;
         }
         self.outline_source = None;
         self.outline_task = None;
-        let (entries, active_line, editor_focus_handle) = self
-            .active_editor()
-            .map(|editor| {
-                let editor = editor.read(cx);
-                (
-                    crate::markdown::collect_outline_from_parsed(
-                        &editor.layout_snapshot().parsed_lines,
-                    ),
-                    Some(editor.cursor_pos().line),
-                    Some(editor.focus_handle(cx)),
-                )
-            })
-            .unwrap_or_default();
         self.outline_panel.update(cx, |panel, cx| {
-            panel.set_entries(entries, active_line, editor_focus_handle, cx)
+            panel.set_entries(Vec::new(), None, None, cx)
         });
     }
 
@@ -1636,7 +1621,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tail_edit_visible_outline_reuses_parsed_document(cx: &mut TestAppContext) {
+    fn tail_edit_visible_outline_uses_background_source_snapshot(cx: &mut TestAppContext) {
         init_globals(cx);
         let (ws, cx) = cx.add_window_view(|_, cx| Workspace::new(None, cx));
         ws.update(cx, |ws, cx| ws.new_tab(cx));
@@ -1649,6 +1634,7 @@ mod tests {
         });
         let before = editor.read_with(cx, |editor, _| editor.buffer().full_line_materializations());
         cx.update(|window, cx| ws.update(cx, |ws, cx| ws.toggle_outline_panel(window, cx)));
+        cx.run_until_parked();
         ws.read_with(cx, |ws, cx| {
             assert_eq!(ws.outline_panel.read(cx).entries().len(), 2);
         });
@@ -1657,6 +1643,7 @@ mod tests {
             editor.ensure_layout_cache();
         });
         ws.update(cx, |ws, cx| ws.sync_outline_panel(cx));
+        cx.run_until_parked();
         ws.read_with(cx, |ws, cx| {
             assert_eq!(ws.outline_panel.read(cx).entries()[1].title, "Last edited");
         });

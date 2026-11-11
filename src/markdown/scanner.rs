@@ -185,13 +185,6 @@ impl QuoteProjection {
         range.start.saturating_sub(1)..(range.end + 1).min(self.len())
     }
 
-    pub(crate) fn scan_window(
-        &self,
-        range: std::ops::Range<usize>,
-    ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
-        MarkdownScanner::scan_snapshot_window(&self.source, &self.index, range)
-    }
-
     pub(crate) fn parser_pair(&self, row: usize) -> Option<(SourceLine, SourceLine)> {
         self.index.parser_pair(SourceLine::new(row))
     }
@@ -394,6 +387,7 @@ fn math_block_range_normalized(
     None
 }
 
+#[cfg(test)]
 pub fn mermaid_block_range(
     lines: &[String],
     target_line: SourceLine,
@@ -426,6 +420,7 @@ pub(crate) fn mermaid_block_range_with_projection(
     is_mermaid_fence(&projection.normalized_line(pair.0.index())).then_some(pair)
 }
 
+#[cfg(test)]
 fn math_block_state_before(projection: &QuoteProjection, end_idx: usize) -> bool {
     math_block_range_with_projection(projection, SourceLine::new(end_idx))
         .is_some_and(|(start, _)| start.index() < end_idx)
@@ -662,7 +657,7 @@ mod window_tests {
 }
 
 impl MarkdownScanner {
-    pub(crate) fn scan_window(
+    pub fn scan_window(
         buffer: &crate::buffer::TextBuffer,
         range: std::ops::Range<usize>,
     ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
@@ -678,11 +673,13 @@ impl MarkdownScanner {
         window::scan(source, index, range)
     }
 
+    #[cfg(test)]
     pub fn scan_document(lines: &[String]) -> Vec<ParsedLine> {
         let projection = QuoteProjection::from_lines(lines);
         Self::scan_document_with_projection(lines, &projection)
     }
 
+    #[cfg(test)]
     pub(crate) fn scan_document_with_projection(
         lines: &(impl LineSource + ?Sized),
         projection: &QuoteProjection,
@@ -696,6 +693,7 @@ impl MarkdownScanner {
         )
     }
 
+    #[cfg(test)]
     pub fn scan_range(
         lines: &[String],
         range: std::ops::Range<usize>,
@@ -716,6 +714,7 @@ impl MarkdownScanner {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn scan_range_with_projection_with_state(
         lines: &(impl LineSource + ?Sized),
         projection: &QuoteProjection,
@@ -1114,6 +1113,7 @@ impl MarkdownScanner {
     }
 }
 
+#[cfg(test)]
 pub fn compute_syntactic_separators(lines: &(impl LineSource + ?Sized)) -> Vec<bool> {
     let mut separators = vec![false; lines.line_count()];
     if lines.line_count() == 0 {
@@ -1184,40 +1184,6 @@ fn is_separator_line(
     index != 0 && is_blank && !in_fence && (previous_nonempty || !previous_separator)
 }
 
-pub(crate) fn compute_syntactic_separators_with_projection(
-    projection: &QuoteProjection,
-) -> Vec<bool> {
-    let mut separators = vec![false; projection.len()];
-    if projection.is_empty() {
-        return separators;
-    }
-
-    let mut in_fence = false;
-    let mut prev_is_separator = false;
-    let mut previous_nonempty = false;
-
-    for (i, separator) in separators.iter_mut().enumerate() {
-        let line = projection.normalized_line(i);
-        if is_fence_line(&line) {
-            in_fence = !in_fence;
-        }
-
-        let is_sep = is_separator_line(
-            i,
-            line.trim().is_empty(),
-            in_fence,
-            previous_nonempty,
-            prev_is_separator,
-        );
-
-        *separator = is_sep;
-        prev_is_separator = is_sep;
-        previous_nonempty = !line.trim().is_empty();
-    }
-
-    separators
-}
-
 pub fn is_syntactic_separator(lines: &(impl LineSource + ?Sized), source_line: SourceLine) -> bool {
     let idx = source_line.index();
     if idx == 0 || idx >= lines.line_count() {
@@ -1248,13 +1214,6 @@ pub fn is_syntactic_separator(lines: &(impl LineSource + ?Sized), source_line: S
     }
 
     prev_is_separator
-}
-
-pub(crate) fn is_syntactic_separator_with_projection(
-    projection: &QuoteProjection,
-    source_line: SourceLine,
-) -> bool {
-    projection.separator(source_line.index())
 }
 
 pub(crate) fn local_separator(
