@@ -6,6 +6,7 @@ use std::{cmp::Ordering, ops::Range};
 
 #[derive(Clone, Debug)]
 struct StructureLine {
+    count: usize,
     raw: LineStructure,
     projected: LineStructure,
     parser: Option<Arc<super::parser_summary::ParserEffects>>,
@@ -16,6 +17,7 @@ impl StructureLine {
         let raw = classify(line);
         let projected = classify(&line[raw.quote_prefix..]);
         Self {
+            count: 1,
             projected,
             raw,
             parser: (raw.is_fence
@@ -24,6 +26,21 @@ impl StructureLine {
                 || projected.is_math_delim)
                 .then(|| Arc::new(super::parser_summary::ParserEffects::line(raw, projected))),
         }
+    }
+
+    fn runs(lines: impl Iterator<Item = Self>) -> impl Iterator<Item = Self> {
+        let mut lines = lines.peekable();
+        std::iter::from_fn(move || {
+            let mut run = lines.next()?;
+            while run.parser.is_none()
+                && lines.peek().is_some_and(|next| {
+                    next.parser.is_none() && next.raw == run.raw && next.projected == run.projected
+                })
+            {
+                run.count += lines.next().unwrap().count;
+            }
+            Some(run)
+        })
     }
 }
 
@@ -88,8 +105,8 @@ struct BlankSummary {
 impl BlankSummary {
     fn line(line: &StructureLine) -> Self {
         let normal = [
-            usize::from(!line.projected.is_blank),
-            usize::from(!line.raw.is_blank),
+            usize::from(!line.projected.is_blank) * line.count,
+            usize::from(!line.raw.is_blank) * line.count,
         ];
         let projected = normal[0];
         Self {
@@ -147,7 +164,7 @@ impl Item for StructureLine {
         StructureSummary {
             blank: BlankSummary::line(self),
             parser: self.parser.clone(),
-            lines: 1,
+            lines: self.count,
             fences: usize::from(self.raw.is_fence),
             through_last_fence: if self.raw.is_fence {
                 normal.clone()
@@ -265,7 +282,7 @@ impl StructureIndex {
     pub(crate) fn new(source: &(impl LineSource + ?Sized)) -> Self {
         Self {
             tree: SumTree::from_iter(
-                source.source_lines().map(|line| StructureLine::new(&line)),
+                StructureLine::runs(source.source_lines().map(|line| StructureLine::new(&line))),
                 (),
             ),
             #[cfg(test)]
@@ -285,12 +302,37 @@ impl StructureIndex {
     ) {
         let mut cursor = self.tree.cursor::<StructureSummary>(());
         let mut tree = cursor.slice(&Lines(old.start), Bias::Right);
+        if let Some(item) = cursor.item() {
+            let count = old.start - cursor.start().lines;
+            if count > 0 {
+                tree.push(
+                    StructureLine {
+                        count,
+                        ..item.clone()
+                    },
+                    (),
+                );
+            }
+        }
         cursor.seek_forward(&Lines(old.end), Bias::Right);
+        let tail = cursor.item().and_then(|item| {
+            let skipped = old.end - cursor.start().lines;
+            (skipped > 0).then(|| StructureLine {
+                count: item.count - skipped,
+                ..item.clone()
+            })
+        });
+        if tail.is_some() {
+            cursor.next();
+        }
         tree.extend(
-            new.clone()
-                .map(|line| StructureLine::new(&source.source_line(SourceLine::new(line)))),
+            StructureLine::runs(
+                new.clone()
+                    .map(|line| StructureLine::new(&source.source_line(SourceLine::new(line)))),
+            ),
             (),
         );
+        tree.extend(tail, ());
         tree.append(cursor.suffix(), ());
         drop(cursor);
         self.tree = tree;
@@ -403,7 +445,7 @@ impl StructureIndex {
         cursor.seek(&Lines(row), Bias::Right);
         cursor.item()?;
         let start = self.last_non_blank(&cursor.end().0);
-        if start == row + 1 {
+        if start > row {
             return None;
         }
         cursor.seek(
@@ -614,6 +656,37 @@ impl<'a> SeekTarget<'a, StructureSummary, StructureSummary> for ParserBoundary<'
 mod tests {
     use super::*;
     use crate::buffer::{LineSource, SourceLine, TextBuffer};
+
+    #[test]
+    fn neutral_source_runs_share_one_structure_item_and_survive_splices() {
+        let mut rows = vec!["paragraph".to_string(); 200_000];
+        let mut index = StructureIndex::new(&rows);
+        assert_eq!(index.tree.iter().count(), 1);
+        assert_eq!(index.len(), rows.len());
+        rows.splice(
+            100_000..100_001,
+            ["```".into(), "code".into(), "```".into()],
+        );
+        index.splice(100_000..100_001, &rows, 100_000..100_003);
+        let expected = StructureIndex::new(&rows);
+        for row in [
+            0,
+            99_999,
+            100_000,
+            100_001,
+            100_002,
+            100_003,
+            rows.len() - 1,
+        ] {
+            let line = SourceLine::new(row);
+            assert_eq!(index.fence_state(line), expected.fence_state(line));
+            assert_eq!(index.parser_pair(line), expected.parser_pair(line));
+            assert_eq!(index.blank_range(row), expected.blank_range(row));
+        }
+        rows.splice(100_000..100_003, vec![String::new(); 3]);
+        index.splice(100_000..100_003, &rows, 100_000..100_003);
+        assert_eq!(index.blank_range(100_001), Some(100_000..100_003));
+    }
 
     #[test]
     fn navigation_summaries_keep_blank_metadata_compact() {
