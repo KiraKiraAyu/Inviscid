@@ -17,6 +17,14 @@ pub(super) struct Lookahead {
 }
 
 impl Lookahead {
+    pub fn new(fences: usize, math: [bool; 2]) -> Self {
+        Self {
+            fence: fences > 0,
+            odd_fences: fences % 2 == 1,
+            math,
+        }
+    }
+
     pub fn has_math(self) -> bool {
         self.math[0]
     }

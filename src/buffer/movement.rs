@@ -1,6 +1,8 @@
 use super::TextBuffer;
 use super::primitives::{Position, Selection};
-use crate::markdown::{compute_syntactic_separators, get_block_prefix_len};
+#[cfg(test)]
+use crate::markdown::compute_syntactic_separators;
+use crate::markdown::get_block_prefix_len;
 use std::cell::Ref;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -93,7 +95,6 @@ pub(crate) struct LineIndex {
     version: usize,
     revision: u64,
     structure: super::structure_index::StructureIndex,
-    syntactic_separators: std::cell::RefCell<Option<Vec<bool>>>,
 }
 
 impl LineIndex {
@@ -106,7 +107,6 @@ impl LineIndex {
             version: buffer.version,
             revision: buffer.revision,
             structure: super::structure_index::StructureIndex::new(buffer),
-            syntactic_separators: Default::default(),
         }
     }
 
@@ -126,7 +126,6 @@ impl LineIndex {
             );
             self.version = buffer.version;
             self.revision = buffer.revision;
-            *self.syntactic_separators.get_mut() = None;
         } else {
             *self = Self::build(buffer);
         }
@@ -157,14 +156,7 @@ impl LineIndex {
     }
 
     fn is_separator(&self, buffer: &TextBuffer, line: usize) -> bool {
-        // Separator localization is separate from the fence/math index. Build
-        // this table only for navigation commands that actually need it.
-        let mut separators = self.syntactic_separators.borrow_mut();
-        separators
-            .get_or_insert_with(|| compute_syntactic_separators(buffer))
-            .get(line)
-            .copied()
-            .unwrap_or(false)
+        crate::markdown::local_separator(buffer, &self.structure, line)
     }
 }
 

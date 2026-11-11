@@ -153,6 +153,9 @@ impl Default for QuoteProjection {
 }
 
 impl QuoteProjection {
+    pub fn separator(&self, row: usize) -> bool {
+        local_separator(&self.source, &self.index, row)
+    }
     pub fn from_lines(lines: &[String]) -> Self {
         Self::from_source(lines)
     }
@@ -418,6 +421,63 @@ pub struct MarkdownScanner;
 mod window_tests {
     use super::*;
     use crate::buffer::TextBuffer;
+
+    #[test]
+    fn separator_queries_do_not_walk_long_blank_runs() {
+        struct Counted {
+            rows: Vec<String>,
+            reads: std::cell::Cell<usize>,
+        }
+        impl LineSource for Counted {
+            fn line_count(&self) -> usize {
+                self.rows.len()
+            }
+            fn source_line(&self, line: SourceLine) -> std::borrow::Cow<'_, str> {
+                self.reads.set(self.reads.get() + 1);
+                std::borrow::Cow::Borrowed(&self.rows[line.index()])
+            }
+        }
+        let mut rows = vec![String::new(); 100_000];
+        rows[0] = "paragraph".into();
+        let index = crate::buffer::StructureIndex::new(&rows);
+        let source = Counted {
+            rows,
+            reads: std::cell::Cell::new(0),
+        };
+        assert!(local_separator(&source, &index, 99_999));
+        assert!(
+            source.reads.get() <= 2,
+            "{} source reads",
+            source.reads.get()
+        );
+    }
+
+    #[test]
+    fn local_separators_match_full_scan_after_fixed_seed_edits() {
+        let mut seed = 0x9134_7182_u64;
+        let tokens = [
+            "",
+            " ",
+            "text",
+            "> ",
+            "> text",
+            "```",
+            "> ```",
+            "$$",
+            "# heading",
+        ];
+        let mut lines = vec![String::new(); 80];
+        for _ in 0..200 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let row = (seed >> 32) as usize % lines.len();
+            lines[row] = tokens[seed as usize % tokens.len()].to_owned();
+            let projection = QuoteProjection::from_lines(&lines);
+            let expected = compute_syntactic_separators(&lines);
+            for (row, expected) in expected.into_iter().enumerate() {
+                assert_eq!(projection.separator(row), expected, "{lines:?}, {row}");
+            }
+        }
+    }
 
     #[test]
     fn source_projection_reads_rows_without_storing_normalized_strings() {
@@ -1128,30 +1188,27 @@ pub(crate) fn is_syntactic_separator_with_projection(
     projection: &QuoteProjection,
     source_line: SourceLine,
 ) -> bool {
-    let idx = source_line.index();
-    if idx == 0 || idx >= projection.len() || !projection.normalized_line(idx).trim().is_empty() {
+    projection.separator(source_line.index())
+}
+
+pub(crate) fn local_separator(
+    source: &(impl LineSource + ?Sized),
+    index: &crate::buffer::StructureIndex,
+    row: usize,
+) -> bool {
+    if row == 0 || row >= source.line_count() {
         return false;
     }
-
-    let mut in_fence = false;
-    let mut prev_is_separator = false;
-    let mut previous_nonempty = false;
-
-    for i in 0..=idx {
-        let line = projection.normalized_line(i);
-        if is_fence_line(&line) {
-            in_fence = !in_fence;
-        }
-
-        prev_is_separator = is_separator_line(
-            i,
-            line.trim().is_empty(),
-            in_fence,
-            previous_nonempty,
-            prev_is_separator,
-        );
-        previous_nonempty = !line.trim().is_empty();
+    let Some(range) = index.blank_range(row) else {
+        return false;
+    };
+    if index.projected_fence_open_after(SourceLine::new(row)) {
+        return false;
     }
-
-    prev_is_separator
+    let start = range.start;
+    if start == 0 {
+        row % 2 == 1
+    } else {
+        (row - start) % 2 == 0
+    }
 }

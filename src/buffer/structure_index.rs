@@ -76,8 +76,57 @@ impl MathSummary {
     }
 }
 
+/// Last nonblank position plus one, with zero denoting an entirely blank segment.
+#[derive(Clone, Debug, Default)]
+struct BlankSummary {
+    normal: [usize; 2],
+    projected: usize,
+    through_last_fence: [usize; 2],
+    after_last_fence: usize,
+}
+
+impl BlankSummary {
+    fn line(line: &StructureLine) -> Self {
+        let normal = [
+            usize::from(!line.projected.is_blank),
+            usize::from(!line.raw.is_blank),
+        ];
+        let projected = normal[0];
+        Self {
+            normal,
+            projected,
+            through_last_fence: if line.raw.is_fence { normal } else { [0; 2] },
+            after_last_fence: if line.raw.is_fence { 0 } else { projected },
+        }
+    }
+
+    fn append(&mut self, other: &Self, lines: usize, fences: usize, other_fences: usize) {
+        let extend = |before, after| if after == 0 { before } else { lines + after };
+        if other_fences > 0 {
+            self.through_last_fence = std::array::from_fn(|state| {
+                extend(
+                    self.normal[state],
+                    other.through_last_fence[state ^ (fences % 2)],
+                )
+            });
+            self.after_last_fence = if other.after_last_fence == 0 {
+                0
+            } else {
+                lines + other.after_last_fence
+            };
+        } else {
+            self.after_last_fence = extend(self.after_last_fence, other.projected);
+        }
+        self.normal = std::array::from_fn(|state| {
+            extend(self.normal[state], other.normal[state ^ (fences % 2)])
+        });
+        self.projected = extend(self.projected, other.projected);
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct StructureSummary {
+    blank: BlankSummary,
     parser: Option<Arc<super::parser_summary::ParserEffects>>,
     lines: usize,
     fences: usize,
@@ -96,6 +145,7 @@ impl Item for StructureLine {
         let normal = MathSummary::line(self, false);
         let projected = MathSummary::line(self, true);
         StructureSummary {
+            blank: BlankSummary::line(self),
             parser: self.parser.clone(),
             lines: 1,
             fences: usize::from(self.raw.is_fence),
@@ -134,6 +184,8 @@ impl ContextLessSummary for StructureSummary {
 
 impl StructureSummary {
     fn add_navigation(&mut self, other: &Self) {
+        self.blank
+            .append(&other.blank, self.lines, self.fences, other.fences);
         if other.fences > 0 {
             self.through_last_fence = self.normal.clone();
             self.through_last_fence.append(&other.through_last_fence);
@@ -340,12 +392,45 @@ impl StructureIndex {
         cursor.item().map_or(0, |item| item.raw.quote_prefix)
     }
 
-    fn parser_segment(&self, range: Range<usize>) -> super::parser_summary::ParserSummary {
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
-        cursor.seek(&Lines(range.start), Bias::Right);
-        let raw_before = cursor.start().fences;
-        let summary: StructureSummary = cursor.summary(&Lines(range.end), Bias::Right);
-        let Some(parser) = summary.parser else {
+    pub(crate) fn projected_fence_open_after(&self, line: SourceLine) -> bool {
+        let mut cursor = self.tree.cursor::<Navigation>(());
+        cursor.seek(&Lines(line.index()), Bias::Right);
+        self.effective(&cursor.end().0).code_fences % 2 == 1
+    }
+
+    pub(crate) fn blank_range(&self, row: usize) -> Option<Range<usize>> {
+        let mut cursor = self.tree.cursor::<Navigation>(());
+        cursor.seek(&Lines(row), Bias::Right);
+        cursor.item()?;
+        let start = self.last_non_blank(&cursor.end().0);
+        if start == row + 1 {
+            return None;
+        }
+        cursor.seek(
+            &NonBlank {
+                count: row + 1,
+                index: self,
+            },
+            Bias::Right,
+        );
+        Some(start..cursor.start().0.lines)
+    }
+
+    fn last_non_blank(&self, prefix: &StructureSummary) -> usize {
+        let fences = self.tree.summary().fences;
+        if fences % 2 == 1 && prefix.fences == fences {
+            prefix.blank.through_last_fence[0].max(prefix.blank.after_last_fence)
+        } else {
+            prefix.blank.normal[0]
+        }
+    }
+
+    fn segment_parser(
+        &self,
+        summary: &StructureSummary,
+        raw_before: usize,
+    ) -> super::parser_summary::ParserSummary {
+        let Some(parser) = &summary.parser else {
             return Default::default();
         };
         let fences = self.tree.summary().fences;
@@ -362,9 +447,39 @@ impl StructureIndex {
     }
 
     fn parser_effect(&self, prefix: &StructureSummary) -> super::parser_summary::ParseEffect {
-        let before = self.parser_segment(0..prefix.lines);
-        let after = self.parser_segment(prefix.lines..self.len());
-        before.with_suffix(after.lookahead)
+        let before = self.segment_parser(prefix, 0);
+        before.with_suffix(self.segment_lookahead(prefix.lines..self.len()))
+    }
+
+    fn segment_lookahead(&self, range: Range<usize>) -> super::parser_summary::Lookahead {
+        let mut cursor = self.tree.cursor::<Navigation>(());
+        cursor.seek(&Lines(range.start), Bias::Right);
+        let raw_before = cursor.start().0.fences;
+        let suffix: Navigation = cursor.summary(&Lines(range.end), Bias::Right);
+        let summary = suffix.0;
+        let effects: [Effect; 2] = std::array::from_fn(|code| {
+            let state = raw_before % 2 * 2 + code;
+            if self.tree.summary().fences % 2 == 1
+                && raw_before + summary.fences == self.tree.summary().fences
+            {
+                if summary.fences == 0 {
+                    return summary.projected.0[state];
+                }
+                let before = summary.through_last_fence.0[state];
+                let after = summary.after_last_fence.0[before.state];
+                Effect {
+                    state: after.state,
+                    math_delims: before.math_delims + after.math_delims,
+                    code_fences: before.code_fences + after.code_fences,
+                }
+            } else {
+                summary.normal.0[state]
+            }
+        });
+        super::parser_summary::Lookahead::new(
+            effects[0].code_fences,
+            effects.map(|effect| effect.math_delims > 0),
+        )
     }
 
     pub(crate) fn parser_pair(&self, line: SourceLine) -> Option<(SourceLine, SourceLine)> {
@@ -427,18 +542,28 @@ impl StructureIndex {
     }
 
     pub(crate) fn math_lookahead_end(&self, from: usize) -> Option<usize> {
-        if !self.parser_segment(from..self.len()).lookahead.has_math() {
+        if !self.segment_lookahead(from..self.len()).has_math() {
             return None;
         }
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let mut cursor = self.tree.cursor::<Navigation>(());
         cursor.seek(&MathLookahead { from, index: self }, Bias::Right);
-        Some(cursor.start().lines)
+        Some(cursor.start().0.lines)
     }
 }
 
 struct ProjectedFences<'a> {
     ordinal: usize,
     index: &'a StructureIndex,
+}
+
+struct NonBlank<'a> {
+    count: usize,
+    index: &'a StructureIndex,
+}
+impl<'a> SeekTarget<'a, StructureSummary, Navigation> for NonBlank<'_> {
+    fn cmp(&self, location: &Navigation, (): ()) -> Ordering {
+        Ord::cmp(&self.count, &self.index.last_non_blank(&location.0))
+    }
 }
 impl<'a> SeekTarget<'a, StructureSummary, Navigation> for ProjectedFences<'_> {
     fn cmp(&self, location: &Navigation, (): ()) -> Ordering {
@@ -454,13 +579,12 @@ struct MathLookahead<'a> {
     index: &'a StructureIndex,
 }
 
-impl<'a> SeekTarget<'a, StructureSummary, StructureSummary> for MathLookahead<'_> {
-    fn cmp(&self, location: &StructureSummary, (): ()) -> Ordering {
-        let found = location.lines > self.from
+impl<'a> SeekTarget<'a, StructureSummary, Navigation> for MathLookahead<'_> {
+    fn cmp(&self, location: &Navigation, (): ()) -> Ordering {
+        let found = location.0.lines > self.from
             && self
                 .index
-                .parser_segment(self.from..location.lines)
-                .lookahead
+                .segment_lookahead(self.from..location.0.lines)
                 .has_math();
         Ord::cmp(&0, &usize::from(found))
     }
@@ -490,6 +614,30 @@ impl<'a> SeekTarget<'a, StructureSummary, StructureSummary> for ParserBoundary<'
 mod tests {
     use super::*;
     use crate::buffer::{LineSource, SourceLine, TextBuffer};
+
+    #[test]
+    fn navigation_summaries_keep_blank_metadata_compact() {
+        assert!(std::mem::size_of::<StructureSummary>() <= 512);
+    }
+
+    #[test]
+    fn parser_queries_reuse_prefix_summaries_and_cheap_lookahead() {
+        let rows: Vec<String> = "```text\ncode\n```\n$$\nx\n$$\n"
+            .repeat(1000)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let index = StructureIndex::new(&rows);
+        super::super::parser_summary::COMPOSITIONS.set(0);
+        for row in 3000..3010 {
+            index.parser_pair(SourceLine::new(row));
+        }
+        assert!(
+            super::super::parser_summary::COMPOSITIONS.get() < 5000,
+            "{} compositions",
+            super::super::parser_summary::COMPOSITIONS.get()
+        );
+    }
 
     #[test]
     fn navigation_queries_do_not_compose_parser_transitions() {
