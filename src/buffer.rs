@@ -11,6 +11,7 @@ mod fingerprint;
 #[cfg(test)]
 mod fingerprint_loading_tests;
 mod loading;
+pub(crate) use loading::StreamingBuffer;
 pub mod movement;
 pub mod operations;
 mod parser_summary;

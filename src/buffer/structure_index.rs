@@ -347,18 +347,7 @@ impl StructureIndex {
     }
 
     fn effective(&self, prefix: &StructureSummary) -> Effect {
-        let fences = self.tree.summary().fences;
-        if fences % 2 == 1 && prefix.fences == fences {
-            let before = prefix.through_last_fence.0[0];
-            let after = prefix.after_last_fence.0[before.state];
-            Effect {
-                state: after.state,
-                math_delims: before.math_delims + after.math_delims,
-                code_fences: before.code_fences + after.code_fences,
-            }
-        } else {
-            prefix.normal.0[0]
-        }
+        prefix.normal.0[0]
     }
 
     fn fence_line(&self, ordinal: usize) -> usize {
@@ -398,6 +387,24 @@ impl StructureIndex {
         }
     }
 
+    /// A code opener takes effect immediately, including before a closing fence arrives.
+    pub(crate) fn streaming_fence(&self, line: SourceLine) -> Option<(usize, Option<usize>)> {
+        let mut cursor = self.tree.cursor::<Navigation>(());
+        cursor.seek(&Lines(line.index()), Bias::Right);
+        let item = cursor.item()?;
+        let before = cursor.start().0.fences;
+        if !item.raw.is_fence && before % 2 == 0 {
+            return self
+                .projected_fence_pair(line)
+                .map(|(start, end)| (start.index(), Some(end.index())));
+        }
+        let pair = before / 2 * 2;
+        Some((
+            self.fence_line(pair),
+            (pair + 1 < self.tree.summary().fences).then(|| self.fence_line(pair + 1)),
+        ))
+    }
+
     pub(crate) fn math_pair(&self, line: SourceLine) -> Option<(SourceLine, SourceLine)> {
         if line.index() >= self.len() {
             return None;
@@ -425,13 +432,15 @@ impl StructureIndex {
     }
 
     pub(crate) fn quote_prefix(&self, line: SourceLine) -> usize {
-        let (inside, closing) = self.fence_state(line);
-        if inside || closing {
-            return 0;
-        }
         let mut cursor = self.tree.cursor::<Navigation>(());
         cursor.seek(&Lines(line.index()), Bias::Right);
-        cursor.item().map_or(0, |item| item.raw.quote_prefix)
+        cursor.item().map_or(0, |item| {
+            if cursor.start().0.fences % 2 == 1 || item.raw.is_fence {
+                0
+            } else {
+                item.raw.quote_prefix
+            }
+        })
     }
 
     pub(crate) fn projected_fence_open_after(&self, line: SourceLine) -> bool {
@@ -459,12 +468,7 @@ impl StructureIndex {
     }
 
     fn last_non_blank(&self, prefix: &StructureSummary) -> usize {
-        let fences = self.tree.summary().fences;
-        if fences % 2 == 1 && prefix.fences == fences {
-            prefix.blank.through_last_fence[0].max(prefix.blank.after_last_fence)
-        } else {
-            prefix.blank.normal[0]
-        }
+        prefix.blank.normal[0]
     }
 
     fn segment_parser(
@@ -475,17 +479,7 @@ impl StructureIndex {
         let Some(parser) = &summary.parser else {
             return Default::default();
         };
-        let fences = self.tree.summary().fences;
-        if fences % 2 == 1 && raw_before + summary.fences == fences {
-            if summary.fences == 0 {
-                return parser.projected.clone();
-            }
-            let mut result = parser.through_last_fence[raw_before % 2].clone();
-            result.append(&parser.after_last_fence);
-            result
-        } else {
-            parser.normal[raw_before % 2].clone()
-        }
+        parser.normal[raw_before % 2].clone()
     }
 
     fn parser_effect(&self, prefix: &StructureSummary) -> super::parser_summary::ParseEffect {
@@ -501,22 +495,7 @@ impl StructureIndex {
         let summary = suffix.0;
         let effects: [Effect; 2] = std::array::from_fn(|code| {
             let state = raw_before % 2 * 2 + code;
-            if self.tree.summary().fences % 2 == 1
-                && raw_before + summary.fences == self.tree.summary().fences
-            {
-                if summary.fences == 0 {
-                    return summary.projected.0[state];
-                }
-                let before = summary.through_last_fence.0[state];
-                let after = summary.after_last_fence.0[before.state];
-                Effect {
-                    state: after.state,
-                    math_delims: before.math_delims + after.math_delims,
-                    code_fences: before.code_fences + after.code_fences,
-                }
-            } else {
-                summary.normal.0[state]
-            }
+            summary.normal.0[state]
         });
         super::parser_summary::Lookahead::new(
             effects[0].code_fences,
@@ -548,7 +527,7 @@ impl StructureIndex {
                 },
                 Bias::Right,
             );
-            SourceLine::new(cursor.start().lines)
+            SourceLine::new(cursor.start().lines.min(self.len().saturating_sub(1)))
         };
         Some((locate(false), locate(true)))
     }

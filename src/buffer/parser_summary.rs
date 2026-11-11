@@ -100,7 +100,7 @@ impl ParserSummary {
                         MATH => MATH,
                         CODE if syntax.is_fence => OUTSIDE,
                         CODE => CODE,
-                        _ if syntax.is_fence && suffix.fence => CODE,
+                        _ if syntax.is_fence => CODE,
                         _ if syntax.is_math_delim && suffix.math[0] => MATH,
                         _ => OUTSIDE,
                     };

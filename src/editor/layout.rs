@@ -297,6 +297,7 @@ impl DocumentLayoutCache {
 
 #[derive(Clone)]
 pub struct LineLayoutContext<'a> {
+    pub(crate) math_preview: Option<crate::math::MathSvg>,
     pub is_active: bool,
     pub math_block_editing: bool,
     pub mermaid_block_editing: bool,
@@ -342,6 +343,7 @@ impl<'a> Default for LineLayoutContext<'a> {
     fn default() -> Self {
         Self {
             is_active: false,
+            math_preview: None,
             math_block_editing: false,
             mermaid_block_editing: false,
             is_separator: None,
@@ -372,6 +374,7 @@ impl<'a> LineLayoutContext<'a> {
     ) -> Self {
         Self {
             is_active,
+            math_preview: None,
             math_block_editing: false,
             mermaid_block_editing: false,
             is_separator,
@@ -651,30 +654,14 @@ pub fn get_line_layout_height(
             );
             let source_height =
                 source_line_height * source_visual_lines as f32 + typo.padding_vertical;
-            let preview_height = if idx > 0
-                && lines.source_line(SourceLine::new(idx - 1)).trim() == "$$"
-            {
-                let close_idx = (idx + 1..lines.line_count())
-                    .find(|&line| lines.source_line(SourceLine::new(line)).trim() == "$$");
-                close_idx
-                    .and_then(|close_idx| {
-                        let mut source = String::new();
-                        for line in idx..close_idx {
-                            if line > idx {
-                                source.push('\n');
-                            }
-                            source.push_str(&lines.source_line(SourceLine::new(line)));
-                        }
-                        crate::math::prepare_latex(&source, true)
-                    })
-                    .map(|math| {
-                        crate::editor::shaping::math_render_size(&math, px(lcx.font_size)).height
-                            + typo.padding_vertical
-                    })
-                    .unwrap_or(px(0.0))
-            } else {
-                px(0.0)
-            };
+            let preview_height = lcx
+                .math_preview
+                .as_ref()
+                .map(|math| {
+                    crate::editor::shaping::math_render_size(&math, px(lcx.font_size)).height
+                        + typo.padding_vertical
+                })
+                .unwrap_or(px(0.0));
             source_height.max(preview_height)
         }
         BlockKind::Image { url, .. } => {
@@ -684,8 +671,9 @@ pub fn get_line_layout_height(
                 typo.padding_vertical
             };
             if crate::http::is_url_loaded(url) {
-                if let Some((w, h)) = crate::http::get_image_size(url, lcx.doc_path)
-                    && w > 0
+                if let Some((w, h)) = crate::http::read_cache(|cache| {
+                    cache.get_size(&crate::http::image_size_key(url, lcx.doc_path))
+                }) && w > 0
                 {
                     let img_h = px((h as f32) * f32::from(content_width) / (w as f32));
                     base_h + img_h + px(12.0)
@@ -910,12 +898,13 @@ impl Editor {
         active_mermaid_block: Option<(SourceLine, SourceLine)>,
     ) -> Vec<Pixels> {
         assert_eq!(range.len(), parsed.len());
+        let parsed_rows = parsed;
         let disclosure = self.disclosure_position();
         range
             .zip(parsed)
             .map(|(idx, parsed)| {
                 let source_line = SourceLine::new(idx);
-                let lcx = self.line_layout_ctx(
+                let mut lcx = self.line_layout_ctx(
                     parsed,
                     source_line == disclosure.line,
                     separators.get(idx).copied().unwrap_or(false),
@@ -925,6 +914,14 @@ impl Editor {
                     active_math_block,
                     active_mermaid_block,
                 );
+                lcx.math_preview = active_math_block
+                    .filter(|(start, _)| source_line == *start + 1)
+                    .and_then(|(start, _)| parsed_rows.get(start.index()))
+                    .and_then(|row| {
+                        row.spans
+                            .iter()
+                            .find_map(|span| span.math.as_ref().map(|math| math.rendered.clone()))
+                    });
                 self.measure_line_layout_height(idx, parsed, lcx)
             })
             .collect()
@@ -966,7 +963,7 @@ impl Editor {
                 .zip(start..end)
                 .map(|(parsed, line)| {
                     let source_line = SourceLine::new(line);
-                    let context = self.line_layout_ctx(
+                    let mut context = self.line_layout_ctx(
                         parsed,
                         source_line == disclosure.line,
                         cache.separator(line),
@@ -976,6 +973,15 @@ impl Editor {
                         cache.active_math_block,
                         cache.active_mermaid_block,
                     );
+                    context.math_preview = cache
+                        .active_math_block
+                        .filter(|(start, _)| source_line == *start + 1)
+                        .and_then(|(start, _)| cache.parsed_lines.row(start.index()))
+                        .and_then(|row| {
+                            row.spans.iter().find_map(|span| {
+                                span.math.as_ref().map(|math| math.rendered.clone())
+                            })
+                        });
                     self.measure_line_layout_height(line, parsed, context)
                 })
                 .collect();

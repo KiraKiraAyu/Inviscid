@@ -12,6 +12,12 @@ impl Editor {
         image: usize,
         syntax: usize,
     ) {
+        if let Some(snapshot) = &self.prepared_document
+            && snapshot.revision != self.buffer.revision()
+            && !self.is_loading
+        {
+            snapshot.session.cancel();
+        }
         let current = self.layout_cache.borrow().clone();
         let same_buffer = current.buffer_revision == self.buffer.revision()
             && current.lines_len == self.buffer.line_count()
@@ -137,7 +143,13 @@ impl Editor {
                 let end = self.buffer.utf16_offset_to_pos(range.end);
                 (start.line == end.line).then_some((start.line.index(), start.col..end.col))
             });
-            cache.parsed_lines = ParsedLineStore::windowed(&self.buffer).with_preedit(preedit);
+            cache.parsed_lines = ParsedLineStore::windowed(&self.buffer)
+                .with_prepared(
+                    self.prepared_document
+                        .clone()
+                        .filter(|snapshot| snapshot.revision == self.buffer.revision()),
+                )
+                .with_preedit(preedit);
         }
         if same_view && (cache.active_line != active || cache.active_col != col) {
             let map_old = |line: usize| {

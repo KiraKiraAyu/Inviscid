@@ -464,6 +464,9 @@ fn top_level_fenced_lines(lines: &(impl LineSource + ?Sized)) -> Vec<bool> {
         }
     }
 
+    if let Some(start) = open_idx {
+        fenced[start..].fill(true);
+    }
     fenced
 }
 
@@ -550,9 +553,9 @@ mod window_tests {
         assert_eq!(projection.quote_prefix(4), Some(2));
         buffer.record_single_line_edit(SourceLine::new(3), |line, _| line.clear());
         let edited = QuoteProjection::from_source(&buffer);
-        assert_eq!(edited.normalized_line(2), "literal");
+        assert_eq!(edited.normalized_line(2), "> literal");
         assert_eq!(projection.normalized_line(2), "> literal");
-        assert_eq!(edited.normalized_line(4), "quoted");
+        assert_eq!(edited.normalized_line(4), "> quoted");
         for row in 0..edited.len() {
             let line = SourceLine::new(row);
             assert_eq!(
@@ -647,8 +650,8 @@ mod window_tests {
                         actual == &whole[range.start + offset],
                         "source {lines:?}, request {row}, window {range:?}, mismatch {}: {:?} vs {:?}",
                         range.start + offset,
-                        actual.kind,
-                        whole[range.start + offset].kind
+                        actual,
+                        whole[range.start + offset]
                     );
                 }
             }
@@ -812,18 +815,18 @@ impl MarkdownScanner {
                         }
                     }
 
-                    if let Some(close_idx) = next_closing_fence {
+                    {
+                        let close_idx = next_closing_fence.unwrap_or(lines.len());
                         in_code_fence = true;
                         let lang_str = stripped.trim().to_string();
-                        let mermaid_preview = is_mermaid_fence(raw_line)
-                            .then(|| {
-                                crate::mermaid::prepare_mermaid_lines(&lines[idx + 1..close_idx])
-                            })
-                            .flatten();
+                        let mermaid_preview = (is_mermaid_fence(raw_line)
+                            && close_idx < lines.len())
+                        .then(|| crate::mermaid::prepare_mermaid_lines(&lines[idx + 1..close_idx]))
+                        .flatten();
                         let is_mermaid = mermaid_preview.is_some();
                         current_mermaid_preview = mermaid_preview.clone();
-                        current_code_block_highlights =
-                            Some(highlight_fenced_slice(lines, Some(idx), close_idx));
+                        current_code_block_highlights = (close_idx < lines.len())
+                            .then(|| highlight_fenced_slice(lines, Some(idx), close_idx));
 
                         let mut spans = Vec::new();
                         // Opening backticks are hidden in Live Preview mode
@@ -854,7 +857,6 @@ impl MarkdownScanner {
                         });
                         continue;
                     }
-                    // If there is no closing fence below, treat as normal paragraph text
                 } else {
                     in_code_fence = false;
                     current_code_block_highlights = None;

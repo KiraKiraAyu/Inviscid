@@ -45,7 +45,8 @@ fn opens_immediately_merges_pending_duplicates_and_installs_requested_position(
         );
         assert_eq!(editor.cursor_pos(), Position::new(SourceLine::new(1), 7));
         assert!(!ws.get_tabs_meta(cx)[0].is_loading);
-        assert!(ws.tabs[0]._load_task.is_none());
+        // The session stays parked after EOF to prepare later viewport requests.
+        assert!(ws.tabs[0]._load_task.is_some());
     });
 }
 

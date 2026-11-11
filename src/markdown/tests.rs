@@ -20,7 +20,7 @@ fn test_inline_focus_disclosure() {
 }
 
 #[test]
-fn test_triple_backticks_not_collapsed() {
+fn unclosed_fence_uses_code_markers_and_content() {
     let lines1 = vec!["```".to_string(), "hello".to_string()];
     let parsed1 = MarkdownScanner::scan_document(&lines1);
     assert_eq!(parsed1.len(), 2);
@@ -30,7 +30,8 @@ fn test_triple_backticks_not_collapsed() {
         .filter(|s| s.is_visible(false, 0, false))
         .map(|s| s.text.as_str())
         .collect();
-    assert_eq!(line0_visible, "```");
+    assert_eq!(line0_visible, "");
+    assert!(matches!(parsed1[1].kind, BlockKind::CodeBlockContent));
 
     let lines2 = vec!["```rust".to_string(), "hello".to_string()];
     let parsed2 = MarkdownScanner::scan_document(&lines2);
@@ -41,7 +42,8 @@ fn test_triple_backticks_not_collapsed() {
         .filter(|s| s.is_visible(false, 0, false))
         .map(|s| s.text.as_str())
         .collect();
-    assert_eq!(line1_visible, "```rust");
+    assert_eq!(line1_visible, "rust");
+    assert!(matches!(parsed2[1].kind, BlockKind::CodeBlockContent));
 }
 
 #[test]
@@ -1086,12 +1088,12 @@ fn quote_projection_reads_source_sequentially_without_random_line_lookups() {
             "```",
             "尾部",
             "```",
-            "未闭合"
+            "> 未闭合"
         ]
     );
     assert_eq!(
         projection.quote_prefixes(),
-        &[Some(2), None, None, None, Some(2), None, Some(2)]
+        &[Some(2), None, None, None, Some(2), None, None]
     );
     assert_eq!(source.lookups.get(), 0);
 }

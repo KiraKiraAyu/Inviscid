@@ -490,29 +490,49 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Task<()> {
         let requested_path = path.clone();
+        let session = crate::editor::loading::DocumentSession::new();
+        let mut updates = session.updates.subscribe();
+        let worker_session = session.clone();
         let work = cx
             .background_executor()
-            .spawn(async move { crate::editor::loading::LoadedFile::read(path) });
+            .spawn(async move { worker_session.run(path).await });
+        let cancellation = crate::editor::loading::CancelSession(session.clone());
         cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |workspace, cx| {
-                let Some(editor) = editor.upgrade() else {
-                    return;
+            use futures::StreamExt;
+            let _work = work;
+            let _cancellation = cancellation;
+            while updates.next().await.is_some() {
+                let Some(result) = session.take() else {
+                    continue;
                 };
-                let Some(index) = workspace.tabs.iter().position(|tab| tab.editor == editor) else {
-                    return;
-                };
-                if editor.read(cx).file_path() != Some(requested_path.as_path()) {
-                    if let Some(path) = editor.read(cx).file_path_buf() {
-                        workspace.tabs[index]._load_task =
-                            Some(Self::spawn_file_load(path, editor.downgrade(), cx));
-                    }
-                    return;
+                let keep_running = this
+                    .update(cx, |workspace, cx| {
+                        let Some(editor) = editor.upgrade() else {
+                            return false;
+                        };
+                        let Some(index) =
+                            workspace.tabs.iter().position(|tab| tab.editor == editor)
+                        else {
+                            return false;
+                        };
+                        if editor.read(cx).file_path() != Some(requested_path.as_path()) {
+                            if let Some(path) = editor.read(cx).file_path_buf() {
+                                workspace.tabs[index]._load_task =
+                                    Some(Self::spawn_file_load(path, editor.downgrade(), cx));
+                            }
+                            return false;
+                        }
+                        editor.update(cx, |editor, cx| {
+                            editor.install_publication(&session, result, cx)
+                        });
+                        workspace.sync_active_editor_state(cx);
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_running {
+                    break;
                 }
-                editor.update(cx, |editor, cx| editor.finish_loading(result, cx));
-                workspace.tabs[index]._load_task = None;
-                workspace.sync_active_editor_state(cx);
-            });
+            }
         })
     }
 
@@ -1274,6 +1294,15 @@ impl Workspace {
         if let Some(entity) = self.active_editor() {
             let editor = entity.read(cx);
             use crate::buffer::LineSource;
+            if editor.is_loading() {
+                self.outline_task = None;
+                if self.outline_source.take().is_some() {
+                    self.outline_panel.update(cx, |panel, cx| {
+                        panel.set_entries(Vec::new(), None, None, cx)
+                    });
+                }
+                return;
+            }
             let key = (entity.entity_id(), editor.buffer().revision());
             let active = Some(editor.cursor_pos().line);
             if self.outline_source == Some(key) {

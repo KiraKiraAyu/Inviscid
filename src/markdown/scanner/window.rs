@@ -7,6 +7,66 @@ pub(super) fn scan(
     index: &StructureIndex,
     requested: Range<usize>,
 ) -> (Range<usize>, Vec<ParsedLine>) {
+    // Long and unfinished code blocks are consumed as rows, not expanded to their end.
+    let bounded_code = |row: usize| {
+        index
+            .streaming_fence(SourceLine::new(row))
+            .filter(|_| index.quote_prefix(SourceLine::new(row)) == 0)
+            .filter(|(start, end)| end.is_none_or(|end| end - start > 1024))
+            .filter(|(start, _)| {
+                index
+                    .parser_pair(SourceLine::new(row))
+                    .is_some_and(|(open, _)| open.index() == *start)
+            })
+    };
+    if requested.clone().any(|row| bounded_code(row).is_some()) {
+        let mut rows = Vec::new();
+        let mut row = requested.start;
+        while row < requested.end {
+            if let Some((start, end)) = bounded_code(row) {
+                let stop = requested.end.min(end.map_or(requested.end, |end| end + 1));
+                let mut raw = Vec::new();
+                let prefix = usize::from(row > start);
+                if prefix > 0 {
+                    raw.push(source.source_line(SourceLine::new(start)).into_owned());
+                }
+                raw.extend(
+                    (row..stop).map(|row| source.source_line(SourceLine::new(row)).into_owned()),
+                );
+                let parsed = MarkdownScanner::scan_normalized_range_with_state(
+                    &raw,
+                    &raw,
+                    &vec![None; raw.len()],
+                    0..raw.len(),
+                    false,
+                    false,
+                );
+                rows.extend(parsed.into_iter().skip(prefix));
+                row = stop;
+            } else {
+                let start = row;
+                while row < requested.end && bounded_code(row).is_none() {
+                    row += 1;
+                }
+                let (range, parsed) = scan_complete(source, index, start..row);
+                rows.extend(
+                    parsed
+                        .into_iter()
+                        .skip(start - range.start)
+                        .take(row - start),
+                );
+            }
+        }
+        return (requested, rows);
+    }
+    scan_complete(source, index, requested)
+}
+
+fn scan_complete(
+    source: &(impl LineSource + ?Sized),
+    index: &StructureIndex,
+    requested: Range<usize>,
+) -> (Range<usize>, Vec<ParsedLine>) {
     assert!(requested.start <= requested.end && requested.end <= source.line_count());
     if requested.is_empty() {
         return (requested, Vec::new());

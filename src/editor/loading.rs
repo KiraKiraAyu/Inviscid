@@ -1,36 +1,9 @@
-use super::{
-    Editor, EditorEvent, ExternalChangeState, Position, TextBuffer, is_whitelisted_extension,
-};
+use super::{Editor, EditorEvent, ExternalChangeState, Position};
 use gpui::Context;
-use std::{io, path::PathBuf, time::SystemTime};
-
-pub(crate) struct LoadedFile {
-    buffer: TextBuffer,
-    disk_hash: Option<u64>,
-}
-
-impl LoadedFile {
-    pub(crate) fn read(path: PathBuf) -> io::Result<Self> {
-        let (mut buffer, disk_hash) = if is_whitelisted_extension(&path) {
-            let bytes = std::fs::read(&path)?;
-            let text = std::str::from_utf8(&bytes)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            let disk_hash = Editor::hash_file_content(text);
-            let buffer = TextBuffer::from_bytes(&bytes, Some(path.clone()))
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            (buffer, Some(disk_hash))
-        } else {
-            (TextBuffer::from_str("", Some(path.clone())), None)
-        };
-        let mtime: Option<SystemTime> = std::fs::metadata(path)
-            .ok()
-            .and_then(|metadata| metadata.modified().ok());
-        buffer.set_last_saved_mtime(mtime);
-        // Build source context while the file is still on the background loader.
-        drop(buffer.line_index());
-        Ok(Self { buffer, disk_hash })
-    }
-}
+use std::{io, path::PathBuf, sync::Arc};
+mod session;
+pub(super) use session::source_window;
+pub(crate) use session::{CancelSession, DocumentSession, PreparedSnapshot};
 
 impl Editor {
     pub fn is_loading(&self) -> bool {
@@ -44,6 +17,9 @@ impl Editor {
     }
 
     pub(crate) fn begin_loading(&mut self, path: PathBuf) {
+        if let Some(snapshot) = self.prepared_document.take() {
+            snapshot.session.cancel();
+        }
         self.auto_save_task = None;
         self.file_watch_task = None;
         self.fingerprint_task = None;
@@ -64,37 +40,64 @@ impl Editor {
         }
     }
 
-    pub(crate) fn finish_loading(
+    pub(crate) fn install_publication(
         &mut self,
-        result: io::Result<LoadedFile>,
+        session: &Arc<DocumentSession>,
+        result: io::Result<session::Publication>,
         cx: &mut Context<Self>,
     ) {
-        let position = self.pending_open_position.take();
         match result {
             Ok(file) => {
-                let find_bar = self.detach_find_bar(cx);
-                let mut loaded =
-                    Self::new_with_buffer_and_disk_hash(file.buffer, file.disk_hash, cx);
-                loaded.focus_handle = self.focus_handle.clone();
-                loaded.render_mode = self.render_mode;
-                loaded.has_explicit_render_mode = self.has_explicit_render_mode;
-                loaded.is_read_only = self.is_read_only;
-                loaded.font_size = self.font_size;
-                loaded.line_height = self.line_height;
-                loaded.soft_wrap = self.soft_wrap;
-                loaded.text_system = self.text_system.clone();
-                *self = loaded;
-                if let Some(bar) = find_bar {
-                    self.attach_find_bar(bar, cx);
+                if !self.is_loading && self.buffer.revision() != file.buffer.revision() {
+                    session.cancel();
+                    return;
                 }
-                if let Some(position) = position {
-                    self.open_at_position(position, cx);
+                let finishing = self.is_loading && file.complete;
+                if self.is_loading {
+                    let cursor = self.buffer.cursor_pos();
+                    self.buffer = file.buffer;
+                    self.buffer.set_cursor(cursor);
+                }
+                self.prepared_document = Some(Arc::new(PreparedSnapshot {
+                    revision: self.buffer.revision(),
+                    session: session.clone(),
+                    windows: file.windows,
+                }));
+                {
+                    let mut cache = self.layout_cache.borrow_mut();
+                    // Multiple publications can arrive before a frame catches layout up.
+                    // Only invalidate geometry that belongs to this source snapshot.
+                    if cache.buffer_revision == self.buffer.revision()
+                        && cache.lines_len == self.buffer.line_count()
+                        && cache.metrics.len() == self.buffer.line_count()
+                        && cache.parsed_lines.is_windowed()
+                    {
+                        let cache = Arc::make_mut(&mut cache);
+                        cache.parsed_lines =
+                            super::parsed_line_store::ParsedLineStore::windowed(&self.buffer)
+                                .with_prepared(self.prepared_document.clone());
+                        if let Some(snapshot) = &self.prepared_document {
+                            for window in &snapshot.windows {
+                                cache.metrics.invalidate_measured(window.range.clone());
+                            }
+                        }
+                    }
+                }
+                if finishing {
+                    self.is_loading = false;
+                    self.external_disk_hash = Some(file.disk_hash);
+                    self.schedule_fingerprints(cx);
+                    self.start_file_watcher(cx);
+                    if let Some(position) = self.pending_open_position.take() {
+                        self.open_at_position(position, cx);
+                    }
                 }
             }
             Err(error) => {
                 eprintln!("Failed to load file {:?}: {error}", self.buffer.file_path());
                 self.is_loading = false;
                 self.load_error = Some(format!("Could not open file: {error}"));
+                session.cancel();
             }
         }
         cx.emit(EditorEvent::TitleChanged);

@@ -3192,7 +3192,7 @@ fn retained_projection_survives_local_and_structural_edits(cx: &mut gpui::TestAp
             let after = ed.layout_snapshot();
             assert_eq!(
                 after.quote_projection.normalized_lines()[2],
-                "literal changed"
+                "> literal changed"
             );
             assert_eq!(retained.normalized_lines()[2], "> literal");
             let full = crate::markdown::QuoteProjection::from_source(&ed.buffer);

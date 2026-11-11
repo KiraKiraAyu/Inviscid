@@ -177,6 +177,7 @@ pub enum ExternalChangeState {
 }
 
 pub struct Editor {
+    prepared_document: Option<Arc<loading::PreparedSnapshot>>,
     is_loading: bool,
     pending_open_position: Option<Position>,
     load_error: Option<String>,
@@ -419,6 +420,10 @@ impl Editor {
     }
 
     pub fn update_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if let Some(snapshot) = self.prepared_document.take() {
+            snapshot.session.cancel();
+            self.invalidate_layout_cache();
+        }
         self.buffer.set_file_path(Some(path));
         if self.is_loading {
             cx.emit(EditorEvent::TitleChanged);
@@ -489,6 +494,7 @@ impl Editor {
             .unwrap_or((RenderMode::LivePreview, 15.0, 1.6, true, true, true));
 
         let mut editor = Self {
+            prepared_document: None,
             is_loading: false,
             pending_open_position: None,
             load_error: None,
@@ -1208,50 +1214,58 @@ impl Editor {
         let parent = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
 
         let target_name = path.file_name().map(|name| name.to_os_string());
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
         let watch_path = path.clone();
-        let mut watcher =
-            match notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-                let event = match result {
-                    Ok(event) => event,
-                    Err(error) => {
-                        eprintln!("File watcher error for {:?}: {}", watch_path, error);
+        let setup = cx.background_executor().spawn(async move {
+            let mut watcher =
+                match notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+                    let event = match result {
+                        Ok(event) => event,
+                        Err(error) => {
+                            eprintln!("File watcher error for {:?}: {}", watch_path, error);
+                            return;
+                        }
+                    };
+                    if !(event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove())
+                    {
                         return;
                     }
+                    let Some(target_name) = target_name.as_ref() else {
+                        return;
+                    };
+                    if event
+                        .paths
+                        .iter()
+                        .any(|event_path| event_path.file_name() == Some(target_name.as_os_str()))
+                    {
+                        let _ = tx.unbounded_send(());
+                    }
+                }) {
+                    Ok(watcher) => watcher,
+                    Err(error) => {
+                        eprintln!("Failed to watch file {:?}: {}", path, error);
+                        return None;
+                    }
                 };
-                if !(event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove()) {
-                    return;
-                }
-                let Some(target_name) = target_name.as_ref() else {
-                    return;
-                };
-                if event
-                    .paths
-                    .iter()
-                    .any(|event_path| event_path.file_name() == Some(target_name.as_os_str()))
-                {
-                    let _ = tx.unbounded_send(());
-                }
-            }) {
-                Ok(watcher) => watcher,
-                Err(error) => {
-                    eprintln!("Failed to watch file {:?}: {}", path, error);
-                    return;
-                }
-            };
 
-        if let Err(error) =
-            notify::Watcher::watch(&mut watcher, parent, notify::RecursiveMode::NonRecursive)
-        {
-            eprintln!("Failed to watch file {:?}: {}", path, error);
-            return;
-        }
+            if let Err(error) =
+                notify::Watcher::watch(&mut watcher, &parent, notify::RecursiveMode::NonRecursive)
+            {
+                eprintln!("Failed to watch file {:?}: {}", path, error);
+                return None;
+            }
+            Some(watcher)
+        });
 
         self.file_watch_task = Some(cx.spawn(async move |this, cx| {
             use futures::StreamExt;
+            let Some(watcher) = setup.await else {
+                return;
+            };
             while rx.next().await.is_some() {
                 if this
                     .update(cx, |editor, cx| editor.handle_external_file_change(cx))
@@ -1283,6 +1297,15 @@ impl Editor {
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.is_loading
+            && self
+                .prepared_document
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.revision != self.buffer.revision())
+            && let Some(snapshot) = self.prepared_document.take()
+        {
+            snapshot.session.cancel();
+        }
         if self.text_system.is_none() {
             // Layout measurement must shape text exactly like painting does, which requires the
             // window's text system; drop anything measured with the headless fallback.
@@ -1334,7 +1357,7 @@ impl Render for Editor {
 
         let theme = cx.theme();
 
-        if self.is_loading {
+        if self.is_loading && self.buffer.is_empty() {
             return div()
                 .size_full()
                 .bg(theme.bg_editor)

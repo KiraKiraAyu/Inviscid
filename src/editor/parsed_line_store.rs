@@ -23,6 +23,7 @@ const MAX_WINDOWS: usize = 8;
 
 #[derive(Clone, Debug)]
 struct WindowStore {
+    prepared: Option<Arc<super::loading::PreparedSnapshot>>,
     source: crate::buffer::SourceSnapshot,
     index: crate::buffer::StructureIndex,
     windows: RefCell<VecDeque<ParsedWindow>>,
@@ -76,6 +77,7 @@ impl ParsedLineStore {
             #[cfg(test)]
             eager: Arc::default(),
             windows: Some(Arc::new(WindowStore {
+                prepared: None,
                 source: buffer.source_snapshot(),
                 index: buffer.line_index().structure_snapshot(),
                 windows: RefCell::default(),
@@ -114,6 +116,16 @@ impl ParsedLineStore {
         self
     }
 
+    pub(crate) fn with_prepared(
+        mut self,
+        prepared: Option<Arc<super::loading::PreparedSnapshot>>,
+    ) -> Self {
+        if let Some(store) = &mut self.windows {
+            Arc::make_mut(store).prepared = prepared;
+        }
+        self
+    }
+
     pub fn read_range(&self, range: Range<usize>) -> ParsedSlice {
         assert!(range.start <= range.end && range.end <= self.len());
         let Some(store) = &self.windows else {
@@ -135,6 +147,31 @@ impl ParsedLineStore {
     }
 
     fn load_window(&self, store: &WindowStore, requested: Range<usize>) -> ParsedWindow {
+        if let Some(prepared) = &store.prepared {
+            if let Some(window) = prepared.windows.iter().rev().find(|window| {
+                window.range.start <= requested.start && window.range.end >= requested.end
+            }) {
+                return ParsedWindow {
+                    range: window.range.clone(),
+                    rows: window.rows.clone(),
+                };
+            }
+            prepared.session.request(requested.clone());
+            let mut windows = store.windows.borrow_mut();
+            if let Some(window) = windows.iter().find(|window| window.range == requested) {
+                return window.clone();
+            }
+            let window = super::loading::source_window(&store.source, requested);
+            let window = ParsedWindow {
+                range: window.range,
+                rows: window.rows,
+            };
+            if windows.len() == MAX_WINDOWS {
+                windows.pop_front();
+            }
+            windows.push_back(window.clone());
+            return window;
+        }
         let mut windows = store.windows.borrow_mut();
         let window = if let Some(position) = windows.iter().position(|window| {
             window.range.start <= requested.start && window.range.end >= requested.end
@@ -192,6 +229,13 @@ impl ParsedLineStore {
     }
 
     pub(crate) fn refresh_resources(&mut self, images: bool, syntax: bool) -> Vec<Range<usize>> {
+        if self
+            .windows
+            .as_ref()
+            .is_some_and(|store| store.prepared.is_some())
+        {
+            return Vec::new();
+        }
         if !images && !syntax {
             return Vec::new();
         }
@@ -241,6 +285,7 @@ impl ParsedLineStore {
                 }
             }
             self.windows = Some(Arc::new(WindowStore {
+                prepared: store.prepared.clone(),
                 source: store.source.clone(),
                 index: store.index.clone(),
                 windows: RefCell::new(windows),

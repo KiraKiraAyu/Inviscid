@@ -32,7 +32,7 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
-/// Resolves a local `file://` URL or local relative path against an optional document base path,
+/// Resolves a local `file://` URL or local relative path against an optional document file path,
 /// performing percent-decoding on encoded file paths.
 pub fn parse_file_url_path(url: &str, doc_path: Option<&Path>) -> Option<PathBuf> {
     let clean = url.trim();
@@ -55,11 +55,7 @@ pub fn parse_file_url_path(url: &str, doc_path: Option<&Path>) -> Option<PathBuf
     if p.is_absolute() {
         Some(p)
     } else if let Some(doc) = doc_path {
-        let base_dir = if doc.is_dir() {
-            doc
-        } else {
-            doc.parent().unwrap_or(Path::new(""))
-        };
+        let base_dir = doc.parent().unwrap_or(Path::new(""));
         Some(base_dir.join(p))
     } else if let Ok(cwd) = std::env::current_dir() {
         Some(cwd.join(p))
@@ -71,7 +67,8 @@ pub fn parse_file_url_path(url: &str, doc_path: Option<&Path>) -> Option<PathBuf
 /// Returns the `(width, height)` dimensions of an image URL or local file.
 pub fn get_image_size(url: &str, doc_path: Option<&Path>) -> Option<(u32, u32)> {
     let clean = url.trim();
-    if let Some(dims) = read_cache(|cache| cache.get_size(clean)) {
+    let key = image_size_key(clean, doc_path);
+    if let Some(dims) = read_cache(|cache| cache.get_size(&key)) {
         return Some(dims);
     }
 
@@ -82,7 +79,7 @@ pub fn get_image_size(url: &str, doc_path: Option<&Path>) -> Option<(u32, u32)> 
         let mut header = Vec::with_capacity(4096);
         if Read::take(&mut file, 4096).read_to_end(&mut header).is_ok() {
             if let Some(dims) = extract_image_dimensions(&header) {
-                record_image_size(clean, dims.0, dims.1);
+                record_image_size(&key, dims.0, dims.1);
                 return Some(dims);
             } else if header.len() == 4096 {
                 // Extended header read for rare JPEGs with large EXIF metadata blocks
@@ -93,11 +90,18 @@ pub fn get_image_size(url: &str, doc_path: Option<&Path>) -> Option<(u32, u32)> 
                     .is_ok()
                     && let Some(dims) = extract_image_dimensions(&extended)
                 {
-                    record_image_size(clean, dims.0, dims.1);
+                    record_image_size(&key, dims.0, dims.1);
                     return Some(dims);
                 }
             }
         }
     }
     None
+}
+
+pub(crate) fn image_size_key(url: &str, doc_path: Option<&Path>) -> String {
+    parse_file_url_path(url, doc_path).map_or_else(
+        || url.trim().to_owned(),
+        |path| path.to_string_lossy().into_owned(),
+    )
 }
