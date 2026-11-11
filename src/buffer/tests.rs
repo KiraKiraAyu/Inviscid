@@ -1751,8 +1751,8 @@ fn test_undo_stack_max_bound_and_delta_efficiency() {
 
     let last_step = buf.undo_stack.back().expect("expected undo step");
     assert_eq!(last_step.start_line, crate::buffer::SourceLine::new(50));
-    assert_eq!(last_step.old_lines, vec!["Line 50"]);
-    assert_eq!(last_step.new_lines, vec!["Line 5 MODIFIED0"]);
+    assert_eq!(last_step.old_lines.to_lines(), vec!["Line 50"]);
+    assert_eq!(last_step.new_lines.to_lines(), vec!["Line 5 MODIFIED0"]);
 
     buf.undo();
     assert_eq!(buf.to_lines().as_slice()[50], "Line 50");

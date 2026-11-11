@@ -10,6 +10,8 @@ use std::time::{Instant, SystemTime};
 mod fingerprint;
 #[cfg(test)]
 mod fingerprint_loading_tests;
+#[cfg(test)]
+mod history_tests;
 mod loading;
 pub(crate) use loading::StreamingBuffer;
 pub mod movement;
@@ -521,7 +523,7 @@ impl TextBuffer {
         } else {
             end.line.index().saturating_sub(start.line.index()) + 1
         };
-        let old_lines = self.old_rope_lines(start.line.index(), old_count, old_empty);
+        let old_lines = UndoLines::capture(&self.rope, start.line.index(), old_count, old_empty);
         let start_char = self.position_to_rope_char(start);
         let end_char = self.position_to_rope_char(end);
         let at_document_end = end_char == self.rope.len_chars();
@@ -551,10 +553,11 @@ impl TextBuffer {
                 + 1
                 + usize::from(append_virtual_trailing_line && !normalized.ends_with('\n'))
         };
-        let new_lines = self.old_rope_lines(start.line.index(), new_count, false);
+        let new_lines =
+            UndoLines::capture(&self.rope, start.line.index(), new_count, self.is_empty_doc);
 
         self.version = self.version.wrapping_add(1);
-        self.finish_content_metrics(SourceLine::new(start.line.index()), &old_lines, &new_lines);
+        self.finish_history_metrics(start.line, &old_lines, &new_lines);
         let step = UndoStep {
             start_line: start.line,
             old_lines,
@@ -968,31 +971,49 @@ impl TextBuffer {
     fn apply_history_content(
         &mut self,
         start_line: SourceLine,
-        replaced_lines: &[String],
-        inserted_lines: &[String],
+        replaced_lines: &UndoLines,
+        inserted_lines: &UndoLines,
         target_empty_doc: bool,
         target_document_line_count: usize,
     ) {
         if target_empty_doc {
             self.rope = Rope::new();
         } else if self.is_empty_doc {
-            // A history range can cover only part of the former document.
-            // Its saved extent distinguishes a virtual trailing line from a
-            // file that originally had no trailing newline.
-            let mut lines = vec![""; target_document_line_count];
             let start = start_line.index();
-            for (target, text) in lines[start..start + inserted_lines.len()]
-                .iter_mut()
-                .zip(inserted_lines)
-            {
-                *target = text.as_str();
-            }
-            self.rope = Rope::from_str(&lines.join("\n"));
+            self.rope = Rope::from_str(&"\n".repeat(start));
+            self.rope.append(inserted_lines.text.clone());
+            let trailing = target_document_line_count - start - inserted_lines.len();
+            self.rope
+                .insert(self.rope.len_chars(), &"\n".repeat(trailing));
         } else {
-            self.replace_rope_lines(start_line, replaced_lines.len(), inserted_lines);
+            let start = start_line.index().min(self.rope.len_lines());
+            let end_line = start + replaced_lines.len();
+            let mut start_char = self.rope.line_to_char(start);
+            let end_char = if end_line < self.rope.len_lines() {
+                self.rope.line_to_char(end_line)
+            } else {
+                self.rope.len_chars()
+            };
+            if end_line >= self.rope.len_lines() && inserted_lines.is_empty() && start > 0 {
+                start_char -= 1;
+            }
+            let mut replacement = inserted_lines.text.clone();
+            if end_line < self.rope.len_lines() && !inserted_lines.is_empty() {
+                replacement.insert(replacement.len_chars(), "\n");
+            } else if start == self.rope.len_lines()
+                && replaced_lines.is_empty()
+                && start > 0
+                && !inserted_lines.is_empty()
+            {
+                replacement.insert(0, "\n");
+            }
+            let suffix = self.rope.split_off(end_char);
+            self.rope.remove(start_char..);
+            self.rope.append(replacement);
+            self.rope.append(suffix);
         }
         self.is_empty_doc = target_empty_doc;
-        self.finish_content_metrics(start_line, replaced_lines, inserted_lines);
+        self.finish_history_metrics(start_line, replaced_lines, inserted_lines);
     }
 
     /// Replaces a contiguous range of logical lines without materializing the document.
@@ -1007,6 +1028,7 @@ impl TextBuffer {
         let cursor_before = self.selection;
         let version_before = self.version;
         let old_empty_doc = self.is_empty_doc;
+        let old_rope = self.rope.clone();
         let line_count_before = self.line_count();
         let mut start = start_line.index().min(line_count_before);
         let old_count = old_line_count.min(line_count_before.saturating_sub(start));
@@ -1077,8 +1099,8 @@ impl TextBuffer {
             && !new_lines[0].ends_with('\t');
         let step = UndoStep {
             start_line: SourceLine::new(start),
-            old_lines,
-            new_lines,
+            old_lines: UndoLines::capture(&old_rope, start, old_lines.len(), old_empty_doc),
+            new_lines: UndoLines::capture(&self.rope, start, new_lines.len(), self.is_empty_doc),
             old_empty_doc,
             new_empty_doc: self.is_empty_doc,
             old_document_line_count: line_count_before,
@@ -1105,15 +1127,42 @@ impl TextBuffer {
             .iter()
             .map(|line| line.split_whitespace().count())
             .sum();
+        self.finish_content_metrics_counts(
+            start_line,
+            replaced_lines.len(),
+            inserted_lines.len(),
+            removed_words,
+            inserted_words,
+        );
+    }
+
+    fn finish_history_metrics(&mut self, start: SourceLine, old: &UndoLines, new: &UndoLines) {
+        self.finish_content_metrics_counts(
+            start,
+            old.len(),
+            new.len(),
+            old.word_count(),
+            new.word_count(),
+        );
+    }
+
+    fn finish_content_metrics_counts(
+        &mut self,
+        start_line: SourceLine,
+        old_line_count: usize,
+        new_line_count: usize,
+        removed_words: usize,
+        inserted_words: usize,
+    ) {
         self.total_word_count = self.total_word_count - removed_words + inserted_words;
         if let fingerprint::FingerprintState::Ready(fingerprints) = &mut self.line_fingerprints {
-            fingerprints.update(&self.rope, start_line.index(), replaced_lines.len());
+            fingerprints.update(&self.rope, start_line.index(), old_line_count);
         }
         self.revision = self.revision.wrapping_add(1);
         self.last_edit_delta = Some(EditDelta {
             start_line,
-            old_line_count: replaced_lines.len(),
-            new_line_count: inserted_lines.len(),
+            old_line_count,
+            new_line_count,
         });
 
         self.update_empty_doc_state();
@@ -1131,7 +1180,7 @@ impl TextBuffer {
             if let Some(top) = self.undo_stack.back_mut() {
                 top.try_coalesce_single_char(
                     step.start_line,
-                    step.new_lines[0].clone(),
+                    step.new_lines.clone(),
                     step.cursor_after,
                     step.version_after,
                 )
@@ -1167,6 +1216,7 @@ impl TextBuffer {
         let cursor_before = self.selection;
         let version_before = self.version;
         let was_empty_doc = self.is_empty_doc;
+        let old_rope = self.rope.clone();
         let old_document_line_count = self.line_count();
         let old_line = self.line_text(line_idx).unwrap_or_default();
         let mut new_line = old_line.clone();
@@ -1218,8 +1268,18 @@ impl TextBuffer {
 
             let step = UndoStep {
                 start_line: line_idx,
-                old_lines,
-                new_lines,
+                old_lines: UndoLines::capture(
+                    &old_rope,
+                    line_idx.index(),
+                    old_lines.len(),
+                    was_empty_doc,
+                ),
+                new_lines: UndoLines::capture(
+                    &self.rope,
+                    line_idx.index(),
+                    new_lines.len(),
+                    self.is_empty_doc,
+                ),
                 old_empty_doc: was_empty_doc,
                 new_empty_doc: self.is_empty_doc,
                 old_document_line_count,
@@ -1243,6 +1303,7 @@ impl TextBuffer {
         let version_before = self.version;
         let line_count_before = self.line_count();
         let empty_before = self.is_empty_doc;
+        let old_rope = self.rope.clone();
         let mut lines = SourceLines::from(self.to_lines());
         f(&mut lines, &mut self.selection);
 
@@ -1325,8 +1386,13 @@ impl TextBuffer {
 
             let step = UndoStep {
                 start_line: SourceLine::new(prefix),
-                old_lines,
-                new_lines,
+                old_lines: UndoLines::capture(&old_rope, prefix, old_lines.len(), empty_before),
+                new_lines: UndoLines::capture(
+                    &self.rope,
+                    prefix,
+                    new_lines.len(),
+                    self.is_empty_doc,
+                ),
                 old_empty_doc: empty_before,
                 new_empty_doc: self.is_empty_doc,
                 old_document_line_count: line_count_before,
