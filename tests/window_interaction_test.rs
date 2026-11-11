@@ -18,35 +18,140 @@ fn init_test_globals(cx: &mut TestAppContext) {
 }
 
 #[test]
-fn titlebar_buttons_work_before_document_focus() {
+fn menus_switch_on_hover_without_editor_focus() {
+    use gpui::{Modifiers, MouseMoveEvent};
+    use inviscid::app::ActiveMenu;
+
+    let mut tcx = TestAppContext::single();
+    init_test_globals(&mut tcx);
+    let (app, cx) = tcx.add_window_view(|_, cx| InviscidWindow::new(cx));
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.set_active_menu(Some(ActiveMenu::Inviscid), cx)
+        });
+        window.blur();
+    });
+    cx.run_until_parked();
+
+    for (selector, expected) in [
+        ("menu_trigger_File", ActiveMenu::File),
+        ("menu_trigger_Edit", ActiveMenu::Edit),
+        ("menu_trigger_View", ActiveMenu::View),
+        ("menu_trigger_Theme", ActiveMenu::Theme),
+    ] {
+        let position = cx.debug_bounds(selector).unwrap().center();
+        cx.simulate_event(MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_, cx| app.read(cx).active_menu()),
+            Some(expected)
+        );
+    }
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| app.read(cx).active_menu().is_none()));
+}
+
+#[test]
+fn menu_commands_execute_without_editor_focus() {
+    use gpui::Modifiers;
+    use inviscid::app::ActiveMenu;
+
+    let mut tcx = TestAppContext::single();
+    init_test_globals(&mut tcx);
+    let (app, cx) = tcx.add_window_view(|_, cx| InviscidWindow::new(cx));
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.set_active_menu(Some(ActiveMenu::File), cx)
+        });
+        window.blur();
+    });
+    cx.run_until_parked();
+    let position = cx.debug_bounds("menu_item_New Tab").unwrap().center();
+    cx.simulate_click(position, Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| app.read(cx).workspace().read(cx).tab_count()),
+        1
+    );
+    assert!(cx.update(|_, cx| app.read(cx).active_menu().is_none()));
+}
+
+#[test]
+fn titlebar_menus_open_and_dismiss_before_editor_focus() {
     use gpui::{Modifiers, point, px};
+    use inviscid::app::ActiveMenu;
 
     let mut tcx = TestAppContext::single();
     init_test_globals(&mut tcx);
     let (app, cx) = tcx.add_window_view(|_, cx| InviscidWindow::new(cx));
     cx.run_until_parked();
-    cx.update(|window, _| window.blur());
-    cx.run_until_parked();
-
-    cx.simulate_click(point(px(24.0), px(17.0)), Modifiers::default());
+    let position = cx.debug_bounds("app_menu_hamburger_btn").unwrap().center();
+    cx.simulate_click(position, Modifiers::default());
     cx.run_until_parked();
     assert_eq!(
-        cx.update(|_, cx| format!("{:?}", app.read(cx).active_menu())),
-        "Some(Inviscid)"
+        cx.update(|_, cx| app.read(cx).active_menu()),
+        Some(ActiveMenu::Inviscid)
     );
-
-    cx.update(|_, cx| app.update(cx, |app, cx| app.close_menu(cx)));
-    cx.run_until_parked();
-    cx.simulate_click(point(px(90.0), px(17.0)), Modifiers::default());
-    cx.run_until_parked();
-    assert_eq!(
-        cx.update(|_, cx| format!("{:?}", app.read(cx).active_menu())),
-        "Some(Workspace)"
-    );
-
-    cx.simulate_click(point(px(90.0), px(17.0)), Modifiers::default());
+    cx.simulate_click(point(px(400.0), px(200.0)), Modifiers::default());
     cx.run_until_parked();
     assert!(cx.update(|_, cx| app.read(cx).active_menu().is_none()));
+    let position = cx.debug_bounds("workspace_selector_btn").unwrap().center();
+    cx.simulate_click(position, Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| app.read(cx).active_menu()),
+        Some(ActiveMenu::Workspace)
+    );
+    cx.simulate_click(position, Modifiers::default());
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| app.read(cx).active_menu().is_none()));
+}
+
+#[test]
+fn menu_redraws_preserve_editor_focus_and_edit_commands() {
+    use gpui::{Modifiers, MouseMoveEvent};
+
+    let mut tcx = TestAppContext::single();
+    init_test_globals(&mut tcx);
+    let (app, cx) = tcx.add_window_view(|_, cx| InviscidWindow::new(cx));
+    let editor = cx.update(|window, cx| {
+        let workspace = app.read(cx).workspace().clone();
+        workspace.update(cx, |workspace, cx| workspace.new_tab(cx));
+        let editor = workspace.read(cx).active_editor().unwrap().clone();
+        window.focus(&editor.focus_handle(cx));
+        editor.update(cx, |editor, cx| {
+            editor.replace_text_in_range(None, "sample", window, cx);
+        });
+        app.update(cx, |_, cx| cx.notify());
+        editor
+    });
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| editor.focus_handle(cx).is_focused(window)));
+    let text = cx.update(|_, cx| editor.read(cx).buffer().to_string_normalized());
+    assert!(text.starts_with("sample"));
+
+    let position = cx.debug_bounds("app_menu_hamburger_btn").unwrap().center();
+    cx.simulate_click(position, Modifiers::default());
+    cx.run_until_parked();
+    let position = cx.debug_bounds("menu_trigger_Edit").unwrap().center();
+    cx.simulate_event(MouseMoveEvent {
+        position,
+        pressed_button: None,
+        modifiers: Modifiers::default(),
+    });
+    cx.run_until_parked();
+    let position = cx.debug_bounds("menu_item_Select All").unwrap().center();
+    cx.simulate_click(position, Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(editor.focus_handle(cx).is_focused(window));
+        assert_eq!(editor.read(cx).buffer().selected_text(), Some(text));
+    });
 }
 
 #[test]

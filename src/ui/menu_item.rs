@@ -88,6 +88,7 @@ impl RenderOnce for MenuItem {
         };
 
         div()
+            .debug_selector(|| format!("menu_item_{}", self.label))
             .id(self.id)
             .w_full()
             .h(ControlHeight::MD)

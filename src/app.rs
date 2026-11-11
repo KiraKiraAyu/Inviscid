@@ -32,6 +32,7 @@ use crate::theme::ThemeManager;
 
 /// Root view entity for an Inviscid editor window.
 pub struct InviscidWindow {
+    focus_handle: FocusHandle,
     titlebar: Entity<TitleBar>,
     workspace: Entity<Workspace>,
     active_menu: Option<ActiveMenu>,
@@ -76,6 +77,7 @@ impl InviscidWindow {
         );
 
         Self {
+            focus_handle: cx.focus_handle(),
             titlebar,
             workspace,
             active_menu: None,
@@ -184,6 +186,10 @@ impl InviscidWindow {
 
 impl Render for InviscidWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // App actions need a dispatch path even before an editor or panel takes focus.
+        if window.focused(cx).is_none() {
+            window.focus(&self.focus_handle);
+        }
         let bg_app = cx.global::<ThemeManager>().theme().bg_app;
         let config = cx.global::<AppConfig>();
         let ui_font_size = config.ui_font_size;
@@ -199,6 +205,7 @@ impl Render for InviscidWindow {
 
         actions::attach_app_actions(
             div()
+                .track_focus(&self.focus_handle)
                 .key_context(app_context)
                 .size_full()
                 .bg(bg_app)
@@ -211,5 +218,62 @@ impl Render for InviscidWindow {
                 .child(self.workspace.clone()),
             cx,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    #[gpui::test]
+    fn menu_commands_work_while_document_is_loading(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let config = AppConfig::default();
+            cx.set_global(ThemeManager::from_config(&config));
+            actions::bind_default_bindings(cx);
+            cx.set_global(config);
+        });
+        let (app, cx) = cx.add_window_view(|_, cx| InviscidWindow::new(cx));
+        let editor = cx.update(|window, cx| {
+            let workspace = app.read(cx).workspace().clone();
+            workspace.update(cx, |workspace, cx| workspace.new_tab(cx));
+            let editor = workspace.read(cx).active_editor().unwrap().clone();
+            // Park loading independently of file I/O so the menu must work before EOF.
+            editor.update(cx, |editor, _| editor.begin_loading("loading.md".into()));
+            window.blur();
+            editor
+        });
+        cx.run_until_parked();
+        let position = cx.debug_bounds("app_menu_hamburger_btn").unwrap().center();
+        cx.simulate_click(position, Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_, cx| app.read(cx).active_menu()),
+            Some(ActiveMenu::Inviscid)
+        );
+
+        let position = cx.debug_bounds("menu_trigger_View").unwrap().center();
+        cx.simulate_event(MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_, cx| app.read(cx).active_menu()),
+            Some(ActiveMenu::View)
+        );
+
+        let position = cx.debug_bounds("menu_item_Source Mode").unwrap().center();
+        cx.simulate_click(position, Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let editor = editor.read(cx);
+            assert_eq!(editor.render_mode(), crate::editor::RenderMode::Source);
+            assert!(editor.is_loading());
+            assert!(!editor.focus_handle(cx).is_focused(window));
+            assert!(app.read(cx).active_menu().is_none());
+        });
     }
 }

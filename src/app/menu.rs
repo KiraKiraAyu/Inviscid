@@ -116,6 +116,7 @@ impl RenderOnce for MenuTrigger {
 
         div()
             .relative()
+            .debug_selector(|| format!("menu_trigger_{}", self.label))
             .id(ElementId::NamedInteger(
                 "menu_trigger".into(),
                 category as u64,
@@ -135,7 +136,7 @@ impl RenderOnce for MenuTrigger {
             .hover(|s| s.bg(theme.btn_hover))
             .active(|s| s.bg(theme.btn_active))
             .cursor_pointer()
-            .on_click(move |_, window, cx| {
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 if is_active {
                     window.dispatch_action(crate::app::actions::CloseMenu.boxed_clone(), cx);
                 } else {
