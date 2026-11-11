@@ -636,6 +636,7 @@ impl Editor {
 
     #[inline]
     pub fn display_map(&self) -> &DisplayMap {
+        self.display_map.synchronize(&self.buffer);
         &self.display_map
     }
 
@@ -645,6 +646,7 @@ impl Editor {
         start_line: crate::buffer::SourceLine,
         end_line: crate::buffer::SourceLine,
     ) {
+        self.display_map.synchronize(&self.buffer);
         self.display_map.fold_map_mut().fold(start_line, end_line);
         let cursor = self.buffer.cursor_pos();
         if cursor.line > start_line && cursor.line <= end_line {
@@ -667,6 +669,7 @@ impl Editor {
     }
 
     pub fn unfold_internal(&mut self, start_line: crate::buffer::SourceLine) -> bool {
+        self.display_map.synchronize(&self.buffer);
         let changed = self.display_map.fold_map_mut().unfold(start_line);
         if changed {
             self.ensure_layout_cache();
@@ -687,6 +690,7 @@ impl Editor {
     }
 
     pub fn unfold_all_internal(&mut self) {
+        self.display_map.synchronize(&self.buffer);
         self.display_map.fold_map_mut().unfold_all();
         self.ensure_layout_cache();
     }
@@ -698,12 +702,12 @@ impl Editor {
 
     #[inline]
     pub fn is_line_folded(&self, line: crate::buffer::SourceLine) -> bool {
-        self.display_map.fold_map().is_line_folded(line)
+        self.display_map().fold_map().is_line_folded(line)
     }
 
     #[inline]
     pub fn is_fold_header(&self, line: crate::buffer::SourceLine) -> bool {
-        self.display_map.fold_map().is_fold_header(line)
+        self.display_map().fold_map().is_fold_header(line)
     }
 
     pub fn status_meta(&self) -> Option<EditorStatusMeta> {
@@ -1003,6 +1007,7 @@ impl Editor {
         self.fingerprint_task = None;
         self.buffer =
             TextBuffer::from_bytes(content.as_bytes(), Some(path)).expect("validated UTF-8");
+        self.display_map = DisplayMap::new();
         self.schedule_fingerprints(cx);
         self.load_error = None;
         self.refresh_find_matches(cx);

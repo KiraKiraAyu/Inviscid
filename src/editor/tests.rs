@@ -1746,6 +1746,43 @@ fn test_display_map_fold_regions_and_visibility() {
     }
 }
 
+#[gpui::test]
+fn fold_regions_follow_edits_and_history(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    let (editor, cx) = cx.add_window_view(|_, cx| {
+        super::Editor::new_with_buffer(
+            TextBuffer::from_str("before\n# Fold\na\nb\nafter", None),
+            cx,
+        )
+    });
+    cx.update(|_, cx| {
+        editor.update(cx, |editor, _| {
+            editor.fold_internal(SourceLine::new(1), SourceLine::new(3));
+            editor
+                .buffer
+                .set_cursor(Position::new(SourceLine::new(0), 0));
+            editor.buffer.insert_text("inserted\n");
+            editor.ensure_layout_cache();
+            assert!(editor.is_fold_header(SourceLine::new(2)));
+            assert!(!editor.is_line_folded(SourceLine::new(2)));
+            assert!(editor.is_line_folded(SourceLine::new(4)));
+            editor.buffer.undo();
+            editor.ensure_layout_cache();
+            assert!(editor.is_fold_header(SourceLine::new(1)));
+            assert!(editor.is_line_folded(SourceLine::new(3)));
+            editor.buffer.redo();
+            editor.ensure_layout_cache();
+            assert!(editor.is_fold_header(SourceLine::new(2)));
+            editor
+                .buffer
+                .set_cursor(Position::new(SourceLine::new(3), 0));
+            editor.buffer.insert_text("changed");
+            editor.ensure_layout_cache();
+            assert!(editor.display_map().fold_map().folded_regions().is_empty());
+        });
+    });
+}
+
 #[test]
 fn test_folding_layout_height_and_navigation() {
     use crate::buffer::TextBuffer;

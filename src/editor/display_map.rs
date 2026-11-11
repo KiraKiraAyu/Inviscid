@@ -1,3 +1,7 @@
+use std::cell::{Cell, Ref, RefCell};
+
+use crate::buffer::{EditDelta, SourceLine, TextBuffer};
+
 /// Collapsed range of source lines `[start_line..=end_line]`.
 /// `start_line` remains visible as the fold header; `start_line + 1 ..= end_line` are hidden.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,11 +111,37 @@ impl FoldMap {
     pub fn folded_regions(&self) -> &[FoldRegion] {
         &self.regions
     }
+
+    fn apply_edit(&mut self, delta: EditDelta) {
+        let start = delta.start_line.index();
+        let end = start + delta.old_line_count;
+        let mut changed = false;
+        self.regions.retain_mut(|region| {
+            if end <= region.start_line.index() {
+                let shift = |line: SourceLine| {
+                    SourceLine::new(line.index() - delta.old_line_count + delta.new_line_count)
+                };
+                changed |= delta.old_line_count != delta.new_line_count;
+                region.start_line = shift(region.start_line);
+                region.end_line = shift(region.end_line);
+                true
+            } else if start > region.end_line.index() {
+                true
+            } else {
+                changed = true;
+                false
+            }
+        });
+        if changed {
+            self.version = self.version.wrapping_add(1);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct DisplayMap {
-    fold_map: FoldMap,
+    fold_map: RefCell<FoldMap>,
+    buffer_revision: Cell<Option<u64>>,
 }
 
 impl DisplayMap {
@@ -121,15 +151,32 @@ impl DisplayMap {
 
     #[inline]
     pub fn version(&self) -> usize {
-        self.fold_map.version()
+        self.fold_map.borrow().version()
     }
 
-    pub fn fold_map(&self) -> &FoldMap {
-        &self.fold_map
+    pub fn fold_map(&self) -> Ref<'_, FoldMap> {
+        self.fold_map.borrow()
     }
 
     pub fn fold_map_mut(&mut self) -> &mut FoldMap {
-        &mut self.fold_map
+        self.fold_map.get_mut()
+    }
+
+    pub(crate) fn synchronize(&self, buffer: &TextBuffer) {
+        let revision = buffer.revision();
+        let previous = self.buffer_revision.replace(Some(revision));
+        if previous == Some(revision) {
+            return;
+        }
+        let mut folds = self.fold_map.borrow_mut();
+        if previous.is_some_and(|previous| previous.wrapping_add(1) == revision)
+            && let Some(delta) = buffer.last_edit_delta()
+        {
+            folds.apply_edit(delta);
+        } else {
+            // The buffer exposes only its last edit, so skipped revisions cannot be mapped.
+            folds.unfold_all();
+        }
     }
 
     #[inline]
@@ -138,12 +185,13 @@ impl DisplayMap {
         from_line: SourceLine,
         total_lines: usize,
     ) -> Option<SourceLine> {
-        self.fold_map.next_visible_line(from_line, total_lines)
+        self.fold_map
+            .borrow()
+            .next_visible_line(from_line, total_lines)
     }
 
     #[inline]
     pub fn prev_visible_line(&self, from_line: SourceLine) -> Option<SourceLine> {
-        self.fold_map.prev_visible_line(from_line)
+        self.fold_map.borrow().prev_visible_line(from_line)
     }
 }
-use crate::buffer::SourceLine;

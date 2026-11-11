@@ -17,6 +17,7 @@ impl Editor {
     }
 
     pub(crate) fn begin_loading(&mut self, path: PathBuf) {
+        self.display_map = super::DisplayMap::new();
         if let Some(snapshot) = self.prepared_document.take() {
             snapshot.session.cancel();
         }

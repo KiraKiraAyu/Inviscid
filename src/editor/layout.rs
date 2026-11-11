@@ -1118,6 +1118,7 @@ impl Editor {
     }
 
     pub fn ensure_layout_cache(&self) {
+        self.display_map.synchronize(&self.buffer);
         let viewport = self.viewport_bounds_val();
         let content_width = compute_content_width(viewport.size.width, self.render_mode);
         let disclosure = self.disclosure_position();
