@@ -51,6 +51,8 @@ pub struct Workspace {
     sidebar_width: Pixels,
     sidebar_view: SidebarView,
     outline_visible: bool,
+    outline_source: Option<(EntityId, u64)>,
+    outline_task: Option<Task<()>>,
     outline_width: Pixels,
     search_panel: Entity<SearchPanel>,
     resize_target: Option<PanelResizeTarget>,
@@ -236,6 +238,8 @@ impl Workspace {
             sidebar_width: px(DEFAULT_SIDEBAR_WIDTH),
             sidebar_view: SidebarView::default(),
             outline_visible: false,
+            outline_source: None,
+            outline_task: None,
             outline_width: px(DEFAULT_SIDEBAR_WIDTH),
             search_panel,
             resize_target: None,
@@ -345,6 +349,8 @@ impl Workspace {
             sidebar_width,
             sidebar_view: SidebarView::default(),
             outline_visible: false,
+            outline_source: None,
+            outline_task: None,
             outline_width,
             search_panel,
             resize_target: None,
@@ -1261,24 +1267,74 @@ impl Workspace {
         // Hidden outlines catch up when opened; input events should not parse
         // an invisible panel's document on the UI thread.
         if !self.outline_visible {
+            self.outline_task = None;
+            self.outline_source = None;
             return;
         }
-        let (layout, active_line, editor_focus_handle) = self
+        if let Some(entity) = self.active_editor() {
+            let editor = entity.read(cx);
+            if editor.buffer().line_count() >= crate::editor::layout::LAZY_LAYOUT_MIN_LINES {
+                use crate::buffer::LineSource;
+                let key = (entity.entity_id(), editor.buffer().revision());
+                let active = Some(editor.cursor_pos().line);
+                if self.outline_source == Some(key) {
+                    self.outline_panel
+                        .update(cx, |panel, cx| panel.set_active_line(active, cx));
+                    return;
+                }
+                let source = editor.buffer().source_snapshot();
+                let focus = Some(editor.focus_handle(cx));
+                self.outline_source = Some(key);
+                self.outline_panel.update(cx, |panel, cx| {
+                    panel.set_entries(Vec::new(), active, focus, cx)
+                });
+                let job = cx
+                    .background_executor()
+                    .spawn(async move { crate::markdown::collect_outline_from_source(&source) });
+                self.outline_task = Some(cx.spawn(async move |workspace, cx| {
+                    let entries = job.await;
+                    let _ = workspace.update(cx, |workspace, cx| {
+                        if workspace.outline_source != Some(key) {
+                            return;
+                        }
+                        let Some(entity) = workspace
+                            .active_editor()
+                            .filter(|entity| entity.entity_id() == key.0)
+                        else {
+                            return;
+                        };
+                        let editor = entity.read(cx);
+                        if editor.buffer().revision() != key.1 {
+                            return;
+                        }
+                        let active = Some(editor.cursor_pos().line);
+                        let focus = Some(editor.focus_handle(cx));
+                        workspace.outline_panel.update(cx, |panel, cx| {
+                            panel.set_entries(entries, active, focus, cx)
+                        });
+                        workspace.outline_task = None;
+                    });
+                }));
+                return;
+            }
+        }
+        self.outline_source = None;
+        self.outline_task = None;
+        let (entries, active_line, editor_focus_handle) = self
             .active_editor()
             .map(|editor| {
                 let editor = editor.read(cx);
                 (
-                    Some(editor.layout_snapshot()),
+                    crate::markdown::collect_outline_from_parsed(
+                        &editor.layout_snapshot().parsed_lines,
+                    ),
                     Some(editor.cursor_pos().line),
                     Some(editor.focus_handle(cx)),
                 )
             })
             .unwrap_or_default();
         self.outline_panel.update(cx, |panel, cx| {
-            let parsed_lines = layout
-                .as_ref()
-                .map_or(&[][..], |layout| layout.parsed_lines.as_slice());
-            panel.set_parsed_document(parsed_lines, active_line, editor_focus_handle, cx)
+            panel.set_entries(entries, active_line, editor_focus_handle, cx)
         });
     }
 

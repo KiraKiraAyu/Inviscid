@@ -145,6 +145,10 @@ impl SourceSnapshot {
 }
 
 impl LineSource for SourceSnapshot {
+    fn source_snapshot(&self) -> SourceSnapshot {
+        self.clone()
+    }
+
     fn line_count(&self) -> usize {
         self.lines
     }

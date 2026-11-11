@@ -17,38 +17,65 @@ pub fn collect_outline(lines: &[String]) -> Vec<OutlineItem> {
     collect_outline_from_parsed(&parsed_lines)
 }
 
+/// Only headings need inline parsing; body rows stay in the source Rope.
+pub(crate) fn collect_outline_from_source(
+    source: &(impl crate::buffer::LineSource + ?Sized),
+) -> Vec<OutlineItem> {
+    use crate::buffer::LineSource;
+    let source = source.source_snapshot();
+    let index = source.structure_index();
+    let mut headings = Vec::new();
+    for (row, text) in source.source_lines().enumerate() {
+        let prefix = index.quote_prefix(SourceLine::new(row));
+        if !matches!(
+            super::prefix::parse_block_prefix(&text[prefix..]).map(|prefix| prefix.kind),
+            Some(super::prefix::BlockPrefix::Heading { .. })
+        ) {
+            continue;
+        }
+        let (range, parsed) =
+            super::scanner::MarkdownScanner::scan_snapshot_window(&source, &index, row..row + 1);
+        let parsed = parsed.into_iter().nth(row - range.start).unwrap();
+        headings.push((row, parsed));
+    }
+    collect_indexed_headings(headings.iter().map(|(row, parsed)| (*row, parsed)))
+}
+
 /// Reuses the editor's parsed document without copying or reparsing source text.
 pub(crate) fn collect_outline_from_parsed(
     parsed_lines: &[super::types::ParsedLine],
 ) -> Vec<OutlineItem> {
+    collect_indexed_headings(parsed_lines.iter().enumerate())
+}
+
+fn collect_indexed_headings<'a>(
+    rows: impl Iterator<Item = (usize, &'a super::types::ParsedLine)>,
+) -> Vec<OutlineItem> {
     let mut anchor_counts = HashMap::<String, usize>::new();
 
-    parsed_lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, parsed)| {
-            let super::types::BlockKind::Heading { level } = parsed.kind else {
-                return None;
-            };
+    rows.filter_map(|(index, parsed)| {
+        let super::types::BlockKind::Heading { level } = parsed.kind else {
+            return None;
+        };
 
-            let title = clean_heading_title(parsed.visible_text(false, 0, false));
-            let base_anchor = slugify(&title);
-            let count = anchor_counts.entry(base_anchor.clone()).or_insert(0);
-            *count += 1;
-            let anchor = if *count == 1 {
-                base_anchor
-            } else {
-                format!("{base_anchor}-{}", *count)
-            };
+        let title = clean_heading_title(parsed.visible_text(false, 0, false));
+        let base_anchor = slugify(&title);
+        let count = anchor_counts.entry(base_anchor.clone()).or_insert(0);
+        *count += 1;
+        let anchor = if *count == 1 {
+            base_anchor
+        } else {
+            format!("{base_anchor}-{}", *count)
+        };
 
-            Some(OutlineItem {
-                level,
-                title,
-                source_line: SourceLine::new(index),
-                anchor,
-            })
+        Some(OutlineItem {
+            level,
+            title,
+            source_line: SourceLine::new(index),
+            anchor,
         })
-        .collect()
+    })
+    .collect()
 }
 
 fn clean_heading_title(title: String) -> String {
@@ -100,6 +127,20 @@ fn slugify(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::slugify;
+
+    #[test]
+    fn source_outline_matches_full_parser_with_quoted_and_hidden_headings() {
+        let lines: Vec<String> =
+            "# one\n> ## quoted\n```\n# hidden\n```\n$$\n# hidden math\n$$\n# one\n"
+                .split('\n')
+                .map(str::to_owned)
+                .collect();
+        let buffer = crate::buffer::TextBuffer::from_str(&lines.join("\n"), None);
+        assert_eq!(
+            super::collect_outline_from_source(&buffer),
+            super::collect_outline(&lines)
+        );
+    }
 
     #[test]
     fn slugify_collapses_punctuation_and_whitespace() {
