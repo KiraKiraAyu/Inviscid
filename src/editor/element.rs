@@ -164,10 +164,11 @@ impl Element for EditorElement {
 
                     match mode {
                         RenderMode::LivePreview => {
-                            let first_quote = layout
-                                .quote_ranges
-                                .partition_point(|range| range.end <= visible_start);
-                            for quote_range in layout.quote_ranges[first_quote..]
+                            let quote_ranges =
+                                layout.visible_quote_ranges(visible_start..visible_end);
+                            let first_quote =
+                                quote_ranges.partition_point(|range| range.end <= visible_start);
+                            for quote_range in quote_ranges[first_quote..]
                                 .iter()
                                 .take_while(|range| range.start < visible_end)
                             {
@@ -226,9 +227,11 @@ impl Element for EditorElement {
                             .is_some_and(|(start, end)| source_line >= start && source_line <= end);
                         let is_mermaid_block_editing = active_mermaid_block
                             .is_some_and(|(start, end)| source_line >= start && source_line <= end);
-                        let math_preview = active_math_block
+                        let math_row = active_math_block
                             .filter(|(start, _)| source_line == *start + 1)
-                            .and_then(|(start, _)| layout.parsed_lines.get(start.index()))
+                            .and_then(|(start, _)| layout.parsed_lines.row(start.index()));
+                        let math_preview = math_row
+                            .as_ref()
                             .and_then(|start_line| {
                                 start_line.spans.iter().find_map(|span| span.math.as_ref())
                             })
@@ -267,11 +270,7 @@ impl Element for EditorElement {
                                     parsed,
                                     layout.space_width,
                                 ),
-                            is_syntactic_separator: layout
-                                .separators
-                                .get(line_idx)
-                                .copied()
-                                .unwrap_or(false),
+                            is_syntactic_separator: layout.separator(line_idx),
                             text_system: editor.text_system.as_ref(),
                             highlights: &highlights,
                         };

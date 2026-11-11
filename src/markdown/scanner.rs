@@ -153,6 +153,72 @@ impl Default for QuoteProjection {
 }
 
 impl QuoteProjection {
+    pub(crate) fn context_range(
+        &self,
+        mut range: std::ops::Range<usize>,
+    ) -> std::ops::Range<usize> {
+        if range.is_empty() {
+            return range;
+        }
+        if let Some(blank) = self.index.blank_range(range.start) {
+            range.start = blank.start;
+        }
+        if let Some(blank) = self.index.blank_range(range.end - 1) {
+            range.end = blank.end;
+        }
+        for group in self.quote_ranges(range.clone()) {
+            range.start = range.start.min(group.start);
+            range.end = range.end.max(group.end);
+        }
+        while range.start > 0
+            && self.normalized_line(range.start).contains('|')
+            && self.normalized_line(range.start - 1).contains('|')
+        {
+            range.start -= 1;
+        }
+        while range.end < self.len()
+            && self.normalized_line(range.end - 1).contains('|')
+            && self.normalized_line(range.end).contains('|')
+        {
+            range.end += 1;
+        }
+        range.start.saturating_sub(1)..(range.end + 1).min(self.len())
+    }
+
+    pub(crate) fn scan_window(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
+        MarkdownScanner::scan_snapshot_window(&self.source, &self.index, range)
+    }
+
+    pub(crate) fn parser_pair(&self, row: usize) -> Option<(SourceLine, SourceLine)> {
+        self.index.parser_pair(SourceLine::new(row))
+    }
+
+    pub(crate) fn quote_ranges(
+        &self,
+        requested: std::ops::Range<usize>,
+    ) -> Vec<std::ops::Range<usize>> {
+        let mut ranges = Vec::new();
+        let mut row = requested.start;
+        while row < requested.end {
+            if self.quote_prefix(row).is_none() {
+                row += 1;
+                continue;
+            }
+            let mut start = row;
+            while start > 0 && self.quote_prefix(start - 1).is_some() {
+                start -= 1;
+            }
+            row += 1;
+            while row < self.len() && self.quote_prefix(row).is_some() {
+                row += 1;
+            }
+            ranges.push(start..row);
+        }
+        ranges
+    }
     pub fn separator(&self, row: usize) -> bool {
         local_separator(&self.source, &self.index, row)
     }

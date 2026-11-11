@@ -7,7 +7,6 @@ use super::line_metrics::{DOCUMENT_BOTTOM_PADDING, LineMetrics};
 use super::{Editor, RenderMode};
 use crate::buffer::{LineSource, SourceLine};
 use crate::editor::shaping::compute_content_width;
-use crate::markdown::prefix::is_fence_line;
 use crate::markdown::{BlockKind, MarkdownScanner, ParsedLine, QuoteProjection};
 use crate::theme::Theme;
 
@@ -242,6 +241,18 @@ impl Default for DocumentLayoutCache {
 }
 
 impl DocumentLayoutCache {
+    pub(crate) fn separator(&self, line: usize) -> bool {
+        self.separators.get(line).copied().unwrap_or_else(|| {
+            self.render_mode != RenderMode::Source && self.quote_projection.separator(line)
+        })
+    }
+
+    pub(crate) fn visible_quote_ranges(&self, range: Range<usize>) -> Vec<Range<usize>> {
+        if !self.parsed_lines.is_windowed() {
+            return self.quote_ranges.as_ref().clone();
+        }
+        self.quote_projection.quote_ranges(range)
+    }
     #[inline]
     pub fn compute_indent_px(parsed: &ParsedLine, mode: RenderMode, space_width: Pixels) -> Pixels {
         if mode != RenderMode::LivePreview {
@@ -751,7 +762,7 @@ fn blockquote_edge_spacing(quote: crate::markdown::QuoteContext) -> Pixels {
 }
 
 impl Editor {
-    fn measure_line_layout_height(
+    pub(super) fn measure_line_layout_height(
         &self,
         idx: usize,
         parsed: &ParsedLine,
@@ -766,7 +777,7 @@ impl Editor {
     }
 
     /// Marks active IME preedit text so it participates in line shaping and receives an underline.
-    fn project_ime_preedit(&self, first_line: usize, parsed_lines: &mut [ParsedLine]) {
+    pub(super) fn project_ime_preedit(&self, first_line: usize, parsed_lines: &mut [ParsedLine]) {
         let Some(marked) = self.marked_range.clone() else {
             return;
         };
@@ -845,7 +856,7 @@ impl Editor {
         DocumentLayoutCache::compute_indent_px(parsed, self.render_mode, self.space_width())
     }
 
-    fn line_layout_ctx(
+    pub(super) fn line_layout_ctx(
         &self,
         parsed: &ParsedLine,
         is_active: bool,
@@ -922,10 +933,11 @@ impl Editor {
         }
         let cache = Arc::get_mut(&mut cached)?;
         let projection = Arc::get_mut(&mut cache.quote_projection)?;
+        let previous = Arc::new(projection.clone());
         if !projection.try_update_source(&self.buffer, delta) {
             return None;
         }
-        Some(cache.quote_projection.clone())
+        Some(std::mem::replace(&mut cache.quote_projection, previous))
     }
 
     fn parse_range(
@@ -1017,15 +1029,38 @@ impl Editor {
             .next_unmeasured(from)
             .filter(|&line| line < range.end)
         {
-            let end = (start + 32).min(range.end);
-            let heights = self.measure_range(
-                start..end,
-                cache.parsed_lines.range(start..end),
-                &cache.separators,
-                cache.content_width,
-                cache.active_math_block,
-                cache.active_mermaid_block,
-            );
+            let end = cache
+                .metrics
+                .unmeasured_end(start, (start + 32).min(range.end));
+            let parsed = cache.parsed_lines.read_range(start..end);
+            let mut parsed = parsed.to_vec();
+            self.project_ime_preedit(start, &mut parsed);
+            #[cfg(test)]
+            self.layout_stats.update(|mut stats| {
+                stats.lines_scanned += cache.parsed_lines.take_scanned();
+                stats
+            });
+            #[cfg(not(test))]
+            cache.parsed_lines.take_scanned();
+            let disclosure = self.disclosure_position();
+            let heights = parsed
+                .iter()
+                .zip(start..end)
+                .map(|(parsed, line)| {
+                    let source_line = SourceLine::new(line);
+                    let context = self.line_layout_ctx(
+                        parsed,
+                        source_line == disclosure.line,
+                        cache.separator(line),
+                        disclosure.col,
+                        cache.content_width,
+                        source_line,
+                        cache.active_math_block,
+                        cache.active_mermaid_block,
+                    );
+                    self.measure_line_layout_height(line, parsed, context)
+                })
+                .collect();
             cache.metrics.set_measured(start..end, heights);
             from = end;
         }
@@ -1037,7 +1072,7 @@ impl Editor {
         }
     }
 
-    fn measure_viewport(&self, cache: &mut DocumentLayoutCache) {
+    pub(super) fn measure_viewport(&self, cache: &mut DocumentLayoutCache) {
         if cache.metrics.unmeasured_count() == 0 {
             return;
         }
@@ -1075,12 +1110,38 @@ impl Editor {
     }
 
     #[cfg(test)]
+    pub(super) fn eager_metrics_for_test(&self) -> LineMetrics {
+        let cache = self.layout_snapshot();
+        let mut parsed = MarkdownScanner::scan_document(&self.buffer.lines());
+        self.project_ime_preedit(0, &mut parsed);
+        let separators = if self.render_mode == RenderMode::Source {
+            Vec::new()
+        } else {
+            crate::markdown::compute_syntactic_separators(&self.buffer)
+        };
+        LineMetrics::from_heights(self.measure_range(
+            0..parsed.len(),
+            &parsed,
+            &separators,
+            cache.content_width,
+            cache.active_math_block,
+            cache.active_mermaid_block,
+        ))
+    }
+
+    #[cfg(test)]
     pub(super) fn measure_all_pending_for_test(&mut self) {
-        self.ensure_layout_cache();
-        {
-            let mut cache = self.layout_cache.borrow_mut();
-            let len = cache.metrics.len();
-            self.measure_pending_range(Arc::make_mut(&mut cache), 0..len);
+        loop {
+            self.ensure_layout_cache();
+            {
+                let mut cache = self.layout_cache.borrow_mut();
+                let len = cache.metrics.len();
+                self.measure_pending_range(Arc::make_mut(&mut cache), 0..len);
+            }
+            self.ensure_layout_cache();
+            if self.layout_cache.borrow().metrics.unmeasured_count() == 0 {
+                break;
+            }
         }
         self.apply_layout_scroll_adjustment();
         self.rebase_scroll();
@@ -1095,7 +1156,33 @@ impl Editor {
         let current_img_v = crate::http::image_cache_version();
         let current_syntax_v = crate::syntax::syntax_cache_version();
 
+        if self.buffer.line_count() >= LAZY_LAYOUT_MIN_LINES {
+            self.ensure_window_layout(
+                content_width,
+                active_line,
+                active_col,
+                current_img_v,
+                current_syntax_v,
+            );
+            return;
+        }
+
         // Derived block state cannot change while its inputs and disclosure position match.
+        {
+            let mut cached = self.layout_cache.borrow_mut();
+            if cached.buffer_revision == self.buffer.revision()
+                && cached.lines_len == self.buffer.line_count()
+                && self.cache_matches_view(&cached, content_width)
+                && (cached.image_cache_version != current_img_v
+                    || cached.syntax_cache_version != current_syntax_v)
+            {
+                self.refresh_eager_resources(
+                    Arc::make_mut(&mut cached),
+                    current_img_v,
+                    current_syntax_v,
+                );
+            }
+        }
         {
             let cache = self.layout_cache.borrow();
             if cache.buffer_version == self.buffer.version()
@@ -1231,7 +1318,8 @@ impl Editor {
                     active_line,
                 )
             };
-            let new_h = if let Some(parsed) = cache.parsed_lines.get(active_line_idx) {
+            let new_h = if let Some(row) = cache.parsed_lines.get(active_line_idx) {
+                let parsed = &*row;
                 let lcx = self.line_layout_ctx(
                     parsed,
                     true,
@@ -1300,7 +1388,8 @@ impl Editor {
 
             let calc_h = |source_line: SourceLine, is_active: bool| -> Pixels {
                 let line_idx = source_line.index();
-                if let Some(parsed) = cache.parsed_lines.get(line_idx) {
+                if let Some(row) = cache.parsed_lines.get(line_idx) {
+                    let parsed = &*row;
                     let is_sep = separators.get(line_idx).copied().unwrap_or(false);
                     let lcx = self.line_layout_ctx(
                         parsed,
@@ -1359,6 +1448,7 @@ impl Editor {
         // Incremental block update on intra-block edits
         if let Some(delta) = self.buffer.last_edit_delta()
             && current_cache.buffer_revision.wrapping_add(1) == self.buffer.revision()
+            && !current_cache.parsed_lines.is_windowed()
             && view_matches
             && current_cache.image_cache_version == current_img_v
             && current_cache.syntax_cache_version == current_syntax_v
@@ -1459,347 +1549,6 @@ impl Editor {
         self.measure_viewport(&mut new_cache);
 
         *self.layout_cache.borrow_mut() = Arc::new(new_cache);
-    }
-
-    fn try_incremental_layout_update(
-        &self,
-        cache: &mut DocumentLayoutCache,
-        delta: crate::buffer::EditDelta,
-        active_line: SourceLine,
-        content_width: Pixels,
-        quote_projection: Arc<QuoteProjection>,
-    ) -> bool {
-        let buf_lines = &self.buffer;
-        let buf_len = buf_lines.line_count();
-        let cache_len = cache.parsed_lines.len();
-        let edit_start_idx = delta.start_line.index();
-
-        if edit_start_idx + delta.old_line_count > cache_len
-            || edit_start_idx + delta.new_line_count > buf_len
-        {
-            return false;
-        }
-        if cache.parsed_lines.get(edit_start_idx).is_some_and(|line| {
-            matches!(
-                line.kind,
-                BlockKind::MermaidBlockContent | BlockKind::MermaidBlock { .. }
-            )
-        }) {
-            return false;
-        }
-        let active_col = self.disclosure_col();
-        let active_math_block =
-            self.active_math_block_with_projection(active_line, &quote_projection);
-        let active_mermaid_block =
-            self.active_mermaid_block_with_projection(active_line, &quote_projection);
-
-        if cache_len.saturating_sub(delta.old_line_count) + delta.new_line_count != buf_len {
-            return false;
-        }
-
-        // Entering/leaving a preview changes every row of that block.
-        if cache.active_math_block != active_math_block
-            || cache.active_mermaid_block != active_mermaid_block
-        {
-            return false;
-        }
-
-        if self.render_mode != RenderMode::Source && cache.separators.len() != cache_len {
-            return false;
-        }
-
-        for line in &cache.parsed_lines[edit_start_idx..edit_start_idx + delta.old_line_count] {
-            if crate::markdown::structure::classify(crate::markdown::strip_quote_prefix(
-                &line.raw_text,
-            ))
-            .is_fence
-                || matches!(
-                    line.kind,
-                    BlockKind::CodeBlock { .. }
-                        | BlockKind::MermaidBlock { .. }
-                        | BlockKind::MathBlock { .. }
-                )
-            {
-                return false;
-            }
-        }
-        for idx in edit_start_idx..edit_start_idx + delta.new_line_count {
-            let line = buf_lines.source_line(SourceLine::new(idx));
-            let structure =
-                crate::markdown::structure::classify(crate::markdown::strip_quote_prefix(&line));
-            if structure.is_fence || structure.is_math_delim {
-                return false;
-            }
-        }
-
-        let in_code_block = edit_start_idx < cache_len
-            && matches!(
-                cache.parsed_lines[edit_start_idx].kind,
-                BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent
-            );
-        let in_math_block = edit_start_idx < cache_len
-            && matches!(
-                cache.parsed_lines[edit_start_idx].kind,
-                BlockKind::MathBlockContent
-            );
-
-        // At EOF, blank lines cannot change a following block's interpretation.
-        // Keep edits to the final paragraph/blank lines incremental; internal
-        // separators still take the conservative full-rebuild path.
-        let edits_document_tail = edit_start_idx + delta.old_line_count == cache_len
-            && edit_start_idx + delta.new_line_count == buf_len;
-        if !in_code_block && !edits_document_tail {
-            for line in &cache.parsed_lines[edit_start_idx..edit_start_idx + delta.old_line_count] {
-                let content = if line.quote.is_some() {
-                    crate::markdown::strip_quote_prefix(&line.raw_text)
-                } else {
-                    &line.raw_text
-                };
-                if content.trim().is_empty() {
-                    return false;
-                }
-            }
-            for idx in edit_start_idx..edit_start_idx + delta.new_line_count {
-                if quote_projection.normalized_line(idx).trim().is_empty() {
-                    return false;
-                }
-            }
-        }
-
-        let mut block_start = edit_start_idx;
-        if in_code_block {
-            while block_start > 0 {
-                let previous = buf_lines.source_line(SourceLine::new(block_start - 1));
-                let prev_trimmed = crate::markdown::strip_quote_prefix(&previous).trim_start();
-                if is_fence_line(prev_trimmed) {
-                    break;
-                }
-                block_start -= 1;
-            }
-        } else if in_math_block {
-            while block_start > 0 {
-                if matches!(
-                    cache.parsed_lines[block_start - 1].kind,
-                    BlockKind::MathBlock { is_start: true }
-                ) {
-                    block_start -= 1;
-                    break;
-                }
-                block_start -= 1;
-            }
-        } else {
-            while block_start > 0
-                && !buf_lines
-                    .source_line(SourceLine::new(block_start - 1))
-                    .trim()
-                    .is_empty()
-            {
-                let previous = buf_lines.source_line(SourceLine::new(block_start - 1));
-                let prev_trimmed = crate::markdown::strip_quote_prefix(&previous).trim_start();
-                if is_fence_line(prev_trimmed) || prev_trimmed.starts_with('#') {
-                    break;
-                }
-                block_start -= 1;
-            }
-        }
-
-        let mut block_end = edit_start_idx + delta.new_line_count;
-        if in_code_block {
-            while block_end < buf_len {
-                let next = buf_lines.source_line(SourceLine::new(block_end));
-                let next_trimmed = crate::markdown::strip_quote_prefix(&next).trim_start();
-                if is_fence_line(next_trimmed) {
-                    break;
-                }
-                block_end += 1;
-            }
-        } else if in_math_block {
-            while block_end < buf_len {
-                let is_close = crate::markdown::strip_quote_prefix(
-                    &buf_lines.source_line(SourceLine::new(block_end)),
-                )
-                .trim()
-                    == "$$";
-                block_end += 1;
-                if is_close {
-                    break;
-                }
-            }
-        } else {
-            while block_end < buf_len
-                && !buf_lines
-                    .source_line(SourceLine::new(block_end))
-                    .trim()
-                    .is_empty()
-            {
-                let next = buf_lines.source_line(SourceLine::new(block_end));
-                let next_trimmed = crate::markdown::strip_quote_prefix(&next).trim_start();
-                if is_fence_line(next_trimmed) || next_trimmed.starts_with('#') {
-                    break;
-                }
-                block_end += 1;
-            }
-        }
-
-        let old_block_end = block_end - delta.new_line_count + delta.old_line_count;
-        if old_block_end > cache_len {
-            return false;
-        }
-
-        let new_parsed = self.parse_range(block_start..block_end, &quote_projection, in_code_block);
-        if new_parsed.len() != block_end - block_start {
-            return false;
-        }
-
-        cache.separators = Arc::new(if self.render_mode == RenderMode::Source {
-            Vec::new()
-        } else {
-            crate::markdown::compute_syntactic_separators_with_projection(&quote_projection)
-        });
-        let lazy_replacement =
-            buf_len >= LAZY_LAYOUT_MIN_LINES && new_parsed.len() > LAYOUT_OVERSCAN_LINES * 4;
-        let scroll_anchor = lazy_replacement
-            .then(|| {
-                let top = self.scroll.current_scroll_top + self.layout_scroll_adjustment.get();
-                let line = cache
-                    .metrics
-                    .line_at_relative_y(self.scroll.anchor_line, top)?;
-                Some((
-                    line,
-                    cache.metrics.top_relative(line, self.scroll.anchor_line)?,
-                ))
-            })
-            .flatten();
-        if lazy_replacement {
-            cache
-                .metrics
-                .splice_estimated(block_start..old_block_end, new_parsed.len());
-        } else {
-            let new_heights = self.measure_range(
-                block_start..block_end,
-                &new_parsed,
-                if in_code_block {
-                    &[]
-                } else {
-                    &cache.separators
-                },
-                content_width,
-                active_math_block,
-                active_mermaid_block,
-            );
-            cache
-                .metrics
-                .splice(block_start..old_block_end, new_heights);
-        }
-        let mut quote_edge_rows = [None, None];
-        {
-            let parsed_lines = cache.parsed_lines.make_mut();
-            parsed_lines.splice(block_start..old_block_end, new_parsed);
-            // Quote groups can start/end on a neighboring heading excluded
-            // from the reparsed block. Its edge padding must change as well.
-            for (slot, row) in [
-                block_start.checked_sub(1),
-                (block_end < buf_len).then_some(block_end),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let Some(idx) = row else { continue };
-                let Some(quote) = parsed_lines[idx].quote.as_mut() else {
-                    continue;
-                };
-                let is_start = idx == 0 || quote_projection.quote_prefix(idx - 1).is_none();
-                let is_end = idx + 1 == buf_len || quote_projection.quote_prefix(idx + 1).is_none();
-                if quote.is_start != is_start || quote.is_end != is_end {
-                    quote.is_start = is_start;
-                    quote.is_end = is_end;
-                    quote_edge_rows[slot] = Some(idx);
-                }
-            }
-        }
-        // Map the former disclosure row through any inserted/deleted lines.
-        // Both old and new rows can lie outside the reparsed block.
-        let old_active_idx = cache.active_line.index();
-        let old_disclosure = if old_active_idx < block_start {
-            Some(old_active_idx)
-        } else if old_active_idx >= old_block_end {
-            Some(old_active_idx - delta.old_line_count + delta.new_line_count)
-        } else {
-            None
-        };
-        let new_disclosure = (!(block_start..block_end).contains(&active_line.index()))
-            .then_some(active_line.index());
-        let affected_rows = [
-            old_disclosure,
-            new_disclosure,
-            quote_edge_rows[0],
-            quote_edge_rows[1],
-        ];
-        for (slot, candidate) in affected_rows.into_iter().enumerate() {
-            let Some(line_idx) = candidate.filter(|&idx| idx < buf_len) else {
-                continue;
-            };
-            if affected_rows[..slot].contains(&candidate) {
-                continue;
-            }
-            let parsed = &cache.parsed_lines[line_idx];
-            let source_line = SourceLine::new(line_idx);
-            let lcx = self.line_layout_ctx(
-                parsed,
-                source_line == active_line,
-                cache.separators.get(line_idx).copied().unwrap_or(false),
-                active_col,
-                content_width,
-                source_line,
-                active_math_block,
-                active_mermaid_block,
-            );
-            let height = self.measure_line_layout_height(line_idx, parsed, lcx);
-            if Some(height) != cache.metrics.height(line_idx) {
-                cache.metrics.set_height(line_idx, height);
-            }
-        }
-
-        cache.buffer_version = self.buffer.version();
-        cache.buffer_revision = self.buffer.revision();
-        cache.lines_len = buf_len;
-        cache.active_line = active_line;
-        cache.active_col = active_col;
-        cache.active_math_block = active_math_block;
-        cache.active_mermaid_block = active_mermaid_block;
-        cache.quote_projection = quote_projection;
-        cache.quote_ranges = quote_ranges(&cache.parsed_lines).into();
-        cache.fold_version = self.display_map.version();
-
-        if lazy_replacement {
-            for region in self.display_map.fold_map().folded_regions() {
-                let start = (region.start_line.index() + 1)
-                    .max(block_start)
-                    .min(block_end);
-                let end = (region.end_line.index() + 1).min(block_end);
-                if start < end {
-                    cache.metrics.set_uniform_measured(start..end, px(0.0));
-                }
-            }
-            if let Some((line, old_top)) = scroll_anchor {
-                let mapped = if line >= edit_start_idx + delta.old_line_count {
-                    line - delta.old_line_count + delta.new_line_count
-                } else if line >= edit_start_idx {
-                    edit_start_idx
-                        + (line - edit_start_idx).min(delta.new_line_count.saturating_sub(1))
-                } else {
-                    line
-                }
-                .min(buf_len - 1);
-                if let Some(new_top) = cache.metrics.top_relative(mapped, self.scroll.anchor_line) {
-                    self.layout_scroll_adjustment
-                        .set(self.layout_scroll_adjustment.get() + new_top - old_top);
-                }
-            }
-            self.measure_viewport(cache);
-        }
-
-        true
     }
 
     pub fn get_line_y_range(&self, target_line: SourceLine) -> (Pixels, Pixels) {
@@ -1927,9 +1676,7 @@ mod incremental_tests {
     }
 
     #[gpui::test]
-    fn normalized_blank_quote_edits_require_a_separator_state_rebuild(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn normalized_blank_quote_edits_update_separator_state_locally(cx: &mut gpui::TestAppContext) {
         let (editor, cx) = cx.add_window_view(|_window, cx| {
             Editor::new_with_buffer(
                 TextBuffer::from_str("old active\n\n> ## heading\n> \n\n\nlast", None),
@@ -1942,7 +1689,7 @@ mod incremental_tests {
                 let mut cache = (*ed.layout_snapshot()).clone();
                 ed.buffer.set_cursor(Position::new(SourceLine::new(3), 2));
                 ed.buffer.insert_text("text");
-                assert!(!ed.try_incremental_layout_update(
+                assert!(ed.try_incremental_layout_update(
                     &mut cache,
                     ed.buffer.last_edit_delta().unwrap(),
                     ed.disclosure_position().line,

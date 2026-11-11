@@ -44,6 +44,7 @@ mod scroll_anchor;
 pub mod shaping;
 #[cfg(test)]
 mod tests;
+mod window_layout;
 
 pub use actions::*;
 pub use display_map::*;
@@ -736,13 +737,38 @@ impl Editor {
 
         let layout = self.layout_snapshot();
         let pos = self.buffer.cursor_pos();
-        let vdoc = if layout.separators.len() == layout.parsed_lines.len() {
-            VisualDocument::from_parsed_with_separators(&layout.parsed_lines, &layout.separators)
+        let mut target_pos = if layout.parsed_lines.is_windowed() {
+            let mut start = pos.line.index();
+            while start > 0 && layout.separator(start) {
+                start -= 1;
+            }
+            let (range, parsed) = crate::markdown::MarkdownScanner::scan_window(
+                &self.buffer,
+                start..(pos.line.index() + 1).min(self.buffer.line_count()),
+            );
+            let separators: Vec<bool> = range.clone().map(|row| layout.separator(row)).collect();
+            let document = VisualDocument::from_parsed_with_separators(&parsed, &separators);
+            let local = crate::buffer::SourcePosition::new(
+                crate::buffer::SourceLine::new(pos.line.index() - range.start),
+                pos.col,
+            );
+            let projected = document.visual_to_source(document.source_to_visual(local));
+            Position::new(
+                crate::buffer::SourceLine::new(projected.line.index() + range.start),
+                projected.col,
+            )
         } else {
-            VisualDocument::from_parsed(&self.buffer, &layout.parsed_lines)
+            let vdoc = if layout.separators.len() == layout.parsed_lines.len() {
+                VisualDocument::from_parsed_with_separators(
+                    &layout.parsed_lines,
+                    &layout.separators,
+                )
+            } else {
+                VisualDocument::from_parsed(&self.buffer, &layout.parsed_lines)
+            };
+            let vpos = vdoc.source_to_visual(crate::buffer::SourcePosition::from_position(pos));
+            vdoc.visual_to_source(vpos).to_position()
         };
-        let vpos = vdoc.source_to_visual(crate::buffer::SourcePosition::from_position(pos));
-        let mut target_pos = vdoc.visual_to_source(vpos).to_position();
 
         let current_line_str = self.buffer.line_text(target_pos.line).unwrap_or_default();
         let prefix_len = get_block_prefix_len(&current_line_str);

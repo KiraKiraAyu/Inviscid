@@ -6,21 +6,27 @@ use std::{
     sync::Arc,
 };
 
+mod resources;
+use resources::Resource;
+
 /// Parsed source rows shared by immutable layout snapshots.
 #[derive(Clone, Debug, Default)]
 pub struct ParsedLineStore {
     eager: Arc<Vec<ParsedLine>>,
     windows: Option<Arc<WindowStore>>,
+    resources: Arc<RefCell<Vec<Resource>>>,
 }
 
 const WINDOW_ROWS: usize = 256;
 const MAX_WINDOWS: usize = 8;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct WindowStore {
     source: crate::buffer::SourceSnapshot,
     index: crate::buffer::StructureIndex,
     windows: RefCell<VecDeque<ParsedWindow>>,
+    scanned: std::cell::Cell<usize>,
+    preedit: Option<(usize, Range<usize>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,7 +76,10 @@ impl ParsedLineStore {
                 source: buffer.source_snapshot(),
                 index: buffer.line_index().structure_snapshot(),
                 windows: RefCell::default(),
+                scanned: std::cell::Cell::new(0),
+                preedit: None,
             })),
+            resources: Arc::default(),
         }
     }
 
@@ -92,6 +101,13 @@ impl ParsedLineStore {
         })
     }
 
+    pub(crate) fn with_preedit(mut self, preedit: Option<(usize, Range<usize>)>) -> Self {
+        if let Some(store) = &mut self.windows {
+            Arc::make_mut(store).preedit = preedit;
+        }
+        self
+    }
+
     pub fn read_range(&self, range: Range<usize>) -> ParsedSlice {
         assert!(range.start <= range.end && range.end <= self.len());
         let Some(store) = &self.windows else {
@@ -100,7 +116,9 @@ impl ParsedLineStore {
                 range,
             };
         };
-        let window = self.load_window(store, range.clone());
+        let start = range.start / WINDOW_ROWS * WINDOW_ROWS;
+        let end = range.end.div_ceil(WINDOW_ROWS) * WINDOW_ROWS;
+        let window = self.load_window(store, start..end.min(self.len()));
         ParsedSlice {
             rows: window.rows,
             range: range.start - window.range.start..range.end - window.range.start,
@@ -114,11 +132,33 @@ impl ParsedLineStore {
         }) {
             windows.remove(position).unwrap()
         } else {
-            let (range, rows) = crate::markdown::MarkdownScanner::scan_snapshot_window(
+            let (range, mut rows) = crate::markdown::MarkdownScanner::scan_snapshot_window(
                 &store.source,
                 &store.index,
                 requested,
             );
+            if let Some((line, columns)) = &store.preedit
+                && range.contains(line)
+            {
+                let row = &mut rows[line - range.start];
+                row.spans =
+                    crate::markdown::mark_ime_preedit(&row.spans, (columns.start, columns.end));
+                if let crate::markdown::BlockKind::Table { cells, .. } = &mut row.kind {
+                    for cell in cells {
+                        cell.spans = crate::markdown::mark_ime_preedit(
+                            &cell.spans,
+                            (columns.start, columns.end),
+                        );
+                    }
+                }
+            }
+            store.scanned.set(store.scanned.get() + rows.len());
+            let mut resources = self.resources.borrow_mut();
+            for resource in Resource::collect(range.start, &rows) {
+                if !resources.iter().any(|old| old.range == resource.range) {
+                    resources.push(resource);
+                }
+            }
             ParsedWindow {
                 range,
                 rows: Arc::new(rows),
@@ -142,12 +182,116 @@ impl ParsedLineStore {
         })
     }
 
-    pub fn get(&self, line: usize) -> Option<&ParsedLine> {
-        self.eager.get(line)
+    pub(crate) fn refresh_resources(&mut self, images: bool, syntax: bool) -> Vec<Range<usize>> {
+        if !images && !syntax {
+            return Vec::new();
+        }
+        let mut resources = self.resources.borrow().clone();
+        let mut syntax_ranges = Vec::new();
+        let ranges: Vec<_> = resources
+            .iter_mut()
+            .filter_map(|resource| {
+                if !resource.changed(images, syntax) {
+                    return None;
+                }
+                if resource.is_syntax() {
+                    syntax_ranges.push(resource.range.clone());
+                }
+                Some(resource.range.clone())
+            })
+            .collect();
+        if ranges.is_empty() {
+            return ranges;
+        }
+        self.resources = Arc::new(RefCell::new(resources));
+        if let Some(store) = &self.windows {
+            let mut windows = store.windows.borrow().clone();
+            let mut scanned = store.scanned.get();
+            for range in syntax_ranges {
+                if !windows
+                    .iter()
+                    .any(|window| range.start < window.range.end && window.range.start < range.end)
+                {
+                    continue;
+                }
+                let (range, rows) = crate::markdown::MarkdownScanner::scan_snapshot_window(
+                    &store.source,
+                    &store.index,
+                    range,
+                );
+                scanned += rows.len();
+                for window in windows.iter_mut() {
+                    let start = range.start.max(window.range.start);
+                    let end = range.end.min(window.range.end);
+                    if start >= end {
+                        continue;
+                    }
+                    Arc::make_mut(&mut window.rows)
+                        [start - window.range.start..end - window.range.start]
+                        .clone_from_slice(&rows[start - range.start..end - range.start]);
+                }
+            }
+            self.windows = Some(Arc::new(WindowStore {
+                source: store.source.clone(),
+                index: store.index.clone(),
+                windows: RefCell::new(windows),
+                scanned: std::cell::Cell::new(scanned),
+                preedit: store.preedit.clone(),
+            }));
+        }
+        ranges
     }
 
-    pub fn range(&self, range: Range<usize>) -> &[ParsedLine] {
-        &self.eager[range]
+    pub(crate) fn update_resources_after_edit(
+        &mut self,
+        delta: crate::buffer::EditDelta,
+        range: Range<usize>,
+    ) {
+        let old_end = range.end - delta.new_line_count + delta.old_line_count;
+        let mut resources = self.resources.borrow().clone();
+        resources.retain_mut(|resource| {
+            if resource.range.end <= range.start {
+                return true;
+            }
+            if resource.range.start < old_end {
+                return false;
+            }
+            resource.range.start =
+                resource.range.start - delta.old_line_count + delta.new_line_count;
+            resource.range.end = resource.range.end - delta.old_line_count + delta.new_line_count;
+            true
+        });
+        resources.extend(Resource::collect(range.start, &self.eager[range]));
+        self.resources = Arc::new(RefCell::new(resources));
+    }
+
+    pub(crate) fn take_scanned(&self) -> usize {
+        self.windows
+            .as_ref()
+            .map_or(0, |store| store.scanned.replace(0))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn is_windowed(&self) -> bool {
+        self.windows.is_some()
+    }
+
+    pub fn shares_storage_with(&self, other: &Self) -> bool {
+        match (&self.windows, &other.windows) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => Arc::ptr_eq(&self.eager, &other.eager),
+            _ => false,
+        }
+    }
+
+    pub fn get(&self, line: usize) -> Option<ParsedRow> {
+        self.row(line)
+    }
+
+    pub fn range(&self, range: Range<usize>) -> ParsedSlice {
+        self.read_range(range)
     }
 
     pub fn len(&self) -> usize {
@@ -165,9 +309,11 @@ impl ParsedLineStore {
 
 impl From<Arc<Vec<ParsedLine>>> for ParsedLineStore {
     fn from(lines: Arc<Vec<ParsedLine>>) -> Self {
+        let resources = Arc::new(RefCell::new(Resource::collect(0, &lines)));
         Self {
             eager: lines,
             windows: None,
+            resources,
         }
     }
 }
@@ -192,10 +338,29 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn resource_changes_only_invalidate_matching_rows_and_keep_old_snapshots() {
+        let url = "https://example.invalid/phase-g-resource.png";
+        let buffer = crate::buffer::TextBuffer::from_str(
+            &format!("paragraph\n![test]({url})\n```unknown_phase_g\ncode\n```\nend"),
+            None,
+        );
+        let mut store = ParsedLineStore::windowed(&buffer);
+        let mut old = store.clone();
+        store.read_range(0..buffer.line_count());
+        assert!(store.refresh_resources(false, true).is_empty());
+        crate::http::record_image_size(url, 731, 349);
+        assert_eq!(store.refresh_resources(true, false), vec![1..2]);
+        assert!(!store.shares_storage_with(&old));
+        assert!(store.refresh_resources(true, false).is_empty());
+        assert_eq!(old.refresh_resources(true, false), vec![1..2]);
+    }
+
+    #[test]
     fn lazy_windows_are_bounded_and_snapshot_rows_survive_eviction() {
         let mut buffer = crate::buffer::TextBuffer::from_str(&"paragraph\n".repeat(20_000), None);
         let store = ParsedLineStore::windowed(&buffer);
         assert_eq!(store.resident_rows(), 0);
+        assert!(store.get(100).is_some());
         let retained = store.row(0).unwrap();
         for row in (0..buffer.line_count()).step_by(127) {
             assert_eq!(store.row(row).unwrap().raw_text, "paragraph");
@@ -216,10 +381,10 @@ mod tests {
         let mut store = ParsedLineStore::from(Arc::new(original.clone()));
         let snapshot = store.clone();
         assert_eq!(store.len(), 2);
-        assert_eq!(store.get(1), original.get(1));
-        assert_eq!(store.range(0..1), &original[..1]);
+        assert_eq!(store.get(1).as_deref(), original.get(1));
+        assert_eq!(&*store.range(0..1), &original[..1]);
         store.make_mut().remove(0);
         assert_eq!(snapshot.as_slice(), original);
-        assert_eq!(store.get(0), original.get(1));
+        assert_eq!(store.get(0).as_deref(), original.get(1));
     }
 }

@@ -197,7 +197,7 @@ impl Editor {
         current_line: crate::buffer::SourceLine,
         is_down: bool,
         parsed_lines: &super::parsed_line_store::ParsedLineStore,
-        separators: &[bool],
+        layout: &super::DocumentLayoutCache,
     ) -> Option<crate::buffer::SourceLine> {
         let mut search_from_line = current_line;
 
@@ -216,7 +216,7 @@ impl Editor {
             let is_hidden_line = parsed_lines
                 .row(candidate_line.index())
                 .is_some_and(|line| {
-                    separators.get(candidate_line.index()) == Some(&true)
+                    layout.separator(candidate_line.index())
                         || matches!(
                             line.kind,
                             BlockKind::MathBlock { .. }
@@ -257,12 +257,8 @@ impl Editor {
 
             // Step to next physical line, respecting folds and visual blocks
             let layout = self.layout_snapshot();
-            let next_line = self.adjacent_live_navigation_line(
-                pos.line,
-                true,
-                &layout.parsed_lines,
-                &layout.separators,
-            );
+            let next_line =
+                self.adjacent_live_navigation_line(pos.line, true, &layout.parsed_lines, &layout);
 
             if let Some(target_line) = next_line {
                 let target_line_str = self.buffer.line(target_line).unwrap_or_default();
@@ -297,12 +293,8 @@ impl Editor {
 
             // Step to previous physical line, respecting folds and visual blocks
             let layout = self.layout_snapshot();
-            let prev_line = self.adjacent_live_navigation_line(
-                pos.line,
-                false,
-                &layout.parsed_lines,
-                &layout.separators,
-            );
+            let prev_line =
+                self.adjacent_live_navigation_line(pos.line, false, &layout.parsed_lines, &layout);
 
             if let Some(target_line) = prev_line {
                 let target_line_str = self.buffer.line(target_line).unwrap_or_default();

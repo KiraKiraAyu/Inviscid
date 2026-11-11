@@ -26,6 +26,8 @@ impl LoadedFile {
             .ok()
             .and_then(|metadata| metadata.modified().ok());
         buffer.set_last_saved_mtime(mtime);
+        // Build source context while the file is still on the background loader.
+        drop(buffer.line_index());
         Ok(Self { buffer, disk_hash })
     }
 }

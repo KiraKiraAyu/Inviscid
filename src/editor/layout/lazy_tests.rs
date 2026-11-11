@@ -1,7 +1,258 @@
-use super::{Editor, LineMetrics, SourceLine};
+use super::{Editor, SourceLine};
 use crate::buffer::TextBuffer;
 use gpui::{AppContext, Bounds, point, px, size};
 use std::sync::Arc;
+
+#[gpui::test]
+fn large_structural_edits_converge_to_eager_geometry(cx: &mut gpui::TestAppContext) {
+    let text = format!(
+        "# heading\n\n> quote\n> next\n\n```unknown_phase_g\ncode\n```\n\n$$\nx\n$$\n\n| a |\n| --- |\n| b |\n\n{}",
+        "paragraph\n".repeat(20_000)
+    );
+    let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
+    editor.update(cx, |ed, _| {
+        ed.measure_all_pending_for_test();
+        for (line, insertion) in [
+            (2, "\n"),
+            (5, "```\n"),
+            (10, "$$\n"),
+            (14, "> "),
+            (16, "| c |\n"),
+        ] {
+            ed.buffer
+                .set_cursor(crate::buffer::Position::new(SourceLine::new(line), 0));
+            ed.layout_stats.set(super::super::LayoutStats::default());
+            ed.buffer.insert_text(insertion);
+            ed.prepare_viewport_layout();
+            assert_eq!(ed.layout_stats.get().full_rebuilds, 0);
+            assert!(ed.layout_stats.get().lines_measured <= 128);
+        }
+        ed.measure_all_pending_for_test();
+        let layout = ed.layout_snapshot();
+        let eager = ed.eager_metrics_for_test();
+        for row in 0..eager.len() {
+            assert_eq!(layout.metrics.height(row), eager.height(row), "row {row}");
+            assert_eq!(layout.metrics.top(row), eager.top(row), "row {row}");
+        }
+    });
+}
+
+#[gpui::test]
+fn shrinking_below_lazy_threshold_rebuilds_a_small_eager_snapshot(cx: &mut gpui::TestAppContext) {
+    let text = "paragraph\n".repeat(20_000);
+    let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
+    editor.update(cx, |ed, _| {
+        let old = ed.layout_snapshot();
+        ed.buffer.set_selection(crate::buffer::Selection {
+            anchor: crate::buffer::Position::new(SourceLine::new(0), 0),
+            head: crate::buffer::Position::new(SourceLine::new(19_999), 9),
+        });
+        ed.buffer.insert_text("small");
+        ed.prepare_viewport_layout();
+        let layout = ed.layout_snapshot();
+        assert!(!layout.parsed_lines.is_windowed());
+        assert_eq!(layout.metrics, ed.eager_metrics_for_test());
+        assert_eq!(old.parsed_lines.row(0).unwrap().raw_text, "paragraph");
+    });
+}
+
+#[gpui::test]
+fn grammar_completions_only_reparse_matching_code_blocks(cx: &mut gpui::TestAppContext) {
+    for count in [100, 20_000] {
+        let text = format!(
+            "```json\n{{\"x\":1}}\n```\n```unknown_phase_g\nplain\n```\n{}",
+            "paragraph\n".repeat(count)
+        );
+        let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
+        editor.update(cx, |ed, _| {
+            ed.ensure_layout_cache();
+            ed.layout_stats.set(super::super::LayoutStats::default());
+            crate::syntax::register_global_wasm_grammar(
+                "json",
+                include_bytes!("../../../tests/fixtures/tree-sitter-json.wasm"),
+                None,
+            )
+            .unwrap();
+            ed.prepare_viewport_layout();
+            let stats = ed.layout_stats.get();
+            assert_eq!(stats.full_rebuilds, 0);
+            assert!(stats.lines_measured <= 3, "{stats:?}");
+            assert!(stats.lines_scanned <= 3, "{stats:?}");
+            assert!(
+                ed.layout_snapshot()
+                    .parsed_lines
+                    .row(1)
+                    .unwrap()
+                    .spans
+                    .iter()
+                    .any(|span| span.syntax_token.is_some())
+            );
+        });
+    }
+}
+
+#[gpui::test]
+fn large_blank_runs_and_quote_edges_match_eager_after_edits(cx: &mut gpui::TestAppContext) {
+    let text = format!(
+        "intro\n{}> first\n> second\n\n| a |\n| --- |\n| b |\n{}",
+        "\n".repeat(60),
+        "paragraph\n".repeat(20_000)
+    );
+    let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
+    editor.update(cx, |ed, _| {
+        ed.measure_all_pending_for_test();
+        for (line, insertion) in [(20, "\n"), (62, "> \n"), (65, "| c |\n")] {
+            ed.buffer
+                .set_cursor(crate::buffer::Position::new(SourceLine::new(line), 0));
+            ed.layout_stats.set(super::super::LayoutStats::default());
+            ed.buffer.insert_text(insertion);
+            ed.prepare_viewport_layout();
+            assert_eq!(ed.layout_stats.get().full_rebuilds, 0);
+            assert!(ed.layout_stats.get().lines_measured <= 128);
+            ed.measure_all_pending_for_test();
+            let layout = ed.layout_snapshot();
+            let eager = ed.eager_metrics_for_test();
+            for row in 0..eager.len() {
+                assert_eq!(
+                    layout.metrics.height(row),
+                    eager.height(row),
+                    "edit {line}, row {row}"
+                );
+            }
+        }
+    });
+}
+
+#[gpui::test]
+fn windowed_ime_preedit_reaches_cached_render_rows(cx: &mut gpui::TestAppContext) {
+    let text = "paragraph\n".repeat(20_000);
+    let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
+    editor.update(cx, |ed, _| {
+        ed.marked_range = Some(1..4);
+        ed.ensure_layout_cache();
+        let layout = ed.layout_snapshot();
+        assert!(
+            layout
+                .parsed_lines
+                .row(0)
+                .unwrap()
+                .spans
+                .iter()
+                .any(|span| span.is_ime_preedit)
+        );
+        assert!(
+            !layout
+                .parsed_lines
+                .row(1)
+                .unwrap()
+                .spans
+                .iter()
+                .any(|span| span.is_ime_preedit)
+        );
+    });
+}
+
+#[gpui::test]
+fn image_completions_remeasure_only_matching_rows(cx: &mut gpui::TestAppContext) {
+    for count in [100, 20_000] {
+        let url = format!("https://example.invalid/phase-g-editor-{count}.png");
+        let text = format!("![image]({url})\n{}", "paragraph\n".repeat(count));
+        let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
+        editor.update(cx, |ed, _| {
+            ed.ensure_layout_cache();
+            let old = ed.layout_snapshot();
+            let old_height = old.metrics.height(0);
+            ed.layout_stats.set(super::super::LayoutStats::default());
+            crate::http::mark_url_loaded_with_size(&url, Some((123, 321)));
+            ed.prepare_viewport_layout();
+            let stats = ed.layout_stats.get();
+            assert_eq!(stats.full_rebuilds, 0);
+            assert_eq!(stats.lines_measured, 1, "{stats:?}");
+            assert_eq!(old.metrics.height(0), old_height);
+            assert_ne!(ed.layout_snapshot().metrics.height(0), old_height);
+            ed.layout_stats.set(super::super::LayoutStats::default());
+            crate::http::record_image_size("https://example.invalid/unrelated.png", 42, 24);
+            ed.prepare_viewport_layout();
+            assert_eq!(ed.layout_stats.get().lines_measured, 0);
+        });
+    }
+}
+
+#[gpui::test]
+fn structural_edits_match_full_layout_without_rebuilds(cx: &mut gpui::TestAppContext) {
+    let text = "# heading\n\nparagraph\n\n> quote\n> next\n\n| a | b |\n| --- | --- |\n| c | d |\n\n```text\ncode\n```\n\n$$\nx + y\n$$\n";
+    for mode in [
+        crate::editor::RenderMode::Source,
+        crate::editor::RenderMode::LivePreview,
+    ] {
+        let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(text, None), cx));
+        editor.update(cx, |ed, _| {
+            ed.render_mode = mode;
+            ed.ensure_layout_cache();
+            let mut seed = 0x93d7_412b_u64;
+            for step in 0..96 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let line = (seed >> 32) as usize % ed.buffer.line_count();
+                ed.buffer
+                    .set_cursor(crate::buffer::Position::new(SourceLine::new(line), 0));
+                let insert = ["\n", "```\n", "$$\n", "> ", "| a |\n", "text"][step % 6];
+                ed.layout_stats.set(super::super::LayoutStats::default());
+                ed.buffer.insert_text(insert);
+                ed.prepare_viewport_layout();
+                assert_eq!(
+                    ed.layout_stats.get().full_rebuilds,
+                    0,
+                    "step {step}: {insert:?}"
+                );
+                let layout = ed.layout_snapshot();
+                let eager = ed.eager_metrics_for_test();
+                for row in 0..eager.len() {
+                    assert_eq!(
+                        layout.metrics.height(row),
+                        eager.height(row),
+                        "step {step}, row {row}: {insert:?}"
+                    );
+                    assert_eq!(
+                        layout.metrics.top(row),
+                        eager.top(row),
+                        "step {step}, row {row}: {insert:?}"
+                    );
+                }
+                let expected = crate::markdown::MarkdownScanner::scan_document(&ed.buffer.lines());
+                for (row, expected) in expected.iter().enumerate() {
+                    assert_eq!(
+                        &*layout.parsed_lines.row(row).unwrap(),
+                        expected,
+                        "step {step}, row {row}"
+                    );
+                }
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn opening_large_documents_keeps_parsing_and_storage_local(cx: &mut gpui::TestAppContext) {
+    let text = "paragraph\n".repeat(200_000);
+    let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
+    editor.update(cx, |ed, _| {
+        ed.ensure_layout_cache();
+        assert!(
+            ed.layout_stats.get().lines_scanned <= 512,
+            "{:?}",
+            ed.layout_stats.get()
+        );
+        assert!(ed.layout_snapshot().parsed_lines.resident_rows() <= 2048);
+        ed.buffer
+            .set_cursor(crate::buffer::Position::new(SourceLine::new(100_000), 0));
+        ed.layout_stats.set(super::super::LayoutStats::default());
+        ed.buffer.insert_text("\n");
+        ed.prepare_viewport_layout();
+        assert_eq!(ed.layout_stats.get().full_rebuilds, 0);
+        assert!(ed.layout_stats.get().lines_scanned <= 1024);
+        assert!(ed.layout_stats.get().lines_measured <= 128);
+    });
+}
 
 #[gpui::test]
 fn editing_a_large_paragraph_keeps_height_measurement_local(cx: &mut gpui::TestAppContext) {
@@ -47,14 +298,7 @@ fn editing_a_large_paragraph_keeps_height_measurement_local(cx: &mut gpui::TestA
                 );
                 ed.measure_all_pending_for_test();
                 let layout = ed.layout_snapshot();
-                let eager = LineMetrics::from_heights(ed.measure_range(
-                    0..layout.lines_len,
-                    &layout.parsed_lines,
-                    &layout.separators,
-                    layout.content_width,
-                    layout.active_math_block,
-                    layout.active_mermaid_block,
-                ));
+                let eager = ed.eager_metrics_for_test();
                 assert_eq!(layout.metrics, eager);
             });
         }
@@ -102,20 +346,13 @@ fn view_changes_reuse_parsing_and_measure_only_viewport(cx: &mut gpui::TestAppCo
             }
             ed.prepare_viewport_layout();
             let stats = ed.layout_stats.get();
-            assert_eq!(stats.lines_scanned, 0, "change {change}: {stats:?}");
+            assert!(stats.lines_scanned <= 768, "change {change}: {stats:?}");
             assert_eq!(stats.full_rebuilds, 0, "change {change}: {stats:?}");
             assert!(stats.lines_measured <= 128, "change {change}: {stats:?}");
-            assert!(Arc::ptr_eq(&parsed, &ed.layout_snapshot().parsed_lines));
+            assert!(parsed.shares_storage_with(&ed.layout_snapshot().parsed_lines));
             ed.measure_all_pending_for_test();
             let layout = ed.layout_snapshot();
-            let eager = LineMetrics::from_heights(ed.measure_range(
-                0..layout.lines_len,
-                &layout.parsed_lines,
-                &layout.separators,
-                layout.content_width,
-                layout.active_math_block,
-                layout.active_mermaid_block,
-            ));
+            let eager = ed.eager_metrics_for_test();
             assert_eq!(layout.metrics, eager, "change {change}");
             for line in 0..eager.len() {
                 assert_eq!(layout.metrics.top(line), eager.top(line));

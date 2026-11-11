@@ -218,7 +218,7 @@ impl Editor {
             } else {
                 match parsed_math_block_range(&layout.parsed_lines, source_line) {
                     Some((start, _)) => source_line = start,
-                    None if layout.separators.get(source_line.index()) == Some(&true)
+                    None if layout.separator(source_line.index())
                         || matches!(
                             layout.parsed_lines.row(source_line.index())?.kind,
                             crate::markdown::BlockKind::Table {

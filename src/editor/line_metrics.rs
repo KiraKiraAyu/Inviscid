@@ -304,6 +304,23 @@ impl LineMetrics {
         );
     }
 
+    pub(crate) fn unmeasured_end(&self, from: usize, limit: usize) -> usize {
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Lines(from), Bias::Right);
+        let mut end = from;
+        while let Some(item) = cursor.item() {
+            if item.measured {
+                break;
+            }
+            end = (cursor.start().lines + item.count).min(limit);
+            if end == limit {
+                break;
+            }
+            cursor.next();
+        }
+        end
+    }
+
     pub fn set_estimate(&mut self, height: Pixels) {
         self.estimate = Fixed::from_pixels(height);
     }
@@ -377,6 +394,26 @@ impl LineMetrics {
         }
         self.replace_runs(range, items);
         true
+    }
+
+    pub(crate) fn invalidate_measured(&mut self, range: Range<usize>) {
+        assert!(range.start <= range.end && range.end <= self.len());
+        let mut cursor = self.tree.cursor::<LineSummary>(());
+        cursor.seek(&Lines(range.start), Bias::Right);
+        let mut items = Vec::new();
+        while cursor.start().lines < range.end {
+            let Some(item) = cursor.item() else { break };
+            let start = cursor.start().lines.max(range.start);
+            let end = (cursor.start().lines + item.count).min(range.end);
+            items.push(LineItem {
+                count: end - start,
+                measured: false,
+                ..item.clone()
+            });
+            cursor.next();
+        }
+        drop(cursor);
+        self.replace_runs(range, items);
     }
 
     fn replace_runs(&mut self, range: Range<usize>, items: impl IntoIterator<Item = LineItem>) {

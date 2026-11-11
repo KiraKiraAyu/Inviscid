@@ -18,7 +18,7 @@ fn large_document_first_layout_measures_only_viewport(cx: &mut gpui::TestAppCont
             ed.layout_stats.set(super::LayoutStats::default());
             let layout = ed.layout_snapshot();
             let stats = ed.layout_stats.get();
-            assert_eq!(stats.lines_scanned, 200_000);
+            assert!(stats.lines_scanned <= 512, "{stats:?}");
             assert!(stats.lines_measured <= 128, "{stats:?}");
             assert!(layout.metrics.unmeasured_count() >= 199_872);
         }
@@ -51,15 +51,7 @@ fn lazy_measurement_converges_and_preserves_visible_anchor(cx: &mut gpui::TestAp
         drop(layout);
         ed.measure_all_pending_for_test();
         let lazy = ed.layout_snapshot();
-        let expected = ed.measure_range(
-            0..lazy.parsed_lines.len(),
-            &lazy.parsed_lines,
-            &lazy.separators,
-            lazy.content_width,
-            lazy.active_math_block,
-            lazy.active_mermaid_block,
-        );
-        let eager = super::line_metrics::LineMetrics::from_heights(expected);
+        let eager = ed.eager_metrics_for_test();
         assert_eq!(lazy.metrics, eager);
         for line in 0..eager.len() {
             assert_eq!(lazy.metrics.top(line), eager.top(line));
@@ -133,7 +125,7 @@ fn large_document_layout_work_guards(cx: &mut gpui::TestAppContext) {
                 ed.ensure_layout_cache();
                 let initial = ed.layout_stats.get();
                 assert_eq!(initial.full_rebuilds, 1);
-                assert_eq!(initial.lines_scanned, 20_000);
+                assert!(initial.lines_scanned <= 512);
                 assert!(initial.lines_measured <= 128);
                 assert_eq!(initial.cache_deep_clones, 0);
                 ed.layout_stats.set(LayoutStats::default());
@@ -143,12 +135,12 @@ fn large_document_layout_work_guards(cx: &mut gpui::TestAppContext) {
                 let stats = ed.layout_stats.get();
                 if insertion == "x" {
                     assert_eq!(stats.full_rebuilds, 0);
-                    assert_eq!(stats.lines_scanned, 1);
-                    assert_eq!(stats.lines_measured, 1);
+                    assert!(stats.lines_scanned <= 512);
+                    assert!(stats.lines_measured <= 128);
                     assert!(super::line_metrics::SUMMARY_WORK.get() < 2_000);
                 } else {
-                    assert_eq!(stats.full_rebuilds, 1);
-                    assert_eq!(stats.lines_scanned, ed.buffer.line_count());
+                    assert_eq!(stats.full_rebuilds, 0);
+                    assert!(stats.lines_scanned <= 512);
                     assert!(stats.lines_measured <= 128);
                 }
                 assert_eq!(stats.cache_deep_clones, 0);
@@ -165,15 +157,11 @@ fn large_document_layout_work_guards(cx: &mut gpui::TestAppContext) {
                     .set_cursor(Position::new(SourceLine::new(line), 0));
                 ed.ensure_layout_cache();
             }
-            assert_eq!(
-                ed.layout_stats.get(),
-                LayoutStats {
-                    full_rebuilds: 0,
-                    lines_scanned: 0,
-                    lines_measured: 20,
-                    cache_deep_clones: 0,
-                }
-            );
+            let stats = ed.layout_stats.get();
+            assert_eq!(stats.full_rebuilds, 0);
+            assert!(stats.lines_scanned <= 512, "{stats:?}");
+            assert!(stats.lines_measured <= 128, "{stats:?}");
+            assert_eq!(stats.cache_deep_clones, 0);
         });
     });
 }
