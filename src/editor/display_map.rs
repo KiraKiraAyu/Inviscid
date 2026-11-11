@@ -62,15 +62,26 @@ impl FoldMap {
     /// Returns `true` if `line` is hidden inside a folded region.
     #[inline]
     pub fn is_line_folded(&self, line: SourceLine) -> bool {
-        self.regions
-            .iter()
-            .any(|r| line > r.start_line && line <= r.end_line)
+        self.region_hiding(line).is_some()
+    }
+
+    fn region_hiding(&self, line: SourceLine) -> Option<&FoldRegion> {
+        let index = self
+            .regions
+            .partition_point(|region| region.start_line < line);
+        let region = self.regions.get(index.checked_sub(1)?)?;
+        (line <= region.end_line).then_some(region)
     }
 
     /// Returns `true` if `line` is the visible header of a folded region.
     #[inline]
     pub fn is_fold_header(&self, line: SourceLine) -> bool {
-        self.regions.iter().any(|r| r.start_line == line)
+        let index = self
+            .regions
+            .partition_point(|region| region.start_line < line);
+        self.regions
+            .get(index)
+            .is_some_and(|region| region.start_line == line)
     }
 
     /// Returns the next visible line after `from_line`, skipping folded lines.
@@ -79,33 +90,20 @@ impl FoldMap {
         from_line: SourceLine,
         total_lines: usize,
     ) -> Option<SourceLine> {
-        let mut line = from_line.index() + 1;
-        while line < total_lines {
-            if let Some(reg) = self
-                .regions
-                .iter()
-                .find(|r| line > r.start_line.index() && line <= r.end_line.index())
-            {
-                line = reg.end_line.index() + 1;
-            } else {
-                return Some(SourceLine::new(line));
-            }
-        }
-        None
+        let line = SourceLine::new(from_line.index().checked_add(1)?);
+        let line = self
+            .region_hiding(line)
+            .map_or(line, |region| region.end_line + 1);
+        (line.index() < total_lines).then_some(line)
     }
 
     /// Returns the previous visible line before `from_line`, skipping folded lines.
     pub fn prev_visible_line(&self, from_line: SourceLine) -> Option<SourceLine> {
-        let line = from_line.index().checked_sub(1)?;
-        if let Some(reg) = self
-            .regions
-            .iter()
-            .find(|r| line > r.start_line.index() && line <= r.end_line.index())
-        {
-            Some(reg.start_line)
-        } else {
-            Some(SourceLine::new(line))
-        }
+        let line = from_line.checked_sub(1)?;
+        Some(
+            self.region_hiding(line)
+                .map_or(line, |region| region.start_line),
+        )
     }
 
     pub fn folded_regions(&self) -> &[FoldRegion] {
@@ -193,5 +191,93 @@ impl DisplayMap {
     #[inline]
     pub fn prev_visible_line(&self, from_line: SourceLine) -> Option<SourceLine> {
         self.fold_map.borrow().prev_visible_line(from_line)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Original linear queries remain the oracle for the ordered-region index.
+    fn linear_next(regions: &[FoldRegion], from: SourceLine, total: usize) -> Option<SourceLine> {
+        let mut line = from.index() + 1;
+        while line < total {
+            if let Some(region) = regions
+                .iter()
+                .find(|r| line > r.start_line.index() && line <= r.end_line.index())
+            {
+                line = region.end_line.index() + 1;
+            } else {
+                return Some(SourceLine::new(line));
+            }
+        }
+        None
+    }
+
+    fn linear_prev(regions: &[FoldRegion], from: SourceLine) -> Option<SourceLine> {
+        let line = from.index().checked_sub(1)?;
+        Some(
+            regions
+                .iter()
+                .find(|r| line > r.start_line.index() && line <= r.end_line.index())
+                .map_or(SourceLine::new(line), |r| r.start_line),
+        )
+    }
+
+    #[test]
+    fn fold_queries_match_linear_oracle_after_random_updates() {
+        let mut folds = FoldMap::new();
+        let mut seed = 0x85ad_19c2_43b7_6001_u64;
+        let mut random = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed as usize
+        };
+        for step in 0..10_000 {
+            let start = random() % 4096;
+            let end = start + random() % 12;
+            match step % 11 {
+                0 => {
+                    folds.unfold(SourceLine::new(start));
+                }
+                _ => folds.fold(SourceLine::new(start), SourceLine::new(end)),
+            }
+            for line in [0, start, start + 1, end, end + 1, random() % 4110, 4110] {
+                let line = SourceLine::new(line);
+                assert_eq!(
+                    folds.is_line_folded(line),
+                    folds
+                        .regions
+                        .iter()
+                        .any(|r| line > r.start_line && line <= r.end_line)
+                );
+                assert_eq!(
+                    folds.is_fold_header(line),
+                    folds.regions.iter().any(|r| line == r.start_line)
+                );
+                assert_eq!(
+                    folds.next_visible_line(line, 4110),
+                    linear_next(&folds.regions, line, 4110)
+                );
+                assert_eq!(
+                    folds.prev_visible_line(line),
+                    linear_prev(&folds.regions, line)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn skipped_edit_revisions_expand_stale_folds() {
+        let mut buffer = TextBuffer::from_str("before\nheader\na\nb\nafter", None);
+        let mut map = DisplayMap::new();
+        map.synchronize(&buffer);
+        map.fold_map_mut()
+            .fold(SourceLine::new(1), SourceLine::new(3));
+        buffer.insert_text("one\n");
+        buffer.insert_text("two\n");
+        map.synchronize(&buffer);
+        assert!(map.fold_map().folded_regions().is_empty());
     }
 }
