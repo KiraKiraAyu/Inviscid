@@ -18,6 +18,38 @@ fn init_test_globals(cx: &mut TestAppContext) {
 }
 
 #[test]
+fn titlebar_buttons_work_before_document_focus() {
+    use gpui::{Modifiers, point, px};
+
+    let mut tcx = TestAppContext::single();
+    init_test_globals(&mut tcx);
+    let (app, cx) = tcx.add_window_view(|_, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+    cx.update(|window, _| window.blur());
+    cx.run_until_parked();
+
+    cx.simulate_click(point(px(24.0), px(17.0)), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| format!("{:?}", app.read(cx).active_menu())),
+        "Some(Inviscid)"
+    );
+
+    cx.update(|_, cx| app.update(cx, |app, cx| app.close_menu(cx)));
+    cx.run_until_parked();
+    cx.simulate_click(point(px(90.0), px(17.0)), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| format!("{:?}", app.read(cx).active_menu())),
+        "Some(Workspace)"
+    );
+
+    cx.simulate_click(point(px(90.0), px(17.0)), Modifiers::default());
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| app.read(cx).active_menu().is_none()));
+}
+
+#[test]
 fn test_gpui_global_theme_resolution_and_propagation() {
     let mut cx = TestAppContext::single();
     init_test_globals(&mut cx);

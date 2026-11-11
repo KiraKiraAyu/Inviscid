@@ -1,4 +1,3 @@
-use crate::app::actions::{OpenMenu, ToggleMenu};
 use crate::app::menu::{ActiveMenu, MenuTrigger, TextMenu, ViewMenuState};
 use crate::app::workspace::Workspace;
 use crate::theme::ThemeManager;
@@ -120,12 +119,9 @@ impl Render for TitleBar {
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.btn_hover))
                             .active(|s| s.bg(theme.btn_active))
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(
-                                    ToggleMenu(ActiveMenu::Inviscid).boxed_clone(),
-                                    cx,
-                                );
-                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_active_menu(Some(ActiveMenu::Inviscid), cx);
+                            }))
                             .child(
                                 Icon::new(IconName::Menu)
                                     .size(IconSize::Small)
@@ -147,19 +143,14 @@ impl Render for TitleBar {
                             })
                             .hover(|s| s.bg(theme.btn_hover))
                             .active(|s| s.bg(theme.btn_active))
-                            .on_click(move |_, window, cx| {
-                                if is_workspace_menu_active {
-                                    window.dispatch_action(
-                                        crate::app::actions::CloseMenu.boxed_clone(),
-                                        cx,
-                                    );
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let menu = if this.active_menu == Some(ActiveMenu::Workspace) {
+                                    None
                                 } else {
-                                    window.dispatch_action(
-                                        OpenMenu(ActiveMenu::Workspace).boxed_clone(),
-                                        cx,
-                                    );
-                                }
-                            })
+                                    Some(ActiveMenu::Workspace)
+                                };
+                                this.set_active_menu(menu, cx);
+                            }))
                             .flex()
                             .flex_row()
                             .items_center()
@@ -211,6 +202,43 @@ impl Render for TitleBar {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[gpui::test]
+    fn titlebar_buttons_work_while_document_is_loading(cx: &mut TestAppContext) {
+        use crate::{InviscidWindow, config::AppConfig};
+
+        cx.update(|cx| {
+            let config = AppConfig::default();
+            cx.set_global(ThemeManager::from_config(&config));
+            cx.set_global(config);
+        });
+        let (app, cx) = cx.add_window_view(|_, cx| InviscidWindow::new(cx));
+        let editor = cx.update(|window, cx| {
+            let workspace = app.read(cx).workspace().clone();
+            workspace.update(cx, |workspace, cx| workspace.new_tab(cx));
+            let editor = workspace.read(cx).active_editor().unwrap().clone();
+            // Keep the loading state parked without depending on disk or worker timing.
+            editor.update(cx, |editor, _| editor.begin_loading("loading.md".into()));
+            window.blur();
+            editor
+        });
+        cx.run_until_parked();
+        cx.simulate_click(point(px(24.0), px(17.0)), Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_, cx| app.read(cx).active_menu()),
+            Some(ActiveMenu::Inviscid)
+        );
+        cx.update(|_, cx| app.update(cx, |app, cx| app.close_menu(cx)));
+        cx.run_until_parked();
+        cx.simulate_click(point(px(90.0), px(17.0)), Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_, cx| app.read(cx).active_menu()),
+            Some(ActiveMenu::Workspace)
+        );
+        assert!(cx.update(|_, cx| editor.read(cx).is_loading()));
+    }
 
     #[test]
     fn test_active_menu_text_menu_classification() {
