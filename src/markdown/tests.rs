@@ -1261,3 +1261,21 @@ fn blank_run_terminal_separator_classification_matches_projection() {
         }
     }
 }
+#[test]
+fn code_fence_footer_projects_to_last_editable_line() {
+    use crate::buffer::{SourceLine, SourcePosition};
+
+    for text in ["```rust\nx\n```", "```rust\n```", "```rust\nx"] {
+        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        let document = VisualDocument::from_lines(&lines);
+        let last = SourceLine::new(lines.len() - 1);
+        let position =
+            document.visual_to_source(document.source_to_visual(SourcePosition::new(last, 0)));
+        let expected = if text.ends_with("```") {
+            last - 1
+        } else {
+            last
+        };
+        assert_eq!(position.line, expected, "{text}");
+    }
+}

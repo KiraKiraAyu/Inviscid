@@ -6,7 +6,7 @@ use crate::editor::shaping::{
     LineShapingContext, calculate_col_from_point, calculate_pos_from_col, compute_content_width,
     get_block_style_for_line_with_metrics,
 };
-use crate::markdown::{BlockKind, get_block_prefix_len};
+use crate::markdown::get_block_prefix_len;
 use crate::theme::Theme;
 
 impl Editor {
@@ -196,7 +196,6 @@ impl Editor {
         &self,
         current_line: crate::buffer::SourceLine,
         is_down: bool,
-        parsed_lines: &super::parsed_line_store::ParsedLineStore,
         layout: &super::DocumentLayoutCache,
     ) -> Option<crate::buffer::SourceLine> {
         let mut search_from_line = current_line;
@@ -213,20 +212,7 @@ impl Editor {
             }?;
 
             search_from_line = candidate_line;
-            let is_hidden_line = parsed_lines
-                .row(candidate_line.index())
-                .is_some_and(|line| {
-                    layout.separator(candidate_line.index())
-                        || matches!(
-                            line.kind,
-                            BlockKind::MathBlock { .. }
-                                | BlockKind::Table {
-                                    is_delimiter: true,
-                                    ..
-                                }
-                        )
-                });
-            if !is_hidden_line {
+            if layout.is_live_cursor_line(candidate_line) {
                 return Some(candidate_line);
             }
         }
@@ -257,8 +243,7 @@ impl Editor {
 
             // Step to next physical line, respecting folds and visual blocks
             let layout = self.layout_snapshot();
-            let next_line =
-                self.adjacent_live_navigation_line(pos.line, true, &layout.parsed_lines, &layout);
+            let next_line = self.adjacent_live_navigation_line(pos.line, true, &layout);
 
             if let Some(target_line) = next_line {
                 let target_line_str = self.buffer.line(target_line).unwrap_or_default();
@@ -293,8 +278,7 @@ impl Editor {
 
             // Step to previous physical line, respecting folds and visual blocks
             let layout = self.layout_snapshot();
-            let prev_line =
-                self.adjacent_live_navigation_line(pos.line, false, &layout.parsed_lines, &layout);
+            let prev_line = self.adjacent_live_navigation_line(pos.line, false, &layout);
 
             if let Some(target_line) = prev_line {
                 let target_line_str = self.buffer.line(target_line).unwrap_or_default();

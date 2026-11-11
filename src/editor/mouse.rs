@@ -255,6 +255,13 @@ impl Editor {
         let target_line_idx = target_line.index();
 
         let layout = self.layout_snapshot();
+        if self.render_mode == RenderMode::LivePreview {
+            let position = Position::new(target_line, 0);
+            let projected = layout.project_code_block_cursor(position);
+            if projected != position {
+                return projected;
+            }
+        }
         if let Some(row) = layout.parsed_lines.row(target_line_idx) {
             let parsed = &*row;
             let is_source = self.render_mode == RenderMode::Source;

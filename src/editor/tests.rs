@@ -2476,6 +2476,168 @@ fn test_live_preview_vertical_navigation_skips_math_delimiters(cx: &mut gpui::Te
 }
 
 #[gpui::test]
+fn live_navigation_skips_code_fence_footers(cx: &mut gpui::TestAppContext) {
+    use super::{Editor, RenderMode};
+    use crate::buffer::{Position, TextBuffer};
+
+    for (content, last_code, after) in [
+        ("Before\n```rust\nx\n```\nAfter".to_owned(), 2, 4),
+        ("Before\n> ```rust\n> x\n> ```\nAfter".to_owned(), 2, 4),
+        (
+            format!("Before\n```rust\n{}```\nAfter", "x\n".repeat(1100)),
+            1101,
+            1103,
+        ),
+        ("Before\n```rust\n```\nAfter".to_owned(), 1, 3),
+    ] {
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            Editor::new_with_buffer(TextBuffer::from_str(&content, None), cx)
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, _| {
+                editor.render_mode = RenderMode::LivePreview;
+                let before = editor.buffer.full_line_materializations();
+                for select in [false, true] {
+                    editor
+                        .buffer
+                        .set_cursor(Position::new(SourceLine::new(last_code), 0));
+                    editor.move_down(select, window);
+                    assert_eq!(
+                        editor.buffer.cursor_pos().line,
+                        SourceLine::new(after),
+                        "down, select={select}"
+                    );
+                    if select {
+                        assert_eq!(
+                            editor.buffer.selection().anchor,
+                            Position::new(SourceLine::new(last_code), 0)
+                        );
+                    }
+                    editor
+                        .buffer
+                        .set_cursor(Position::new(SourceLine::new(after), 0));
+                    editor.move_up(select, window);
+                    assert_eq!(
+                        editor.buffer.cursor_pos().line,
+                        SourceLine::new(last_code),
+                        "up, select={select}"
+                    );
+                }
+                assert_eq!(editor.buffer.full_line_materializations(), before);
+                editor.render_mode = RenderMode::Source;
+                editor
+                    .buffer
+                    .set_cursor(Position::new(SourceLine::new(last_code), 0));
+                editor.move_down(false, window);
+                assert_eq!(editor.buffer.cursor_pos().line, SourceLine::new(after - 1));
+            });
+        });
+    }
+}
+
+#[gpui::test]
+fn live_hit_testing_maps_code_fence_footer_to_content(cx: &mut gpui::TestAppContext) {
+    use super::Editor;
+    use crate::buffer::{Position, TextBuffer};
+
+    let (editor, cx) = cx.add_window_view(|_, cx| {
+        Editor::new_with_buffer(
+            TextBuffer::from_str("Before\n```rust\nlet x = 1;\n```\nAfter", None),
+            cx,
+        )
+    });
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, _| {
+            editor.ensure_layout_cache();
+            let bounds =
+                editor.line_screen_bounds(SourceLine::new(3), editor.viewport_bounds_val());
+            let position = editor.find_pos_for_mouse_point(bounds.center(), window);
+            assert_eq!(position, Position::new(SourceLine::new(2), 10));
+        });
+    });
+}
+
+#[gpui::test]
+fn live_code_fence_navigation_at_document_end(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+
+    for content in ["```rust\nx\n```", "```rust\n```", "```rust\nx"] {
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            super::Editor::new_with_buffer(TextBuffer::from_str(content, None), cx)
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, _| {
+                let last_code = if content == "```rust\n```" { 0 } else { 1 };
+                editor
+                    .buffer
+                    .set_cursor(Position::new(SourceLine::new(last_code), 0));
+                let before = editor.buffer.revision();
+                editor.move_down(true, window);
+                assert_eq!(editor.buffer.cursor_pos().line, SourceLine::new(last_code));
+                assert_eq!(editor.buffer.revision(), before);
+
+                editor.move_down(false, window);
+                let paragraph = editor.buffer.cursor_pos().line;
+                if !content.ends_with("```") {
+                    assert_eq!(paragraph, SourceLine::new(last_code));
+                    assert_eq!(editor.buffer.revision(), before);
+                    return;
+                }
+                assert!(paragraph.index() > last_code, "{content}");
+                assert_eq!(editor.buffer.line_len(paragraph), 0);
+                assert!(!editor.buffer.is_in_code_fence(paragraph));
+                editor.move_up(false, window);
+                assert_eq!(editor.buffer.cursor_pos().line, SourceLine::new(last_code));
+            });
+        });
+    }
+}
+
+#[gpui::test]
+fn switching_to_live_projects_code_fence_footer(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+
+    for (content, footer) in [
+        ("```rust\nx\n```".to_owned(), 2),
+        ("```rust\n```".to_owned(), 1),
+        ("> ```rust\n> x\n> ```".to_owned(), 2),
+        (format!("```rust\n{}```", "x\n".repeat(1100)), 1101),
+    ] {
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            super::Editor::new_with_buffer(TextBuffer::from_str(&content, None), cx)
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.set_render_mode(super::RenderMode::Source, cx);
+                editor
+                    .buffer
+                    .set_cursor(Position::new(SourceLine::new(footer), 0));
+                let before = editor.buffer.full_line_materializations();
+                editor.set_render_mode(super::RenderMode::LivePreview, cx);
+                assert_eq!(editor.buffer.cursor_pos().line, SourceLine::new(footer - 1));
+                assert_eq!(editor.buffer.full_line_materializations(), before);
+            });
+        });
+    }
+}
+
+#[gpui::test]
+fn selecting_all_preserves_closing_code_fence(cx: &mut gpui::TestAppContext) {
+    let content = "Before\n```rust\nx\n```";
+    let (editor, cx) = cx.add_window_view(|_, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(content, None), cx)
+    });
+    cx.update(|_, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.select_all(cx);
+            assert_eq!(editor.buffer.selected_text().as_deref(), Some(content));
+            editor.perform_edit(cx, |editor| editor.buffer.insert_text(""));
+            assert_eq!(editor.buffer.char_count(), 0);
+        });
+    });
+}
+
+#[gpui::test]
 fn test_clicking_empty_display_math_creates_an_editable_source_line(cx: &mut gpui::TestAppContext) {
     use crate::buffer::{Position, TextBuffer};
     use crate::config::AppConfig;

@@ -761,6 +761,7 @@ impl Editor {
             target_pos.col = prefix_len.min(self.buffer.line_len(target_pos.line));
         }
 
+        target_pos = layout.project_code_block_cursor(target_pos);
         self.buffer.set_cursor(target_pos);
         self.pixel_column_goal = None;
     }

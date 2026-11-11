@@ -288,8 +288,12 @@ impl VisualDocument {
             let range = block.source_range();
             if range.contains(&pos.line) {
                 match block {
-                    VisualBlock::CodeBlock { start_line, .. } => {
-                        let line_in_block = pos.line - *start_line;
+                    VisualBlock::CodeBlock {
+                        start_line,
+                        code_line_count,
+                        ..
+                    } => {
+                        let line_in_block = (pos.line - *start_line).min(code_line_count.count());
                         return VisualPosition::new(
                             ProjectedBlockIndex::new(b_idx),
                             ProjectedLine::new(line_in_block),
@@ -404,9 +408,10 @@ impl VisualDocument {
             VisualBlock::CodeBlock {
                 start_line,
                 end_line,
-                ..
+                code_line_count,
             } => {
-                let target_line = (*start_line + line_in_block).min(*end_line);
+                let last_editable = (*start_line + code_line_count.count()).min(*end_line);
+                let target_line = (*start_line + line_in_block).min(last_editable);
                 SourcePosition::new(target_line, vpos.col)
             }
             VisualBlock::Table {
