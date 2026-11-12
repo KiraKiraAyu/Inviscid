@@ -144,7 +144,11 @@ impl LineIndex {
         self.structure.fence_state(target_line).1
     }
 
-    fn math_pair(
+    pub(super) fn has_fence_after(&self, line: crate::buffer::SourceLine) -> bool {
+        self.structure.has_fence_after(line)
+    }
+
+    pub(super) fn math_pair(
         &self,
         target_line: crate::buffer::SourceLine,
     ) -> Option<(crate::buffer::SourceLine, crate::buffer::SourceLine)> {

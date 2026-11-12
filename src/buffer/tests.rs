@@ -1,24 +1,196 @@
 use super::*;
 
 #[test]
+fn structural_deletion_reuses_index_without_full_fence_scans() {
+    for (backward, block, row, col) in [
+        (true, "# title", 0, 2),
+        (true, "- item", 0, 2),
+        (true, "> text", 0, 2),
+        (true, "---", 0, 0),
+        (false, "---", 0, 0),
+        (true, "```rust\nx\n```", 0, 4),
+        (true, "> $$\n> x\n> $$", 0, 4),
+        (false, "> $$\n> x\n> $$", 1, 3),
+    ] {
+        let mut buffer =
+            TextBuffer::from_str(&format!("{block}\n\n{}", "paragraph\n".repeat(5_000)), None);
+        let classified = buffer.line_index().classified_lines();
+        let scans = crate::markdown::scanner::FULL_FENCE_SCANS.get();
+        buffer.set_cursor(Position::new(SourceLine::new(row), col));
+        if backward {
+            buffer.backspace_mode(false);
+        } else {
+            buffer.delete_forward_mode(false);
+        }
+        assert_eq!(
+            crate::markdown::scanner::FULL_FENCE_SCANS.get(),
+            scans,
+            "{block:?}"
+        );
+        let added = buffer
+            .last_edit_delta
+            .map_or(0, |delta| delta.new_line_count);
+        assert_eq!(buffer.line_index().classified_lines(), classified + added);
+        assert_eq!(buffer.full_line_materializations(), 0);
+    }
+}
+
+#[test]
+fn deletion_protects_projected_math_boundaries() {
+    for quote in ["", "> ", "> > "] {
+        let block = format!("{quote}$$\n{quote}x\n{quote}$$");
+        let delimiter_len = quote.len() + 2;
+        for (backward, input, row, col) in [
+            (true, block.clone(), 0, delimiter_len),
+            (true, block.clone(), 2, delimiter_len),
+            (false, block.clone(), 0, quote.len()),
+            (false, block.clone(), 2, quote.len()),
+            (true, block.clone(), 1, 0),
+            (false, block.clone(), 1, quote.len() + 1),
+            (true, format!("{block}\nafter"), 3, 0),
+            (true, format!("{block}\n\nafter"), 4, 0),
+            (false, format!("before\n{block}"), 0, 6),
+            (false, format!("before\n\n{block}"), 0, 6),
+        ] {
+            let mut buffer = TextBuffer::from_str(&input, None);
+            let cursor = Position::new(SourceLine::new(row), col);
+            buffer.set_cursor(cursor);
+            if backward {
+                buffer.backspace_mode(false);
+            } else {
+                buffer.delete_forward_mode(false);
+            }
+            assert_eq!(
+                buffer.to_string_normalized(),
+                input,
+                "backward={backward}, {cursor:?}"
+            );
+            assert_eq!(buffer.cursor_pos(), cursor);
+            assert!(buffer.undo_stack.is_empty());
+            if backward {
+                buffer.backspace_mode(true);
+            } else {
+                buffer.delete_forward_mode(true);
+            }
+            assert_ne!(buffer.to_string_normalized(), input);
+            buffer.undo();
+            assert_eq!(buffer.to_string_normalized(), input);
+        }
+    }
+}
+
+#[test]
+fn deleting_to_empty_keeps_line_deltas_and_cached_index_consistent() {
+    for (input, start, count, inserted) in [
+        ("\n---", 1, 1, vec![]),
+        ("---\n", 0, 2, vec![String::new()]),
+        ("---", 0, 1, vec![String::new()]),
+        ("text", 0, 1, vec![]),
+        ("\n---\n", 1, 1, vec![]),
+    ] {
+        let mut buffer = TextBuffer::from_str(input, None);
+        let before_count = buffer.line_count();
+        let classified = buffer.line_index().classified_lines();
+        buffer.replace_line_range(SourceLine::new(start), count, inserted, buffer.selection());
+        assert_eq!(buffer.to_string_normalized(), "");
+        assert_eq!(buffer.line_count(), 2);
+        for (phase, old_count) in [before_count, 2, before_count].into_iter().enumerate() {
+            let delta = buffer.last_edit_delta.unwrap();
+            assert_eq!(
+                old_count - delta.old_line_count + delta.new_line_count,
+                buffer.line_count(),
+                "{input:?}"
+            );
+            if phase == 0 {
+                assert_eq!(
+                    buffer.line_index().classified_lines(),
+                    classified + delta.new_line_count,
+                    "index rebuilt for {input:?}"
+                );
+                buffer.undo();
+                assert_eq!(buffer.to_string_normalized(), input);
+            } else if phase == 1 {
+                // Undo restores an earlier version, so the existing cache policy rebuilds.
+                assert_eq!(buffer.line_index().classified_lines(), before_count);
+                buffer.redo();
+                assert_eq!(buffer.to_string_normalized(), "");
+            } else {
+                assert_eq!(
+                    buffer.line_index().classified_lines(),
+                    before_count + delta.new_line_count
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn structural_deletion_uses_rope_and_preserves_history() {
     // backward, input, cursor, expected text, expected cursor
     for (backward, input, at, expected, after) in [
-        (true, "before\n\n---\n\nafter", (2, 0), "before\n\nafter", (1, 0)),
+        (
+            true,
+            "before\n\n---\n\nafter",
+            (2, 0),
+            "before\n\nafter",
+            (1, 0),
+        ),
         (true, "---\n\nafter", (0, 0), "\nafter", (0, 0)),
         (true, "---", (0, 3), "", (0, 0)),
         (false, "---\n\nafter", (0, 1), "\n\nafter", (0, 0)),
-        (true, "before\n- item\nafter", (1, 2), "before\n\nitem\n\nafter", (2, 0)),
-        (true, "before\n> item\n\nafter", (1, 2), "before\n\nitem\n\nafter", (2, 0)),
+        (
+            true,
+            "before\n- item\nafter",
+            (1, 2),
+            "before\n\nitem\n\nafter",
+            (2, 0),
+        ),
+        (
+            true,
+            "before\n> item\n\nafter",
+            (1, 2),
+            "before\n\nitem\n\nafter",
+            (2, 0),
+        ),
         (true, "# title", (0, 2), "title", (0, 0)),
         (true, "```\n\n```", (1, 0), "", (0, 0)),
-        (true, "before\n\n```\n\n```\n\nafter", (3, 0), "before\n\n\nafter", (1, 0)),
+        (
+            true,
+            "before\n\n```\n\n```\n\nafter",
+            (3, 0),
+            "before\n\n\nafter",
+            (1, 0),
+        ),
         (true, "```\ncode\n```\n", (3, 0), "```\ncode\n```", (1, 4)),
-        (true, "```\ncode\n```\nafter", (3, 0), "```\ncode\n```\nafter", (1, 4)),
-        (true, "```\ncode\n```\n\nafter", (4, 0), "```\ncode\n```\nafter", (1, 4)),
-        (true, "$$\nx\n$$\n\nafter", (4, 0), "$$\nx\n$$\n\nafter", (4, 0)),
+        (
+            true,
+            "```\ncode\n```\nafter",
+            (3, 0),
+            "```\ncode\n```\nafter",
+            (1, 4),
+        ),
+        (
+            true,
+            "```\ncode\n```\n\nafter",
+            (4, 0),
+            "```\ncode\n```\nafter",
+            (1, 4),
+        ),
+        (
+            true,
+            "$$\nx\n$$\n\nafter",
+            (4, 0),
+            "$$\nx\n$$\n\nafter",
+            (4, 0),
+        ),
         (true, "$$\nx\n$$", (1, 0), "$$\nx\n$$", (1, 0)),
-        (false, "before\n\n$$\nx\n$$", (0, 6), "before\n\n$$\nx\n$$", (0, 6)),
+        (
+            false,
+            "before\n\n$$\nx\n$$",
+            (0, 6),
+            "before\n\n$$\nx\n$$",
+            (0, 6),
+        ),
         (false, "$$\nx\n$$", (1, 1), "$$\nx\n$$", (1, 1)),
         (false, "$$\nx\n$$", (0, 1), "$$\nx\n$$", (0, 1)),
     ] {
@@ -35,13 +207,113 @@ fn structural_deletion_uses_rope_and_preserves_history() {
         assert_eq!(buffer.selection(), after, "{input:?}");
         assert_eq!(buffer.full_line_materializations(), 0, "{input:?}");
         assert_eq!(buffer.word_count(), expected.split_whitespace().count());
-        assert_eq!(buffer.undo_stack.len(), usize::from(input != expected || before != after));
+        assert_eq!(
+            buffer.undo_stack.len(),
+            usize::from(input != expected || before != after)
+        );
         buffer.undo();
         assert_eq!(buffer.to_string_normalized(), input, "{input:?}");
         assert_eq!(buffer.selection(), before);
         buffer.redo();
         assert_eq!(buffer.to_string_normalized(), expected, "{input:?}");
         assert_eq!(buffer.selection(), after);
+    }
+}
+
+#[test]
+fn structural_deletion_preserves_empty_sentinel_transitions() {
+    for (backward, input, line) in [
+        (true, "---\n\n", 0),
+        (false, "\n---", 1),
+        (true, "\n\n---", 2),
+        (true, "\n```\n\n```", 2),
+    ] {
+        let mut buffer = TextBuffer::from_str(input, None);
+        buffer.set_cursor(Position::new(SourceLine::new(line), 0));
+        if backward {
+            buffer.backspace_mode(false);
+        } else {
+            buffer.delete_forward_mode(false);
+        }
+        assert_eq!(buffer.to_string_normalized(), "", "{input:?}");
+        assert_eq!(buffer.line_count(), 2);
+        assert_eq!(buffer.full_line_materializations(), 0);
+        buffer.undo();
+        assert_eq!(buffer.to_string_normalized(), input);
+        buffer.redo();
+        assert_eq!(buffer.to_string_normalized(), "");
+        assert_eq!(buffer.line_count(), 2);
+    }
+}
+
+#[test]
+fn structural_deletion_in_large_document_keeps_history_local() {
+    let prefix = "paragraph\n".repeat(5_000);
+    let original = format!("{prefix}\n```\n\n```\n\ntail");
+    let mut buffer = TextBuffer::from_str(&original, None);
+    let cursor = Position::new(SourceLine::new(5_002), 0);
+    buffer.set_cursor(cursor);
+    buffer.backspace_mode(false);
+    assert_eq!(buffer.to_string_normalized(), format!("{prefix}\n\ntail"));
+    assert_eq!(buffer.full_line_materializations(), 0);
+    let step = buffer.undo_stack.back().unwrap();
+    assert_eq!(step.start_line, SourceLine::new(5_001));
+    assert_eq!(step.old_lines.len(), 4);
+    assert_eq!(step.new_lines.len(), 1);
+    buffer.undo();
+    assert_eq!(buffer.to_string_normalized(), original);
+    assert_eq!(buffer.cursor_pos(), cursor);
+    buffer.redo();
+    assert_eq!(buffer.to_string_normalized(), format!("{prefix}\n\ntail"));
+    assert_eq!(buffer.full_line_materializations(), 0);
+}
+
+#[test]
+fn deletion_modes_preserve_unicode_selection_and_empty_document_history() {
+    for backward in [false, true] {
+        for source in [false, true] {
+            for reversed in [false, true] {
+                let original = "a\u{754c}\n\u{1f642}z";
+                let mut buffer = TextBuffer::from_str(original, None);
+                let start = Position::new(SourceLine::new(0), 1);
+                let end = Position::new(SourceLine::new(1), 1);
+                let selection = if reversed {
+                    Selection::new(end, start)
+                } else {
+                    Selection::new(start, end)
+                };
+                buffer.set_selection(selection);
+                if backward {
+                    buffer.backspace_mode(source);
+                } else {
+                    buffer.delete_forward_mode(source);
+                }
+                assert_eq!(buffer.to_string_normalized(), "az");
+                assert_eq!(buffer.cursor_pos(), start);
+                assert_eq!(buffer.full_line_materializations(), 0);
+                buffer.undo();
+                assert_eq!(buffer.to_string_normalized(), original);
+                assert_eq!(buffer.selection(), selection);
+                buffer.redo();
+                assert_eq!(buffer.to_string_normalized(), "az");
+                buffer.set_selection(Selection::new(
+                    Position::new(SourceLine::new(0), 0),
+                    Position::new(SourceLine::new(0), 2),
+                ));
+                if backward {
+                    buffer.backspace_mode(source);
+                } else {
+                    buffer.delete_forward_mode(source);
+                }
+                assert_eq!(buffer.to_string_normalized(), "");
+                assert_eq!(buffer.line_count(), 2);
+                buffer.undo();
+                assert_eq!(buffer.to_string_normalized(), "az");
+                buffer.redo();
+                assert_eq!(buffer.to_string_normalized(), "");
+                assert_eq!(buffer.line_count(), 2);
+            }
+        }
     }
 }
 
@@ -159,9 +431,12 @@ fn no_op_line_mutation_does_not_hide_the_previous_edit_from_undo() {
     let mut buf = TextBuffer::from_str("original", None);
     buf.insert_text("!");
     assert_eq!(buf.to_string_normalized(), "!original");
-    buf.record_edit(|lines, _| {
-        let _ = &mut lines[crate::buffer::SourceLine::new(0)];
-    });
+    buf.replace_line_range(
+        SourceLine::new(0),
+        1,
+        vec!["!original".into()],
+        buf.selection(),
+    );
     assert_eq!(buf.to_string_normalized(), "!original");
 
     buf.undo();
@@ -172,10 +447,12 @@ fn no_op_line_mutation_does_not_hide_the_previous_edit_from_undo() {
 #[test]
 fn selection_only_undo_does_not_change_rope_content() {
     let mut buf = TextBuffer::from_str("first\nlast", None);
-    buf.record_edit(|lines, selection| {
-        let _ = &mut lines[crate::buffer::SourceLine::new(1)];
-        *selection = Selection::cursor(Position::new(crate::buffer::SourceLine::new(1), 4));
-    });
+    buf.replace_line_range(
+        SourceLine::new(1),
+        0,
+        vec![],
+        Selection::cursor(Position::new(SourceLine::new(1), 4)),
+    );
 
     buf.undo();
 

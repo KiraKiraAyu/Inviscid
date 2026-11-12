@@ -423,7 +423,14 @@ fn quoted_content(line: &str) -> Option<(usize, &str)> {
     (prefix_len > 0).then_some((prefix_len, &line[prefix_len..]))
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FULL_FENCE_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn top_level_fenced_lines(lines: &(impl LineSource + ?Sized)) -> Vec<bool> {
+    #[cfg(test)]
+    FULL_FENCE_SCANS.with(|count| count.set(count.get() + 1));
     let mut fenced = vec![false; lines.line_count()];
     let mut open_idx = None;
 

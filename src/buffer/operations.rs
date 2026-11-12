@@ -1,20 +1,10 @@
 use super::char_col_to_byte_offset;
-use super::movement::is_closing_code_fence_lines;
 use super::primitives::{Position, Selection};
-use super::{LineSource, SourceLine, SourceLines, TextBuffer};
+use super::{LineSource, SourceLine, TextBuffer};
 use crate::markdown::{
     BlockPrefix, current_indent_relative, get_smart_continuation_prefix, indent_col,
     is_thematic_break, list_marker, parse_block_prefix, parse_heading_prefix, quote_prefix_len,
 };
-
-fn ensure_min_empty_lines(lines: &mut SourceLines) {
-    if lines.is_empty() {
-        lines.push(String::new());
-        lines.push(String::new());
-    } else if lines.len() == 1 && lines[crate::buffer::SourceLine::new(0)].is_empty() {
-        lines.push(String::new());
-    }
-}
 
 fn list_ancestor_for_buffer(
     buffer: &TextBuffer,
@@ -97,31 +87,6 @@ fn remove_char_at_col(line: &mut String, col: usize) {
     }
 }
 
-fn delete_range_internal(lines: &mut SourceLines, (start, end): (Position, Position)) {
-    if start == end {
-        return;
-    }
-    if start.line == end.line {
-        let line = &mut lines[start.line];
-        let start_byte = char_col_to_byte_offset(line, start.col);
-        let end_byte = char_col_to_byte_offset(line, end.col);
-        let start_byte = start_byte.min(end_byte);
-        line.drain(start_byte..end_byte);
-    } else {
-        let start_byte = char_col_to_byte_offset(&lines[start.line], start.col);
-        let end_byte = char_col_to_byte_offset(&lines[end.line], end.col);
-        let suffix = lines[end.line][end_byte..].to_string();
-        lines[start.line].truncate(start_byte);
-        lines[start.line].push_str(&suffix);
-
-        if end.line > start.line {
-            lines.drain_source_lines((start.line + 1)..=end.line);
-        }
-    }
-
-    ensure_min_empty_lines(lines);
-}
-
 /// Inserts an empty block before an unfenced block. Each empty block occupies
 /// an editable source line followed by its own blank separator, regardless of
 /// whether the following block is a heading or a paragraph. Enter at the start
@@ -173,8 +138,8 @@ fn newline_edit(
     };
 
     if current_line.is_empty() {
-        let next_has_content = line.index() + 1 < line_count
-            && !lines.source_line(line + 1).trim().is_empty();
+        let next_has_content =
+            line.index() + 1 < line_count && !lines.source_line(line + 1).trim().is_empty();
         return if is_source || next_has_content {
             cursor_below()
         } else {
@@ -196,14 +161,19 @@ fn newline_edit(
         cursor: Position::new(line + 1, 0),
     };
 
-    if is_source && !trimmed.starts_with("```") && trimmed != "$$" || is_in_paired_fence(lines, line)
+    if is_source && !trimmed.starts_with("```") && trimmed != "$$"
+        || is_in_paired_fence(lines, line)
     {
         return split_here();
     }
 
     if trimmed.starts_with("```") {
-        let has_closing = ((line.index() + 1)..line_count)
-            .any(|idx| lines.source_line(SourceLine::new(idx)).trim().starts_with("```"));
+        let has_closing = ((line.index() + 1)..line_count).any(|idx| {
+            lines
+                .source_line(SourceLine::new(idx))
+                .trim()
+                .starts_with("```")
+        });
         let mut inserted = vec![current_line];
         if !has_closing {
             inserted.extend([String::new(), "```".to_string(), String::new()]);
@@ -344,8 +314,7 @@ fn prepended_block(
 fn appended_block(lines: &(impl LineSource + ?Sized), line: SourceLine) -> NewlineEdit {
     let line_count = lines.line_count();
     let blank_at = |offset: usize| {
-        line.index() + offset < line_count
-            && lines.source_line(line + offset).trim().is_empty()
+        line.index() + offset < line_count && lines.source_line(line + offset).trim().is_empty()
     };
     let (start_offset, inserted_count) = if blank_at(1) {
         (2, usize::from(!blank_at(2)) + 1)
@@ -449,11 +418,7 @@ impl<'a> SelectionDeleted<'a> {
             }
         };
         let original_end = map_end(view_hi.min(self.raw_count()));
-        (
-            SourceLine::new(view_lo),
-            original_end - view_lo,
-            lines,
-        )
+        (SourceLine::new(view_lo), original_end - view_lo, lines)
     }
 }
 
@@ -1008,7 +973,8 @@ impl TextBuffer {
         let (start, end) = (self.clamp_position(start), self.clamp_position(end));
         let overlay = SelectionDeleted::new(self, start, end);
         let edit = newline_edit(&overlay, start.line, start.col, is_source);
-        let (from, remove_count, inserted) = overlay.compose(edit.start, edit.remove_count, edit.inserted);
+        let (from, remove_count, inserted) =
+            overlay.compose(edit.start, edit.remove_count, edit.inserted);
         self.replace_line_range(from, remove_count, inserted, Selection::cursor(edit.cursor));
     }
 
@@ -1075,7 +1041,18 @@ impl TextBuffer {
         Some(pos)
     }
 
+    // Ordinary text cannot be a delimiter, so it needs no structure lookup.
+    fn paired_math_delimiter(&self, line: SourceLine) -> Option<(SourceLine, SourceLine)> {
+        if crate::markdown::strip_quote_prefix(&self.source_line(line)).trim() != "$$" {
+            return None;
+        }
+        self.line_index()
+            .math_pair(line)
+            .filter(|&(start, end)| line == start || line == end)
+    }
+
     pub fn backspace_mode(&mut self, is_source: bool) {
+        self.column_goal = None;
         if self.backspace_auto_pair() {
             return;
         }
@@ -1097,286 +1074,160 @@ impl TextBuffer {
             return;
         }
 
-        if pos.col > 0 {
-            let line = self.line_text(pos.line).unwrap_or_default();
-            let trimmed = line.trim_start();
-            let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
-            if !is_thematic_break(trimmed) {
-                if trimmed.starts_with("```") {
-                    let has_closing = (pos.line.index() + 1..self.line_count()).any(|idx| {
-                        self.line_text(crate::buffer::SourceLine::new(idx))
-                            .is_some_and(|line| line.trim().starts_with("```"))
-                    });
-                    if has_closing {
-                        if pos.col > leading_spaces + 3 {
-                            self.replace_range((Position::new(pos.line, pos.col - 1), pos), "");
-                        }
-                        return;
-                    }
-                }
-
-                if pos.col >= 4 && pos.col <= leading_spaces {
-                    let spaces_to_remove = if pos.col % 4 == 0 { 4 } else { pos.col % 4 };
-                    let start_col = pos.col - spaces_to_remove;
-                    self.replace_range((Position::new(pos.line, start_col), pos), "");
-                    return;
-                }
-
-                let has_block_prefix = parse_block_prefix(&line).is_some_and(|prefix| {
-                    !matches!(prefix.kind, BlockPrefix::Fence { .. }) && pos.col <= prefix.total_len
-                });
-                if !has_block_prefix && line.trim() != "$$" {
-                    self.replace_range((Position::new(pos.line, pos.col - 1), pos), "");
-                    return;
-                }
-            }
+        let line = self.line_text(pos.line).unwrap_or_default();
+        if self.paired_math_delimiter(pos.line).is_some() {
+            return;
         }
-
         if pos.col == 0 && pos.line.index() > 0 {
-            let current_line = self.line_text(pos.line).unwrap_or_default();
-            let previous_line = self.line_text(pos.line - 1).unwrap_or_default();
-            let previous_previous_line = if pos.line.index() > 1 {
-                self.line_text(pos.line - 2).unwrap_or_default()
-            } else {
-                String::new()
-            };
-            let is_special_line = is_thematic_break(current_line.trim_start())
-                || current_line.trim() == "$$"
-                || current_line.trim_start().starts_with("```")
-                || parse_block_prefix(&current_line).is_some()
-                || previous_line.trim() == "$$"
-                || previous_line.trim_start().starts_with("```")
-                || previous_previous_line.trim() == "$$"
-                || previous_previous_line.trim_start().starts_with("```");
-
-            if !is_special_line {
-                if !is_source && previous_line.trim().is_empty() && pos.line.index() > 1 {
-                    let previous_previous = pos.line - 2;
-                    let join_col = self.line_len(previous_previous);
-                    self.replace_range((Position::new(previous_previous, join_col), pos), "");
-                } else {
-                    let previous = pos.line - 1;
-                    let join_col = self.line_len(previous);
-                    self.replace_range((Position::new(previous, join_col), pos), "");
-                }
+            let previous = pos.line - 1;
+            if self.paired_math_delimiter(previous).is_some()
+                || (previous.index() > 0
+                    && self.source_line(previous).trim().is_empty()
+                    && self
+                        .paired_math_delimiter(previous - 1)
+                        .is_some_and(|(_, end)| end == previous - 1))
+            {
                 return;
             }
         }
 
-        self.record_edit(|lines, sel| {
-            if !sel.is_empty() {
-                delete_range_internal(lines, sel.range());
-                let (start, _) = sel.range();
-                *sel = Selection::cursor(start);
-                return;
-            }
-
-            let pos = sel.head;
-            let line_str = lines[pos.line].clone();
-            let trimmed = line_str.trim_start();
-            let leading_spaces = line_str.chars().take_while(|c| *c == ' ').count();
-
-            if is_source {
-                if pos.col > 0 {
-                    remove_char_at_col(&mut lines[pos.line], pos.col - 1);
-                    *sel = Selection::cursor(Position::new(pos.line, pos.col - 1));
-                } else if pos.line.index() > 0 {
-                    let current_line = lines.remove_source_line(pos.line);
-                    let prev_len = lines[pos.line - 1].chars().count();
-                    lines[pos.line - 1].push_str(&current_line);
-                    *sel = Selection::cursor(Position::new(pos.line - 1, prev_len));
-                }
-                return;
-            }
-
-            if pos.col == 0
-                && (pos.line.index() > 0
-                    && crate::markdown::math_block_range(lines.as_slice(), pos.line - 1)
-                        .is_some_and(|(_, end)| end == pos.line - 1)
-                    || pos.line.index() > 1
-                        && lines[pos.line - 1].trim().is_empty()
-                        && crate::markdown::math_block_range(lines.as_slice(), pos.line - 2)
-                            .is_some_and(|(_, end)| end == pos.line - 2))
-            {
-                return;
-            }
-
-            if crate::markdown::math_block_range(lines.as_slice(), pos.line)
-                .is_some_and(|(start, end)| pos.line == start || pos.line == end)
-            {
-                return;
-            }
-
-            if pos.col == 0
-                && crate::markdown::math_block_range(lines.as_slice(), pos.line)
-                    .is_some_and(|(start, _)| pos.line == start + 1)
-            {
-                return;
-            }
-
-            if is_thematic_break(trimmed) {
-                if pos.line.index() > 0 && lines[pos.line - 1].trim().is_empty() {
-                    lines.remove_source_line(pos.line);
-                    if pos.line.index() < lines.len() && lines[pos.line].trim().is_empty() {
-                        lines.remove_source_line(pos.line);
-                    }
-                    *sel = Selection::cursor(Position::new(pos.line - 1, 0));
-                } else if (pos.line + 1).index() < lines.len()
-                    && lines[pos.line + 1].trim().is_empty()
-                {
-                    lines.remove_source_line(pos.line + 1);
-                    lines[pos.line] = String::new();
-                    *sel = Selection::cursor(Position::new(pos.line, 0));
-                } else {
-                    lines[pos.line] = String::new();
-                    *sel = Selection::cursor(Position::new(pos.line, 0));
-                }
-                return;
-            }
-
-            if trimmed.starts_with("```") {
-                let has_closing = lines.as_slice()[(pos.line + 1).index()..]
-                    .iter()
-                    .any(|l| l.trim().starts_with("```"));
-                if has_closing {
-                    if pos.col > leading_spaces + 3 {
-                        remove_char_at_col(&mut lines[pos.line], pos.col - 1);
-                        *sel = Selection::cursor(Position::new(pos.line, pos.col - 1));
-                    }
-                    return;
-                }
-            }
-
-            if pos.col >= 4 && pos.col <= leading_spaces {
-                let spaces_to_remove = if pos.col % 4 == 0 { 4 } else { pos.col % 4 };
-                let start_col = pos.col - spaces_to_remove;
-                lines[pos.line].drain(start_col..pos.col);
-                *sel = Selection::cursor(Position::new(pos.line, start_col));
-                return;
-            }
-
-            if pos.line.index() > 0
-                && lines[pos.line].is_empty()
-                && lines[pos.line - 1].trim().starts_with("```")
-                && (pos.line + 1).index() < lines.len()
-                && lines[pos.line + 1].trim().starts_with("```")
-            {
-                let start_fence = (pos.line - 1).index();
-                let end_fence = (pos.line + 1).index();
-                let mut remove_end = end_fence;
-                if remove_end + 1 < lines.len()
-                    && lines[crate::buffer::SourceLine::new(remove_end + 1)]
-                        .trim()
-                        .is_empty()
-                {
-                    remove_end += 1;
-                }
-                lines.drain_source_lines(
-                    crate::buffer::SourceLine::new(start_fence)
-                        ..=crate::buffer::SourceLine::new(remove_end),
+        if is_thematic_break(line.trim_start()) {
+            let blank_after = (pos.line + 1).index() < self.line_count()
+                && self.source_line(pos.line + 1).trim().is_empty();
+            if pos.line.index() > 0 && self.source_line(pos.line - 1).trim().is_empty() {
+                self.replace_line_range(
+                    pos.line,
+                    1 + usize::from(blank_after),
+                    vec![],
+                    Selection::cursor(Position::new(pos.line - 1, 0)),
                 );
-                lines
-                    .insert_source_line(crate::buffer::SourceLine::new(start_fence), String::new());
-                lines.insert_source_line(
-                    crate::buffer::SourceLine::new(start_fence + 1),
-                    String::new(),
+            } else {
+                self.replace_line_range(
+                    pos.line,
+                    1 + usize::from(blank_after),
+                    vec![String::new()],
+                    Selection::cursor(Position::new(pos.line, 0)),
                 );
-                if start_fence > 0
-                    && lines[crate::buffer::SourceLine::new(start_fence - 1)]
-                        .trim()
-                        .is_empty()
-                {
-                    lines.remove_source_line(crate::buffer::SourceLine::new(start_fence));
-                    *sel = Selection::cursor(Position::new(
-                        crate::buffer::SourceLine::new(start_fence - 1),
-                        0,
-                    ));
-                } else {
-                    *sel = Selection::cursor(Position::new(
-                        crate::buffer::SourceLine::new(start_fence),
-                        0,
-                    ));
-                }
-                return;
             }
+            return;
+        }
 
-            if let Some(prefix) = parse_block_prefix(&line_str)
-                && !matches!(prefix.kind, BlockPrefix::Fence { .. })
-                && pos.col <= prefix.total_len
+        if line.trim_start().starts_with("```") && self.line_index().has_fence_after(pos.line) {
+            let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+            if pos.col > leading_spaces + 3 {
+                self.replace_range((Position::new(pos.line, pos.col - 1), pos), "");
+            }
+            return;
+        }
+
+        let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+        if pos.col >= 4 && pos.col <= leading_spaces {
+            let spaces = if pos.col % 4 == 0 { 4 } else { pos.col % 4 };
+            self.replace_range((Position::new(pos.line, pos.col - spaces), pos), "");
+            return;
+        }
+
+        if pos.line.index() > 0
+            && line.is_empty()
+            && self.source_line(pos.line - 1).trim().starts_with("```")
+            && (pos.line + 1).index() < self.line_count()
+            && self.source_line(pos.line + 1).trim().starts_with("```")
+        {
+            let start = pos.line - 1;
+            let blank_after = (pos.line + 2).index() < self.line_count()
+                && self.source_line(pos.line + 2).trim().is_empty();
+            let blank_before = start.index() > 0 && self.source_line(start - 1).trim().is_empty();
+            self.replace_line_range(
+                start,
+                3 + usize::from(blank_after),
+                vec![String::new(); if blank_before { 1 } else { 2 }],
+                Selection::cursor(Position::new(
+                    if blank_before { start - 1 } else { start },
+                    0,
+                )),
+            );
+            return;
+        }
+
+        if let Some(prefix) = parse_block_prefix(&line)
+            && !matches!(prefix.kind, BlockPrefix::Fence { .. })
+            && pos.col <= prefix.total_len
+        {
+            let split = char_col_to_byte_offset(&line, prefix.total_len);
+            let leading = char_col_to_byte_offset(&line, prefix.leading_spaces);
+            let content = format!("{}{}", &line[..leading], &line[split..]);
+            let is_list_or_quote = matches!(
+                prefix.kind,
+                BlockPrefix::Task { .. }
+                    | BlockPrefix::Bullet { .. }
+                    | BlockPrefix::Ordered { .. }
+                    | BlockPrefix::Quote
+            );
+            let (inserted, cursor_line) = if is_list_or_quote
+                && pos.line.index() > 0
+                && !self.source_line(pos.line - 1).trim().is_empty()
             {
-                let split_b = char_col_to_byte_offset(&line_str, prefix.total_len);
-                let content = &line_str[split_b..];
-                let leading_b = char_col_to_byte_offset(&line_str, prefix.leading_spaces);
-                let leading = &line_str[..leading_b];
-                let is_list_or_quote = matches!(
-                    prefix.kind,
-                    BlockPrefix::Task { .. }
-                        | BlockPrefix::Bullet { .. }
-                        | BlockPrefix::Ordered { .. }
-                        | BlockPrefix::Quote
+                let mut inserted = vec![String::new(), content];
+                if (pos.line + 1).index() >= self.line_count()
+                    || !self.source_line(pos.line + 1).trim().is_empty()
+                {
+                    inserted.push(String::new());
+                }
+                (inserted, pos.line + 1)
+            } else {
+                (vec![content], pos.line)
+            };
+            self.replace_line_range(
+                pos.line,
+                1,
+                inserted,
+                Selection::cursor(Position::new(cursor_line, prefix.leading_spaces)),
+            );
+            return;
+        }
+
+        if pos.col > 0 {
+            self.replace_range((Position::new(pos.line, pos.col - 1), pos), "");
+        } else if pos.line.index() > 0 {
+            if self
+                .source_line(pos.line - 1)
+                .trim_start()
+                .starts_with("```")
+                && self.is_closing_code_fence(pos.line - 1)
+            {
+                let target = pos.line.saturating_sub(2);
+                // A boundary jump is undoable even when it changes only the selection.
+                self.replace_line_range(
+                    pos.line,
+                    usize::from(line.is_empty()),
+                    vec![],
+                    Selection::cursor(Position::new(target, self.line_len(target))),
                 );
-
-                if !is_source
-                    && is_list_or_quote
-                    && pos.line.index() > 0
-                    && !lines[pos.line - 1].trim().is_empty()
-                {
-                    lines.insert_source_line(pos.line, String::new());
-                    lines[pos.line + 1] = format!("{}{}", leading, content);
-                    if (pos.line + 2).index() >= lines.len()
-                        || !lines[pos.line + 2].trim().is_empty()
-                    {
-                        lines.insert_source_line(pos.line + 2, String::new());
-                    }
-                    *sel = Selection::cursor(Position::new(pos.line + 1, prefix.leading_spaces));
-                } else {
-                    lines[pos.line] = format!("{}{}", leading, content);
-                    *sel = Selection::cursor(Position::new(pos.line, prefix.leading_spaces));
-                }
-                return;
+            } else if pos.line.index() >= 2
+                && self.source_line(pos.line - 1).trim().is_empty()
+                && self
+                    .source_line(pos.line - 2)
+                    .trim_start()
+                    .starts_with("```")
+                && self.is_closing_code_fence(pos.line - 2)
+            {
+                let target = pos.line.saturating_sub(3);
+                self.replace_line_range(
+                    pos.line - 1,
+                    1,
+                    vec![],
+                    Selection::cursor(Position::new(target, self.line_len(target))),
+                );
+            } else {
+                let previous =
+                    if pos.line.index() >= 2 && self.source_line(pos.line - 1).trim().is_empty() {
+                        pos.line - 2
+                    } else {
+                        pos.line - 1
+                    };
+                self.replace_range((Position::new(previous, self.line_len(previous)), pos), "");
             }
-
-            if pos.col > 0 {
-                remove_char_at_col(&mut lines[pos.line], pos.col - 1);
-                *sel = Selection::cursor(Position::new(pos.line, pos.col - 1));
-            } else if pos.line > crate::buffer::SourceLine::new(0) {
-                if is_closing_code_fence_lines(lines.as_slice(), pos.line - 1) {
-                    let target_line = pos.line.saturating_sub(2);
-                    let target_col = lines[target_line].chars().count();
-                    if lines[pos.line].is_empty() {
-                        lines.remove_source_line(pos.line);
-                    }
-                    *sel = Selection::cursor(Position::new(target_line, target_col));
-                } else if pos.line >= crate::buffer::SourceLine::new(2)
-                    && lines[pos.line - 1].trim().is_empty()
-                    && is_closing_code_fence_lines(lines.as_slice(), pos.line - 2)
-                {
-                    lines.remove_source_line(pos.line - 1);
-                    let target_line = pos.line - 2;
-                    let content_line = target_line.saturating_sub(1);
-                    let target_col = lines[content_line].chars().count();
-                    *sel = Selection::cursor(Position::new(content_line, target_col));
-                } else if !is_source
-                    && pos.line >= crate::buffer::SourceLine::new(2)
-                    && lines[pos.line - 1].trim().is_empty()
-                {
-                    lines.remove_source_line(pos.line - 1);
-                    let current_line = lines.remove_source_line(pos.line - 1);
-                    let prev_line_idx = pos.line - 2;
-                    let prev_line_chars = lines[prev_line_idx].chars().count();
-                    lines[prev_line_idx].push_str(&current_line);
-                    *sel = Selection::cursor(Position::new(prev_line_idx, prev_line_chars));
-                } else {
-                    let current_line = lines.remove_source_line(pos.line);
-                    let prev_line_idx = pos.line - 1;
-                    let prev_line_chars = lines[prev_line_idx].chars().count();
-                    lines[prev_line_idx].push_str(&current_line);
-                    *sel = Selection::cursor(Position::new(prev_line_idx, prev_line_chars));
-                }
-            }
-
-            ensure_min_empty_lines(lines);
-        });
+        }
     }
 
     pub fn delete_forward_mode(&mut self, is_source: bool) {
@@ -1398,79 +1249,33 @@ impl TextBuffer {
             return;
         }
 
-        if !is_thematic_break(line.trim()) && line.trim() != "$$" {
-            if pos.col < line_len {
-                self.replace_range((pos, Position::new(pos.line, pos.col + 1)), "");
+        if self.paired_math_delimiter(pos.line).is_some() {
+            return;
+        }
+        if pos.col >= line_len && (pos.line + 1).index() < self.line_count() {
+            let next = pos.line + 1;
+            if self.paired_math_delimiter(next).is_some()
+                || ((next + 1).index() < self.line_count()
+                    && self.source_line(next).trim().is_empty()
+                    && self
+                        .paired_math_delimiter(next + 1)
+                        .is_some_and(|(start, _)| start == next + 1))
+            {
                 return;
-            }
-            if (pos.line + 1).index() < self.line_count() {
-                let next_line = self.line_text(pos.line + 1).unwrap_or_default();
-                let next_next_line = if (pos.line + 2).index() < self.line_count() {
-                    self.line_text(pos.line + 2).unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                if next_line.trim() != "$$"
-                    && !(next_line.trim().is_empty() && next_next_line.trim() == "$$")
-                {
-                    self.replace_range((pos, Position::new(pos.line + 1, 0)), "");
-                    return;
-                }
             }
         }
-
-        self.record_edit(|lines, sel| {
-            if !sel.is_empty() {
-                delete_range_internal(lines, sel.range());
-                let (start, _) = sel.range();
-                *sel = Selection::cursor(start);
-                return;
-            }
-
-            let pos = sel.head;
-            let trimmed = lines[pos.line].trim();
-
-            if !is_source
-                && crate::markdown::math_block_range(lines.as_slice(), pos.line)
-                    .is_some_and(|(start, end)| pos.line == start || pos.line == end)
-            {
-                return;
-            }
-
-            if !is_source
-                && pos.col >= lines[pos.line].chars().count()
-                && (pos.line + 1).index() < lines.len()
-                && (crate::markdown::math_block_range(lines.as_slice(), pos.line + 1)
-                    .is_some_and(|(start, _)| start == pos.line + 1)
-                    || (pos.line + 2).index() < lines.len()
-                        && lines[pos.line + 1].trim().is_empty()
-                        && crate::markdown::math_block_range(lines.as_slice(), pos.line + 2)
-                            .is_some_and(|(start, _)| start == pos.line + 2))
-            {
-                return;
-            }
-
-            if !is_source && is_thematic_break(trimmed) {
-                lines[pos.line] = String::new();
-                *sel = Selection::cursor(Position::new(pos.line, 0));
-                return;
-            }
-
-            let line_chars_count = lines[pos.line].chars().count();
-            if pos.col < line_chars_count {
-                remove_char_at_col(&mut lines[pos.line], pos.col);
-            } else if !is_source
-                && crate::markdown::math_block_range(lines.as_slice(), pos.line)
-                    .is_some_and(|(_, end)| pos.line + 1 == end)
-            {
-                return;
-            } else if (pos.line + 1).index() < lines.len() {
-                let next_line = lines.remove_source_line(pos.line + 1);
-                lines[pos.line].push_str(&next_line);
-            }
-
-            ensure_min_empty_lines(lines);
-        });
+        if is_thematic_break(line.trim()) {
+            self.replace_line_range(
+                pos.line,
+                1,
+                vec![String::new()],
+                Selection::cursor(Position::new(pos.line, 0)),
+            );
+        } else if pos.col < line_len {
+            self.replace_range((pos, Position::new(pos.line, pos.col + 1)), "");
+        } else if (pos.line + 1).index() < self.line_count() {
+            self.replace_range((pos, Position::new(pos.line + 1, 0)), "");
+        }
     }
 
     pub fn delete_to_previous_word(&mut self) {

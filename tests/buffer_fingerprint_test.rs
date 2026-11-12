@@ -139,7 +139,7 @@ fn fingerprint_tracks_empty_documents_and_partial_history_ranges() {
 }
 
 #[test]
-fn fingerprint_tracks_range_ime_and_legacy_edits() {
+fn fingerprint_tracks_range_ime_and_line_replacements() {
     let original = "alpha\nbeta\ngamma\ndelta";
     let mut buffer = TextBuffer::from_str(original, None);
     buffer.replace_range(
@@ -158,19 +158,18 @@ fn fingerprint_tracks_range_ime_and_legacy_edits() {
 
     buffer.replace_and_mark_utf16(Some(0..2), None, "🙂", None);
     assert_fingerprint(&buffer);
-    buffer.record_edit(|lines, _| {
-        lines.replace_source_lines_at(
-            SourceLine::new(1),
-            1,
-            vec!["legacy".to_owned(), "界".to_owned()],
-        );
-    });
-    let legacy = buffer.to_string_normalized();
+    buffer.replace_line_range(
+        SourceLine::new(1),
+        1,
+        vec!["replacement".to_owned(), "界".to_owned()],
+        buffer.selection(),
+    );
+    let replaced_lines = buffer.to_string_normalized();
     assert_fingerprint(&buffer);
     buffer.undo();
     assert_fingerprint(&buffer);
     buffer.redo();
-    assert_state(&buffer, &legacy, original);
+    assert_state(&buffer, &replaced_lines, original);
 }
 
 #[test]

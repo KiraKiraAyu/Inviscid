@@ -3,7 +3,7 @@ use ropey::Rope;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::ops::{Index, IndexMut, Range, RangeFrom, RangeInclusive};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
@@ -27,265 +27,6 @@ pub use fingerprint::{FingerprintJob, FingerprintResult};
 pub use primitives::*;
 pub use source::{LineSource, SourceSnapshot};
 pub(crate) use structure_index::StructureIndex;
-
-/// A document's source lines. Indexing requires a source-coordinate value.
-///
-/// ```compile_fail
-/// use inviscid::buffer::SourceLines;
-/// let lines = SourceLines::from(vec![String::from("text")]);
-/// let _ = &lines[0];
-/// ```
-#[derive(Clone, Debug)]
-pub struct SourceLines {
-    lines: Vec<String>,
-    dirty_range: Option<Range<usize>>,
-}
-
-impl PartialEq for SourceLines {
-    fn eq(&self, other: &Self) -> bool {
-        self.lines == other.lines
-    }
-}
-
-impl Eq for SourceLines {}
-
-impl SourceLines {
-    fn track_mutation(&mut self, range: Range<usize>) {
-        let Some(dirty) = &mut self.dirty_range else {
-            self.dirty_range = Some(range);
-            return;
-        };
-        dirty.start = dirty.start.min(range.start);
-        dirty.end = dirty.end.max(range.end);
-    }
-
-    fn track_splice(&mut self, start: usize, removed: usize, inserted: usize) {
-        let splice_end = start + removed;
-        if let Some(dirty) = &mut self.dirty_range {
-            // Keep earlier dirty coordinates aligned with the post-splice lines.
-            let delta = inserted as isize - removed as isize;
-            let map_start = |index: usize| {
-                if index <= start {
-                    index
-                } else if index >= splice_end {
-                    (index as isize + delta) as usize
-                } else {
-                    start
-                }
-            };
-            let map_end = |index: usize| {
-                if index < start {
-                    index
-                } else if index >= splice_end {
-                    (index as isize + delta) as usize
-                } else {
-                    start + inserted
-                }
-            };
-            let old_start = dirty.start;
-            let old_end = dirty.end;
-            dirty.start = map_start(old_start).min(start);
-            dirty.end = map_end(old_end).max(start + inserted);
-        } else {
-            self.dirty_range = Some(start..start + inserted);
-        }
-    }
-
-    fn take_dirty_range(&mut self) -> Option<Range<usize>> {
-        self.dirty_range.take()
-    }
-}
-
-impl From<Vec<String>> for SourceLines {
-    fn from(lines: Vec<String>) -> Self {
-        Self {
-            lines,
-            dirty_range: None,
-        }
-    }
-}
-
-impl PartialEq<Vec<&str>> for SourceLines {
-    fn eq(&self, other: &Vec<&str>) -> bool {
-        self.lines
-            .iter()
-            .map(String::as_str)
-            .eq(other.iter().copied())
-    }
-}
-
-impl PartialEq<Vec<&str>> for &SourceLines {
-    fn eq(&self, other: &Vec<&str>) -> bool {
-        self.lines
-            .iter()
-            .map(String::as_str)
-            .eq(other.iter().copied())
-    }
-}
-
-impl FromIterator<String> for SourceLines {
-    fn from_iter<T: IntoIterator<Item = String>>(iter: T) -> Self {
-        Self::from(Vec::from_iter(iter))
-    }
-}
-
-impl SourceLines {
-    pub fn as_slice(&self) -> &[String] {
-        &self.lines
-    }
-
-    pub fn len(&self) -> usize {
-        self.lines.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-
-    pub fn iter(&self) -> std::slice::Iter<'_, String> {
-        self.lines.iter()
-    }
-
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, String> {
-        self.track_mutation(0..self.lines.len());
-        self.lines.iter_mut()
-    }
-
-    pub fn push(&mut self, line: String) {
-        let index = self.lines.len();
-        self.lines.push(line);
-        self.track_splice(index, 0, 1);
-    }
-
-    pub fn clear(&mut self) {
-        let old_len = self.lines.len();
-        self.lines.clear();
-        self.track_splice(0, old_len, 0);
-    }
-
-    pub fn join(&self, separator: &str) -> String {
-        self.lines.join(separator)
-    }
-
-    pub fn to_vec(&self) -> Vec<String> {
-        self.lines.clone()
-    }
-
-    pub fn get_source_line(&self, line: SourceLine) -> Option<&String> {
-        self.lines.get(line.index())
-    }
-
-    pub fn get_source_line_mut(&mut self, line: SourceLine) -> Option<&mut String> {
-        let index = line.index();
-        self.track_mutation(index..index + 1);
-        self.lines.get_mut(index)
-    }
-
-    pub fn drain_source_lines(
-        &mut self,
-        lines: RangeInclusive<SourceLine>,
-    ) -> std::vec::Drain<'_, String> {
-        let start = lines.start().index();
-        let removed = lines.end().index().saturating_sub(start) + 1;
-        self.track_splice(start, removed, 0);
-        self.lines.drain(start..start + removed)
-    }
-
-    pub fn replace_source_lines(
-        &mut self,
-        lines: RangeInclusive<SourceLine>,
-        replacements: impl IntoIterator<Item = String>,
-    ) {
-        let start = lines.start().index();
-        let end = lines.end().index().saturating_add(1);
-        let replacements = Vec::from_iter(replacements);
-        let replacement_len = replacements.len();
-        self.lines.splice(start..end, replacements);
-        self.track_splice(start, end - start, replacement_len);
-    }
-
-    pub fn replace_source_lines_at(
-        &mut self,
-        start: SourceLine,
-        remove_count: usize,
-        replacements: impl IntoIterator<Item = String>,
-    ) {
-        let start = start.index();
-        let replacements = Vec::from_iter(replacements);
-        let replacement_len = replacements.len();
-        self.lines.splice(start..start + remove_count, replacements);
-        self.track_splice(start, remove_count, replacement_len);
-    }
-
-    pub fn insert_source_line(&mut self, line: SourceLine, text: String) {
-        let index = line.index();
-        self.lines.insert(index, text);
-        self.track_splice(index, 0, 1);
-    }
-
-    pub fn remove_source_line(&mut self, line: SourceLine) -> String {
-        let index = line.index();
-        let removed = self.lines.remove(index);
-        self.track_splice(index, 1, 0);
-        removed
-    }
-
-    pub fn replace_all(&mut self, replacement: Vec<String>) {
-        let old_len = self.lines.len();
-        let new_len = replacement.len();
-        self.lines = replacement;
-        self.track_splice(0, old_len, new_len);
-    }
-}
-
-impl Index<SourceLine> for SourceLines {
-    type Output = String;
-
-    fn index(&self, line: SourceLine) -> &Self::Output {
-        &self.lines[line.index()]
-    }
-}
-
-impl IndexMut<SourceLine> for SourceLines {
-    fn index_mut(&mut self, line: SourceLine) -> &mut Self::Output {
-        let index = line.index();
-        self.track_mutation(index..index + 1);
-        &mut self.lines[index]
-    }
-}
-
-impl Index<RangeInclusive<SourceLine>> for SourceLines {
-    type Output = [String];
-
-    fn index(&self, lines: RangeInclusive<SourceLine>) -> &Self::Output {
-        &self.lines[lines.start().index()..=lines.end().index()]
-    }
-}
-
-impl Index<RangeFrom<SourceLine>> for SourceLines {
-    type Output = [String];
-
-    fn index(&self, lines: RangeFrom<SourceLine>) -> &Self::Output {
-        &self.lines[lines.start.index()..]
-    }
-}
-
-impl IndexMut<RangeInclusive<SourceLine>> for SourceLines {
-    fn index_mut(&mut self, lines: RangeInclusive<SourceLine>) -> &mut Self::Output {
-        let start = lines.start().index();
-        let end = lines.end().index().saturating_add(1);
-        self.track_mutation(start..end);
-        &mut self.lines[start..end]
-    }
-}
-
-impl IndexMut<RangeFrom<SourceLine>> for SourceLines {
-    fn index_mut(&mut self, lines: RangeFrom<SourceLine>) -> &mut Self::Output {
-        let start = lines.start.index();
-        self.track_mutation(start..self.lines.len());
-        &mut self.lines[start..]
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LineEnding {
@@ -1043,7 +784,7 @@ impl TextBuffer {
         let new_empty_doc;
 
         if old_empty_doc {
-            let mut resulting_lines = self.to_lines();
+            let mut resulting_lines = vec![String::new(), String::new()];
             resulting_lines.splice(start..start + old_count, new_lines);
             if resulting_lines.is_empty()
                 || (resulting_lines.len() == 1 && resulting_lines[0].is_empty())
@@ -1052,14 +793,24 @@ impl TextBuffer {
             }
             new_empty_doc =
                 resulting_lines.len() == 2 && resulting_lines.iter().all(String::is_empty);
-            old_lines = self.to_lines();
+            old_lines = vec![String::new(), String::new()];
             new_lines = resulting_lines;
             start = 0;
         } else {
-            new_empty_doc = start == 0
-                && old_count == line_count_before
-                && new_lines.len() == 2
-                && new_lines.iter().all(String::is_empty);
+            // Zero, one or two empty logical lines normalize to two sentinels.
+            // At most two unchanged lines need inspecting.
+            new_empty_doc = line_count_before - old_count + new_lines.len() <= 2
+                && new_lines.iter().all(String::is_empty)
+                && (0..start)
+                    .chain(start + old_count..line_count_before)
+                    .all(|line| self.line_len(SourceLine::new(line)) == 0);
+            if new_empty_doc {
+                if start != 0 || old_count != line_count_before {
+                    old_lines = self.old_rope_lines(0, line_count_before, false);
+                }
+                start = 0;
+                new_lines = vec![String::new(), String::new()];
+            }
         }
 
         let content_changed = old_lines != new_lines;
@@ -1283,119 +1034,6 @@ impl TextBuffer {
                 old_empty_doc: was_empty_doc,
                 new_empty_doc: self.is_empty_doc,
                 old_document_line_count,
-                new_document_line_count: self.line_count(),
-                cursor_before,
-                cursor_after: self.selection,
-                version_before,
-                version_after,
-            };
-
-            self.push_undo_step(step, is_single_char_insert);
-        }
-    }
-
-    pub fn record_edit<F>(&mut self, f: F)
-    where
-        F: FnOnce(&mut SourceLines, &mut Selection),
-    {
-        self.column_goal = None;
-        let cursor_before = self.selection;
-        let version_before = self.version;
-        let line_count_before = self.line_count();
-        let empty_before = self.is_empty_doc;
-        let old_rope = self.rope.clone();
-        let mut lines = SourceLines::from(self.to_lines());
-        f(&mut lines, &mut self.selection);
-
-        let clamp_to_lines = |pos: Position| {
-            let line = pos.line.min(SourceLine::new(lines.len().saturating_sub(1)));
-            let col = pos.col.min(lines[line].chars().count());
-            Position::new(line, col)
-        };
-        self.selection.anchor = clamp_to_lines(self.selection.anchor);
-        self.selection.head = clamp_to_lines(self.selection.head);
-
-        let dirty = lines
-            .take_dirty_range()
-            .or_else(|| (lines.len() != line_count_before).then_some(0..lines.len()));
-        if dirty.is_some() || self.selection != cursor_before {
-            let mut prefix = dirty.as_ref().map_or(0, |range| range.start);
-            let new_end = dirty
-                .as_ref()
-                .map_or(prefix, |range| range.end.min(lines.len()));
-            let new_count = new_end.saturating_sub(prefix);
-            let line_delta = lines.len() as isize - line_count_before as isize;
-            let old_count = (new_count as isize - line_delta).max(0) as usize;
-            let mut old_lines = self.old_rope_lines(prefix, old_count, empty_before);
-            let mut new_lines = lines.as_slice()[prefix..new_end].to_vec();
-
-            let mut unchanged_prefix = 0;
-            while unchanged_prefix < old_lines.len().min(new_lines.len())
-                && old_lines[unchanged_prefix] == new_lines[unchanged_prefix]
-            {
-                unchanged_prefix += 1;
-            }
-            if unchanged_prefix > 0 {
-                old_lines.drain(..unchanged_prefix);
-                new_lines.drain(..unchanged_prefix);
-                prefix += unchanged_prefix;
-            }
-
-            let mut unchanged_suffix = 0;
-            while unchanged_suffix < old_lines.len().min(new_lines.len())
-                && old_lines[old_lines.len() - 1 - unchanged_suffix]
-                    == new_lines[new_lines.len() - 1 - unchanged_suffix]
-            {
-                unchanged_suffix += 1;
-            }
-            if unchanged_suffix > 0 {
-                old_lines.truncate(old_lines.len() - unchanged_suffix);
-                new_lines.truncate(new_lines.len() - unchanged_suffix);
-            }
-
-            let content_changed = !old_lines.is_empty() || !new_lines.is_empty();
-            if !content_changed && self.selection == cursor_before {
-                return;
-            }
-            let version_after = if content_changed {
-                self.version = self.version.wrapping_add(1);
-                self.is_empty_doc = lines.len() == 2 && lines.iter().all(String::is_empty);
-                if empty_before {
-                    self.rope = if self.is_empty_doc {
-                        Rope::new()
-                    } else {
-                        Rope::from_str(&lines.join("\n"))
-                    };
-                    self.finish_content_metrics(SourceLine::new(prefix), &old_lines, &new_lines);
-                } else {
-                    self.apply_content_metrics(SourceLine::new(prefix), &old_lines, &new_lines);
-                }
-                self.version
-            } else {
-                version_before
-            };
-
-            let is_single_char_insert = old_lines.len() == 1
-                && new_lines.len() == 1
-                && cursor_before.is_empty()
-                && self.selection.is_empty()
-                && self.selection.head.line == cursor_before.head.line
-                && self.selection.head.col == cursor_before.head.col + 1
-                && !new_lines[0].ends_with(' ')
-                && !new_lines[0].ends_with('\t');
-
-            let step = UndoStep {
-                start_line: SourceLine::new(prefix),
-                old_lines: UndoLines::capture(&old_rope, prefix, old_lines.len(), empty_before),
-                new_lines: UndoLines::capture(
-                    &self.rope,
-                    prefix,
-                    new_lines.len(),
-                    self.is_empty_doc,
-                ),
-                old_empty_doc: empty_before,
-                new_empty_doc: self.is_empty_doc,
-                old_document_line_count: line_count_before,
                 new_document_line_count: self.line_count(),
                 cursor_before,
                 cursor_after: self.selection,

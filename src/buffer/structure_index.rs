@@ -368,6 +368,11 @@ impl StructureIndex {
         cursor.start().0.lines
     }
 
+    pub(super) fn has_fence_after(&self, line: SourceLine) -> bool {
+        let count = self.tree.summary().fences;
+        count > 0 && self.fence_line(count - 1) > line.index()
+    }
+
     pub(crate) fn fence_state(&self, line: SourceLine) -> (bool, bool) {
         if line.index() >= self.len() {
             return (false, false);
