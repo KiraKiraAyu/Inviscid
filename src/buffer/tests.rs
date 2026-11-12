@@ -542,7 +542,7 @@ fn block_start_enter_preserves_source_separators() {
             let expected_cursor = if block.starts_with('#') {
                 Position::new(at + added_lines, 2)
             } else {
-                Position::new(at + editable_offset, 0)
+                Position::new(at + added_lines, 0)
             };
             assert_eq!(buffer.cursor_pos(), expected_cursor);
             buffer.undo();

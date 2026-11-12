@@ -1,5 +1,5 @@
 use super::char_col_to_byte_offset;
-use super::movement::{is_closing_code_fence_lines, is_in_code_fence_lines};
+use super::movement::is_closing_code_fence_lines;
 use super::primitives::{Position, Selection};
 use super::{LineSource, SourceLine, SourceLines, TextBuffer};
 use crate::markdown::{
@@ -124,10 +124,11 @@ fn delete_range_internal(lines: &mut SourceLines, (start, end): (Position, Posit
 
 /// Inserts an empty block before an unfenced block. Each empty block occupies
 /// an editable source line followed by its own blank separator, regardless of
-/// whether the following block is a heading or a paragraph.
+/// whether the following block is a heading or a paragraph. Enter at the start
+/// of that block leaves the caret on `following_line`, the block the user was
+/// already editing.
 struct PrependBlockPlan {
     inserted_line_count: usize,
-    editable_line: SourceLine,
     following_line: SourceLine,
 }
 
@@ -143,65 +144,230 @@ fn prepend_block_plan(
     let inserted_line_count = editable_offset + 2;
     PrependBlockPlan {
         inserted_line_count,
-        editable_line: block_line + editable_offset,
         following_line: block_line + inserted_line_count,
     }
 }
 
-fn append_block_below_buffer(
-    buffer: &mut TextBuffer,
-    current_line: crate::buffer::SourceLine,
-) -> crate::buffer::SourceLine {
-    let line_count = buffer.line_count();
-    let has_blank_after = current_line.index() + 1 < line_count
-        && buffer
-            .line_text(current_line + 1)
-            .is_some_and(|line| line.trim().is_empty());
-    let (insert_at, inserted_count) = if has_blank_after {
-        let has_second_blank = current_line.index() + 2 < line_count
-            && buffer
-                .line_text(current_line + 2)
-                .is_some_and(|line| line.trim().is_empty());
-        (current_line + 2, usize::from(!has_second_blank) + 1)
-    } else {
-        (current_line + 1, 2)
-    };
-    let target = current_line + 2;
-    buffer.replace_line_range(
-        insert_at,
-        0,
-        vec![String::new(); inserted_count],
-        Selection::cursor(Position::new(target, 0)),
-    );
-    target
+/// A newline edit expressed as a line-range replacement, so both the rope path
+/// and the materialized-selection path apply one decision.
+struct NewlineEdit {
+    start: SourceLine,
+    remove_count: usize,
+    inserted: Vec<String>,
+    cursor: Position,
 }
 
-fn append_block_below(
-    lines: &mut SourceLines,
-    current_line: crate::buffer::SourceLine,
-) -> crate::buffer::SourceLine {
-    if current_line + 1 < crate::buffer::SourceLine::new(lines.len())
-        && lines[current_line + 1].trim().is_empty()
+fn newline_edit(
+    lines: &(impl LineSource + ?Sized),
+    line: SourceLine,
+    col: usize,
+    is_source: bool,
+) -> NewlineEdit {
+    let line_count = lines.line_count();
+    let current_line = lines.source_line(line).into_owned();
+    let cursor_below = || NewlineEdit {
+        start: line + 1,
+        remove_count: 0,
+        inserted: vec![String::new()],
+        cursor: Position::new(line + 1, 0),
+    };
+
+    if current_line.is_empty() {
+        let next_has_content = line.index() + 1 < line_count
+            && !lines.source_line(line + 1).trim().is_empty();
+        return if is_source || next_has_content {
+            cursor_below()
+        } else {
+            appended_block(lines, line)
+        };
+    }
+
+    let current_chars_len = current_line.chars().count();
+    let col = col.min(current_chars_len);
+    let trimmed = current_line.trim_start();
+    let leading_spaces = current_line.len() - trimmed.len();
+    let split_byte = char_col_to_byte_offset(&current_line, col);
+    let left = current_line[..split_byte].to_string();
+    let right = current_line[split_byte..].to_string();
+    let split_here = || NewlineEdit {
+        start: line,
+        remove_count: 1,
+        inserted: vec![left.clone(), right.clone()],
+        cursor: Position::new(line + 1, 0),
+    };
+
+    if is_source && !trimmed.starts_with("```") && trimmed != "$$" || is_in_paired_fence(lines, line)
     {
-        lines.insert_source_line(current_line + 2, String::new());
-        if (current_line + 3).index() >= lines.len() || !lines[current_line + 3].trim().is_empty() {
-            lines.insert_source_line(current_line + 3, String::new());
+        return split_here();
+    }
+
+    if trimmed.starts_with("```") {
+        let has_closing = ((line.index() + 1)..line_count)
+            .any(|idx| lines.source_line(SourceLine::new(idx)).trim().starts_with("```"));
+        let mut inserted = vec![current_line];
+        if !has_closing {
+            inserted.extend([String::new(), "```".to_string(), String::new()]);
         }
-        current_line + 2
-    } else {
-        lines.insert_source_line(current_line + 1, String::new());
-        lines.insert_source_line(current_line + 2, String::new());
-        current_line + 2
+        return NewlineEdit {
+            start: line,
+            remove_count: 1,
+            inserted,
+            cursor: Position::new(line + 1, 0),
+        };
+    }
+
+    if trimmed == "$$" && col == current_chars_len {
+        return math_delimiter_edit(lines, line);
+    }
+    if is_thematic_break(trimmed) {
+        return appended_block(lines, line);
+    }
+
+    if let Some((_level, prefix_len)) = parse_heading_prefix(trimmed) {
+        let actual_prefix_len = leading_spaces + prefix_len;
+        return if col <= actual_prefix_len {
+            prepended_block(lines, line, actual_prefix_len)
+        } else if col >= current_chars_len {
+            appended_block(lines, line)
+        } else {
+            NewlineEdit {
+                start: line,
+                remove_count: 1,
+                inserted: vec![left, String::new(), right],
+                cursor: Position::new(line + 2, 0),
+            }
+        };
+    }
+
+    if let Some(prefix) = parse_block_prefix(&current_line)
+        && !matches!(
+            prefix.kind,
+            BlockPrefix::Heading { .. } | BlockPrefix::Fence { .. }
+        )
+        && current_chars_len <= prefix.total_len
+    {
+        let next_is_blank =
+            line.index() + 1 < line_count && lines.source_line(line + 1).trim().is_empty();
+        let mut inserted = vec![String::new(), String::new()];
+        if !is_source && !next_is_blank {
+            inserted.push(String::new());
+        }
+        return NewlineEdit {
+            start: line,
+            remove_count: 1,
+            inserted,
+            cursor: Position::new(line + 1, 0),
+        };
+    }
+
+    if let Some(prefix) = get_smart_continuation_prefix(&current_line) {
+        let prefix_len = prefix.chars().count();
+        return NewlineEdit {
+            start: line,
+            remove_count: 1,
+            inserted: vec![left, format!("{prefix}{right}")],
+            cursor: Position::new(line + 1, prefix_len),
+        };
+    }
+
+    if is_source {
+        return split_here();
+    }
+    if col == 0 {
+        // Enter at the start of a block opens an empty block above it and
+        // leaves the caret on the block the user was already editing.
+        return prepended_block(lines, line, 0);
+    }
+    if col >= current_chars_len {
+        return appended_block(lines, line);
+    }
+    NewlineEdit {
+        start: line,
+        remove_count: 1,
+        inserted: vec![left, String::new(), right],
+        cursor: Position::new(line + 2, 0),
     }
 }
 
-fn is_in_paired_fence(buffer: &TextBuffer, target_line: crate::buffer::SourceLine) -> bool {
+/// Enter at the end of a `$$` line. A closing delimiter of an existing math block
+/// is ordinary text and falls through to the remaining rules.
+fn math_delimiter_edit(lines: &(impl LineSource + ?Sized), line: SourceLine) -> NewlineEdit {
+    let cursor_below = || NewlineEdit {
+        start: line + 1,
+        remove_count: 0,
+        inserted: vec![String::new()],
+        cursor: Position::new(line + 1, 0),
+    };
+    let Some((start, end)) = crate::markdown::math_block_range(lines, line) else {
+        return NewlineEdit {
+            start: line + 1,
+            remove_count: 0,
+            inserted: vec![String::new(), "$$".to_string(), String::new()],
+            cursor: Position::new(line + 1, 0),
+        };
+    };
+    if start != line {
+        // This `$$` closes a block opened above it.
+        return NewlineEdit {
+            start: line,
+            remove_count: 1,
+            inserted: vec![lines.source_line(line).into_owned(), String::new()],
+            cursor: Position::new(line + 1, 0),
+        };
+    }
+    if end.index() == start.index() + 1 {
+        cursor_below()
+    } else {
+        NewlineEdit {
+            start: line,
+            remove_count: 0,
+            inserted: Vec::new(),
+            cursor: Position::new(line + 1, 0),
+        }
+    }
+}
+
+fn prepended_block(
+    lines: &(impl LineSource + ?Sized),
+    line: SourceLine,
+    cursor_col: usize,
+) -> NewlineEdit {
+    let plan = prepend_block_plan(lines, line);
+    NewlineEdit {
+        start: line,
+        remove_count: 0,
+        inserted: vec![String::new(); plan.inserted_line_count],
+        cursor: Position::new(plan.following_line, cursor_col),
+    }
+}
+
+fn appended_block(lines: &(impl LineSource + ?Sized), line: SourceLine) -> NewlineEdit {
+    let line_count = lines.line_count();
+    let blank_at = |offset: usize| {
+        line.index() + offset < line_count
+            && lines.source_line(line + offset).trim().is_empty()
+    };
+    let (start_offset, inserted_count) = if blank_at(1) {
+        (2, usize::from(!blank_at(2)) + 1)
+    } else {
+        (1, 2)
+    };
+    NewlineEdit {
+        start: line + start_offset,
+        remove_count: 0,
+        inserted: vec![String::new(); inserted_count],
+        cursor: Position::new(line + 2, 0),
+    }
+}
+
+fn is_in_paired_fence(lines: &(impl LineSource + ?Sized), target_line: SourceLine) -> bool {
     let mut open_fence = None;
-    for idx in 0..buffer.line_count() {
-        let line = buffer
-            .line_text(crate::buffer::SourceLine::new(idx))
-            .unwrap_or_default();
-        if !line.trim_start().starts_with("```") {
+    for idx in 0..lines.line_count() {
+        if !lines
+            .source_line(SourceLine::new(idx))
+            .trim_start()
+            .starts_with("```")
+        {
             continue;
         }
         if let Some(start) = open_fence.take() {
@@ -213,6 +379,104 @@ fn is_in_paired_fence(buffer: &TextBuffer, target_line: crate::buffer::SourceLin
         }
     }
     false
+}
+
+/// A document with a selection already removed, computed lazily so a newline
+/// over a selection does not materialize the untouched lines.
+struct SelectionDeleted<'a> {
+    buffer: &'a TextBuffer,
+    start: Position,
+    end: Position,
+    joined: String,
+}
+
+impl<'a> SelectionDeleted<'a> {
+    fn new(buffer: &'a TextBuffer, start: Position, end: Position) -> Self {
+        let start_line = buffer.line_text(start.line).unwrap_or_default();
+        let start_byte = char_col_to_byte_offset(&start_line, start.col);
+        let end_line = if start.line == end.line {
+            start_line.clone()
+        } else {
+            buffer.line_text(end.line).unwrap_or_default()
+        };
+        let end_byte = char_col_to_byte_offset(&end_line, end.col);
+        Self {
+            buffer,
+            start,
+            end,
+            joined: format!("{}{}", &start_line[..start_byte], &end_line[end_byte..]),
+        }
+    }
+
+    /// Lines left after the deletion, before the empty-document sentinel padding.
+    fn raw_count(&self) -> usize {
+        self.buffer.line_count() - self.end.line.index() + self.start.line.index()
+    }
+
+    fn padded(&self) -> bool {
+        self.raw_count() == 1 && self.joined.is_empty()
+    }
+
+    /// Folds the selection deletion and a following line edit into one range of
+    /// the original document. The edit's coordinates are in this view.
+    fn compose(
+        &self,
+        edit_start: SourceLine,
+        remove_count: usize,
+        mut inserted: Vec<String>,
+    ) -> (SourceLine, usize, Vec<String>) {
+        let join = self.start.line.index();
+        let collapsed = self.end.line.index() - join;
+        let edit_at = edit_start.index();
+        let edit_end = edit_at + remove_count;
+        let view_lo = edit_at.min(join);
+        let view_hi = edit_end.max(join + 1);
+
+        let mut lines = Vec::new();
+        for idx in view_lo..edit_at {
+            lines.push(self.source_line(SourceLine::new(idx)).into_owned());
+        }
+        lines.append(&mut inserted);
+        for idx in edit_end..view_hi {
+            lines.push(self.source_line(SourceLine::new(idx)).into_owned());
+        }
+
+        let map_end = |index: usize| {
+            if index <= join {
+                index
+            } else {
+                index + collapsed
+            }
+        };
+        let original_end = map_end(view_hi.min(self.raw_count()));
+        (
+            SourceLine::new(view_lo),
+            original_end - view_lo,
+            lines,
+        )
+    }
+}
+
+impl LineSource for SelectionDeleted<'_> {
+    fn line_count(&self) -> usize {
+        self.raw_count() + usize::from(self.padded())
+    }
+
+    fn source_line(&self, line: SourceLine) -> std::borrow::Cow<'_, str> {
+        let idx = line.index();
+        if self.padded() && idx == self.raw_count() {
+            return std::borrow::Cow::Borrowed("");
+        }
+        if idx == self.start.line.index() {
+            return std::borrow::Cow::Borrowed(&self.joined);
+        }
+        let original = if idx < self.start.line.index() {
+            idx
+        } else {
+            idx + self.end.line.index() - self.start.line.index()
+        };
+        self.buffer.source_line(SourceLine::new(original))
+    }
 }
 
 impl TextBuffer {
@@ -707,11 +971,16 @@ impl TextBuffer {
         let text = self.to_string_normalized();
         let (new_text, count) = query.replace_all(&text, &normalized_rep);
         if count > 0 {
-            self.record_edit(|lines, sel| {
-                lines.replace_all(new_text.split('\n').map(String::from).collect());
-                ensure_min_empty_lines(lines);
-                *sel = Selection::cursor(Position::default());
-            });
+            let mut lines: Vec<String> = new_text.split('\n').map(String::from).collect();
+            if lines.len() == 1 && lines[0].is_empty() {
+                lines.push(String::new());
+            }
+            self.replace_line_range(
+                SourceLine::new(0),
+                self.line_count(),
+                lines,
+                Selection::cursor(Position::default()),
+            );
         }
         count
     }
@@ -724,304 +993,23 @@ impl TextBuffer {
     pub fn insert_newline_mode(&mut self, is_source: bool) {
         if self.selection.is_empty() {
             let pos = self.selection.head;
-            let current_line = self.line_text(pos.line).unwrap_or_default();
-            let line_count = self.line_count();
-            if current_line.is_empty() {
-                if is_source
-                    || (pos.line.index() + 1 < line_count
-                        && self
-                            .line_text(pos.line + 1)
-                            .is_some_and(|line| !line.trim().is_empty()))
-                {
-                    self.replace_line_range(
-                        pos.line + 1,
-                        0,
-                        vec![String::new()],
-                        Selection::cursor(Position::new(pos.line + 1, 0)),
-                    );
-                } else {
-                    append_block_below_buffer(self, pos.line);
-                }
-                return;
-            }
-
-            let current_chars_len = current_line.chars().count();
-            let col = pos.col.min(current_chars_len);
-            let trimmed = current_line.trim_start();
-            let leading_spaces = current_line.len() - trimmed.len();
-            let split_byte = char_col_to_byte_offset(&current_line, col);
-            let left = current_line[..split_byte].to_string();
-            let right = current_line[split_byte..].to_string();
-
-            if is_source && !trimmed.starts_with("```") && trimmed != "$$"
-                || !is_source && is_in_paired_fence(self, pos.line)
-            {
-                self.replace_line_range(
-                    pos.line,
-                    1,
-                    vec![left, right],
-                    Selection::cursor(Position::new(pos.line + 1, 0)),
-                );
-                return;
-            }
-
-            if trimmed.starts_with("```") {
-                let has_closing = (pos.line.index() + 1..line_count).any(|idx| {
-                    self.line_text(crate::buffer::SourceLine::new(idx))
-                        .is_some_and(|line| line.trim().starts_with("```"))
-                });
-                let inserted = if has_closing {
-                    vec![current_line]
-                } else {
-                    vec![
-                        current_line,
-                        String::new(),
-                        "```".to_string(),
-                        String::new(),
-                    ]
-                };
-                self.replace_line_range(
-                    pos.line,
-                    1,
-                    inserted,
-                    Selection::cursor(Position::new(pos.line + 1, 0)),
-                );
-                return;
-            }
-
-            if trimmed == "$$" && col == current_chars_len {
-                // Math delimiter pairing is context-sensitive; keep its established path.
-            } else if is_thematic_break(trimmed) {
-                append_block_below_buffer(self, pos.line);
-                return;
-            } else if let Some((_level, prefix_len)) = parse_heading_prefix(trimmed) {
-                let actual_prefix_len = leading_spaces + prefix_len;
-                if col <= actual_prefix_len {
-                    let plan = prepend_block_plan(self, pos.line);
-                    self.replace_line_range(
-                        pos.line,
-                        0,
-                        vec![String::new(); plan.inserted_line_count],
-                        Selection::cursor(Position::new(plan.following_line, actual_prefix_len)),
-                    );
-                } else if col >= current_chars_len {
-                    append_block_below_buffer(self, pos.line);
-                } else {
-                    self.replace_line_range(
-                        pos.line,
-                        1,
-                        vec![left, String::new(), right],
-                        Selection::cursor(Position::new(pos.line + 2, 0)),
-                    );
-                }
-                return;
-            } else if let Some(prefix) = parse_block_prefix(&current_line)
-                && !matches!(
-                    prefix.kind,
-                    BlockPrefix::Heading { .. } | BlockPrefix::Fence { .. }
-                )
-                && current_chars_len <= prefix.total_len
-            {
-                let next_line_is_blank = pos.line.index() + 1 < line_count
-                    && self
-                        .line_text(pos.line + 1)
-                        .is_some_and(|line| line.trim().is_empty());
-                let mut inserted = vec![String::new(), String::new()];
-                if !is_source && !next_line_is_blank {
-                    inserted.push(String::new());
-                }
-                self.replace_line_range(
-                    pos.line,
-                    1,
-                    inserted,
-                    Selection::cursor(Position::new(pos.line + 1, 0)),
-                );
-                return;
-            } else if let Some(prefix) = get_smart_continuation_prefix(&current_line) {
-                let prefix_len = prefix.chars().count();
-                self.replace_line_range(
-                    pos.line,
-                    1,
-                    vec![left, format!("{}{}", prefix, right)],
-                    Selection::cursor(Position::new(pos.line + 1, prefix_len)),
-                );
-                return;
-            } else if is_source {
-                self.replace_line_range(
-                    pos.line,
-                    1,
-                    vec![left, right],
-                    Selection::cursor(Position::new(pos.line + 1, 0)),
-                );
-                return;
-            } else if col == 0 {
-                let plan = prepend_block_plan(self, pos.line);
-                self.replace_line_range(
-                    pos.line,
-                    0,
-                    vec![String::new(); plan.inserted_line_count],
-                    Selection::cursor(Position::new(plan.editable_line, 0)),
-                );
-                return;
-            } else if col >= current_chars_len {
-                append_block_below_buffer(self, pos.line);
-                return;
-            } else {
-                self.replace_line_range(
-                    pos.line,
-                    1,
-                    vec![left, String::new(), right],
-                    Selection::cursor(Position::new(pos.line + 2, 0)),
-                );
-                return;
-            }
+            let edit = newline_edit(self, pos.line, pos.col, is_source);
+            self.replace_line_range(
+                edit.start,
+                edit.remove_count,
+                edit.inserted,
+                Selection::cursor(edit.cursor),
+            );
+            return;
         }
 
-        self.record_edit(|lines, sel| {
-            if !sel.is_empty() {
-                delete_range_internal(lines, sel.range());
-                let (start, _) = sel.range();
-                *sel = Selection::cursor(start);
-            }
-
-            let pos = sel.head;
-            let current_line = &lines[pos.line];
-            let current_chars_len = current_line.chars().count();
-            let col = pos.col.min(current_chars_len);
-            let trimmed = current_line.trim_start();
-            let leading_spaces = current_line.len() - trimmed.len();
-
-            if current_line.is_empty() {
-                if is_source
-                    || ((pos.line + 1).index() < lines.len()
-                        && !lines[pos.line + 1].trim().is_empty())
-                {
-                    lines.insert_source_line(pos.line + 1, String::new());
-                    *sel = Selection::cursor(Position::new(pos.line + 1, 0));
-                } else {
-                    let target = append_block_below(lines, pos.line);
-                    *sel = Selection::cursor(Position::new(target, 0));
-                }
-                return;
-            }
-
-            let split_b = char_col_to_byte_offset(current_line, col);
-            let left = current_line[..split_b].to_string();
-            let right = current_line[split_b..].to_string();
-
-            if is_in_code_fence_lines(lines.as_slice(), pos.line)
-                || (is_source && !trimmed.starts_with("```") && trimmed != "$$")
-            {
-                lines[pos.line] = left;
-                lines.insert_source_line(pos.line + 1, right);
-                *sel = Selection::cursor(Position::new(pos.line + 1, 0));
-                return;
-            }
-
-            if trimmed.starts_with("```") {
-                let has_closing = lines.as_slice()[(pos.line + 1).index()..]
-                    .iter()
-                    .any(|l| l.trim().starts_with("```"));
-                if !has_closing {
-                    lines.insert_source_line(pos.line + 1, String::new());
-                    lines.insert_source_line(pos.line + 2, "```".to_string());
-                    lines.insert_source_line(pos.line + 3, String::new());
-                }
-                *sel = Selection::cursor(Position::new(pos.line + 1, 0));
-                return;
-            }
-
-            if trimmed == "$$" && col == current_chars_len {
-                let pair = crate::markdown::math_block_pairs(lines.as_slice())
-                    .into_iter()
-                    .find(|&(start, end)| start <= pos.line && pos.line <= end);
-                if pair.is_none_or(|(start, _)| start == pos.line) {
-                    if pair.is_some_and(|(start, end)| end.index() == start.index() + 1) {
-                        lines.insert_source_line(pos.line + 1, String::new());
-                        *sel = Selection::cursor(Position::new(pos.line + 1, 0));
-                    } else if pair.is_some() {
-                        *sel = Selection::cursor(Position::new(pos.line + 1, 0));
-                    } else {
-                        lines.insert_source_line(pos.line + 1, String::new());
-                        lines.insert_source_line(pos.line + 2, "$$".to_string());
-                        lines.insert_source_line(pos.line + 3, String::new());
-                        *sel = Selection::cursor(Position::new(pos.line + 1, 0));
-                    }
-                    return;
-                }
-            }
-
-            if is_thematic_break(trimmed) {
-                let target = append_block_below(lines, pos.line);
-                *sel = Selection::cursor(Position::new(target, 0));
-                return;
-            }
-
-            if let Some((_level, prefix_len)) = parse_heading_prefix(trimmed) {
-                let actual_prefix_len = leading_spaces + prefix_len;
-
-                if col <= actual_prefix_len {
-                    let plan = prepend_block_plan(lines.as_slice(), pos.line);
-                    for _ in 0..plan.inserted_line_count {
-                        lines.insert_source_line(pos.line, String::new());
-                    }
-                    *sel = Selection::cursor(Position::new(plan.following_line, actual_prefix_len));
-                } else if col >= current_chars_len {
-                    let target = append_block_below(lines, pos.line);
-                    *sel = Selection::cursor(Position::new(target, 0));
-                } else {
-                    lines[pos.line] = left;
-                    lines.insert_source_line(pos.line + 1, String::new());
-                    lines.insert_source_line(pos.line + 2, right);
-                    *sel = Selection::cursor(Position::new(pos.line + 2, 0));
-                }
-                return;
-            }
-
-            if let Some(parsed) = parse_block_prefix(current_line)
-                && !matches!(
-                    parsed.kind,
-                    BlockPrefix::Heading { .. } | BlockPrefix::Fence { .. }
-                )
-                && current_chars_len <= parsed.total_len
-            {
-                lines[pos.line] = String::new();
-                lines.insert_source_line(pos.line + 1, String::new());
-                if !is_source
-                    && ((pos.line + 2).index() >= lines.len()
-                        || !lines[pos.line + 2].trim().is_empty())
-                {
-                    lines.insert_source_line(pos.line + 2, String::new());
-                }
-                *sel = Selection::cursor(Position::new(pos.line + 1, 0));
-                return;
-            }
-
-            if let Some(prefix) = get_smart_continuation_prefix(current_line) {
-                let p_len = prefix.chars().count();
-                lines[pos.line] = left;
-                lines.insert_source_line(pos.line + 1, format!("{}{}", prefix, right));
-                *sel = Selection::cursor(Position::new(pos.line + 1, p_len));
-            } else if is_source {
-                lines[pos.line] = left;
-                lines.insert_source_line(pos.line + 1, right);
-                *sel = Selection::cursor(Position::new(pos.line + 1, 0));
-            } else if col == 0 {
-                let plan = prepend_block_plan(lines.as_slice(), pos.line);
-                for _ in 0..plan.inserted_line_count {
-                    lines.insert_source_line(pos.line, String::new());
-                }
-                *sel = Selection::cursor(Position::new(plan.editable_line, 0));
-            } else if col >= current_chars_len {
-                let target = append_block_below(lines, pos.line);
-                *sel = Selection::cursor(Position::new(target, 0));
-            } else {
-                lines[pos.line] = left;
-                lines.insert_source_line(pos.line + 1, String::new());
-                lines.insert_source_line(pos.line + 2, right);
-                *sel = Selection::cursor(Position::new(pos.line + 2, 0));
-            }
-        });
+        // The selection is deleted and the newline inserted as one undo step.
+        let (start, end) = self.selection.range();
+        let (start, end) = (self.clamp_position(start), self.clamp_position(end));
+        let overlay = SelectionDeleted::new(self, start, end);
+        let edit = newline_edit(&overlay, start.line, start.col, is_source);
+        let (from, remove_count, inserted) = overlay.compose(edit.start, edit.remove_count, edit.inserted);
+        self.replace_line_range(from, remove_count, inserted, Selection::cursor(edit.cursor));
     }
 
     pub fn insert_line_below_block(&mut self) {

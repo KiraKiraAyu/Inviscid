@@ -280,32 +280,6 @@ impl QuoteProjection {
     }
 }
 
-pub(crate) fn math_block_pairs(lines: &[String]) -> Vec<(SourceLine, SourceLine)> {
-    let mut pairs = Vec::new();
-    let mut in_code_fence = false;
-    let mut open_idx = None;
-    let top_level_fences = top_level_fenced_lines(lines);
-
-    for (idx, raw_line) in lines.iter().enumerate() {
-        let line = projected_line(raw_line, top_level_fences[idx]);
-        if is_fence_line(line) {
-            in_code_fence = !in_code_fence;
-            continue;
-        }
-        if in_code_fence || !is_math_delimiter(line) {
-            continue;
-        }
-
-        if let Some(open_idx) = open_idx.take() {
-            pairs.push((SourceLine::new(open_idx), SourceLine::new(idx)));
-        } else {
-            open_idx = Some(idx);
-        }
-    }
-
-    pairs
-}
-
 pub(crate) fn math_block_range(
     lines: &(impl LineSource + ?Sized),
     target_line: SourceLine,

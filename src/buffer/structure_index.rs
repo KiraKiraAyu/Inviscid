@@ -707,14 +707,14 @@ mod tests {
         assert_eq!(super::super::parser_summary::COMPOSITIONS.get(), 0);
     }
 
-    /// The former LineIndex build/query implementation, retained as an oracle.
-    struct VecIndex {
+    /// Full-scan reference for navigation queries, independent of tree summaries.
+    struct VecIndex<'a> {
         fence_pairs: Vec<(SourceLine, SourceLine)>,
-        math_pairs: Vec<(SourceLine, SourceLine)>,
+        lines: &'a [String],
     }
 
-    impl VecIndex {
-        fn build(lines: &[String]) -> Self {
+    impl<'a> VecIndex<'a> {
+        fn build(lines: &'a [String]) -> Self {
             let mut fence_pairs = Vec::new();
             let mut open = None;
             for (i, line) in lines.iter().enumerate() {
@@ -728,10 +728,7 @@ mod tests {
                     }
                 }
             }
-            Self {
-                fence_pairs,
-                math_pairs: crate::markdown::math_block_pairs(lines),
-            }
+            Self { fence_pairs, lines }
         }
 
         fn fence_state(&self, target: SourceLine) -> (bool, bool) {
@@ -748,16 +745,12 @@ mod tests {
         }
 
         fn math_pair(&self, target: SourceLine) -> Option<(SourceLine, SourceLine)> {
-            self.math_pairs
-                .iter()
-                .copied()
-                .find(|&(start, end)| (start..=end).contains(&target))
+            crate::markdown::math_block_range(self.lines, target)
         }
 
         fn is_math_delimiter(&self, target: SourceLine) -> bool {
-            self.math_pairs
-                .iter()
-                .any(|&(start, end)| target == start || target == end)
+            self.math_pair(target)
+                .is_some_and(|(start, end)| target == start || target == end)
         }
     }
 

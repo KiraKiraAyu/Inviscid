@@ -170,24 +170,18 @@ mod structure_cache_tests {
             .source_lines()
             .map(|line| line.into_owned())
             .collect();
-        let math = crate::markdown::math_block_pairs(&lines);
         let separators = compute_syntactic_separators(&lines);
         let index = buffer.line_index();
         for (row, separator) in separators.into_iter().enumerate() {
             let line = SourceLine::new(row);
+            let math = crate::markdown::math_block_range(&lines, line);
             let fence = code_fence_status(&lines, line);
             assert_eq!(index.is_in_fence(line), fence.0);
             assert_eq!(index.is_closing_fence(line), fence.1);
-            assert_eq!(
-                index.math_pair(line),
-                math.iter()
-                    .copied()
-                    .find(|&(start, end)| (start..=end).contains(&line))
-            );
+            assert_eq!(index.math_pair(line), math);
             assert_eq!(
                 index.is_math_delimiter(line),
-                math.iter()
-                    .any(|&(start, end)| line == start || line == end)
+                math.is_some_and(|(start, end)| line == start || line == end)
             );
             assert_eq!(index.is_separator(buffer, row), separator);
         }
