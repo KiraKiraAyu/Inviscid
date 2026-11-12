@@ -59,6 +59,7 @@ impl RenderOnce for WindowTitleBar {
 
         div()
             .id("window_titlebar")
+            .occlude()
             .w_full()
             .h(Self::HEIGHT)
             .flex_none()

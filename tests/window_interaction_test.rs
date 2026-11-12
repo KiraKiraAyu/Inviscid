@@ -18,6 +18,50 @@ fn init_test_globals(cx: &mut TestAppContext) {
 }
 
 #[test]
+fn titlebar_clicks_allow_native_drag_without_changing_focus() {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, point, px};
+
+    let mut tcx = TestAppContext::single();
+    init_test_globals(&mut tcx);
+    let (app, cx) = tcx.add_window_view(|_, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    for with_editor in [false, true] {
+        if with_editor {
+            cx.update(|window, cx| {
+                let workspace = app.read(cx).workspace().clone();
+                workspace.update(cx, |workspace, cx| workspace.new_tab(cx));
+                let editor = workspace.read(cx).active_editor().unwrap().clone();
+                window.focus(&editor.focus_handle(cx));
+            });
+            cx.run_until_parked();
+        }
+
+        let focus = cx.update(|window, cx| window.focused(cx));
+        assert!(focus.is_some());
+        // Windows sends both caption clicks and double-clicks through MouseDown.
+        for button in [MouseButton::Left, MouseButton::Right] {
+            for click_count in [1, 2] {
+                cx.simulate_event(MouseDownEvent {
+                    position: point(px(400.0), px(16.0)),
+                    button,
+                    modifiers: Modifiers::default(),
+                    click_count,
+                    first_mouse: false,
+                });
+                cx.update(|window, cx| {
+                    assert!(
+                        !window.default_prevented(),
+                        "Caption clicks must allow native dragging and maximizing"
+                    );
+                    assert_eq!(window.focused(cx), focus);
+                });
+            }
+        }
+    }
+}
+
+#[test]
 fn menus_switch_on_hover_without_editor_focus() {
     use gpui::{Modifiers, MouseMoveEvent};
     use inviscid::app::ActiveMenu;
