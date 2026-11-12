@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn structural_deletion_uses_rope_and_preserves_history() {
+    // backward, input, cursor, expected text, expected cursor
+    for (backward, input, at, expected, after) in [
+        (true, "before\n\n---\n\nafter", (2, 0), "before\n\nafter", (1, 0)),
+        (true, "---\n\nafter", (0, 0), "\nafter", (0, 0)),
+        (true, "---", (0, 3), "", (0, 0)),
+        (false, "---\n\nafter", (0, 1), "\n\nafter", (0, 0)),
+        (true, "before\n- item\nafter", (1, 2), "before\n\nitem\n\nafter", (2, 0)),
+        (true, "before\n> item\n\nafter", (1, 2), "before\n\nitem\n\nafter", (2, 0)),
+        (true, "# title", (0, 2), "title", (0, 0)),
+        (true, "```\n\n```", (1, 0), "", (0, 0)),
+        (true, "before\n\n```\n\n```\n\nafter", (3, 0), "before\n\n\nafter", (1, 0)),
+        (true, "```\ncode\n```\n", (3, 0), "```\ncode\n```", (1, 4)),
+        (true, "```\ncode\n```\nafter", (3, 0), "```\ncode\n```\nafter", (1, 4)),
+        (true, "```\ncode\n```\n\nafter", (4, 0), "```\ncode\n```\nafter", (1, 4)),
+        (true, "$$\nx\n$$\n\nafter", (4, 0), "$$\nx\n$$\n\nafter", (4, 0)),
+        (true, "$$\nx\n$$", (1, 0), "$$\nx\n$$", (1, 0)),
+        (false, "before\n\n$$\nx\n$$", (0, 6), "before\n\n$$\nx\n$$", (0, 6)),
+        (false, "$$\nx\n$$", (1, 1), "$$\nx\n$$", (1, 1)),
+        (false, "$$\nx\n$$", (0, 1), "$$\nx\n$$", (0, 1)),
+    ] {
+        let mut buffer = TextBuffer::from_str(input, None);
+        let before = Selection::cursor(Position::new(SourceLine::new(at.0), at.1));
+        buffer.set_selection(before);
+        if backward {
+            buffer.backspace_mode(false);
+        } else {
+            buffer.delete_forward_mode(false);
+        }
+        let after = Selection::cursor(Position::new(SourceLine::new(after.0), after.1));
+        assert_eq!(buffer.to_string_normalized(), expected, "{input:?}");
+        assert_eq!(buffer.selection(), after, "{input:?}");
+        assert_eq!(buffer.full_line_materializations(), 0, "{input:?}");
+        assert_eq!(buffer.word_count(), expected.split_whitespace().count());
+        assert_eq!(buffer.undo_stack.len(), usize::from(input != expected || before != after));
+        buffer.undo();
+        assert_eq!(buffer.to_string_normalized(), input, "{input:?}");
+        assert_eq!(buffer.selection(), before);
+        buffer.redo();
+        assert_eq!(buffer.to_string_normalized(), expected, "{input:?}");
+        assert_eq!(buffer.selection(), after);
+    }
+}
+
+#[test]
 fn tail_edit_cursor_normalization_does_not_materialize_document() {
     let content = format!("{}\nTail", "paragraph\n".repeat(5_000));
     let mut buffer = TextBuffer::from_str(&content, None);
