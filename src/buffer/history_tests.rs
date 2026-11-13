@@ -160,7 +160,7 @@ fn random_history_matches_vec_replay_and_saved_states() {
                         buffer.replace_line_range(line, removed, inserted, buffer.selection());
                     }
                     4 => buffer.record_single_line_edit(line, |text, _| text.push('z')),
-                    _ => buffer.backspace_mode(false),
+                    _ => crate::markdown::LiveBuffer::new(&mut buffer).backspace(),
                 }
                 let after = state(&buffer);
                 if version != buffer.version() || before.selection != after.selection {

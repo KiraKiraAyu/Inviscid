@@ -116,6 +116,14 @@ pub(crate) fn char_col_to_byte_offset(s: &str, char_col: usize) -> usize {
         .unwrap_or(s.len())
 }
 
+#[inline]
+pub(crate) fn remove_char_at_col(line: &mut String, col: usize) {
+    let b = char_col_to_byte_offset(line, col);
+    if b < line.len() {
+        line.remove(b);
+    }
+}
+
 impl TextBuffer {
     fn replace_rope_lines(
         &mut self,
@@ -1056,6 +1064,19 @@ impl TextBuffer {
             anchor: self.clamp_position(sel.anchor),
             head: self.clamp_position(sel.head),
         };
+    }
+
+    pub(crate) fn set_selection_direct(&mut self, sel: Selection) {
+        self.column_goal = None;
+        self.selection = sel;
+    }
+
+    pub(crate) fn column_goal(&self) -> Option<usize> {
+        self.column_goal
+    }
+
+    pub(crate) fn set_column_goal(&mut self, goal: Option<usize>) {
+        self.column_goal = goal;
     }
 
     pub fn update_cursor(&mut self, select: bool, new_pos: Position) {

@@ -1124,19 +1124,19 @@ impl TextInput {
                 }
             }))
             .on_action(cx.listener(|this, _: &MoveLeft, _, cx| {
-                this.text_input_mut().buffer.move_left_mode(false, true);
+                this.text_input_mut().buffer.move_left(false);
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &SelectLeft, _, cx| {
-                this.text_input_mut().buffer.move_left_mode(true, true);
+                this.text_input_mut().buffer.move_left(true);
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &MoveRight, _, cx| {
-                this.text_input_mut().buffer.move_right_mode(false, true);
+                this.text_input_mut().buffer.move_right(false);
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &SelectRight, _, cx| {
-                this.text_input_mut().buffer.move_right_mode(true, true);
+                this.text_input_mut().buffer.move_right(true);
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &MoveToPreviousWord, _, cx| {
@@ -1156,15 +1156,11 @@ impl TextInput {
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &MoveToBeginningOfLine, _, cx| {
-                this.text_input_mut()
-                    .buffer
-                    .move_to_line_start_mode(false, true);
+                this.text_input_mut().buffer.move_to_line_start(false);
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &SelectToBeginningOfLine, _, cx| {
-                this.text_input_mut()
-                    .buffer
-                    .move_to_line_start_mode(true, true);
+                this.text_input_mut().buffer.move_to_line_start(true);
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &MoveToEndOfLine, _, cx| {
@@ -1176,11 +1172,11 @@ impl TextInput {
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &Backspace, _, cx| {
-                this.text_input_mut().buffer.backspace_mode(true);
+                this.text_input_mut().buffer.backspace();
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &Delete, _, cx| {
-                this.text_input_mut().buffer.delete_forward_mode(true);
+                this.text_input_mut().buffer.delete_forward();
                 this.on_mutation(cx);
             }))
             .on_action(cx.listener(|this, _: &DeleteToPreviousWord, _, cx| {
@@ -1282,7 +1278,7 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |inp, cx| {
                 inp.replace_text_in_range(None, "c", window, cx);
-                inp.buffer.move_left_mode(false, true);
+                inp.buffer.move_left(false);
                 inp.on_mutation(cx);
                 inp.set_text("abc", cx);
                 inp.set_text("xyz", cx);

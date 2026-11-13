@@ -261,7 +261,8 @@ impl Editor {
                     || self.buffer.is_closing_code_fence(pos.line))
             {
                 self.pixel_column_goal = None;
-                self.buffer.ensure_trailing_code_fence_newline();
+                crate::markdown::LiveBuffer::new(&mut self.buffer)
+                    .ensure_trailing_code_fence_newline();
             }
         } else {
             // Moving UP
@@ -306,7 +307,7 @@ impl Editor {
     /// Moves cursor or selection head one line up, honoring Live Preview visual block tree
     pub fn move_up(&mut self, is_shift: bool, window: &mut Window) {
         if self.render_mode == RenderMode::Source {
-            self.buffer.move_up_mode(is_shift, true);
+            self.buffer.move_up(is_shift);
         } else {
             self.move_vertical_live(is_shift, false, window);
         }
@@ -315,7 +316,7 @@ impl Editor {
     /// Moves cursor or selection head one line down, honoring Live Preview visual block tree
     pub fn move_down(&mut self, is_shift: bool, window: &mut Window) {
         if self.render_mode == RenderMode::Source {
-            self.buffer.move_down_mode(is_shift, true);
+            self.buffer.move_down(is_shift);
         } else {
             self.move_vertical_live(is_shift, true, window);
         }

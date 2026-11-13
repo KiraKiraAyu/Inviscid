@@ -78,20 +78,40 @@ impl Editor {
             .on_action(cx.listener(|this, _: &PasteAction, _, cx| this.paste(cx)))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
             .on_action(cx.listener(|this, _: &MoveLeft, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
-                this.perform_edit(cx, |this| this.buffer.move_left_mode(false, is_source));
+                this.perform_edit(cx, |this| {
+                    if this.render_mode == RenderMode::Source {
+                        this.buffer.move_left(false);
+                    } else {
+                        crate::markdown::LiveBuffer::new(&mut this.buffer).move_left(false);
+                    }
+                });
             }))
             .on_action(cx.listener(|this, _: &SelectLeft, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
-                this.perform_edit(cx, |this| this.buffer.move_left_mode(true, is_source));
+                this.perform_edit(cx, |this| {
+                    if this.render_mode == RenderMode::Source {
+                        this.buffer.move_left(true);
+                    } else {
+                        crate::markdown::LiveBuffer::new(&mut this.buffer).move_left(true);
+                    }
+                });
             }))
             .on_action(cx.listener(|this, _: &MoveRight, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
-                this.perform_edit(cx, |this| this.buffer.move_right_mode(false, is_source));
+                this.perform_edit(cx, |this| {
+                    if this.render_mode == RenderMode::Source {
+                        this.buffer.move_right(false);
+                    } else {
+                        crate::markdown::LiveBuffer::new(&mut this.buffer).move_right(false);
+                    }
+                });
             }))
             .on_action(cx.listener(|this, _: &SelectRight, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
-                this.perform_edit(cx, |this| this.buffer.move_right_mode(true, is_source));
+                this.perform_edit(cx, |this| {
+                    if this.render_mode == RenderMode::Source {
+                        this.buffer.move_right(true);
+                    } else {
+                        crate::markdown::LiveBuffer::new(&mut this.buffer).move_right(true);
+                    }
+                });
             }))
             .on_action(cx.listener(|this, _: &MoveUp, window, cx| {
                 this.navigate_vertical(true, false, window, cx);
@@ -118,15 +138,22 @@ impl Editor {
                 this.perform_edit(cx, |this| this.buffer.move_to_next_word(true));
             }))
             .on_action(cx.listener(|this, _: &MoveToBeginningOfLine, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
                 this.perform_edit(cx, |this| {
-                    this.buffer.move_to_line_start_mode(false, is_source)
+                    if this.render_mode == RenderMode::Source {
+                        this.buffer.move_to_line_start(false);
+                    } else {
+                        crate::markdown::LiveBuffer::new(&mut this.buffer)
+                            .move_to_line_start(false);
+                    }
                 });
             }))
             .on_action(cx.listener(|this, _: &SelectToBeginningOfLine, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
                 this.perform_edit(cx, |this| {
-                    this.buffer.move_to_line_start_mode(true, is_source)
+                    if this.render_mode == RenderMode::Source {
+                        this.buffer.move_to_line_start(true);
+                    } else {
+                        crate::markdown::LiveBuffer::new(&mut this.buffer).move_to_line_start(true);
+                    }
                 });
             }))
             .on_action(cx.listener(|this, _: &MoveToEndOfLine, _, cx| {
@@ -178,26 +205,32 @@ impl Editor {
                 this.perform_edit(cx, |this| this.buffer.toggle_comment());
             }))
             .on_action(cx.listener(|this, _: &Indent, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
                 this.perform_edit(cx, |this| {
-                    if is_source || !this.buffer.table_tab_forward() {
+                    if this.render_mode == RenderMode::Source
+                        || !crate::markdown::LiveBuffer::new(&mut this.buffer).table_tab_forward()
+                    {
                         this.buffer.indent_lines_with_tab_size(4);
                     }
                 });
             }))
             .on_action(cx.listener(|this, _: &Outdent, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
                 this.perform_edit(cx, |this| {
-                    if is_source || !this.buffer.table_tab_backward() {
+                    if this.render_mode == RenderMode::Source
+                        || !crate::markdown::LiveBuffer::new(&mut this.buffer).table_tab_backward()
+                    {
                         this.buffer.outdent_lines_with_tab_size(4);
                     }
                 });
             }))
             .on_action(cx.listener(|this, _: &Newline, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
                 this.perform_edit(cx, |this| {
-                    if is_source || !this.buffer.table_enter_next_row() {
-                        this.buffer.insert_newline_mode(is_source);
+                    if this.render_mode == RenderMode::Source {
+                        this.buffer.insert_newline();
+                    } else {
+                        let mut live = crate::markdown::LiveBuffer::new(&mut this.buffer);
+                        if !live.table_enter_next_row() {
+                            live.insert_newline();
+                        }
                     }
                 });
             }))
@@ -208,7 +241,7 @@ impl Editor {
             }))
             .on_action(cx.listener(|this, _: &NewlineBelowBlock, _, cx| {
                 this.perform_edit(cx, |this| {
-                    this.buffer.insert_line_below_block();
+                    crate::markdown::LiveBuffer::new(&mut this.buffer).insert_line_below_block();
                 });
             }))
             .on_action(cx.listener(|this, _: &NewlineAbove, _, cx| {
@@ -217,17 +250,24 @@ impl Editor {
                 });
             }))
             .on_action(cx.listener(|this, _: &Backspace, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
                 this.perform_edit(cx, |this| {
-                    if is_source || !this.buffer.table_backspace() {
-                        this.buffer.backspace_mode(is_source);
+                    if this.render_mode == RenderMode::Source {
+                        this.buffer.backspace();
+                    } else {
+                        let mut live = crate::markdown::LiveBuffer::new(&mut this.buffer);
+                        if !live.table_backspace() {
+                            live.backspace();
+                        }
                     }
                 });
             }))
             .on_action(cx.listener(|this, _: &Delete, _, cx| {
-                let is_source = this.render_mode == RenderMode::Source;
                 this.perform_edit(cx, |this| {
-                    this.buffer.delete_forward_mode(is_source);
+                    if this.render_mode == RenderMode::Source {
+                        this.buffer.delete_forward();
+                    } else {
+                        crate::markdown::LiveBuffer::new(&mut this.buffer).delete_forward();
+                    }
                 });
             }))
             .on_action(cx.listener(|this, _: &DeleteToPreviousWord, _, cx| {

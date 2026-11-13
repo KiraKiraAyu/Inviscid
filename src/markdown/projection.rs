@@ -64,9 +64,15 @@ impl ProjectedBlock {
     }
 
     /// Returns the next editable line strictly inside this same block, if any.
-    /// Tables intentionally return `None` so forward-Delete does not merge pipe rows.
+    /// Tables return `None` so forward-Delete does not merge pipe rows, and a
+    /// paired CodeBlock opening fence line returns `None` so forward-Delete at
+    /// the end of the info string does not merge code into the fence header.
     pub fn next_intra_block_editable_line(&self, line: SourceLine) -> Option<SourceLine> {
-        if !self.is_editable_line(line) || matches!(self.kind, ProjectedBlockKind::Table { .. }) {
+        if !self.is_editable_line(line)
+            || matches!(self.kind, ProjectedBlockKind::Table { .. })
+            || (matches!(self.kind, ProjectedBlockKind::CodeBlock { .. })
+                && line == self.source_range.start)
+        {
             return None;
         }
         let next = line + 1;

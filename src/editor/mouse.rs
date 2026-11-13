@@ -52,7 +52,8 @@ impl Editor {
 
         if self.can_edit()
             && doc_y > total_h - px(16.0)
-            && let Some(pos) = self.buffer.ensure_trailing_code_fence_newline()
+            && let Some(pos) = crate::markdown::LiveBuffer::new(&mut self.buffer)
+                .ensure_trailing_code_fence_newline()
         {
             return pos;
         }
@@ -70,7 +71,8 @@ impl Editor {
                         crate::markdown::BlockKind::MathBlock { is_start: true }
                     )
                 })
-            && let Some(pos) = self.buffer.ensure_math_block_content_line(start_line)
+            && let Some(pos) = crate::markdown::LiveBuffer::new(&mut self.buffer)
+                .ensure_math_block_content_line(start_line)
         {
             return pos;
         }

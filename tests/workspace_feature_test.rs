@@ -1240,9 +1240,9 @@ fn test_inline_input_rich_navigation_and_ime(cx: &mut TestAppContext) {
             assert_eq!(this.buffer().cursor_pos().col, 7);
 
             // Move left 3 times (over ".rs")
-            this.buffer_mut().move_left_mode(false, false);
-            this.buffer_mut().move_left_mode(false, false);
-            this.buffer_mut().move_left_mode(false, false);
+            this.buffer_mut().move_left(false);
+            this.buffer_mut().move_left(false);
+            this.buffer_mut().move_left(false);
             assert_eq!(this.buffer().cursor_pos().col, 4);
 
             // Insert "_mod"
@@ -1261,13 +1261,13 @@ fn test_inline_input_rich_navigation_and_ime(cx: &mut TestAppContext) {
             assert_eq!(this.text(), "lib.rs");
 
             // Backspace deletes one character before cursor
-            this.buffer_mut().backspace_mode(false);
+            this.buffer_mut().backspace();
             assert_eq!(this.text(), "lib.r");
 
             // Move to start, forward delete
-            this.buffer_mut().move_to_line_start_mode(false, false);
+            this.buffer_mut().move_to_line_start(false);
             assert_eq!(this.buffer().cursor_pos().col, 0);
-            this.buffer_mut().delete_forward_mode(false);
+            this.buffer_mut().delete_forward();
             assert_eq!(this.text(), "ib.r");
         });
     });

@@ -176,7 +176,7 @@ fn fingerprint_tracks_range_ime_and_line_replacements() {
 fn fingerprint_tracks_markdown_commands_and_their_history() {
     let mut list = TextBuffer::from_str("- one\n- two\n- three\n", None);
     list.set_cursor(Position::new(SourceLine::new(1), 5));
-    list.insert_newline_mode(false);
+    inviscid::markdown::LiveBuffer::new(&mut list).insert_newline();
     assert_fingerprint(&list);
     list.insert_text("界🙂");
     assert_fingerprint(&list);
@@ -199,7 +199,7 @@ fn fingerprint_tracks_markdown_commands_and_their_history() {
 
     let mut table = TextBuffer::from_str("| A | B |\n| --- | --- |\n| 你 | 🙂 |", None);
     table.set_cursor(Position::new(SourceLine::new(2), 6));
-    assert!(table.table_enter_next_row());
+    assert!(inviscid::markdown::LiveBuffer::new(&mut table).table_enter_next_row());
     assert_fingerprint(&table);
     table.undo();
     assert_fingerprint(&table);

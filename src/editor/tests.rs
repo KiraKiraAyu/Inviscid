@@ -1179,14 +1179,14 @@ fn test_empty_document_live_preview_cursor_cannot_land_on_trailing_separator() {
     assert!(is_syntactic_separator(&buf.lines(), SourceLine::new(1)));
 
     // Navigating down from line 0 in Live Preview stays on line 0
-    buf.move_down_mode(false, false);
+    crate::markdown::LiveBuffer::new(&mut buf).move_down(false);
     assert_eq!(
         buf.cursor_pos(),
         Position::new(crate::buffer::SourceLine::new(0), 0)
     );
 
     // In Source mode, line 1 is accessible
-    buf.move_down_mode(false, true);
+    buf.move_down(false);
     assert_eq!(
         buf.cursor_pos(),
         Position::new(crate::buffer::SourceLine::new(1), 0)

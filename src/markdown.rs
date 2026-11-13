@@ -1,3 +1,4 @@
+pub mod editing;
 pub mod indent;
 pub mod inline;
 pub mod outline;
@@ -10,6 +11,8 @@ pub mod types;
 
 #[cfg(test)]
 mod tests;
+
+pub use editing::LiveBuffer;
 
 pub use indent::*;
 pub use inline::*;

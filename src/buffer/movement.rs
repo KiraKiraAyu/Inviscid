@@ -2,7 +2,6 @@ use super::TextBuffer;
 use super::primitives::{Position, Selection};
 #[cfg(test)]
 use crate::markdown::compute_syntactic_separators;
-use crate::markdown::get_block_prefix_len;
 use std::cell::Ref;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -148,22 +147,15 @@ impl LineIndex {
         self.structure.fence_state(target_line).1
     }
 
-    pub(super) fn has_fence_after(&self, line: crate::buffer::SourceLine) -> bool {
+    pub(crate) fn has_fence_after(&self, line: crate::buffer::SourceLine) -> bool {
         self.structure.has_fence_after(line)
     }
 
-    pub(super) fn paired_fence_range(
+    pub(crate) fn paired_fence_range(
         &self,
         line: crate::buffer::SourceLine,
     ) -> Option<(crate::buffer::SourceLine, crate::buffer::SourceLine)> {
         self.structure.paired_fence_range(line)
-    }
-
-    pub(super) fn math_pair(
-        &self,
-        target_line: crate::buffer::SourceLine,
-    ) -> Option<(crate::buffer::SourceLine, crate::buffer::SourceLine)> {
-        self.structure.math_pair(target_line)
     }
 
     #[cfg(test)]
@@ -195,7 +187,7 @@ mod structure_cache_tests {
             let fence = code_fence_status(&lines, line);
             assert_eq!(index.is_in_fence(line), fence.0);
             assert_eq!(index.is_closing_fence(line), fence.1);
-            assert_eq!(index.math_pair(line), math);
+            assert_eq!(index.structure.math_pair(line), math);
             assert_eq!(
                 index.is_math_delimiter(line),
                 math.is_some_and(|(start, end)| line == start || line == end)
@@ -279,32 +271,7 @@ impl TextBuffer {
         self.line_index().is_in_fence(source_line)
     }
 
-    pub fn find_next_editable_line(
-        &self,
-        from_line: crate::buffer::SourceLine,
-        is_source: bool,
-    ) -> Option<crate::buffer::SourceLine> {
-        if is_source {
-            let next = from_line.index() + 1;
-            return (next < self.line_count()).then(|| crate::buffer::SourceLine::new(next));
-        }
-        let index = self.line_index();
-        crate::markdown::adjacent_live_editable_line(self, index.structure(), from_line, true)
-    }
-
-    pub fn find_prev_editable_line(
-        &self,
-        from_line: crate::buffer::SourceLine,
-        is_source: bool,
-    ) -> Option<crate::buffer::SourceLine> {
-        if is_source {
-            return from_line.checked_sub(1);
-        }
-        let index = self.line_index();
-        crate::markdown::adjacent_live_editable_line(self, index.structure(), from_line, false)
-    }
-
-    pub fn move_left_mode(&mut self, select: bool, is_source: bool) {
+    pub fn move_left(&mut self, select: bool) {
         self.column_goal = None;
 
         if !select && !self.selection.is_empty() {
@@ -313,96 +280,18 @@ impl TextBuffer {
         }
 
         let pos = self.selection.head;
-        if !is_source {
-            let index = self.line_index();
-            if let Some((start, end)) = index.math_pair(pos.line)
-                && (pos.line == start || pos.line == end)
-            {
-                let target = if pos.line == start {
-                    self.find_prev_editable_line(start, false)
-                        .map(|line| Position::new(line, self.line_len(line)))
-                        .unwrap_or(Position::new(start + 1, 0))
-                } else if end.index() > start.index() + 1 {
-                    Position::new(
-                        end - 1,
-                        self.line_len(crate::buffer::SourceLine::new(end.index() - 1)),
-                    )
-                } else {
-                    self.find_prev_editable_line(start, false)
-                        .map(|line| Position::new(line, self.line_len(line)))
-                        .unwrap_or(Position::new(start, 0))
-                };
-                drop(index);
-                self.update_cursor(select, target);
-                return;
-            }
-        }
-        let new_pos = if is_source {
-            if pos.col > 0 {
-                Position::new(pos.line, pos.col - 1)
-            } else if pos.line.index() > 0 {
-                Position::new(pos.line - 1, self.line_len(pos.line - 1))
-            } else {
-                pos
-            }
-        } else if let Some(meta) = crate::markdown::table::get_table_metadata(self, pos.line) {
-            let cells = crate::markdown::table::parse_table_row_cells(
-                &self.line_text(pos.line).unwrap_or_default(),
-            );
-            let cell_idx = crate::markdown::table::get_cell_index_for_col(&cells, pos.col);
-            if let Some(cell) = cells.get(cell_idx) {
-                if pos.col > cell.col_range.1 {
-                    Position::new(pos.line, cell.col_range.1)
-                } else if pos.col > cell.col_range.0 {
-                    Position::new(pos.line, pos.col - 1)
-                } else if cell_idx > 0 {
-                    Position::new(pos.line, cells[cell_idx - 1].col_range.1)
-                } else if pos.line.index() == meta.delimiter_line.index() + 1 {
-                    let header_cells = crate::markdown::table::parse_table_row_cells(
-                        &self.line_text(meta.header_line).unwrap_or_default(),
-                    );
-                    let col = header_cells.last().map(|c| c.col_range.1).unwrap_or(2);
-                    Position::new(meta.header_line, col)
-                } else if pos.line.index() > meta.delimiter_line.index() + 1 {
-                    let prev_row = pos.line - 1;
-                    let prev_cells = crate::markdown::table::parse_table_row_cells(
-                        &self.line_text(prev_row).unwrap_or_default(),
-                    );
-                    let col = prev_cells.last().map(|c| c.col_range.1).unwrap_or(2);
-                    Position::new(prev_row, col)
-                } else if let Some(prev_line) =
-                    self.find_prev_editable_line(meta.header_line, is_source)
-                {
-                    Position::new(prev_line, self.line_len(prev_line))
-                } else {
-                    pos
-                }
-            } else {
-                pos
-            }
+        let new_pos = if pos.col > 0 {
+            Position::new(pos.line, pos.col - 1)
+        } else if pos.line.index() > 0 {
+            Position::new(pos.line - 1, self.line_len(pos.line - 1))
         } else {
-            let line = self.line_text(pos.line).unwrap_or_default();
-            let prefix_len = get_block_prefix_len(&line);
-
-            if pos.col <= prefix_len {
-                if let Some(prev_line) = self.find_prev_editable_line(pos.line, is_source) {
-                    Position::new(prev_line, self.line_len(prev_line))
-                } else {
-                    Position::new(pos.line, prefix_len)
-                }
-            } else if pos.col > 0 {
-                Position::new(pos.line, pos.col - 1)
-            } else if let Some(prev_line) = self.find_prev_editable_line(pos.line, is_source) {
-                Position::new(prev_line, self.line_len(prev_line))
-            } else {
-                pos
-            }
+            pos
         };
 
         self.update_cursor(select, new_pos);
     }
 
-    pub fn move_right_mode(&mut self, select: bool, is_source: bool) {
+    pub fn move_right(&mut self, select: bool) {
         self.column_goal = None;
 
         if !select && !self.selection.is_empty() {
@@ -411,122 +300,19 @@ impl TextBuffer {
         }
 
         let pos = self.selection.head;
-        if !is_source {
-            let index = self.line_index();
-            if let Some((start, end)) = index.math_pair(pos.line)
-                && (pos.line == start || pos.line == end)
-            {
-                let target = if pos.line == start {
-                    if end.index() > start.index() + 1 {
-                        Position::new(start + 1, 0)
-                    } else {
-                        self.find_next_editable_line(end, false)
-                            .map(|line| {
-                                Position::new(
-                                    line,
-                                    get_block_prefix_len(&self.line_text(line).unwrap_or_default()),
-                                )
-                            })
-                            .unwrap_or(Position::new(end, 0))
-                    }
-                } else {
-                    self.find_next_editable_line(end, false)
-                        .map(|line| {
-                            Position::new(
-                                line,
-                                get_block_prefix_len(&self.line_text(line).unwrap_or_default()),
-                            )
-                        })
-                        .unwrap_or(Position::new(end, 0))
-                };
-                drop(index);
-                self.update_cursor(select, target);
-                return;
-            }
-        }
         let line_len = self.line_len(pos.line);
-
-        let new_pos = if is_source {
-            if pos.col < line_len {
-                Position::new(pos.line, pos.col + 1)
-            } else if (pos.line + 1).index() < self.line_count() {
-                Position::new(pos.line + 1, 0)
-            } else {
-                pos
-            }
-        } else if let Some(meta) = crate::markdown::table::get_table_metadata(self, pos.line) {
-            let cells = crate::markdown::table::parse_table_row_cells(
-                &self.line_text(pos.line).unwrap_or_default(),
-            );
-            let cell_idx = crate::markdown::table::get_cell_index_for_col(&cells, pos.col);
-            if let Some(cell) = cells.get(cell_idx) {
-                if pos.col < cell.col_range.0 {
-                    Position::new(pos.line, cell.col_range.0)
-                } else if pos.col < cell.col_range.1 {
-                    Position::new(pos.line, pos.col + 1)
-                } else if cell_idx + 1 < cells.len() {
-                    // Jump to start of next cell
-                    Position::new(pos.line, cells[cell_idx + 1].col_range.0)
-                } else if pos.line == meta.header_line {
-                    let next_row = meta.delimiter_line.index() + 1;
-                    if next_row < self.line_count() && next_row <= meta.last_table_line.index() {
-                        let next_cells = crate::markdown::table::parse_table_row_cells(
-                            &self
-                                .line_text(crate::buffer::SourceLine::new(next_row))
-                                .unwrap_or_default(),
-                        );
-                        let col = next_cells.first().map(|c| c.col_range.0).unwrap_or(2);
-                        Position::new(crate::buffer::SourceLine::new(next_row), col)
-                    } else {
-                        pos
-                    }
-                } else if pos.line < meta.last_table_line {
-                    let next_row = pos.line + 1;
-                    let next_cells = crate::markdown::table::parse_table_row_cells(
-                        &self.line_text(next_row).unwrap_or_default(),
-                    );
-                    let col = next_cells.first().map(|c| c.col_range.0).unwrap_or(2);
-                    Position::new(next_row, col)
-                } else if let Some(next_line) =
-                    self.find_next_editable_line(meta.last_table_line, is_source)
-                {
-                    Position::new(
-                        next_line,
-                        get_block_prefix_len(&self.line_text(next_line).unwrap_or_default()),
-                    )
-                } else {
-                    pos
-                }
-            } else {
-                pos
-            }
+        let new_pos = if pos.col < line_len {
+            Position::new(pos.line, pos.col + 1)
+        } else if (pos.line + 1).index() < self.line_count() {
+            Position::new(pos.line + 1, 0)
         } else {
-            let line = self.line_text(pos.line).unwrap_or_default();
-            let prefix_len = get_block_prefix_len(&line);
-
-            if pos.col < prefix_len {
-                // Step over hidden prefix directly to right of first visible character
-                Position::new(pos.line, (prefix_len + 1).min(line_len))
-            } else if pos.col < line_len {
-                Position::new(pos.line, pos.col + 1)
-            } else if let Some(next_line) = self.find_next_editable_line(pos.line, is_source) {
-                let next_prefix =
-                    get_block_prefix_len(&self.line_text(next_line).unwrap_or_default());
-                Position::new(next_line, next_prefix.min(self.line_len(next_line)))
-            } else if !select
-                && (self.is_in_code_fence(pos.line) || self.is_closing_code_fence(pos.line))
-                && self.ensure_trailing_code_fence_newline().is_some()
-            {
-                return;
-            } else {
-                pos
-            }
+            pos
         };
 
         self.update_cursor(select, new_pos);
     }
 
-    pub fn move_vertical_mode(&mut self, is_down: bool, select: bool, is_source: bool) {
+    pub fn move_vertical(&mut self, is_down: bool, select: bool) {
         let pos = self.selection.head;
         let goal = match self.column_goal {
             Some(g) => g,
@@ -537,77 +323,42 @@ impl TextBuffer {
             }
         };
 
-        let new_pos = if is_source {
-            if is_down {
-                if (pos.line + 1).index() < self.line_count() {
-                    let next_line = pos.line + 1;
-                    Position::new(next_line, goal.min(self.line_len(next_line)))
-                } else {
-                    Position::new(pos.line, self.line_len(pos.line))
-                }
-            } else if pos.line.index() > 0 {
-                let prev_line = pos.line - 1;
-                Position::new(prev_line, goal.min(self.line_len(prev_line)))
+        let new_pos = if is_down {
+            if (pos.line + 1).index() < self.line_count() {
+                let next_line = pos.line + 1;
+                Position::new(next_line, goal.min(self.line_len(next_line)))
             } else {
-                Position::new(crate::buffer::SourceLine::new(0), 0)
-            }
-        } else {
-            let target_line = if is_down {
-                self.find_next_editable_line(pos.line, is_source)
-            } else {
-                self.find_prev_editable_line(pos.line, is_source)
-            };
-
-            if let Some(target) = target_line {
-                let target_text = self.line_text(target).unwrap_or_default();
-                let prefix = get_block_prefix_len(&target_text);
-                let col = if target_text.trim_start().starts_with("```") {
-                    self.line_len(target)
-                } else {
-                    goal.max(prefix).min(self.line_len(target))
-                };
-                Position::new(target, col)
-            } else if is_down
-                && !select
-                && (self.is_in_code_fence(pos.line) || self.is_closing_code_fence(pos.line))
-                && self.ensure_trailing_code_fence_newline().is_some()
-            {
-                return;
-            } else if is_down {
                 Position::new(pos.line, self.line_len(pos.line))
-            } else {
-                Position::new(crate::buffer::SourceLine::new(0), 0)
             }
+        } else if pos.line.index() > 0 {
+            let prev_line = pos.line - 1;
+            Position::new(prev_line, goal.min(self.line_len(prev_line)))
+        } else {
+            Position::new(crate::buffer::SourceLine::new(0), 0)
         };
 
         self.update_cursor(select, new_pos);
     }
 
-    pub fn move_up_mode(&mut self, select: bool, is_source: bool) {
-        self.move_vertical_mode(false, select, is_source);
+    pub fn move_up(&mut self, select: bool) {
+        self.move_vertical(false, select);
     }
 
-    pub fn move_down_mode(&mut self, select: bool, is_source: bool) {
-        self.move_vertical_mode(true, select, is_source);
+    pub fn move_down(&mut self, select: bool) {
+        self.move_vertical(true, select);
     }
 
-    pub fn move_to_line_start_mode(&mut self, select: bool, is_source: bool) {
+    pub fn move_to_line_start(&mut self, select: bool) {
         self.column_goal = None;
         let pos = self.selection.head;
         let line = self.line_text(pos.line).unwrap_or_default();
-
-        let new_col = if is_source {
-            let trimmed = line.trim_start();
-            let leading_spaces = line.len() - trimmed.len();
-            if pos.col > leading_spaces {
-                leading_spaces
-            } else {
-                0
-            }
+        let trimmed = line.trim_start();
+        let leading_spaces = line.len() - trimmed.len();
+        let new_col = if pos.col > leading_spaces {
+            leading_spaces
         } else {
-            get_block_prefix_len(&line)
+            0
         };
-
         let new_pos = Position::new(pos.line, new_col);
         self.update_cursor(select, new_pos);
     }
