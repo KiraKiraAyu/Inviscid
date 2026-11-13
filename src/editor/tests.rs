@@ -4678,6 +4678,13 @@ fn test_external_change_reloads_clean_editor(cx: &mut gpui::TestAppContext) {
     cx.update(|_window, cx| {
         editor.update(cx, |ed, cx| {
             ed.handle_external_file_change(cx);
+            assert!(ed.is_loading());
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.read_with(cx, |ed, _| {
+            assert!(!ed.is_loading());
             assert_eq!(ed.buffer().to_string_content(), "after");
             assert!(!ed.external_change_pending());
         });
@@ -4709,8 +4716,60 @@ fn test_external_change_preserves_dirty_editor_until_reload(cx: &mut gpui::TestA
             assert!(ed.save_file_async(cx).is_err());
 
             ed.reload_file(cx).unwrap();
+            assert!(ed.is_loading());
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.read_with(cx, |ed, _| {
+            assert!(!ed.is_loading());
             assert_eq!(ed.buffer().to_string_content(), "on disk");
             assert!(!ed.external_change_pending());
+        });
+    });
+}
+
+#[gpui::test]
+fn async_reload_keeps_background_worker_active_for_subsequent_edits(cx: &mut gpui::TestAppContext) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let test_file = temp_dir.path().join("reload_edit.md");
+    std::fs::write(&test_file, "initial").unwrap();
+
+    let (editor, cx) =
+        cx.add_window_view(|_window, cx| super::Editor::new_with_path(test_file.clone(), cx));
+    cx.run_until_parked();
+
+    std::fs::write(&test_file, "# Reloaded\n$$E = mc^2$$\n").unwrap();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.reload_file(cx).unwrap();
+            assert!(ed.is_loading());
+            assert!(ed.load_task.is_some());
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            assert!(!ed.is_loading());
+            assert!(ed.prepared_document.is_some());
+            assert_eq!(
+                ed.layout_snapshot().parsed_lines.row(0).unwrap().kind,
+                crate::markdown::BlockKind::Heading { level: 1 }
+            );
+            ed.perform_edit(cx, |ed| {
+                ed.buffer_mut()
+                    .set_cursor(super::Position::new(SourceLine::new(0), 2));
+                ed.buffer_mut().insert_text("Updated ");
+            });
+            let _ = ed.layout_snapshot();
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.read_with(cx, |ed, _| {
+            let prepared = ed.prepared_document.as_ref().expect("prepared snapshot");
+            assert_eq!(prepared.revision, ed.buffer().revision());
+            assert_eq!(prepared.windows[0].rows[0].raw_text, "# Updated Reloaded");
         });
     });
 }

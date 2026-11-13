@@ -21,13 +21,17 @@ impl Editor {
         if let Some(snapshot) = self.prepared_document.take() {
             snapshot.session.cancel();
         }
+        self.load_task = None;
         self.auto_save_task = None;
         self.file_watch_task = None;
         self.fingerprint_task = None;
+        self.reset_find_search();
+        self.external_change = ExternalChangeState::None;
         self.buffer.set_file_path(Some(path));
         self.load_error = None;
         self.is_loading = true;
         self.pending_open_position = None;
+        self.invalidate_layout_cache();
     }
 
     pub(crate) fn open_at_position(&mut self, position: Position, cx: &mut Context<Self>) {
@@ -111,8 +115,12 @@ impl Editor {
                 if finishing {
                     self.is_loading = false;
                     self.external_disk_hash = Some(file.disk_hash);
+                    self.external_change = ExternalChangeState::None;
                     self.schedule_fingerprints(cx);
                     self.start_file_watcher(cx);
+                    self.refresh_find_matches(cx);
+                    self.sync_find_bar(cx);
+                    self.last_cursor_action = std::time::Instant::now();
                     if let Some(position) = self.pending_open_position.take() {
                         self.open_at_position(position, cx);
                     }
@@ -138,7 +146,49 @@ impl Editor {
             cx.emit(EditorEvent::ExternalChangeChanged(
                 ExternalChangeState::None,
             ));
+            cx.emit(EditorEvent::CursorMoved);
         }
         cx.notify();
     }
+}
+
+pub(crate) fn spawn_session(
+    session: &Arc<DocumentSession>,
+    path: PathBuf,
+    executor: &gpui::BackgroundExecutor,
+) -> (gpui::Task<()>, gpui::Task<()>, CancelSession) {
+    let reader_session = session.clone();
+    let reader_path = path.clone();
+    let read_work = executor.spawn(async move { reader_session.run_reader(reader_path) });
+    let worker_session = session.clone();
+    let prepare_work = executor.spawn(async move { worker_session.run_worker(path).await });
+    (read_work, prepare_work, CancelSession(session.clone()))
+}
+
+pub(crate) fn spawn_editor_load(path: PathBuf, cx: &mut Context<Editor>) -> gpui::Task<()> {
+    let requested_path = path.clone();
+    let session = DocumentSession::new();
+    let mut updates = session.updates.subscribe();
+    let session_work = spawn_session(&session, path, cx.background_executor());
+    cx.spawn(async move |this, cx| {
+        use futures::StreamExt;
+        let _session_work = session_work;
+        while updates.next().await.is_some() {
+            let Some(result) = session.take() else {
+                continue;
+            };
+            let keep_running = this
+                .update(cx, |editor, cx| {
+                    if editor.file_path() != Some(requested_path.as_path()) {
+                        return false;
+                    }
+                    editor.install_publication(&session, result, cx);
+                    true
+                })
+                .unwrap_or(false);
+            if !keep_running {
+                break;
+            }
+        }
+    })
 }

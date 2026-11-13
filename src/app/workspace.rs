@@ -492,20 +492,11 @@ impl Workspace {
         let requested_path = path.clone();
         let session = crate::editor::loading::DocumentSession::new();
         let mut updates = session.updates.subscribe();
-        let reader_session = session.clone();
-        let reader_path = path.clone();
-        let read_work = cx
-            .background_executor()
-            .spawn(async move { reader_session.run_reader(reader_path) });
-        let worker_session = session.clone();
-        let prepare_work = cx
-            .background_executor()
-            .spawn(async move { worker_session.run_worker(path).await });
-        let cancellation = crate::editor::loading::CancelSession(session.clone());
+        let session_work =
+            crate::editor::loading::spawn_session(&session, path, cx.background_executor());
         cx.spawn(async move |this, cx| {
             use futures::StreamExt;
-            let _work = (read_work, prepare_work);
-            let _cancellation = cancellation;
+            let _session_work = session_work;
             while updates.next().await.is_some() {
                 let Some(result) = session.take() else {
                     continue;

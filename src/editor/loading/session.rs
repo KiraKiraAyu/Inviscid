@@ -870,6 +870,125 @@ mod tests {
         session.cancel();
         worker.join().unwrap().unwrap();
     }
+
+    #[gpui::test]
+    fn ui_streams_optimistic_code_and_math_before_closing_fences(cx: &mut gpui::TestAppContext) {
+        struct UnclosedOptimisticReader {
+            step_done: mpsc::Sender<usize>,
+            resume: mpsc::Receiver<()>,
+            step: usize,
+        }
+        impl Read for UnclosedOptimisticReader {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.step += 1;
+                match self.step {
+                    1 => {
+                        let text = b"$$\nx^2 + y^2\nstill math\n";
+                        bytes[..text.len()].copy_from_slice(text);
+                        Ok(text.len())
+                    }
+                    2 => {
+                        self.step_done.send(1).unwrap();
+                        self.resume.recv().unwrap();
+                        let text = b"$$\n```rust\nlet v = 1;\n";
+                        bytes[..text.len()].copy_from_slice(text);
+                        Ok(text.len())
+                    }
+                    _ => {
+                        self.step_done.send(2).unwrap();
+                        self.resume.recv().unwrap();
+                        Ok(0)
+                    }
+                }
+            }
+        }
+
+        cx.update(|cx| {
+            let config = crate::config::AppConfig::default();
+            cx.set_global(crate::theme::ThemeManager::from_config(&config));
+            cx.set_global(config);
+        });
+        let session = DocumentSession::new();
+        let (step_done, step_done_rx) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel();
+        let worker_session = session.clone();
+        let worker = std::thread::spawn(move || {
+            futures::executor::block_on(worker_session.read_and_prepare(
+                UnclosedOptimisticReader {
+                    step_done,
+                    resume: resume_rx,
+                    step: 0,
+                },
+                "optimistic.md".into(),
+            ))
+        });
+        assert_eq!(
+            step_done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            1
+        );
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            crate::editor::Editor::new_loading("optimistic.md".into(), cx)
+        });
+        editor.update(cx, |editor, cx| {
+            editor.install_publication(&session, session.take().unwrap(), cx)
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |editor, _| {
+            assert!(editor.is_loading());
+            let layout = editor.layout_snapshot();
+            let row1 = layout.parsed_lines.row(1).unwrap();
+            assert_eq!(row1.kind, BlockKind::MathBlockContent);
+            assert!(editor.is_math_block_expanded(SourceLine::new(1), &row1, None));
+            assert_eq!(layout.parsed_lines.row(2).unwrap().raw_text, "still math");
+        });
+
+        resume.send(()).unwrap();
+        assert_eq!(
+            step_done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            2
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(pub_item) = session.take() {
+                let pub_item = pub_item.unwrap();
+                editor.update(cx, |editor, cx| {
+                    editor.install_publication(&session, Ok(pub_item), cx)
+                });
+                let ready = editor.read_with(cx, |editor, _| {
+                    editor.buffer().line_count() >= 6
+                        && editor
+                            .layout_snapshot()
+                            .parsed_lines
+                            .row(5)
+                            .is_some_and(|row| row.kind == BlockKind::CodeBlockContent)
+                });
+                if ready {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        editor.read_with(cx, |editor, _| {
+            assert!(editor.is_loading());
+            assert_eq!(
+                editor
+                    .layout_snapshot()
+                    .parsed_lines
+                    .row(5)
+                    .unwrap()
+                    .raw_text,
+                "let v = 1;"
+            );
+        });
+        session.cancel();
+        resume.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+    }
 }
 
 pub(crate) fn source_window(

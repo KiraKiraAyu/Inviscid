@@ -201,6 +201,7 @@ pub struct Editor {
     pub(crate) scroll_task: Option<Task<()>>,
     pub(crate) drag_scroll_task: Option<Task<()>>,
     pub(crate) _async_update_task: Option<Task<()>>,
+    pub(crate) load_task: Option<Task<()>>,
 
     pub(crate) layout_cache: RefCell<Arc<DocumentLayoutCache>>,
     layout_scroll_adjustment: std::cell::Cell<Pixels>,
@@ -522,6 +523,7 @@ impl Editor {
             scroll_task: None,
             drag_scroll_task: None,
             _async_update_task: Some(async_update_task),
+            load_task: None,
             layout_cache: RefCell::new(Arc::new(DocumentLayoutCache::default())),
             layout_scroll_adjustment: std::cell::Cell::new(px(0.0)),
             #[cfg(test)]
@@ -961,35 +963,11 @@ impl Editor {
         path: PathBuf,
         cx: &mut Context<Self>,
     ) -> Result<(), std::io::Error> {
-        self.auto_save_task = None;
-        let content = if is_whitelisted_extension(&path) {
-            std::fs::read_to_string(&path)?
-        } else {
-            String::new()
-        };
-        let mtime = std::fs::metadata(&path)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        self.reset_find_search();
-        self.fingerprint_task = None;
-        self.buffer =
-            TextBuffer::from_bytes(content.as_bytes(), Some(path)).expect("validated UTF-8");
-        self.display_map = DisplayMap::new();
-        self.schedule_fingerprints(cx);
-        self.load_error = None;
-        self.refresh_find_matches(cx);
-        self.sync_find_bar(cx);
-        self.buffer.set_last_saved_mtime(mtime);
-        self.external_disk_hash = Some(Self::hash_file_content(&content));
-        self.external_change = ExternalChangeState::None;
-        self.start_file_watcher(cx);
-        self.invalidate_layout_cache();
-        self.last_cursor_action = std::time::Instant::now();
+        self.begin_loading(path.clone());
         cx.emit(EditorEvent::TitleChanged);
-        cx.emit(EditorEvent::DirtyChanged(false));
         cx.emit(EditorEvent::ExternalChangeChanged(self.external_change));
-        cx.emit(EditorEvent::CursorMoved);
         cx.notify();
+        self.load_task = Some(loading::spawn_editor_load(path, cx));
         Ok(())
     }
 
@@ -1271,13 +1249,10 @@ impl Editor {
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.is_loading
-            && self
-                .prepared_document
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.revision != self.buffer.revision())
-            && let Some(snapshot) = self.prepared_document.take()
+            && let Some(snapshot) = &self.prepared_document
+            && snapshot.revision != self.buffer.revision()
         {
-            snapshot.session.cancel();
+            snapshot.session.submit_target(&self.buffer);
         }
         if self.text_system.is_none() {
             // Layout measurement must shape text exactly like painting does, which requires the
