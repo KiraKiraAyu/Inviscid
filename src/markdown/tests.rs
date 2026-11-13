@@ -1358,3 +1358,136 @@ fn projected_block_unifies_containers_separators_and_normalization() {
         Some(SourceLine::new(9))
     );
 }
+
+#[test]
+fn live_buffer_delete_forward_respects_container_boundaries_and_merges_inside() {
+    use crate::buffer::{Position, SourceLine, TextBuffer};
+
+    // Code block: opener header and last body line do not pull adjacent lines,
+    // while interior body lines still merge on forward Delete.
+    let code_doc = "```rust\nline1\nline2\n```\nafter";
+    for (row, col, expected) in [
+        (0, 7, code_doc),
+        (2, 5, code_doc),
+        (1, 5, "```rust\nline1line2\n```\nafter"),
+    ] {
+        let mut live = TextBuffer::from_str(code_doc, None);
+        live.set_cursor(Position::new(SourceLine::new(row), col));
+        LiveBuffer::new(&mut live).delete_forward();
+        assert_eq!(
+            live.to_string_normalized(),
+            expected,
+            "code delete at ({row}, {col})"
+        );
+    }
+
+    // Source mode performs raw forward-Delete even across closing fence lines.
+    let mut source = TextBuffer::from_str(code_doc, None);
+    source.set_cursor(Position::new(SourceLine::new(2), 5));
+    source.delete_forward();
+    assert_eq!(
+        source.to_string_normalized(),
+        "```rust\nline1\nline2```\nafter"
+    );
+    source.undo();
+    assert_eq!(source.to_string_normalized(), code_doc);
+
+    // Mermaid fence and Table boundaries are enclosed containers too.
+    let mermaid_doc = "```mermaid\nA --> B\n```\nafter";
+    let mut mermaid = TextBuffer::from_str(mermaid_doc, None);
+    mermaid.set_cursor(Position::new(SourceLine::new(1), 7));
+    LiveBuffer::new(&mut mermaid).delete_forward();
+    assert_eq!(mermaid.to_string_normalized(), mermaid_doc);
+
+    let table_doc = "| H1 | H2 |\n| --- | --- |\n| A | B |\nafter";
+    for (row, col) in [(0, 11), (2, 9)] {
+        let mut table = TextBuffer::from_str(table_doc, None);
+        table.set_cursor(Position::new(SourceLine::new(row), col));
+        LiveBuffer::new(&mut table).delete_forward();
+        assert_eq!(
+            table.to_string_normalized(),
+            table_doc,
+            "table delete at ({row}, {col})"
+        );
+    }
+}
+
+#[test]
+fn live_buffer_handles_block_degeneration_math_and_single_undo() {
+    use crate::buffer::{Position, SourceLine, TextBuffer};
+
+    // Heading prefix backspace degenerates into paragraph and restores in one undo step.
+    let mut heading = TextBuffer::from_str("## Title", None);
+    heading.set_cursor(Position::new(SourceLine::new(0), 3));
+    LiveBuffer::new(&mut heading).backspace();
+    assert_eq!(heading.to_string_normalized(), "Title");
+    assert_eq!(heading.cursor_pos(), Position::new(SourceLine::new(0), 0));
+    heading.undo();
+    assert_eq!(heading.to_string_normalized(), "## Title");
+    assert_eq!(heading.cursor_pos(), Position::new(SourceLine::new(0), 3));
+
+    // List item with adjacent item splits out as an isolated paragraph in one undo step.
+    let mut list = TextBuffer::from_str("- one\n- two\n- three", None);
+    list.set_cursor(Position::new(SourceLine::new(1), 2));
+    LiveBuffer::new(&mut list).backspace();
+    assert_eq!(list.to_string_normalized(), "- one\n\ntwo\n\n- three");
+    list.undo();
+    assert_eq!(list.to_string_normalized(), "- one\n- two\n- three");
+
+    // Quoted display math protects delimiters on Backspace and last content line on Delete.
+    let math_doc = "> > $$\n> > x\n> > $$\nafter";
+    let mut math = TextBuffer::from_str(math_doc, None);
+    math.set_cursor(Position::new(SourceLine::new(1), 5));
+    LiveBuffer::new(&mut math).delete_forward();
+    assert_eq!(math.to_string_normalized(), math_doc);
+    math.set_cursor(Position::new(SourceLine::new(3), 0));
+    LiveBuffer::new(&mut math).backspace();
+    assert_eq!(math.to_string_normalized(), math_doc);
+}
+
+#[test]
+fn live_buffer_large_document_editing_and_navigation_zero_materializations() {
+    use crate::buffer::{Position, SourceLine, TextBuffer};
+
+    let mut lines: Vec<String> = (0..5_000)
+        .map(|i| match i % 6 {
+            0 => format!("## Heading {i}"),
+            1 => String::new(),
+            2 => "```rust".to_string(),
+            3 => format!("let item_{i} = {i};"),
+            4 => "```".to_string(),
+            _ => format!("Paragraph {i}"),
+        })
+        .collect();
+    let table_row = lines.len();
+    lines.extend([
+        "| C1 | C2 |".to_string(),
+        "| --- | --- |".to_string(),
+        "| v1 | v2 |".to_string(),
+    ]);
+    let mut buffer = TextBuffer::from_str(&lines.join("\n"), None);
+    let scans = crate::markdown::scanner::FULL_FENCE_SCANS.get();
+    let mat = buffer.full_line_materializations();
+
+    buffer.set_cursor(Position::new(SourceLine::new(0), 3));
+    {
+        let mut live = LiveBuffer::new(&mut buffer);
+        live.move_down(false);
+        live.move_right(false);
+        live.move_left(false);
+        live.move_to_line_start(false);
+        live.insert_newline();
+        live.backspace();
+    }
+
+    buffer.set_cursor(Position::new(SourceLine::new(3), 15));
+    LiveBuffer::new(&mut buffer).delete_forward();
+    LiveBuffer::new(&mut buffer).insert_line_below_block();
+
+    buffer.set_cursor(Position::new(SourceLine::new(table_row + 2), 3));
+    assert!(LiveBuffer::new(&mut buffer).table_tab_forward());
+    assert!(LiveBuffer::new(&mut buffer).table_enter_next_row());
+
+    assert_eq!(crate::markdown::scanner::FULL_FENCE_SCANS.get(), scans);
+    assert_eq!(buffer.full_line_materializations(), mat);
+}
