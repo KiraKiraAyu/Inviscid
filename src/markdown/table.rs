@@ -1,7 +1,7 @@
 ﻿use super::inline::parse_inline_spans;
 use super::prefix::is_fence_line;
 use super::types::{TableAlignment, TableCell};
-use crate::buffer::SourceLine;
+use crate::buffer::{LineSource, SourceLine};
 
 pub fn is_table_delimiter_row(line: &str) -> bool {
     let trimmed = line.trim();
@@ -121,18 +121,23 @@ pub struct TableMetadata {
     pub alignments: Vec<TableAlignment>,
 }
 
-pub fn get_table_metadata(lines: &[String], target_line: SourceLine) -> Option<TableMetadata> {
+pub fn get_table_metadata(
+    lines: &(impl LineSource + ?Sized),
+    target_line: SourceLine,
+) -> Option<TableMetadata> {
     let target_line = target_line.index();
-    if target_line >= lines.len() {
+    let line_count = lines.line_count();
+    if target_line >= line_count {
         return None;
     }
 
     let mut header_idx = None;
     for cur in (0..=target_line).rev() {
-        let trimmed = lines[cur].trim();
-        if cur + 1 < lines.len()
-            && is_table_delimiter_row(&lines[cur + 1])
-            && lines[cur].contains('|')
+        let cur_line = lines.source_line(SourceLine::new(cur));
+        let trimmed = cur_line.trim();
+        if cur + 1 < line_count
+            && cur_line.contains('|')
+            && is_table_delimiter_row(&lines.source_line(SourceLine::new(cur + 1)))
         {
             header_idx = Some(cur);
             break;
@@ -145,11 +150,12 @@ pub fn get_table_metadata(lines: &[String], target_line: SourceLine) -> Option<T
 
     let header_line = header_idx?;
     let delimiter_line = header_line + 1;
-    let alignments = parse_table_alignments(&lines[delimiter_line]);
+    let alignments = parse_table_alignments(&lines.source_line(SourceLine::new(delimiter_line)));
     let num_columns = alignments.len().max(1);
 
     let mut last_table_line = delimiter_line;
-    for (idx, line) in lines.iter().enumerate().skip(delimiter_line + 1) {
+    for idx in (delimiter_line + 1)..line_count {
+        let line = lines.source_line(SourceLine::new(idx));
         let trimmed = line.trim();
         if trimmed.is_empty()
             || !trimmed.contains('|')

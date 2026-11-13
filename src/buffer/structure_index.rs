@@ -392,6 +392,30 @@ impl StructureIndex {
         }
     }
 
+    pub(crate) fn paired_fence_range(&self, line: SourceLine) -> Option<(SourceLine, SourceLine)> {
+        if line.index() >= self.len() {
+            return None;
+        }
+        let mut cursor = self.tree.cursor::<Navigation>(());
+        cursor.seek(&Lines(line.index()), Bias::Right);
+        let item = cursor.item()?;
+        let before = cursor.start().0.fences;
+        let pair = if item.raw.is_fence {
+            before / 2 * 2
+        } else if before % 2 == 1 {
+            before - 1
+        } else {
+            return None;
+        };
+        if pair + 1 >= self.tree.summary().fences {
+            return None;
+        }
+        Some((
+            SourceLine::new(self.fence_line(pair)),
+            SourceLine::new(self.fence_line(pair + 1)),
+        ))
+    }
+
     /// A code opener takes effect immediately, including before a closing fence arrives.
     pub(crate) fn streaming_fence(&self, line: SourceLine) -> Option<(usize, Option<usize>)> {
         let mut cursor = self.tree.cursor::<Navigation>(());

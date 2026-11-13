@@ -124,6 +124,7 @@ struct NewlineEdit {
 
 fn newline_edit(
     lines: &(impl LineSource + ?Sized),
+    fence_hint: FenceHint,
     line: SourceLine,
     col: usize,
     is_source: bool,
@@ -161,21 +162,13 @@ fn newline_edit(
         cursor: Position::new(line + 1, 0),
     };
 
-    if is_source && !trimmed.starts_with("```") && trimmed != "$$"
-        || is_in_paired_fence(lines, line)
-    {
+    if is_source && !trimmed.starts_with("```") && trimmed != "$$" || fence_hint.in_paired_fence {
         return split_here();
     }
 
     if trimmed.starts_with("```") {
-        let has_closing = ((line.index() + 1)..line_count).any(|idx| {
-            lines
-                .source_line(SourceLine::new(idx))
-                .trim()
-                .starts_with("```")
-        });
         let mut inserted = vec![current_line];
-        if !has_closing {
+        if !fence_hint.has_fence_after {
             inserted.extend([String::new(), "```".to_string(), String::new()]);
         }
         return NewlineEdit {
@@ -329,25 +322,50 @@ fn appended_block(lines: &(impl LineSource + ?Sized), line: SourceLine) -> Newli
     }
 }
 
-fn is_in_paired_fence(lines: &(impl LineSource + ?Sized), target_line: SourceLine) -> bool {
-    let mut open_fence = None;
-    for idx in 0..lines.line_count() {
-        if !lines
-            .source_line(SourceLine::new(idx))
-            .trim_start()
-            .starts_with("```")
-        {
-            continue;
-        }
-        if let Some(start) = open_fence.take() {
-            if (start..=idx).contains(&target_line.index()) {
-                return true;
-            }
-        } else {
-            open_fence = Some(idx);
+#[derive(Clone, Copy)]
+struct FenceHint {
+    in_paired_fence: bool,
+    has_fence_after: bool,
+}
+
+impl FenceHint {
+    fn from_buffer(buffer: &TextBuffer, line: SourceLine) -> Self {
+        let index = buffer.line_index();
+        Self {
+            in_paired_fence: index.paired_fence_range(line).is_some(),
+            has_fence_after: index.has_fence_after(line),
         }
     }
-    false
+
+    fn scan(lines: &(impl LineSource + ?Sized), line: SourceLine) -> Self {
+        let mut open_fence = None;
+        let mut in_paired_fence = false;
+        let mut has_fence_after = false;
+        let target = line.index();
+        for idx in 0..lines.line_count() {
+            if !lines
+                .source_line(SourceLine::new(idx))
+                .trim_start()
+                .starts_with("```")
+            {
+                continue;
+            }
+            if idx > target {
+                has_fence_after = true;
+            }
+            if let Some(start) = open_fence.take() {
+                if (start..=idx).contains(&target) {
+                    in_paired_fence = true;
+                }
+            } else {
+                open_fence = Some(idx);
+            }
+        }
+        Self {
+            in_paired_fence,
+            has_fence_after,
+        }
+    }
 }
 
 /// A document with a selection already removed, computed lazily so a newline
@@ -819,48 +837,36 @@ impl TextBuffer {
     /// - Outside code blocks: always returns 4
     fn detect_smart_tab_size(&self) -> usize {
         let cursor_line = self.selection.head.line;
-        let mut open_fence = None;
-        for idx in 0..self.line_count() {
-            let line = self
-                .line_text(crate::buffer::SourceLine::new(idx))
+        let Some((start, end)) = self.line_index().paired_fence_range(cursor_line) else {
+            return 4;
+        };
+
+        let detect_start = start.index() + 1;
+        let detect_end = end.index().min(detect_start + 50);
+        let mut indent_2_count = 0;
+        let mut indent_4_count = 0;
+        for line_idx in detect_start..detect_end {
+            let content = self
+                .line_text(crate::buffer::SourceLine::new(line_idx))
                 .unwrap_or_default();
-            if !line.trim_start().starts_with("```") {
+            let spaces = crate::markdown::leading_indent_len(&content);
+            if spaces == 0 || content.trim().is_empty() {
                 continue;
             }
-            if let Some(start) = open_fence.take() {
-                if (start..=idx).contains(&cursor_line.index()) {
-                    let detect_start = start + 1;
-                    let detect_end = idx.min(detect_start + 50);
-                    let mut indent_2_count = 0;
-                    let mut indent_4_count = 0;
-                    for line_idx in detect_start..detect_end {
-                        let content = self
-                            .line_text(crate::buffer::SourceLine::new(line_idx))
-                            .unwrap_or_default();
-                        let spaces = crate::markdown::leading_indent_len(&content);
-                        if spaces == 0 || content.trim().is_empty() {
-                            continue;
-                        }
-                        if spaces % 2 == 0 && spaces % 4 != 0 {
-                            indent_2_count += 1;
-                        } else if spaces % 4 == 0 && spaces > 0 {
-                            indent_4_count += 1;
-                        } else if spaces % 2 == 0 {
-                            indent_2_count += 1;
-                        }
-                    }
-                    if indent_2_count + indent_4_count >= 3 {
-                        return if indent_2_count > indent_4_count {
-                            2
-                        } else {
-                            4
-                        };
-                    }
-                    return 4;
-                }
-            } else {
-                open_fence = Some(idx);
+            if spaces % 2 == 0 && spaces % 4 != 0 {
+                indent_2_count += 1;
+            } else if spaces % 4 == 0 && spaces > 0 {
+                indent_4_count += 1;
+            } else if spaces % 2 == 0 {
+                indent_2_count += 1;
             }
+        }
+        if indent_2_count + indent_4_count >= 3 {
+            return if indent_2_count > indent_4_count {
+                2
+            } else {
+                4
+            };
         }
         4
     }
@@ -958,7 +964,8 @@ impl TextBuffer {
     pub fn insert_newline_mode(&mut self, is_source: bool) {
         if self.selection.is_empty() {
             let pos = self.selection.head;
-            let edit = newline_edit(self, pos.line, pos.col, is_source);
+            let fence_hint = FenceHint::from_buffer(self, pos.line);
+            let edit = newline_edit(self, fence_hint, pos.line, pos.col, is_source);
             self.replace_line_range(
                 edit.start,
                 edit.remove_count,
@@ -972,7 +979,8 @@ impl TextBuffer {
         let (start, end) = self.selection.range();
         let (start, end) = (self.clamp_position(start), self.clamp_position(end));
         let overlay = SelectionDeleted::new(self, start, end);
-        let edit = newline_edit(&overlay, start.line, start.col, is_source);
+        let fence_hint = FenceHint::scan(&overlay, start.line);
+        let edit = newline_edit(&overlay, fence_hint, start.line, start.col, is_source);
         let (from, remove_count, inserted) =
             overlay.compose(edit.start, edit.remove_count, edit.inserted);
         self.replace_line_range(from, remove_count, inserted, Selection::cursor(edit.cursor));
@@ -980,24 +988,10 @@ impl TextBuffer {
 
     pub fn insert_line_below_block(&mut self) {
         let pos = self.selection.head;
-        let mut open_idx = None;
-        let mut closing_idx = None;
-        for idx in 0..self.line_count() {
-            let line = self
-                .line_text(crate::buffer::SourceLine::new(idx))
-                .unwrap_or_default();
-            if !line.trim_start().starts_with("```") {
-                continue;
-            }
-            if let Some(open) = open_idx.take() {
-                if open <= pos.line.index() && pos.line.index() <= idx {
-                    closing_idx = Some(idx);
-                    break;
-                }
-            } else {
-                open_idx = Some(idx);
-            }
-        }
+        let closing_idx = self
+            .line_index()
+            .paired_fence_range(pos.line)
+            .map(|(_, close)| close.index());
 
         let anchor = closing_idx.unwrap_or(pos.line.index().min(self.line_count() - 1));
         let has_blank_after = anchor + 1 < self.line_count()
@@ -1369,7 +1363,7 @@ impl TextBuffer {
 
     pub fn table_tab_forward(&mut self) -> bool {
         let pos = self.selection.head;
-        let meta = match crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line) {
+        let meta = match crate::markdown::table::get_table_metadata(self, pos.line) {
             Some(m) => m,
             None => return false,
         };
@@ -1391,7 +1385,7 @@ impl TextBuffer {
 
     pub fn table_tab_backward(&mut self) -> bool {
         let pos = self.selection.head;
-        let meta = match crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line) {
+        let meta = match crate::markdown::table::get_table_metadata(self, pos.line) {
             Some(m) => m,
             None => return false,
         };
@@ -1431,7 +1425,7 @@ impl TextBuffer {
 
     pub fn table_enter_next_row(&mut self) -> bool {
         let pos = self.selection.head;
-        let meta = match crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line) {
+        let meta = match crate::markdown::table::get_table_metadata(self, pos.line) {
             Some(m) => m,
             None => return false,
         };
@@ -1447,7 +1441,7 @@ impl TextBuffer {
 
     pub fn table_backspace(&mut self) -> bool {
         let pos = self.selection.head;
-        if crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line).is_none() {
+        if crate::markdown::table::get_table_metadata(self, pos.line).is_none() {
             return false;
         }
 

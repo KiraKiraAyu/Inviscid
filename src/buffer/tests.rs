@@ -318,6 +318,61 @@ fn deletion_modes_preserve_unicode_selection_and_empty_document_history() {
 }
 
 #[test]
+fn table_and_fence_commands_avoid_full_materialization_and_full_scans() {
+    let mut lines: Vec<String> = (0..300)
+        .map(|i| match i % 5 {
+            0 => "```rust".to_string(),
+            1 => format!("let v{i} = {i};"),
+            2 => "```".to_string(),
+            _ => format!("Paragraph {i}"),
+        })
+        .collect();
+    let table_start = lines.len();
+    lines.extend([
+        "| A | B |".to_string(),
+        "| --- | --- |".to_string(),
+        "| 1 | 2 |".to_string(),
+        "".to_string(),
+        "```rust".to_string(),
+        "  let a = 1;".to_string(),
+        "  let b = 2;".to_string(),
+        "  let c = 3;".to_string(),
+        "  let d = 4;".to_string(),
+        "```".to_string(),
+        "tail".to_string(),
+    ]);
+    let content = lines.join("\n");
+    let mut buffer = TextBuffer::from_str(&content, None);
+    let scans = crate::markdown::scanner::FULL_FENCE_SCANS.get();
+    let materializations = buffer.full_line_materializations();
+
+    buffer.set_cursor(Position::new(SourceLine::new(table_start + 2), 3));
+    buffer.move_right_mode(false, false);
+    buffer.move_left_mode(false, false);
+    assert!(buffer.table_tab_forward());
+    assert!(buffer.table_tab_backward());
+    assert!(buffer.table_backspace());
+    assert!(buffer.table_enter_next_row());
+
+    let code_line = table_start + 5;
+    buffer.set_cursor(Position::new(SourceLine::new(code_line), 12));
+    buffer.insert_newline_mode(false);
+    buffer.indent_lines_with_tab_size(4);
+    buffer.insert_line_below_block();
+
+    assert_eq!(
+        buffer.full_line_materializations(),
+        materializations,
+        "table navigation and fence edits must not materialize all lines"
+    );
+    assert_eq!(
+        crate::markdown::scanner::FULL_FENCE_SCANS.get(),
+        scans,
+        "fence helpers must reuse cached StructureIndex instead of scanning"
+    );
+}
+
+#[test]
 fn tail_edit_cursor_normalization_does_not_materialize_document() {
     let content = format!("{}\nTail", "paragraph\n".repeat(5_000));
     let mut buffer = TextBuffer::from_str(&content, None);

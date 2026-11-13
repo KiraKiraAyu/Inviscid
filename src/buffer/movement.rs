@@ -148,6 +148,13 @@ impl LineIndex {
         self.structure.has_fence_after(line)
     }
 
+    pub(super) fn paired_fence_range(
+        &self,
+        line: crate::buffer::SourceLine,
+    ) -> Option<(crate::buffer::SourceLine, crate::buffer::SourceLine)> {
+        self.structure.paired_fence_range(line)
+    }
+
     pub(super) fn math_pair(
         &self,
         target_line: crate::buffer::SourceLine,
@@ -381,9 +388,7 @@ impl TextBuffer {
             } else {
                 pos
             }
-        } else if let Some(meta) =
-            crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line)
-        {
+        } else if let Some(meta) = crate::markdown::table::get_table_metadata(self, pos.line) {
             let cells = crate::markdown::table::parse_table_row_cells(
                 &self.line_text(pos.line).unwrap_or_default(),
             );
@@ -492,9 +497,7 @@ impl TextBuffer {
             } else {
                 pos
             }
-        } else if let Some(meta) =
-            crate::markdown::table::get_table_metadata(&self.to_lines(), pos.line)
-        {
+        } else if let Some(meta) = crate::markdown::table::get_table_metadata(self, pos.line) {
             let cells = crate::markdown::table::parse_table_row_cells(
                 &self.line_text(pos.line).unwrap_or_default(),
             );
