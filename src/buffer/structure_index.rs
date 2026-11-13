@@ -662,7 +662,7 @@ impl<'a> SeekTarget<'a, StructureSummary, StructureSummary> for ParserBoundary<'
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::buffer) mod tests {
     use super::*;
     use crate::buffer::{LineSource, SourceLine, TextBuffer};
 
@@ -784,7 +784,7 @@ mod tests {
         }
     }
 
-    fn assert_matches(index: &StructureIndex, lines: &[String]) {
+    pub(in crate::buffer) fn assert_matches(index: &StructureIndex, lines: &[String]) {
         let oracle = VecIndex::build(lines);
         for row in 0..=lines.len() + 1 {
             let line = SourceLine::new(row);

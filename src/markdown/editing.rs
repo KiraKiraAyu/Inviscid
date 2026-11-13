@@ -396,7 +396,12 @@ impl<'a> LiveBuffer<'a> {
         &mut self,
         start_line: SourceLine,
     ) -> Option<Position> {
-        let (start, end) = super::math_block_range(self.buffer, start_line)?;
+        let block = self.block_at(start_line)?;
+        if !matches!(block.kind, ProjectedBlockKind::MathBlock) {
+            return None;
+        }
+        let start = block.source_range.start;
+        let end = block.source_range.end - 1;
         if start != start_line {
             return None;
         }
@@ -892,6 +897,7 @@ struct NewlineEdit {
 struct FenceHint {
     in_paired_fence: bool,
     has_fence_after: bool,
+    math_pair: Option<(SourceLine, SourceLine)>,
 }
 
 impl FenceHint {
@@ -900,6 +906,7 @@ impl FenceHint {
         Self {
             in_paired_fence: index.paired_fence_range(line).is_some(),
             has_fence_after: index.has_fence_after(line),
+            math_pair: index.structure().math_pair(line),
         }
     }
 
@@ -930,6 +937,7 @@ impl FenceHint {
         Self {
             in_paired_fence,
             has_fence_after,
+            math_pair: super::math_block_range(lines, line),
         }
     }
 }
@@ -1082,7 +1090,7 @@ fn newline_edit(
     }
 
     if trimmed == "$$" && col == current_chars_len {
-        return math_delimiter_edit(lines, line);
+        return math_delimiter_edit(lines, line, fence_hint.math_pair);
     }
     if is_thematic_break(trimmed) {
         return appended_block(lines, line);
@@ -1153,14 +1161,18 @@ fn newline_edit(
 
 /// Enter at the end of a `$$` line. A closing delimiter of an existing math block
 /// is ordinary text and falls through to the remaining rules.
-fn math_delimiter_edit(lines: &(impl LineSource + ?Sized), line: SourceLine) -> NewlineEdit {
+fn math_delimiter_edit(
+    lines: &(impl LineSource + ?Sized),
+    line: SourceLine,
+    math_pair: Option<(SourceLine, SourceLine)>,
+) -> NewlineEdit {
     let cursor_below = || NewlineEdit {
         start: line + 1,
         remove_count: 0,
         inserted: vec![String::new()],
         cursor: Position::new(line + 1, 0),
     };
-    let Some((start, end)) = super::math_block_range(lines, line) else {
+    let Some((start, end)) = math_pair else {
         return NewlineEdit {
             start: line + 1,
             remove_count: 0,

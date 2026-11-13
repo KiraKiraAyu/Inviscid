@@ -1,7 +1,5 @@
 use super::TextBuffer;
 use super::primitives::{Position, Selection};
-#[cfg(test)]
-use crate::markdown::compute_syntactic_separators;
 use std::cell::Ref;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -19,74 +17,6 @@ fn char_kind(c: char) -> CharKind {
     } else {
         CharKind::Punctuation
     }
-}
-
-fn code_fence_status(lines: &[String], target_line: crate::buffer::SourceLine) -> (bool, bool) {
-    let target_idx = target_line.index();
-    if target_idx >= lines.len() {
-        return (false, false);
-    }
-    let mut open_idx: Option<usize> = None;
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("```") {
-            match open_idx {
-                Some(open) => {
-                    if target_idx == open {
-                        return (true, false);
-                    } else if target_idx == i {
-                        return (false, true);
-                    } else if target_idx > open && target_idx < i {
-                        return (true, false);
-                    }
-                    open_idx = None;
-                }
-                None => open_idx = Some(i),
-            }
-        }
-    }
-    (false, false)
-}
-
-/// Returns the range `(start_line, end_line)` of the code fence containing
-/// `target_idx`, or `None` if the line is not inside a code fence.
-/// The range includes the opening and closing fence lines.
-pub fn code_fence_range(
-    lines: &[String],
-    target_line: crate::buffer::SourceLine,
-) -> Option<(crate::buffer::SourceLine, crate::buffer::SourceLine)> {
-    let target_idx = target_line.index();
-    if target_idx >= lines.len() {
-        return None;
-    }
-    let mut open_idx: Option<usize> = None;
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("```") {
-            match open_idx {
-                Some(open) => {
-                    if (target_idx >= open && target_idx <= i) || target_idx == open {
-                        return Some((
-                            crate::buffer::SourceLine::new(open),
-                            crate::buffer::SourceLine::new(i),
-                        ));
-                    }
-                    open_idx = None;
-                }
-                None => open_idx = Some(i),
-            }
-        }
-    }
-    None
-}
-
-pub fn is_closing_code_fence_lines(
-    lines: &[String],
-    target_line: crate::buffer::SourceLine,
-) -> bool {
-    code_fence_status(lines, target_line).1
-}
-
-pub fn is_in_code_fence_lines(lines: &[String], target_line: crate::buffer::SourceLine) -> bool {
-    code_fence_status(lines, target_line).0
 }
 
 #[derive(Clone, Debug)]
@@ -157,22 +87,13 @@ impl LineIndex {
     ) -> Option<(crate::buffer::SourceLine, crate::buffer::SourceLine)> {
         self.structure.paired_fence_range(line)
     }
-
-    #[cfg(test)]
-    fn is_math_delimiter(&self, target_line: crate::buffer::SourceLine) -> bool {
-        self.structure.is_math_delimiter(target_line)
-    }
-
-    #[cfg(test)]
-    fn is_separator(&self, buffer: &TextBuffer, line: usize) -> bool {
-        crate::markdown::local_separator(buffer, &self.structure, line)
-    }
 }
 
 #[cfg(test)]
 mod structure_cache_tests {
     use super::*;
     use crate::buffer::{LineSource, SourceLine};
+    use crate::markdown::compute_syntactic_separators;
 
     fn assert_matches_full_scan(buffer: &TextBuffer) {
         let lines: Vec<_> = buffer
@@ -181,18 +102,17 @@ mod structure_cache_tests {
             .collect();
         let separators = compute_syntactic_separators(&lines);
         let index = buffer.line_index();
+        super::super::structure_index::tests::assert_matches(index.structure(), &lines);
         for (row, separator) in separators.into_iter().enumerate() {
             let line = SourceLine::new(row);
-            let math = crate::markdown::math_block_range(&lines, line);
-            let fence = code_fence_status(&lines, line);
-            assert_eq!(index.is_in_fence(line), fence.0);
-            assert_eq!(index.is_closing_fence(line), fence.1);
-            assert_eq!(index.structure.math_pair(line), math);
             assert_eq!(
-                index.is_math_delimiter(line),
-                math.is_some_and(|(start, end)| line == start || line == end)
+                (index.is_in_fence(line), index.is_closing_fence(line)),
+                index.structure().fence_state(line)
             );
-            assert_eq!(index.is_separator(buffer, row), separator);
+            assert_eq!(
+                crate::markdown::local_separator(buffer, index.structure(), row),
+                separator
+            );
         }
     }
 
