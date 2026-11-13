@@ -47,18 +47,44 @@ impl Editor {
         result: io::Result<session::Publication>,
         cx: &mut Context<Self>,
     ) {
+        let mut emit_document_events = self.is_loading;
         match result {
             Ok(file) => {
-                if !self.is_loading && self.buffer.revision() != file.buffer.revision() {
-                    session.cancel();
+                if !self.is_loading && file.buffer.is_some() {
+                    if self.buffer.revision() != file.revision {
+                        session.cancel();
+                    }
                     return;
                 }
+                if !self.is_loading && file.revision != self.buffer.revision() {
+                    return;
+                }
+                let has_disk_buffer = file.buffer.is_some();
                 let finishing = self.is_loading && file.complete;
-                if self.is_loading {
+                if self.is_loading
+                    && let Some(buffer) = file.buffer
+                {
                     let cursor = self.buffer.cursor_pos();
-                    self.buffer = file.buffer;
+                    self.buffer = buffer;
                     self.buffer.set_cursor(cursor);
                 }
+                let previous_windows = self
+                    .prepared_document
+                    .as_ref()
+                    .filter(|prev| prev.revision == self.buffer.revision())
+                    .map(|prev| prev.windows.clone())
+                    .unwrap_or_default();
+                let changed_ranges: Vec<_> = file
+                    .windows
+                    .iter()
+                    .filter(|new_win| {
+                        !previous_windows.iter().any(|old_win| {
+                            old_win.range == new_win.range
+                                && Arc::ptr_eq(&old_win.rows, &new_win.rows)
+                        })
+                    })
+                    .map(|win| win.range.clone())
+                    .collect();
                 self.prepared_document = Some(Arc::new(PreparedSnapshot {
                     revision: self.buffer.revision(),
                     session: session.clone(),
@@ -77,10 +103,8 @@ impl Editor {
                         cache.parsed_lines =
                             super::parsed_line_store::ParsedLineStore::windowed(&self.buffer)
                                 .with_prepared(self.prepared_document.clone());
-                        if let Some(snapshot) = &self.prepared_document {
-                            for window in &snapshot.windows {
-                                cache.metrics.invalidate_measured(window.range.clone());
-                            }
+                        for range in &changed_ranges {
+                            cache.metrics.invalidate_measured(range.clone());
                         }
                     }
                 }
@@ -93,19 +117,28 @@ impl Editor {
                         self.open_at_position(position, cx);
                     }
                 }
+                if !emit_document_events && !has_disk_buffer {
+                    if !changed_ranges.is_empty() {
+                        cx.notify();
+                    }
+                    return;
+                }
             }
             Err(error) => {
+                emit_document_events = true;
                 eprintln!("Failed to load file {:?}: {error}", self.buffer.file_path());
                 self.is_loading = false;
                 self.load_error = Some(format!("Could not open file: {error}"));
                 session.cancel();
             }
         }
-        cx.emit(EditorEvent::TitleChanged);
-        cx.emit(EditorEvent::DirtyChanged(self.is_dirty()));
-        cx.emit(EditorEvent::ExternalChangeChanged(
-            ExternalChangeState::None,
-        ));
+        if emit_document_events {
+            cx.emit(EditorEvent::TitleChanged);
+            cx.emit(EditorEvent::DirtyChanged(self.is_dirty()));
+            cx.emit(EditorEvent::ExternalChangeChanged(
+                ExternalChangeState::None,
+            ));
+        }
         cx.notify();
     }
 }

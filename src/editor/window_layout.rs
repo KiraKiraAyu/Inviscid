@@ -16,7 +16,7 @@ impl Editor {
             && snapshot.revision != self.buffer.revision()
             && !self.is_loading
         {
-            snapshot.session.cancel();
+            snapshot.session.submit_target(&self.buffer);
         }
         let current = self.layout_cache.borrow().clone();
         let same_buffer = current.buffer_revision == self.buffer.revision()
