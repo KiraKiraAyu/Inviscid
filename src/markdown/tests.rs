@@ -1279,3 +1279,130 @@ fn code_fence_footer_projects_to_last_editable_line() {
         assert_eq!(position.line, expected, "{text}");
     }
 }
+
+#[test]
+fn projected_block_unifies_containers_separators_and_normalization() {
+    use crate::buffer::{Position, SourceLine, StructureIndex, TextBuffer};
+
+    let doc = [
+        "# Title",
+        "",
+        "Paragraph",
+        "```mermaid",
+        "graph TD",
+        "```",
+        "> $$",
+        "> x + y",
+        "> $$",
+        "| H1 | H2 |",
+        "| --- | --- |",
+        "| A | B |",
+        "---",
+    ]
+    .join("\n");
+    let buffer = TextBuffer::from_str(&doc, None);
+    let index = StructureIndex::new(&buffer);
+
+    let heading = super::projection::block_at(&buffer, &index, SourceLine::new(0)).unwrap();
+    assert_eq!(
+        heading.kind,
+        super::projection::ProjectedBlockKind::Heading { level: 1 }
+    );
+    assert!(!heading.is_enclosed_container);
+    assert_eq!(heading.editable_min_col(&buffer, SourceLine::new(0)), 2);
+
+    let sep = super::projection::block_at(&buffer, &index, SourceLine::new(1)).unwrap();
+    assert_eq!(
+        sep.kind,
+        super::projection::ProjectedBlockKind::BlankSeparator
+    );
+    assert!(!sep.is_editable_line(SourceLine::new(1)));
+
+    let mermaid = super::projection::block_at(&buffer, &index, SourceLine::new(4)).unwrap();
+    assert_eq!(
+        mermaid.kind,
+        super::projection::ProjectedBlockKind::CodeBlock { is_mermaid: true }
+    );
+    assert!(mermaid.is_enclosed_container);
+    assert_eq!(mermaid.source_range, SourceLine::new(3)..SourceLine::new(6));
+    assert_eq!(
+        mermaid.editable_lines,
+        SourceLine::new(3)..SourceLine::new(5)
+    );
+    assert!(!mermaid.is_editable_line(SourceLine::new(5)));
+    assert_eq!(
+        mermaid.next_intra_block_editable_line(SourceLine::new(4)),
+        None
+    );
+    assert_eq!(mermaid.editable_min_col(&buffer, SourceLine::new(3)), 3);
+    assert_eq!(mermaid.editable_min_col(&buffer, SourceLine::new(4)), 0);
+
+    let math = super::projection::block_at(&buffer, &index, SourceLine::new(7)).unwrap();
+    assert_eq!(math.kind, super::projection::ProjectedBlockKind::MathBlock);
+    assert!(math.is_enclosed_container);
+    assert!(!math.is_editable_line(SourceLine::new(6)));
+    assert!(math.is_editable_line(SourceLine::new(7)));
+    assert!(!math.is_editable_line(SourceLine::new(8)));
+    assert_eq!(
+        math.next_intra_block_editable_line(SourceLine::new(7)),
+        None
+    );
+    assert_eq!(math.editable_min_col(&buffer, SourceLine::new(7)), 2);
+
+    let table = super::projection::block_at(&buffer, &index, SourceLine::new(11)).unwrap();
+    assert_eq!(
+        table.kind,
+        super::projection::ProjectedBlockKind::Table {
+            delimiter_line: SourceLine::new(10),
+        }
+    );
+    assert!(table.is_enclosed_container);
+    assert!(!table.is_editable_line(SourceLine::new(10)));
+    assert!(table.is_editable_line(SourceLine::new(11)));
+    assert_eq!(
+        table.next_intra_block_editable_line(SourceLine::new(9)),
+        None
+    );
+
+    // Cursor normalization across closing fence, math delimiters, and separators.
+    assert_eq!(
+        super::projection::normalize_live_cursor(
+            &buffer,
+            &index,
+            Position::new(SourceLine::new(5), 0),
+        ),
+        Position::new(SourceLine::new(4), 8)
+    );
+    assert_eq!(
+        super::projection::normalize_live_cursor(
+            &buffer,
+            &index,
+            Position::new(SourceLine::new(6), 0),
+        ),
+        Position::new(SourceLine::new(7), 2)
+    );
+    assert_eq!(
+        super::projection::normalize_live_cursor(
+            &buffer,
+            &index,
+            Position::new(SourceLine::new(8), 0),
+        ),
+        Position::new(SourceLine::new(7), 7)
+    );
+    assert_eq!(
+        super::projection::normalize_live_cursor(
+            &buffer,
+            &index,
+            Position::new(SourceLine::new(1), 0),
+        ),
+        Position::new(SourceLine::new(0), 2)
+    );
+    assert_eq!(
+        super::projection::adjacent_live_editable_line(&buffer, &index, SourceLine::new(7), true,),
+        Some(SourceLine::new(9))
+    );
+    assert_eq!(
+        super::projection::adjacent_live_editable_line(&buffer, &index, SourceLine::new(11), false,),
+        Some(SourceLine::new(9))
+    );
+}

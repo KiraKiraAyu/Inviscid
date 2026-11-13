@@ -102,6 +102,10 @@ impl LineIndex {
         self.structure.clone()
     }
 
+    pub(crate) fn structure(&self) -> &super::StructureIndex {
+        &self.structure
+    }
+
     fn build(buffer: &TextBuffer) -> Self {
         Self {
             version: buffer.version,
