@@ -2615,11 +2615,6 @@ fn live_code_fence_navigation_at_document_end(cx: &mut gpui::TestAppContext) {
 
                 editor.move_down(false, window);
                 let paragraph = editor.buffer.cursor_pos().line;
-                if !content.ends_with("```") {
-                    assert_eq!(paragraph, SourceLine::new(last_code));
-                    assert_eq!(editor.buffer.revision(), before);
-                    return;
-                }
                 assert!(paragraph.index() > last_code, "{content}");
                 assert_eq!(editor.buffer.line_len(paragraph), 0);
                 assert!(!editor.buffer.is_in_code_fence(paragraph));

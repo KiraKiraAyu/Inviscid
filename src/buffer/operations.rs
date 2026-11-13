@@ -455,12 +455,14 @@ impl TextBuffer {
     /// - Outside code blocks: always returns 4
     fn detect_smart_tab_size(&self) -> usize {
         let cursor_line = self.selection.head.line;
-        let Some((start, end)) = self.line_index().paired_fence_range(cursor_line) else {
+        let Some((start, end_opt)) = self.line_index().fence_range(cursor_line) else {
             return 4;
         };
 
         let detect_start = start.index() + 1;
-        let detect_end = end.index().min(detect_start + 50);
+        let detect_end = end_opt
+            .map_or(self.line_count(), |end| end.index())
+            .min(detect_start + 50);
         let mut indent_2_count = 0;
         let mut indent_4_count = 0;
         for line_idx in detect_start..detect_end {

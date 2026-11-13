@@ -630,23 +630,24 @@ fn math_block_range_ignores_delimiters_inside_code_fences() {
         "x".to_string(),
         "$$".to_string(),
     ];
+    let projection = QuoteProjection::from_lines(&lines);
 
     assert_eq!(
-        math_block_range(&lines, crate::buffer::SourceLine::new(3)),
+        math_block_range_with_projection(&projection, crate::buffer::SourceLine::new(3)),
         Some((
             crate::buffer::SourceLine::new(3),
             crate::buffer::SourceLine::new(5)
         ))
     );
     assert_eq!(
-        math_block_range(&lines, crate::buffer::SourceLine::new(4)),
+        math_block_range_with_projection(&projection, crate::buffer::SourceLine::new(4)),
         Some((
             crate::buffer::SourceLine::new(3),
             crate::buffer::SourceLine::new(5)
         ))
     );
     assert_eq!(
-        math_block_range(&lines, crate::buffer::SourceLine::new(1)),
+        math_block_range_with_projection(&projection, crate::buffer::SourceLine::new(1)),
         None
     );
 }
@@ -980,16 +981,17 @@ fn mermaid_block_range_includes_both_fences_but_excludes_neighboring_lines() {
         "```".to_string(),
         "after".to_string(),
     ];
+    let projection = QuoteProjection::from_lines(&lines);
 
     assert_eq!(
-        mermaid_block_range(&lines, crate::buffer::SourceLine::new(3)),
+        mermaid_block_range_with_projection(&projection, crate::buffer::SourceLine::new(3)),
         Some((
             crate::buffer::SourceLine::new(1),
             crate::buffer::SourceLine::new(4)
         ))
     );
     assert_eq!(
-        mermaid_block_range(&lines, crate::buffer::SourceLine::new(5)),
+        mermaid_block_range_with_projection(&projection, crate::buffer::SourceLine::new(5)),
         None
     );
 }

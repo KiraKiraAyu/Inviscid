@@ -1,5 +1,3 @@
-#[cfg(test)]
-use super::indent::quote_prefix_len;
 use super::indent::{leading_indent_len, quote_depth};
 use super::inline::{InlineSpan, parse_inline_spans};
 use super::prefix::{
@@ -35,15 +33,6 @@ fn is_mermaid_fence(line: &str) -> bool {
     fence_info(line).is_some_and(is_mermaid_info)
 }
 
-#[inline]
-fn projected_line(line: &str, in_top_level_fence: bool) -> &str {
-    if in_top_level_fence {
-        line
-    } else {
-        super::indent::strip_quote_prefix(line)
-    }
-}
-
 fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usize> {
     let mut in_code_fence = false;
     for (offset, line) in lines.get(from_idx..)?.iter().enumerate() {
@@ -56,94 +45,11 @@ fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usiz
     None
 }
 
-#[cfg(test)]
-#[derive(Clone, Debug, Default)]
-struct VecQuoteProjection {
-    normalized: Vec<String>,
-    quote_prefixes: Vec<Option<usize>>,
-    top_level_fences: Vec<bool>,
-}
-
-#[cfg(test)]
-impl VecQuoteProjection {
-    pub fn from_source(lines: &(impl LineSource + ?Sized)) -> Self {
-        let top_level_fences = top_level_fenced_lines(lines);
-        let mut normalized = Vec::with_capacity(lines.line_count());
-        let mut quote_prefixes = Vec::with_capacity(lines.line_count());
-        for (line, fenced) in lines.source_lines().zip(top_level_fences.iter().copied()) {
-            if !fenced && let Some((prefix_len, content)) = quoted_content(&line) {
-                normalized.push(content.to_string());
-                quote_prefixes.push(Some(prefix_len));
-            } else {
-                normalized.push(line.into_owned());
-                quote_prefixes.push(None);
-            }
-        }
-        Self {
-            normalized,
-            quote_prefixes,
-            top_level_fences,
-        }
-    }
-
-    /// Updates only changed lines when top-level fence pairing cannot change.
-    /// Structural edits leave this projection unchanged and require a rebuild.
-    pub(crate) fn try_update_source(
-        &mut self,
-        lines: &(impl LineSource + ?Sized),
-        delta: EditDelta,
-        raw_updates: &mut Vec<(usize, String)>,
-    ) -> bool {
-        let start = delta.start_line.index();
-        let Some(end) = start.checked_add(delta.old_line_count) else {
-            return false;
-        };
-        if delta.old_line_count != delta.new_line_count
-            || lines.line_count() != self.len()
-            || end > self.len()
-        {
-            return false;
-        }
-        // A normalized unquoted fence is also a fence in the original source.
-        if (start..end)
-            .any(|idx| self.quote_prefixes[idx].is_none() && is_fence_line(&self.normalized[idx]))
-        {
-            return false;
-        }
-        let changed: Vec<_> = (start..end)
-            .map(|idx| lines.source_line(SourceLine::new(idx)))
-            .collect();
-        if changed.iter().any(|line| is_fence_line(line)) {
-            return false;
-        }
-        for (idx, line) in (start..end).zip(changed) {
-            raw_updates.push((idx, line.to_string()));
-            if !self.top_level_fences[idx]
-                && let Some((prefix_len, content)) = quoted_content(&line)
-            {
-                self.normalized[idx] = content.to_string();
-                self.quote_prefixes[idx] = Some(prefix_len);
-            } else {
-                self.normalized[idx] = line.into_owned();
-                self.quote_prefixes[idx] = None;
-            }
-        }
-        true
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.normalized.len()
-    }
-}
-
 /// Immutable source projection; normalized text is borrowed or produced one row at a time.
 #[derive(Clone, Debug)]
 pub struct QuoteProjection {
     source: crate::buffer::SourceSnapshot,
     index: crate::buffer::StructureIndex,
-    #[cfg(test)]
-    oracle: VecQuoteProjection,
 }
 
 impl Default for QuoteProjection {
@@ -185,8 +91,17 @@ impl QuoteProjection {
         range.start.saturating_sub(1)..(range.end + 1).min(self.len())
     }
 
-    pub(crate) fn parser_pair(&self, row: usize) -> Option<(SourceLine, SourceLine)> {
-        self.index.parser_pair(SourceLine::new(row))
+    pub(crate) fn block_pair(&self, row: usize) -> Option<(SourceLine, SourceLine)> {
+        let line = SourceLine::new(row);
+        self.index
+            .fence_range(line)
+            .or_else(|| self.index.math_range(line))
+            .map(|(start, end)| {
+                (
+                    start,
+                    end.unwrap_or_else(|| SourceLine::new(self.len().saturating_sub(1))),
+                )
+            })
     }
 
     pub(crate) fn quote_ranges(
@@ -224,8 +139,6 @@ impl QuoteProjection {
         Self {
             index: snapshot.structure_index(),
             source: snapshot,
-            #[cfg(test)]
-            oracle: VecQuoteProjection::from_source(source),
         }
     }
 
@@ -252,12 +165,14 @@ impl QuoteProjection {
     }
 
     #[cfg(test)]
-    pub fn normalized_lines(&self) -> &[String] {
-        &self.oracle.normalized
+    pub fn normalized_lines(&self) -> Vec<String> {
+        (0..self.len())
+            .map(|row| self.normalized_line(row).into_owned())
+            .collect()
     }
     #[cfg(test)]
-    pub fn quote_prefixes(&self) -> &[Option<usize>] {
-        &self.oracle.quote_prefixes
+    pub fn quote_prefixes(&self) -> Vec<Option<usize>> {
+        (0..self.len()).map(|row| self.quote_prefix(row)).collect()
     }
     #[cfg(test)]
     pub(crate) fn try_update_source(
@@ -265,12 +180,32 @@ impl QuoteProjection {
         source: &(impl LineSource + ?Sized),
         delta: EditDelta,
     ) -> bool {
-        let mut changes = Vec::new();
-        if !self.oracle.try_update_source(source, delta, &mut changes) {
+        let start = delta.start_line.index();
+        let Some(end) = start.checked_add(delta.old_line_count) else {
+            return false;
+        };
+        if delta.old_line_count != delta.new_line_count
+            || source.line_count() != self.len()
+            || end > self.len()
+        {
             return false;
         }
+        if (start..end).any(|idx| {
+            self.quote_prefix(idx).is_none() && is_fence_line(&self.normalized_line(idx))
+        }) {
+            return false;
+        }
+        let changed: Vec<_> = (start..end)
+            .map(|idx| source.source_line(SourceLine::new(idx)))
+            .collect();
+        if changed.iter().any(|line| is_fence_line(line)) {
+            return false;
+        }
+        let changes: Vec<(usize, String)> = (start..end)
+            .zip(changed)
+            .map(|(idx, line)| (idx, line.to_string()))
+            .collect();
         self.source.replace_rows(&changes);
-        let start = delta.start_line.index();
         self.index.splice(
             start..start + delta.old_line_count,
             &self.source,
@@ -280,49 +215,14 @@ impl QuoteProjection {
     }
 }
 
-pub(crate) fn math_block_range(
-    lines: &(impl LineSource + ?Sized),
-    target_line: SourceLine,
-) -> Option<(SourceLine, SourceLine)> {
-    let target_idx = target_line.index();
-    let mut in_code_fence = false;
-    let mut open_idx = None;
-    let top_level_fences = top_level_fenced_lines(lines);
-
-    for idx in 0..lines.line_count() {
-        let raw_line = lines.source_line(SourceLine::new(idx));
-        let line = projected_line(&raw_line, top_level_fences[idx]);
-        if is_fence_line(line) {
-            in_code_fence = !in_code_fence;
-        } else if !in_code_fence && is_math_delimiter(line) {
-            if let Some(start) = open_idx.take() {
-                if start <= target_idx && target_idx <= idx {
-                    return Some((SourceLine::new(start), SourceLine::new(idx)));
-                }
-                if idx >= target_idx {
-                    return None;
-                }
-            } else {
-                if idx > target_idx {
-                    return None;
-                }
-                open_idx = Some(idx);
-            }
-        }
-
-        if idx >= target_idx && open_idx.is_none() {
-            return None;
-        }
-    }
-
-    None
-}
-
 pub(crate) fn math_block_range_with_projection(
     projection: &QuoteProjection,
     target_line: SourceLine,
 ) -> Option<(SourceLine, SourceLine)> {
-    projection.index.math_pair(target_line)
+    let (start, Some(end)) = projection.index.math_range(target_line)? else {
+        return None;
+    };
+    Some((start, end))
 }
 
 #[cfg(test)]
@@ -361,37 +261,14 @@ fn math_block_range_normalized(
     None
 }
 
-#[cfg(test)]
-pub fn mermaid_block_range(
-    lines: &[String],
-    target_line: SourceLine,
-) -> Option<(SourceLine, SourceLine)> {
-    let target_idx = target_line.index();
-    let mut open_fence: Option<(usize, bool)> = None;
-    let top_level_fences = top_level_fenced_lines(lines);
-
-    for (idx, raw_line) in lines.iter().enumerate() {
-        let line = projected_line(raw_line, top_level_fences[idx]);
-        if is_fence_line(line) {
-            if let Some((start, is_mermaid)) = open_fence.take() {
-                if is_mermaid && (start..=idx).contains(&target_idx) {
-                    return Some((SourceLine::new(start), SourceLine::new(idx)));
-                }
-            } else {
-                open_fence = Some((idx, is_mermaid_info(fence_info(line).unwrap_or(""))));
-            }
-        }
-    }
-
-    None
-}
-
 pub(crate) fn mermaid_block_range_with_projection(
     projection: &QuoteProjection,
     target_line: SourceLine,
 ) -> Option<(SourceLine, SourceLine)> {
-    let pair = projection.index.projected_fence_pair(target_line)?;
-    is_mermaid_fence(&projection.normalized_line(pair.0.index())).then_some(pair)
+    let (start, Some(end)) = projection.index.fence_range(target_line)? else {
+        return None;
+    };
+    is_mermaid_fence(&projection.normalized_line(start.index())).then_some((start, end))
 }
 
 #[cfg(test)]
@@ -418,37 +295,8 @@ fn highlight_fenced_slice(
 }
 
 #[cfg(test)]
-fn quoted_content(line: &str) -> Option<(usize, &str)> {
-    let prefix_len = quote_prefix_len(line);
-    (prefix_len > 0).then_some((prefix_len, &line[prefix_len..]))
-}
-
-#[cfg(test)]
 thread_local! {
     pub(crate) static FULL_FENCE_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-fn top_level_fenced_lines(lines: &(impl LineSource + ?Sized)) -> Vec<bool> {
-    #[cfg(test)]
-    FULL_FENCE_SCANS.with(|count| count.set(count.get() + 1));
-    let mut fenced = vec![false; lines.line_count()];
-    let mut open_idx = None;
-
-    for (idx, line) in lines.source_lines().enumerate() {
-        if !super::structure::classify(&line).is_fence {
-            continue;
-        }
-        if let Some(start) = open_idx.take() {
-            fenced[start..=idx].fill(true);
-        } else {
-            open_idx = Some(idx);
-        }
-    }
-
-    if let Some(start) = open_idx {
-        fenced[start..].fill(true);
-    }
-    fenced
 }
 
 fn shift_spans(spans: &mut [InlineSpan], offset: usize) {
@@ -541,7 +389,7 @@ mod window_tests {
             let line = SourceLine::new(row);
             assert_eq!(
                 math_block_range_with_projection(&edited, line),
-                math_block_range_normalized(edited.normalized_lines(), line)
+                math_block_range_normalized(&edited.normalized_lines(), line)
             );
         }
     }
@@ -1096,6 +944,33 @@ impl MarkdownScanner {
     }
 }
 
+fn step_separator_state(
+    index: usize,
+    raw_line: &str,
+    state: &mut crate::buffer::BlockState,
+    previous_nonempty: &mut bool,
+    previous_separator: &mut bool,
+) -> bool {
+    let raw = super::structure::classify(raw_line);
+    let projected = super::structure::classify(&raw_line[raw.quote_prefix..]);
+    let is_blank = if state.is_raw_code() {
+        raw.is_blank
+    } else {
+        projected.is_blank
+    };
+    *state = crate::buffer::PrefixSummary::line(raw, projected).0[*state as usize].exit;
+    let is_sep = is_separator_line(
+        index,
+        is_blank,
+        state.is_code(),
+        *previous_nonempty,
+        *previous_separator,
+    );
+    *previous_separator = is_sep;
+    *previous_nonempty = !is_blank;
+    is_sep
+}
+
 #[cfg(test)]
 pub fn compute_syntactic_separators(lines: &(impl LineSource + ?Sized)) -> Vec<bool> {
     let mut separators = vec![false; lines.line_count()];
@@ -1103,30 +978,19 @@ pub fn compute_syntactic_separators(lines: &(impl LineSource + ?Sized)) -> Vec<b
         return separators;
     }
 
-    let mut in_fence = false;
+    let mut state = crate::buffer::BlockState::Outside;
     let mut previous_nonempty = false;
     let mut prev_is_separator = false;
-    let top_level_fences = top_level_fenced_lines(lines);
 
     for (i, separator) in separators.iter_mut().enumerate() {
         let raw_line = lines.source_line(SourceLine::new(i));
-        let line = projected_line(&raw_line, top_level_fences[i]);
-        let is_fence = is_fence_line(line);
-        if is_fence {
-            in_fence = !in_fence;
-        }
-
-        let is_sep = is_separator_line(
+        *separator = step_separator_state(
             i,
-            line.trim().is_empty(),
-            in_fence,
-            previous_nonempty,
-            prev_is_separator,
+            &raw_line,
+            &mut state,
+            &mut previous_nonempty,
+            &mut prev_is_separator,
         );
-
-        *separator = is_sep;
-        prev_is_separator = is_sep;
-        previous_nonempty = !line.trim().is_empty();
     }
 
     separators
@@ -1141,7 +1005,7 @@ pub(crate) fn blank_run_before_ends_with_separator(
     let mut run_start = block_line.index();
     while run_start > 0 {
         let line = lines.source_line(SourceLine::new(run_start - 1));
-        if !projected_line(&line, false).trim().is_empty() {
+        if !super::indent::strip_quote_prefix(&line).trim().is_empty() {
             break;
         }
         run_start -= 1;
@@ -1173,27 +1037,19 @@ pub fn is_syntactic_separator(lines: &(impl LineSource + ?Sized), source_line: S
         return false;
     }
 
-    let mut in_fence = false;
+    let mut state = crate::buffer::BlockState::Outside;
     let mut previous_nonempty = false;
     let mut prev_is_separator = false;
-    let top_level_fences = top_level_fenced_lines(lines);
 
-    for (i, fenced) in top_level_fences.iter().copied().enumerate().take(idx + 1) {
+    for i in 0..=idx {
         let raw_line = lines.source_line(SourceLine::new(i));
-        let line = projected_line(&raw_line, fenced);
-        let is_fence = is_fence_line(line);
-        if is_fence {
-            in_fence = !in_fence;
-        }
-
-        prev_is_separator = is_separator_line(
+        step_separator_state(
             i,
-            line.trim().is_empty(),
-            in_fence,
-            previous_nonempty,
-            prev_is_separator,
+            &raw_line,
+            &mut state,
+            &mut previous_nonempty,
+            &mut prev_is_separator,
         );
-        previous_nonempty = !line.trim().is_empty();
     }
 
     prev_is_separator
@@ -1210,7 +1066,7 @@ pub(crate) fn local_separator(
     let Some(range) = index.blank_range(row) else {
         return false;
     };
-    if index.projected_fence_open_after(SourceLine::new(row)) {
+    if index.is_in_code_block_after(SourceLine::new(row)) {
         return false;
     }
     let start = range.start;

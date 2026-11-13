@@ -75,8 +75,8 @@ impl Editor {
             });
             let old_pair = current
                 .quote_projection
-                .parser_pair(start.min(current.lines_len - 1));
-            let new_pair = projection.parser_pair(start.min(self.buffer.line_count() - 1));
+                .block_pair(start.min(current.lines_len - 1));
+            let new_pair = projection.block_pair(start.min(self.buffer.line_count() - 1));
             let end = old_pair
                 .map_or(start + delta.new_line_count, |(_, end)| {
                     (end.index() + 1).saturating_sub(delta.old_line_count) + delta.new_line_count

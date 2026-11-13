@@ -10,14 +10,10 @@ pub(super) fn scan(
     // Long and unfinished code blocks are consumed as rows, not expanded to their end.
     let bounded_code = |row: usize| {
         index
-            .streaming_fence(SourceLine::new(row))
+            .fence_range(SourceLine::new(row))
+            .map(|(start, end)| (start.index(), end.map(|end| end.index())))
             .filter(|_| index.quote_prefix(SourceLine::new(row)) == 0)
             .filter(|(start, end)| end.is_none_or(|end| end - start > 1024))
-            .filter(|(start, _)| {
-                index
-                    .parser_pair(SourceLine::new(row))
-                    .is_some_and(|(open, _)| open.index() == *start)
-            })
     };
     if requested.clone().any(|row| bounded_code(row).is_some()) {
         let mut rows = Vec::new();
@@ -77,16 +73,11 @@ fn scan_complete(
         let mut row = old.start;
         while row < old.end {
             let line = SourceLine::new(row);
-            if let Some((start, end)) = index.parser_pair(line) {
+            if let Some((start, Some(end))) =
+                index.fence_range(line).or_else(|| index.math_range(line))
+            {
                 range.start = range.start.min(start.index());
                 range.end = range.end.max(end.index() + 1);
-                let opening = source.source_line(start);
-                let prefix = index.quote_prefix(start);
-                if crate::markdown::structure::classify(&opening[prefix..]).is_math_delim
-                    && let Some(lookahead) = index.math_lookahead_end(start.index() + 1)
-                {
-                    range.end = range.end.max(lookahead + 1);
-                }
                 row = end.index() + 1;
             } else {
                 row += 1;

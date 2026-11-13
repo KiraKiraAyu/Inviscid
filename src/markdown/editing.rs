@@ -362,8 +362,8 @@ impl<'a> LiveBuffer<'a> {
         let closing_idx = self
             .buffer
             .line_index()
-            .paired_fence_range(pos.line)
-            .map(|(_, close)| close.index());
+            .fence_range(pos.line)
+            .and_then(|(_, close)| close.map(|close| close.index()));
 
         let anchor = closing_idx.unwrap_or(pos.line.index().min(self.buffer.line_count() - 1));
         let has_blank_after = anchor + 1 < self.buffer.line_count()
@@ -401,11 +401,17 @@ impl<'a> LiveBuffer<'a> {
             return None;
         }
         let start = block.source_range.start;
-        let end = block.source_range.end - 1;
         if start != start_line {
             return None;
         }
-        if end.index() > start.index() + 1 {
+        let end = if block.is_enclosed_container {
+            block.source_range.end - 1
+        } else {
+            block.source_range.end
+        };
+        if block.source_range.end.index()
+            > start.index() + if block.is_enclosed_container { 2 } else { 1 }
+        {
             return Some(Position::new(start + 1, 0));
         }
 
@@ -895,49 +901,106 @@ struct NewlineEdit {
 
 #[derive(Clone, Copy)]
 struct FenceHint {
-    in_paired_fence: bool,
-    has_fence_after: bool,
-    math_pair: Option<(SourceLine, SourceLine)>,
+    in_fence_body: bool,
+    fence_has_close: bool,
+    in_math_body: bool,
+    math_range: Option<(SourceLine, Option<SourceLine>)>,
 }
 
 impl FenceHint {
     fn from_buffer(buffer: &TextBuffer, line: SourceLine) -> Self {
         let index = buffer.line_index();
+        let structure = index.structure();
+        let fence = structure.fence_range(line);
+        let math_range = structure.math_range(line);
         Self {
-            in_paired_fence: index.paired_fence_range(line).is_some(),
-            has_fence_after: index.has_fence_after(line),
-            math_pair: index.structure().math_pair(line),
+            in_fence_body: fence.is_some_and(|(open, _)| line > open),
+            fence_has_close: fence.is_some_and(|(_, close)| close.is_some()),
+            in_math_body: math_range.is_some_and(|(open, _)| line > open),
+            math_range,
         }
     }
 
     fn scan(lines: &(impl LineSource + ?Sized), line: SourceLine) -> Self {
-        let mut open_fence = None;
-        let mut in_paired_fence = false;
-        let mut has_fence_after = false;
         let target = line.index();
+        let mut in_raw_code = false;
+        let mut in_quoted_code = false;
+        let mut in_math = false;
+        let mut active_fence: Option<usize> = None;
+        let mut active_math: Option<usize> = None;
+        let mut target_fence: Option<(usize, bool)> = None;
+        let mut math_range: Option<(SourceLine, Option<SourceLine>)> = None;
+
         for idx in 0..lines.line_count() {
-            if !lines
-                .source_line(SourceLine::new(idx))
-                .trim_start()
-                .starts_with("```")
-            {
-                continue;
-            }
-            if idx > target {
-                has_fence_after = true;
-            }
-            if let Some(start) = open_fence.take() {
-                if (start..=idx).contains(&target) {
-                    in_paired_fence = true;
+            let text = lines.source_line(SourceLine::new(idx));
+            let raw = super::structure::classify(&text);
+            let projected = super::structure::classify(&text[raw.quote_prefix..]);
+
+            if in_raw_code {
+                if raw.is_fence {
+                    if let Some(open) = active_fence.take()
+                        && (open..=idx).contains(&target)
+                    {
+                        target_fence = Some((open, true));
+                    }
+                    in_raw_code = false;
                 }
-            } else {
-                open_fence = Some(idx);
+            } else if in_quoted_code {
+                if projected.is_fence {
+                    if let Some(open) = active_fence.take()
+                        && (open..=idx).contains(&target)
+                    {
+                        target_fence = Some((open, true));
+                    }
+                    in_quoted_code = false;
+                }
+            } else if in_math {
+                if projected.is_math_delim {
+                    if let Some(open) = active_math.take()
+                        && (open..=idx).contains(&target)
+                    {
+                        math_range = Some((SourceLine::new(open), Some(SourceLine::new(idx))));
+                    }
+                    in_math = false;
+                }
+            } else if raw.is_fence {
+                in_raw_code = true;
+                active_fence = Some(idx);
+            } else if projected.is_fence {
+                in_quoted_code = true;
+                active_fence = Some(idx);
+            } else if projected.is_math_delim {
+                in_math = true;
+                active_math = Some(idx);
+            }
+
+            if idx > target && active_fence.is_none() && active_math.is_none() {
+                break;
             }
         }
+
+        if let Some(open) = active_fence
+            && open <= target
+            && target_fence.is_none()
+        {
+            target_fence = Some((open, false));
+        }
+        if let Some(open) = active_math
+            && open <= target
+            && math_range.is_none()
+        {
+            math_range = Some((SourceLine::new(open), None));
+        }
+
+        let in_fence_body = target_fence.is_some_and(|(open, _)| target > open);
+        let fence_has_close = target_fence.is_some_and(|(_, closed)| closed);
+        let in_math_body = math_range.is_some_and(|(open, _)| line > open);
+
         Self {
-            in_paired_fence,
-            has_fence_after,
-            math_pair: super::math_block_range(lines, line),
+            in_fence_body,
+            fence_has_close,
+            in_math_body,
+            math_range,
         }
     }
 }
@@ -1072,13 +1135,13 @@ fn newline_edit(
         cursor: Position::new(line + 1, 0),
     };
 
-    if fence_hint.in_paired_fence {
+    if fence_hint.in_fence_body {
         return split_here();
     }
 
-    if trimmed.starts_with("```") {
+    if trimmed.starts_with("```") && !fence_hint.in_math_body {
         let mut inserted = vec![current_line];
-        if !fence_hint.has_fence_after {
+        if !fence_hint.fence_has_close {
             inserted.extend([String::new(), "```".to_string(), String::new()]);
         }
         return NewlineEdit {
@@ -1090,7 +1153,7 @@ fn newline_edit(
     }
 
     if trimmed == "$$" && col == current_chars_len {
-        return math_delimiter_edit(lines, line, fence_hint.math_pair);
+        return math_delimiter_edit(lines, line, fence_hint.math_range);
     }
     if is_thematic_break(trimmed) {
         return appended_block(lines, line);
@@ -1164,7 +1227,7 @@ fn newline_edit(
 fn math_delimiter_edit(
     lines: &(impl LineSource + ?Sized),
     line: SourceLine,
-    math_pair: Option<(SourceLine, SourceLine)>,
+    math_range: Option<(SourceLine, Option<SourceLine>)>,
 ) -> NewlineEdit {
     let cursor_below = || NewlineEdit {
         start: line + 1,
@@ -1172,7 +1235,7 @@ fn math_delimiter_edit(
         inserted: vec![String::new()],
         cursor: Position::new(line + 1, 0),
     };
-    let Some((start, end)) = math_pair else {
+    let Some((start, Some(end))) = math_range else {
         return NewlineEdit {
             start: line + 1,
             remove_count: 0,

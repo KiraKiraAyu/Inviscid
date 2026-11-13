@@ -24,6 +24,7 @@ mod structure_index;
 pub mod tests;
 
 pub use fingerprint::{FingerprintJob, FingerprintResult};
+pub(crate) use parser_summary::{BlockState, PrefixSummary};
 pub use primitives::*;
 pub use source::{LineSource, SourceSnapshot};
 pub(crate) use structure_index::StructureIndex;

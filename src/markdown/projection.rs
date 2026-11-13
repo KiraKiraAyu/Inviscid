@@ -56,11 +56,12 @@ impl ProjectedBlock {
             && line.index() + 1 == self.source_range.end.index()
     }
 
-    /// Returns true if `line` is an opening or closing `$$` line of a paired math block.
+    /// Returns true if `line` is an opening or closing `$$` line of a math block.
     pub fn is_math_delimiter(&self, line: SourceLine) -> bool {
         matches!(self.kind, ProjectedBlockKind::MathBlock)
             && (line == self.source_range.start
-                || line.index() + 1 == self.source_range.end.index())
+                || (self.is_enclosed_container
+                    && line.index() + 1 == self.source_range.end.index()))
     }
 
     /// Returns the next editable line strictly inside this same block, if any.
@@ -89,7 +90,7 @@ impl ProjectedBlock {
         let quote_bytes = quote_prefix_len(&raw).min(raw.len());
         match self.kind {
             ProjectedBlockKind::CodeBlock { .. } => {
-                if self.is_enclosed_container && line == self.source_range.start {
+                if line == self.source_range.start {
                     let inner = &raw[quote_bytes..];
                     if let Some((_, fence_len)) = parse_fence_prefix(inner.trim_start()) {
                         let leading = inner.len() - inner.trim_start().len();
@@ -142,25 +143,35 @@ pub(crate) fn block_at(
         return None;
     }
 
-    if let Some((start, end)) = index.projected_fence_pair(line) {
+    if let Some((start, end_opt)) = index.fence_range(line) {
         let opener = lines.source_line(start);
+        let eof = SourceLine::new(lines.line_count());
+        let (source_range, editable_lines, is_enclosed_container) = match end_opt {
+            Some(end) => (start..(end + 1), start..end, true),
+            None => (start..eof, start..eof, false),
+        };
         return Some(ProjectedBlock {
             kind: ProjectedBlockKind::CodeBlock {
                 is_mermaid: is_mermaid_language(&opener),
             },
-            source_range: start..(end + 1),
-            editable_lines: start..end,
-            is_enclosed_container: true,
+            source_range,
+            editable_lines,
+            is_enclosed_container,
         });
     }
 
-    if let Some((start, end)) = index.math_pair(line) {
+    if let Some((start, end_opt)) = index.math_range(line) {
         let editable_start = start + 1;
+        let eof = SourceLine::new(lines.line_count());
+        let (source_range, editable_lines, is_enclosed_container) = match end_opt {
+            Some(end) => (start..(end + 1), editable_start..end, true),
+            None => (start..eof, editable_start..eof, false),
+        };
         return Some(ProjectedBlock {
             kind: ProjectedBlockKind::MathBlock,
-            source_range: start..(end + 1),
-            editable_lines: editable_start..end,
-            is_enclosed_container: true,
+            source_range,
+            editable_lines,
+            is_enclosed_container,
         });
     }
 

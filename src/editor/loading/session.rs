@@ -538,11 +538,11 @@ pub(crate) fn source_window(
         .clone()
         .map(|line| {
             let raw_text = source.source_line(SourceLine::new(line)).into_owned();
-            let kind = match index.streaming_fence(SourceLine::new(line)) {
-                Some((start, _)) if line == start => BlockKind::CodeBlock {
+            let kind = match index.fence_range(SourceLine::new(line)) {
+                Some((start, _)) if line == start.index() => BlockKind::CodeBlock {
                     is_fence_start: true,
                 },
-                Some((_, Some(end))) if line == end => BlockKind::CodeBlock {
+                Some((_, Some(end))) if line == end.index() => BlockKind::CodeBlock {
                     is_fence_start: false,
                 },
                 Some(_) => BlockKind::CodeBlockContent,

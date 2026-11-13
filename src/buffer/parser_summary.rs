@@ -1,190 +1,184 @@
 use crate::markdown::structure::LineStructure;
 
-const OUTSIDE: usize = 0;
-const CODE: usize = 1;
-const MATH: usize = 2;
-
-#[cfg(test)]
-thread_local! {
-    pub(super) static COMPOSITIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+/// Unidirectional prefix block state before scanning a line.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum BlockState {
+    #[default]
+    Outside = 0,
+    RawCode = 1,
+    QuotedCode = 2,
+    Math = 3,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Lookahead {
-    fence: bool,
-    odd_fences: bool,
-    math: [bool; 2],
-}
+impl BlockState {
+    pub(crate) const COUNT: usize = 4;
 
-impl Lookahead {
-    pub fn new(fences: usize, math: [bool; 2]) -> Self {
-        Self {
-            fence: fences > 0,
-            odd_fences: fences % 2 == 1,
-            math,
-        }
+    #[inline]
+    pub(crate) const fn is_code(self) -> bool {
+        matches!(self, Self::RawCode | Self::QuotedCode)
     }
 
-    pub fn has_math(self) -> bool {
-        self.math[0]
+    #[inline]
+    pub(crate) const fn is_raw_code(self) -> bool {
+        matches!(self, Self::RawCode)
     }
 
-    fn prepend(self, suffix: Self) -> Self {
-        Self {
-            fence: self.fence || suffix.fence,
-            odd_fences: self.odd_fences ^ suffix.odd_fences,
-            math: std::array::from_fn(|state| {
-                self.math[state] || suffix.math[state ^ usize::from(self.odd_fences)]
-            }),
-        }
+    #[inline]
+    pub(crate) const fn is_math(self) -> bool {
+        matches!(self, Self::Math)
     }
 
-    fn key(self) -> usize {
-        usize::from(self.fence)
-            | (usize::from(self.math[0]) << 1)
-            | (usize::from(self.math[1]) << 2)
-    }
-
-    fn from_key(key: usize) -> Self {
-        Self {
-            fence: key & 1 != 0,
-            odd_fences: false,
-            math: [key & 2 != 0, key & 4 != 0],
+    #[inline]
+    pub(crate) const fn from_usize(index: usize) -> Self {
+        match index {
+            1 => Self::RawCode,
+            2 => Self::QuotedCode,
+            3 => Self::Math,
+            _ => Self::Outside,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ParseEffect {
-    state: usize,
-    pub starts: usize,
-    pub ends: usize,
+/// Summary of transitions and opened/closed blocks across a line segment
+/// when entered from a given incoming `BlockState`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PrefixTransition {
+    pub exit: BlockState,
+    pub code_opens: usize,
+    pub code_closes: usize,
+    pub math_opens: usize,
+    pub math_closes: usize,
 }
 
-/// Scanner transitions for each suffix lookahead and incoming parser state.
-/// The lookahead preserves the scanner's treatment of unmatched delimiters.
-#[derive(Clone, Debug)]
-pub(super) struct ParserSummary {
-    pub lookahead: Lookahead,
-    effects: [[ParseEffect; 3]; 8],
-}
+/// Pure prefix-only block-state monoid over a line segment (zero lookahead).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PrefixSummary(pub [PrefixTransition; BlockState::COUNT]);
 
-impl Default for ParserSummary {
+impl Default for PrefixSummary {
     fn default() -> Self {
-        Self {
-            lookahead: Lookahead::default(),
-            effects: std::array::from_fn(|_| {
-                std::array::from_fn(|state| ParseEffect {
-                    state,
-                    starts: 0,
-                    ends: 0,
-                })
-            }),
-        }
+        Self::neutral()
     }
 }
 
-impl ParserSummary {
-    fn line(syntax: LineStructure) -> Self {
-        Self {
-            lookahead: Lookahead {
-                fence: syntax.is_fence,
-                odd_fences: syntax.is_fence,
-                math: [syntax.is_math_delim, false],
+impl PrefixSummary {
+    pub const fn neutral() -> Self {
+        Self([
+            PrefixTransition {
+                exit: BlockState::Outside,
+                code_opens: 0,
+                code_closes: 0,
+                math_opens: 0,
+                math_closes: 0,
             },
-            effects: std::array::from_fn(|key| {
-                let suffix = Lookahead::from_key(key);
-                std::array::from_fn(|state| {
-                    let next = match state {
-                        MATH if syntax.is_math_delim => OUTSIDE,
-                        MATH => MATH,
-                        CODE if syntax.is_fence => OUTSIDE,
-                        CODE => CODE,
-                        _ if syntax.is_fence => CODE,
-                        _ if syntax.is_math_delim && suffix.math[0] => MATH,
-                        _ => OUTSIDE,
-                    };
-                    ParseEffect {
-                        state: next,
-                        starts: usize::from(state == OUTSIDE && next != OUTSIDE),
-                        ends: usize::from(state != OUTSIDE && next == OUTSIDE),
-                    }
-                })
-            }),
-        }
+            PrefixTransition {
+                exit: BlockState::RawCode,
+                code_opens: 0,
+                code_closes: 0,
+                math_opens: 0,
+                math_closes: 0,
+            },
+            PrefixTransition {
+                exit: BlockState::QuotedCode,
+                code_opens: 0,
+                code_closes: 0,
+                math_opens: 0,
+                math_closes: 0,
+            },
+            PrefixTransition {
+                exit: BlockState::Math,
+                code_opens: 0,
+                code_closes: 0,
+                math_opens: 0,
+                math_closes: 0,
+            },
+        ])
     }
 
-    pub fn append(&mut self, other: &Self) {
-        #[cfg(test)]
-        COMPOSITIONS.update(|count| count + 1);
-        self.effects = std::array::from_fn(|key| {
-            let through_other = other.lookahead.prepend(Lookahead::from_key(key));
-            std::array::from_fn(|state| {
-                let left = self.effects[through_other.key()][state];
-                let right = other.effects[key][left.state];
-                ParseEffect {
-                    state: right.state,
-                    starts: left.starts + right.starts,
-                    ends: left.ends + right.ends,
-                }
-            })
-        });
-        self.lookahead = self.lookahead.prepend(other.lookahead);
-    }
-
-    pub fn with_suffix(&self, suffix: Lookahead) -> ParseEffect {
-        self.effects[suffix.key()][OUTSIDE]
-    }
-}
-
-/// Raw-fence projection is independent of the scanner's code/math state.
-/// Keeping both incoming raw parities also handles the unpaired final fence.
-#[derive(Clone, Debug, Default)]
-pub(super) struct ParserEffects {
-    pub normal: [ParserSummary; 2],
-    pub projected: ParserSummary,
-    pub through_last_fence: [ParserSummary; 2],
-    pub after_last_fence: ParserSummary,
-    raw_fences: usize,
-}
-
-impl ParserEffects {
     pub fn line(raw: LineStructure, projected: LineStructure) -> Self {
-        let normal = [ParserSummary::line(projected), ParserSummary::line(raw)];
-        let projected = ParserSummary::line(projected);
-        Self {
-            through_last_fence: if raw.is_fence {
-                normal.clone()
-            } else {
-                Default::default()
-            },
-            after_last_fence: if raw.is_fence {
-                Default::default()
-            } else {
-                projected.clone()
-            },
-            normal,
-            projected,
-            raw_fences: usize::from(raw.is_fence),
-        }
+        Self(std::array::from_fn(|incoming| {
+            let state = BlockState::from_usize(incoming);
+            match state {
+                BlockState::Outside => {
+                    if raw.is_fence {
+                        PrefixTransition {
+                            exit: BlockState::RawCode,
+                            code_opens: 1,
+                            ..Default::default()
+                        }
+                    } else if projected.is_fence {
+                        PrefixTransition {
+                            exit: BlockState::QuotedCode,
+                            code_opens: 1,
+                            ..Default::default()
+                        }
+                    } else if projected.is_math_delim {
+                        PrefixTransition {
+                            exit: BlockState::Math,
+                            math_opens: 1,
+                            ..Default::default()
+                        }
+                    } else {
+                        PrefixTransition {
+                            exit: BlockState::Outside,
+                            ..Default::default()
+                        }
+                    }
+                }
+                BlockState::RawCode => {
+                    if raw.is_fence {
+                        PrefixTransition {
+                            exit: BlockState::Outside,
+                            code_closes: 1,
+                            ..Default::default()
+                        }
+                    } else {
+                        PrefixTransition {
+                            exit: BlockState::RawCode,
+                            ..Default::default()
+                        }
+                    }
+                }
+                BlockState::QuotedCode => {
+                    if projected.is_fence {
+                        PrefixTransition {
+                            exit: BlockState::Outside,
+                            code_closes: 1,
+                            ..Default::default()
+                        }
+                    } else {
+                        PrefixTransition {
+                            exit: BlockState::QuotedCode,
+                            ..Default::default()
+                        }
+                    }
+                }
+                BlockState::Math => {
+                    if projected.is_math_delim {
+                        PrefixTransition {
+                            exit: BlockState::Outside,
+                            math_closes: 1,
+                            ..Default::default()
+                        }
+                    } else {
+                        PrefixTransition {
+                            exit: BlockState::Math,
+                            ..Default::default()
+                        }
+                    }
+                }
+            }
+        }))
     }
 
     pub fn append(&mut self, other: &Self) {
-        let parity = self.raw_fences % 2;
-        if other.raw_fences > 0 {
-            self.through_last_fence = std::array::from_fn(|state| {
-                let mut prefix = self.normal[state].clone();
-                prefix.append(&other.through_last_fence[state ^ parity]);
-                prefix
-            });
-            self.after_last_fence = other.after_last_fence.clone();
-        } else {
-            self.after_last_fence.append(&other.projected);
+        for left in &mut self.0 {
+            let right = other.0[left.exit as usize];
+            left.exit = right.exit;
+            left.code_opens += right.code_opens;
+            left.code_closes += right.code_closes;
+            left.math_opens += right.math_opens;
+            left.math_closes += right.math_closes;
         }
-        for state in 0..2 {
-            self.normal[state].append(&other.normal[state ^ parity]);
-        }
-        self.projected.append(&other.projected);
-        self.raw_fences += other.raw_fences;
     }
 }

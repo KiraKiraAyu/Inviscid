@@ -77,15 +77,11 @@ impl LineIndex {
         self.structure.fence_state(target_line).1
     }
 
-    pub(crate) fn has_fence_after(&self, line: crate::buffer::SourceLine) -> bool {
-        self.structure.has_fence_after(line)
-    }
-
-    pub(crate) fn paired_fence_range(
+    pub(crate) fn fence_range(
         &self,
         line: crate::buffer::SourceLine,
-    ) -> Option<(crate::buffer::SourceLine, crate::buffer::SourceLine)> {
-        self.structure.paired_fence_range(line)
+    ) -> Option<(crate::buffer::SourceLine, Option<crate::buffer::SourceLine>)> {
+        self.structure.fence_range(line)
     }
 }
 
