@@ -25,7 +25,11 @@ pub(crate) fn collect_outline_from_source(
     let index = source.structure_index();
     let mut headings = Vec::new();
     for (row, text) in source.source_lines().enumerate() {
-        let prefix = index.quote_prefix(SourceLine::new(row));
+        let source_line = SourceLine::new(row);
+        if index.fence_range(source_line).is_some() || index.math_range(source_line).is_some() {
+            continue;
+        }
+        let prefix = index.quote_prefix(source_line);
         if !matches!(
             super::prefix::parse_block_prefix(&text[prefix..]).map(|prefix| prefix.kind),
             Some(super::prefix::BlockPrefix::Heading { .. })

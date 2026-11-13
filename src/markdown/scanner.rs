@@ -33,18 +33,6 @@ fn is_mermaid_fence(line: &str) -> bool {
     fence_info(line).is_some_and(is_mermaid_info)
 }
 
-fn find_closing_math_delimiter(lines: &[String], from_idx: usize) -> Option<usize> {
-    let mut in_code_fence = false;
-    for (offset, line) in lines.get(from_idx..)?.iter().enumerate() {
-        if is_fence_line(line) {
-            in_code_fence = !in_code_fence;
-        } else if !in_code_fence && is_math_delimiter(line) {
-            return Some(from_idx + offset);
-        }
-    }
-    None
-}
-
 /// Immutable source projection; normalized text is borrowed or produced one row at a time.
 #[derive(Clone, Debug)]
 pub struct QuoteProjection {
@@ -235,7 +223,7 @@ fn math_block_range_normalized(
     let mut open_idx = None;
 
     for (idx, line) in lines.iter().enumerate() {
-        if is_fence_line(line) {
+        if open_idx.is_none() && is_fence_line(line) {
             in_code_fence = !in_code_fence;
         } else if !in_code_fence && is_math_delimiter(line) {
             if let Some(start) = open_idx.take() {
@@ -273,7 +261,9 @@ pub(crate) fn mermaid_block_range_with_projection(
 
 #[cfg(test)]
 fn math_block_state_before(projection: &QuoteProjection, end_idx: usize) -> bool {
-    math_block_range_with_projection(projection, SourceLine::new(end_idx))
+    projection
+        .index
+        .math_range(SourceLine::new(end_idx))
         .is_some_and(|(start, _)| start.index() < end_idx)
 }
 
@@ -654,8 +644,8 @@ impl MarkdownScanner {
                         .flatten();
                         let is_mermaid = mermaid_preview.is_some();
                         current_mermaid_preview = mermaid_preview.clone();
-                        current_code_block_highlights = (close_idx < lines.len())
-                            .then(|| highlight_fenced_slice(lines, Some(idx), close_idx));
+                        current_code_block_highlights =
+                            Some(highlight_fenced_slice(lines, Some(idx), close_idx));
 
                         let mut spans = Vec::new();
                         // Opening backticks are hidden in Live Preview mode
@@ -737,10 +727,11 @@ impl MarkdownScanner {
                 continue;
             }
 
-            if is_math_delimiter(raw_line)
-                && let Some(close_idx) = find_closing_math_delimiter(lines, idx + 1)
-            {
-                let tex = lines[idx + 1..close_idx].join("\n");
+            if is_math_delimiter(raw_line) {
+                let close_idx = lines
+                    .get(idx + 1..)
+                    .and_then(|rest| rest.iter().position(|line| is_math_delimiter(line)))
+                    .map(|offset| idx + 1 + offset);
                 current_table_alignments = None;
                 in_math_block = true;
                 let open_start = leading_spaces;
@@ -752,12 +743,15 @@ impl MarkdownScanner {
                         (0, open_start),
                     ));
                 }
-                if let Some(rendered) = crate::math::prepare_latex(&tex, true) {
+                if let Some(rendered) = close_idx.and_then(|close_idx| {
+                    let tex = lines[idx + 1..close_idx].join("\n");
+                    crate::math::prepare_latex(&tex, true).map(|rendered| (tex, rendered))
+                }) {
                     spans.push(InlineSpan::math(
                         "$$",
-                        tex,
+                        rendered.0,
                         (open_start, open_end),
-                        rendered,
+                        rendered.1,
                         true,
                     ));
                 } else {

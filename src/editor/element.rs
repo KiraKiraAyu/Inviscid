@@ -222,8 +222,8 @@ impl Element for EditorElement {
 
                         let is_active_line = source_line == cursor_line;
                         let is_disclosure_line = source_line == disclosure_position.line;
-                        let is_math_block_editing = active_math_block
-                            .is_some_and(|(start, end)| source_line >= start && source_line <= end);
+                        let is_math_block_editing =
+                            editor.is_math_block_expanded(source_line, parsed, active_math_block);
                         let is_mermaid_block_editing = active_mermaid_block
                             .is_some_and(|(start, end)| source_line >= start && source_line <= end);
                         let math_row = active_math_block

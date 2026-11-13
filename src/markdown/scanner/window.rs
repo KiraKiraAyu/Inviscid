@@ -2,42 +2,52 @@ use super::{MarkdownScanner, ParsedLine};
 use crate::buffer::{LineSource, SourceLine, StructureIndex};
 use std::ops::Range;
 
+const CODE_HIGHLIGHT_CONTEXT_LINES: usize = 32;
+const MAX_PREVIEW_BLOCK_EXPANSION: usize = 1024;
+
 pub(super) fn scan(
     source: &(impl LineSource + ?Sized),
     index: &StructureIndex,
     requested: Range<usize>,
 ) -> (Range<usize>, Vec<ParsedLine>) {
-    // Long and unfinished code blocks are consumed as rows, not expanded to their end.
-    let bounded_code = |row: usize| {
-        index
-            .fence_range(SourceLine::new(row))
-            .map(|(start, end)| (start.index(), end.map(|end| end.index())))
-            .filter(|_| index.quote_prefix(SourceLine::new(row)) == 0)
-            .filter(|(start, end)| end.is_none_or(|end| end - start > 1024))
+    assert!(requested.start <= requested.end && requested.end <= source.line_count());
+    if requested.is_empty() {
+        return (requested, Vec::new());
+    }
+    let bounded_code = |row: usize| -> Option<(usize, Option<usize>)> {
+        let (start, end) = index.fence_range(SourceLine::new(row))?;
+        let is_small_mermaid = end.is_some_and(|close| {
+            close.index() - start.index() <= MAX_PREVIEW_BLOCK_EXPANSION && {
+                let line = source.source_line(start);
+                let prefix = index.quote_prefix(start);
+                super::is_mermaid_fence(&line[prefix..])
+            }
+        });
+        (!is_small_mermaid).then_some((start.index(), end.map(|e| e.index())))
     };
     if requested.clone().any(|row| bounded_code(row).is_some()) {
         let mut rows = Vec::new();
         let mut row = requested.start;
         while row < requested.end {
-            if let Some((start, end)) = bounded_code(row) {
-                let stop = requested.end.min(end.map_or(requested.end, |end| end + 1));
-                let mut raw = Vec::new();
-                let prefix = usize::from(row > start);
-                if prefix > 0 {
-                    raw.push(source.source_line(SourceLine::new(start)).into_owned());
-                }
-                raw.extend(
-                    (row..stop).map(|row| source.source_line(SourceLine::new(row)).into_owned()),
-                );
-                let parsed = MarkdownScanner::scan_normalized_range_with_state(
-                    &raw,
-                    &raw,
-                    &vec![None; raw.len()],
-                    0..raw.len(),
-                    false,
-                    false,
-                );
-                rows.extend(parsed.into_iter().skip(prefix));
+            if let Some((open, close)) = bounded_code(row) {
+                let stop = requested
+                    .end
+                    .min(close.map_or(requested.end, |end| end + 1));
+                let mut parsed = if row == open {
+                    scan_normalized(source, index, row..stop, false)
+                } else {
+                    let ctx_start = row
+                        .saturating_sub(CODE_HIGHLIGHT_CONTEXT_LINES)
+                        .max(open + 1);
+                    let skip = 1 + (row - ctx_start);
+                    let indices = std::iter::once(open).chain(ctx_start..stop);
+                    scan_normalized(source, index, indices, false)
+                        .into_iter()
+                        .skip(skip)
+                        .collect()
+                };
+                apply_quote_edges(source, index, row, &mut parsed);
+                rows.extend(parsed);
                 row = stop;
             } else {
                 let start = row;
@@ -73,8 +83,12 @@ fn scan_complete(
         let mut row = old.start;
         while row < old.end {
             let line = SourceLine::new(row);
-            if let Some((start, Some(end))) =
-                index.fence_range(line).or_else(|| index.math_range(line))
+            if let Some((start, Some(end))) = index
+                .fence_range(line)
+                .or_else(|| index.math_range(line))
+                .filter(|(s, e)| {
+                    e.is_some_and(|e| e.index() - s.index() <= MAX_PREVIEW_BLOCK_EXPANSION)
+                })
             {
                 range.start = range.start.min(start.index());
                 range.end = range.end.max(end.index() + 1);
@@ -95,12 +109,25 @@ fn scan_complete(
             break;
         }
     }
-    let raw: Vec<String> = range
+    let initial_in_math_block = index
+        .math_range(SourceLine::new(range.start))
+        .is_some_and(|(start, _)| start.index() < range.start);
+    let mut parsed = scan_normalized(source, index, range.clone(), initial_in_math_block);
+    apply_quote_edges(source, index, range.start, &mut parsed);
+    (range, parsed)
+}
+
+fn scan_normalized(
+    source: &(impl LineSource + ?Sized),
+    index: &StructureIndex,
+    source_rows: impl Iterator<Item = usize> + Clone,
+    initial_in_math_block: bool,
+) -> Vec<ParsedLine> {
+    let raw: Vec<String> = source_rows
         .clone()
         .map(|row| source.source_line(SourceLine::new(row)).into_owned())
         .collect();
-    let prefixes: Vec<Option<usize>> = range
-        .clone()
+    let prefixes: Vec<Option<usize>> = source_rows
         .map(|row| {
             let prefix = index.quote_prefix(SourceLine::new(row));
             (prefix > 0).then_some(prefix)
@@ -111,24 +138,31 @@ fn scan_complete(
         .zip(&prefixes)
         .map(|(line, prefix)| line[prefix.unwrap_or(0)..].to_owned())
         .collect();
-    let mut parsed = MarkdownScanner::scan_normalized_range_with_state(
+    MarkdownScanner::scan_normalized_range_with_state(
         &raw,
         &normalized,
         &prefixes,
         0..raw.len(),
         false,
-        false,
-    );
+        initial_in_math_block,
+    )
+}
+
+fn apply_quote_edges(
+    source: &(impl LineSource + ?Sized),
+    index: &StructureIndex,
+    range_start: usize,
+    parsed: &mut [ParsedLine],
+) {
     // Group edges use document coordinates even when a window starts at an edge.
     for (offset, line) in parsed.iter_mut().enumerate() {
-        let row = range.start + offset;
+        let row = range_start + offset;
         if let Some(quote) = line.quote.as_mut() {
             quote.is_start = row == 0 || index.quote_prefix(SourceLine::new(row - 1)) == 0;
             quote.is_end =
                 row + 1 == source.line_count() || index.quote_prefix(SourceLine::new(row + 1)) == 0;
         }
     }
-    (range, parsed)
 }
 
 fn connected(
@@ -137,6 +171,11 @@ fn connected(
     left: usize,
     right: usize,
 ) -> bool {
+    if index.fence_range(SourceLine::new(left)).is_some()
+        || index.fence_range(SourceLine::new(right)).is_some()
+    {
+        return false;
+    }
     let left_prefix = index.quote_prefix(SourceLine::new(left));
     let right_prefix = index.quote_prefix(SourceLine::new(right));
     if left_prefix > 0 && right_prefix > 0 {

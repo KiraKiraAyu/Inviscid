@@ -848,6 +848,22 @@ impl Editor {
         DocumentLayoutCache::compute_indent_px(parsed, self.render_mode, self.space_width())
     }
 
+    pub(crate) fn is_math_block_expanded(
+        &self,
+        source_line: SourceLine,
+        parsed: &ParsedLine,
+        active_math_block: Option<(SourceLine, SourceLine)>,
+    ) -> bool {
+        active_math_block.is_some_and(|(start, end)| (start..=end).contains(&source_line))
+            || (matches!(parsed.kind, BlockKind::MathBlockContent)
+                && self
+                    .buffer
+                    .line_index()
+                    .structure()
+                    .math_range(source_line)
+                    .is_some_and(|(_, end)| end.is_none()))
+    }
+
     pub(super) fn line_layout_ctx(
         &self,
         parsed: &ParsedLine,
@@ -870,9 +886,11 @@ impl Editor {
             self.buffer.file_path(),
         )
         .with_folded(is_folded)
-        .with_math_block_editing(
-            active_math_block.is_some_and(|(start, end)| (start..=end).contains(&source_line)),
-        )
+        .with_math_block_editing(self.is_math_block_expanded(
+            source_line,
+            parsed,
+            active_math_block,
+        ))
         .with_mermaid_block_editing(
             active_mermaid_block.is_some_and(|(start, end)| (start..=end).contains(&source_line)),
         )

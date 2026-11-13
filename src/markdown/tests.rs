@@ -653,7 +653,7 @@ fn math_block_range_ignores_delimiters_inside_code_fences() {
 }
 
 #[test]
-fn unclosed_math_delimiter_does_not_change_incremental_scan_state() {
+fn unclosed_math_delimiter_enters_math_block_optimistically() {
     let lines = vec![
         "Before".to_string(),
         "$$".to_string(),
@@ -662,6 +662,11 @@ fn unclosed_math_delimiter_does_not_change_incremental_scan_state() {
     let full_scan = MarkdownScanner::scan_document(&lines);
     let partial_scan = MarkdownScanner::scan_range(&lines, 2..3, false);
 
+    assert!(matches!(
+        full_scan[1].kind,
+        BlockKind::MathBlock { is_start: true }
+    ));
+    assert_eq!(full_scan[2].kind, BlockKind::MathBlockContent);
     assert_eq!(partial_scan, full_scan[2..3]);
 }
 
@@ -897,6 +902,75 @@ fn test_fenced_code_block_wasm_syntax_highlighting_and_incremental_scan() {
     assert_eq!(mid_scan.len(), 1);
     assert_eq!(mid_scan[0].kind, BlockKind::CodeBlockContent);
     assert_eq!(mid_scan[0].spans, parsed[3].spans);
+}
+
+#[test]
+fn unclosed_and_large_closed_code_blocks_preserve_windowed_syntax_highlighting() {
+    use crate::syntax::{SyntaxToken, register_global_wasm_grammar};
+
+    let wasm_bytes = include_bytes!("../../tests/fixtures/tree-sitter-json.wasm");
+    register_global_wasm_grammar("json", wasm_bytes, None)
+        .expect("Failed to register JSON WASM grammar");
+
+    let unclosed = vec!["```json".to_string(), "{\"port\": 8080}".to_string()];
+    let unclosed_parsed = MarkdownScanner::scan_document(&unclosed);
+    assert!(matches!(
+        unclosed_parsed[0].kind,
+        BlockKind::CodeBlock {
+            is_fence_start: true
+        }
+    ));
+    assert_eq!(unclosed_parsed[1].kind, BlockKind::CodeBlockContent);
+    assert!(
+        unclosed_parsed[1]
+            .spans
+            .iter()
+            .any(|s| s.text == "\"port\"" && s.syntax_token == Some(SyntaxToken::Variable))
+    );
+    assert!(
+        unclosed_parsed[1]
+            .spans
+            .iter()
+            .any(|s| s.text == "8080" && s.syntax_token == Some(SyntaxToken::Number))
+    );
+
+    let mut huge_closed = String::from("```json\n[\n");
+    for i in 0..1200 {
+        huge_closed.push_str(&format!("  {{\"id\": {i}}},\n"));
+    }
+    huge_closed.push_str("  {\"id\": 1200}\n]\n```");
+    let buffer = TextBuffer::from_str(&huge_closed, None);
+    let (range, window) = MarkdownScanner::scan_window(&buffer, 1100..1105);
+    assert_eq!(range, 1100..1105);
+    assert_eq!(window[0].kind, BlockKind::CodeBlockContent);
+    assert!(
+        window[0]
+            .spans
+            .iter()
+            .any(|s| s.text == "\"id\"" && s.syntax_token == Some(SyntaxToken::Variable))
+    );
+    assert!(
+        window[0]
+            .spans
+            .iter()
+            .any(|s| s.text == "1098" && s.syntax_token == Some(SyntaxToken::Number))
+    );
+}
+
+#[test]
+fn outline_skips_headings_inside_closed_and_unclosed_code_blocks() {
+    let lines = vec![
+        "# Top".to_string(),
+        "```python".to_string(),
+        "# hidden comment".to_string(),
+        "```".to_string(),
+        "## Real".to_string(),
+        "```bash".to_string(),
+        "# unclosed comment".to_string(),
+    ];
+    let items = collect_outline(&lines);
+    let titles: Vec<_> = items.iter().map(|item| item.title.as_str()).collect();
+    assert_eq!(titles, vec!["Top", "Real"]);
 }
 
 #[test]
