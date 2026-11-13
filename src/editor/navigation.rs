@@ -196,7 +196,6 @@ impl Editor {
         &self,
         current_line: crate::buffer::SourceLine,
         is_down: bool,
-        layout: &super::DocumentLayoutCache,
     ) -> Option<crate::buffer::SourceLine> {
         let mut search_from_line = current_line;
 
@@ -212,7 +211,7 @@ impl Editor {
             }?;
 
             search_from_line = candidate_line;
-            if layout.is_live_cursor_line(candidate_line) {
+            if crate::markdown::is_buffer_live_line_editable(&self.buffer, candidate_line) {
                 return Some(candidate_line);
             }
         }
@@ -242,8 +241,7 @@ impl Editor {
             }
 
             // Step to next physical line, respecting folds and visual blocks
-            let layout = self.layout_snapshot();
-            let next_line = self.adjacent_live_navigation_line(pos.line, true, &layout);
+            let next_line = self.adjacent_live_navigation_line(pos.line, true);
 
             if let Some(target_line) = next_line {
                 let target_line_str = self.buffer.line(target_line).unwrap_or_default();
@@ -277,8 +275,7 @@ impl Editor {
             }
 
             // Step to previous physical line, respecting folds and visual blocks
-            let layout = self.layout_snapshot();
-            let prev_line = self.adjacent_live_navigation_line(pos.line, false, &layout);
+            let prev_line = self.adjacent_live_navigation_line(pos.line, false);
 
             if let Some(target_line) = prev_line {
                 let target_line_str = self.buffer.line(target_line).unwrap_or_default();

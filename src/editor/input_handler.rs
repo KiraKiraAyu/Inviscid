@@ -99,7 +99,9 @@ impl EntityInputHandler for Editor {
         };
 
         let is_source = self.render_mode == RenderMode::Source;
-        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
+        if !is_source {
+            crate::markdown::normalize_buffer_math_cursor(&mut self.buffer);
+        }
         self.track_buffer_change(cx, |this| {
             if let Some((open, close)) = pair {
                 this.buffer.surround_selection(open, close);
@@ -107,7 +109,9 @@ impl EntityInputHandler for Editor {
                 this.buffer.insert_text(text);
             }
         });
-        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
+        if !is_source {
+            crate::markdown::normalize_buffer_math_cursor(&mut self.buffer);
+        }
 
         self.marked_range = None;
         self.pixel_column_goal = None;

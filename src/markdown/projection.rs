@@ -346,3 +346,32 @@ pub fn normalize_buffer_live_cursor(buffer: &TextBuffer, pos: Position) -> Posit
     let index = buffer.line_index();
     normalize_live_cursor(buffer, index.structure(), pos)
 }
+
+/// Normalizes a cursor off non-editable math delimiters in Live Preview mode.
+/// Fast-paths non-delimiter lines so ordinary typing never builds `line_index`.
+pub fn normalize_buffer_math_cursor(buffer: &mut TextBuffer) {
+    if !buffer.selection().is_empty() {
+        return;
+    }
+    let pos = buffer.cursor_pos();
+    if buffer
+        .line_text(pos.line)
+        .is_none_or(|line| strip_quote_prefix(&line).trim() != "$$")
+    {
+        return;
+    }
+    let target = {
+        let index = buffer.line_index();
+        let Some(block) = block_at(buffer, index.structure(), pos.line) else {
+            return;
+        };
+        if !matches!(block.kind, ProjectedBlockKind::MathBlock)
+            || !block.is_math_delimiter(pos.line)
+            || block.editable_lines.start >= block.editable_lines.end
+        {
+            return;
+        }
+        normalize_live_cursor(buffer, index.structure(), pos)
+    };
+    buffer.update_cursor(false, target);
+}

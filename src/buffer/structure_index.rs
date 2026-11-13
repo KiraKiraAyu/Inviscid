@@ -455,6 +455,7 @@ impl StructureIndex {
         ))
     }
 
+    #[cfg(test)]
     pub(crate) fn is_math_delimiter(&self, line: SourceLine) -> bool {
         self.math_pair(line)
             .is_some_and(|(start, end)| line == start || line == end)

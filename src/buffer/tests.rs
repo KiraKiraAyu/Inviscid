@@ -378,9 +378,9 @@ fn tail_edit_cursor_normalization_does_not_materialize_document() {
     let mut buffer = TextBuffer::from_str(&content, None);
     buffer.move_to_doc_end(false);
     for text in ["a", "界", "🙂", "\n", "next"] {
-        buffer.ensure_cursor_not_on_math_delimiter(false);
+        crate::markdown::normalize_buffer_math_cursor(&mut buffer);
         buffer.insert_text(text);
-        buffer.ensure_cursor_not_on_math_delimiter(false);
+        crate::markdown::normalize_buffer_math_cursor(&mut buffer);
     }
     assert_eq!(buffer.full_line_materializations(), 0);
     assert!(buffer.line_index_cache.borrow().is_none());
@@ -805,7 +805,7 @@ fn test_cursor_is_kept_inside_math_source_when_normalized() {
     let mut buf = TextBuffer::from_str("$$\nx + y\n$$", None);
     buf.set_cursor(Position::new(crate::buffer::SourceLine::new(0), 0));
 
-    buf.ensure_cursor_not_on_math_delimiter(false);
+    crate::markdown::normalize_buffer_math_cursor(&mut buf);
 
     assert_eq!(
         buf.cursor_pos(),
@@ -813,7 +813,7 @@ fn test_cursor_is_kept_inside_math_source_when_normalized() {
     );
 
     buf.set_cursor(Position::new(crate::buffer::SourceLine::new(2), 0));
-    buf.ensure_cursor_not_on_math_delimiter(false);
+    crate::markdown::normalize_buffer_math_cursor(&mut buf);
 
     assert_eq!(
         buf.cursor_pos(),

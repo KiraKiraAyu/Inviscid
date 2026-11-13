@@ -54,14 +54,6 @@ impl Sub<usize> for SourceLine {
     }
 }
 
-impl Add<ProjectedLine> for SourceLine {
-    type Output = Self;
-
-    fn add(self, offset: ProjectedLine) -> Self::Output {
-        Self::new(self.index() + offset.index())
-    }
-}
-
 impl Sub<SourceLine> for SourceLine {
     type Output = usize;
 
@@ -73,126 +65,6 @@ impl Sub<SourceLine> for SourceLine {
 impl SubAssign<usize> for SourceLine {
     fn sub_assign(&mut self, offset: usize) {
         *self = *self - offset;
-    }
-}
-
-/// Zero-based visual block index in a rendered document.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ProjectedBlockIndex(usize);
-
-impl ProjectedBlockIndex {
-    pub const fn new(index: usize) -> Self {
-        Self(index)
-    }
-
-    pub const fn index(self) -> usize {
-        self.0
-    }
-}
-
-impl Add<usize> for ProjectedBlockIndex {
-    type Output = Self;
-
-    fn add(self, offset: usize) -> Self::Output {
-        Self::new(self.index() + offset)
-    }
-}
-
-impl Sub<usize> for ProjectedBlockIndex {
-    type Output = Self;
-
-    fn sub(self, offset: usize) -> Self::Output {
-        Self::new(self.index() - offset)
-    }
-}
-
-/// Zero-based line within a projected visual block.
-///
-/// ```compile_fail
-/// use inviscid::buffer::{ProjectedLine, SourceLine};
-/// let source_line = SourceLine::new(0);
-/// let visual_line = ProjectedLine::new(0);
-/// let _ = source_line == visual_line;
-/// ```
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ProjectedLine(usize);
-
-impl ProjectedLine {
-    pub const fn new(index: usize) -> Self {
-        Self(index)
-    }
-
-    pub const fn index(self) -> usize {
-        self.0
-    }
-
-    pub const fn saturating_sub(self, offset: usize) -> Self {
-        Self::new(self.0.saturating_sub(offset))
-    }
-}
-
-impl AddAssign<usize> for ProjectedLine {
-    fn add_assign(&mut self, offset: usize) {
-        *self = *self + offset;
-    }
-}
-
-impl Add<usize> for ProjectedLine {
-    type Output = Self;
-
-    fn add(self, offset: usize) -> Self::Output {
-        Self::new(self.index() + offset)
-    }
-}
-
-impl Sub<usize> for ProjectedLine {
-    type Output = Self;
-
-    fn sub(self, offset: usize) -> Self::Output {
-        Self::new(self.index() - offset)
-    }
-}
-
-impl Add<ProjectedLine> for ProjectedLine {
-    type Output = Self;
-
-    fn add(self, offset: ProjectedLine) -> Self::Output {
-        Self::new(self.index() + offset.index())
-    }
-}
-
-/// Number of lines in a projected visual block.
-///
-/// Use `contains` or `last_line` when converting a count into a position boundary.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ProjectedLineCount(usize);
-
-impl ProjectedLineCount {
-    pub const fn new(count: usize) -> Self {
-        Self(count)
-    }
-
-    pub const fn count(self) -> usize {
-        self.0
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    pub const fn contains(self, line: ProjectedLine) -> bool {
-        line.index() < self.0
-    }
-
-    pub const fn last_line(self) -> Option<ProjectedLine> {
-        match self.0.checked_sub(1) {
-            Some(index) => Some(ProjectedLine::new(index)),
-            None => None,
-        }
-    }
-
-    pub fn increment(&mut self) {
-        self.0 += 1;
     }
 }
 
@@ -217,10 +89,6 @@ impl SourcePosition {
     }
 }
 
-/// ```compile_fail
-/// use inviscid::buffer::{Position, ProjectedLine};
-/// let _ = Position::new(ProjectedLine::new(0), 0);
-/// ```
 /// ```compile_fail
 /// use inviscid::buffer::Position;
 /// let _ = Position::new(0usize, 0);

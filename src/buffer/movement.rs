@@ -166,10 +166,12 @@ impl LineIndex {
         self.structure.math_pair(target_line)
     }
 
+    #[cfg(test)]
     fn is_math_delimiter(&self, target_line: crate::buffer::SourceLine) -> bool {
         self.structure.is_math_delimiter(target_line)
     }
 
+    #[cfg(test)]
     fn is_separator(&self, buffer: &TextBuffer, line: usize) -> bool {
         crate::markdown::local_separator(buffer, &self.structure, line)
     }
@@ -245,40 +247,6 @@ mod structure_cache_tests {
 }
 
 impl TextBuffer {
-    pub(crate) fn ensure_cursor_not_on_math_delimiter(&mut self, is_source: bool) {
-        if is_source || !self.selection.is_empty() {
-            return;
-        }
-
-        let pos = self.selection.head;
-        // Only a delimiter can require cursor normalization. Ordinary typing
-        // must not rebuild the document-wide navigation index after every edit.
-        if self
-            .line_text(pos.line)
-            .is_none_or(|line| crate::markdown::strip_quote_prefix(&line).trim() != "$$")
-        {
-            return;
-        }
-        let index = self.line_index();
-        let Some((start, end)) = index.math_pair(pos.line) else {
-            return;
-        };
-        if end.index() == start.index() + 1 || (pos.line != start && pos.line != end) {
-            return;
-        }
-
-        let target = if pos.line == start {
-            Position::new(start + 1, 0)
-        } else {
-            Position::new(
-                end - 1,
-                self.line_len(crate::buffer::SourceLine::new(end.index() - 1)),
-            )
-        };
-        drop(index);
-        self.update_cursor(false, target);
-    }
-
     pub(crate) fn line_index(&self) -> Ref<'_, LineIndex> {
         {
             let cache = self.line_index_cache.borrow();
@@ -311,32 +279,17 @@ impl TextBuffer {
         self.line_index().is_in_fence(source_line)
     }
 
-    fn is_line_editable(&self, index: &LineIndex, line: usize, is_source: bool) -> bool {
-        let is_math_content = index
-            .math_pair(crate::buffer::SourceLine::new(line))
-            .is_some_and(|(start, end)| {
-                crate::buffer::SourceLine::new(line) > start
-                    && crate::buffer::SourceLine::new(line) < end
-            });
-        let is_separator = index.is_separator(self, line);
-        !crate::markdown::table::is_table_delimiter_row(
-            &self
-                .line_text(crate::buffer::SourceLine::new(line))
-                .unwrap_or_default(),
-        ) && (!is_separator || is_math_content)
-            && !index.is_closing_fence(crate::buffer::SourceLine::new(line))
-            && (is_source || !index.is_math_delimiter(crate::buffer::SourceLine::new(line)))
-    }
-
     pub fn find_next_editable_line(
         &self,
         from_line: crate::buffer::SourceLine,
         is_source: bool,
     ) -> Option<crate::buffer::SourceLine> {
+        if is_source {
+            let next = from_line.index() + 1;
+            return (next < self.line_count()).then(|| crate::buffer::SourceLine::new(next));
+        }
         let index = self.line_index();
-        ((from_line.index() + 1)..self.line_count())
-            .find(|&line| self.is_line_editable(&index, line, is_source))
-            .map(crate::buffer::SourceLine::new)
+        crate::markdown::adjacent_live_editable_line(self, index.structure(), from_line, true)
     }
 
     pub fn find_prev_editable_line(
@@ -344,11 +297,11 @@ impl TextBuffer {
         from_line: crate::buffer::SourceLine,
         is_source: bool,
     ) -> Option<crate::buffer::SourceLine> {
+        if is_source {
+            return from_line.checked_sub(1);
+        }
         let index = self.line_index();
-        (0..from_line.index())
-            .rev()
-            .find(|&line| self.is_line_editable(&index, line, is_source))
-            .map(crate::buffer::SourceLine::new)
+        crate::markdown::adjacent_live_editable_line(self, index.structure(), from_line, false)
     }
 
     pub fn move_left_mode(&mut self, select: bool, is_source: bool) {

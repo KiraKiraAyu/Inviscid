@@ -17,9 +17,13 @@ impl Editor {
         }
         self.pixel_column_goal = None;
         let is_source = self.render_mode == RenderMode::Source;
-        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
+        if !is_source {
+            crate::markdown::normalize_buffer_math_cursor(&mut self.buffer);
+        }
         self.track_buffer_change(cx, f);
-        self.buffer.ensure_cursor_not_on_math_delimiter(is_source);
+        if !is_source {
+            crate::markdown::normalize_buffer_math_cursor(&mut self.buffer);
+        }
         self.scroll_to_cursor();
         self.start_scroll_animation_if_needed(cx);
         self.reset_cursor_blink(cx);

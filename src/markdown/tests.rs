@@ -1,5 +1,6 @@
+use super::projection::{ProjectedBlockKind, block_at_buffer, normalize_buffer_live_cursor};
 use super::*;
-use crate::buffer::ProjectedBlockIndex;
+use crate::buffer::{Position, SourceLine, TextBuffer};
 
 #[test]
 fn test_inline_focus_disclosure() {
@@ -217,7 +218,7 @@ fn quote_context_carries_depth_indentation_and_continuous_group_edges() {
 }
 
 #[test]
-fn visual_document_keeps_inner_blocks_inside_a_continuous_blockquote() {
+fn projected_block_keeps_inner_blocks_inside_a_continuous_blockquote() {
     let lines = vec![
         "outside".to_string(),
         "> # Heading".to_string(),
@@ -228,33 +229,37 @@ fn visual_document_keeps_inner_blocks_inside_a_continuous_blockquote() {
         "> paragraph with **bold**".to_string(),
         "after".to_string(),
     ];
-    let document = VisualDocument::from_lines(&lines);
+    let buf = TextBuffer::from_str(&lines.join("\n"), None);
 
-    assert!(matches!(
-        document.blocks[ProjectedBlockIndex::new(0)],
-        VisualBlock::Paragraph { .. }
-    ));
-    assert!(matches!(
-        document.blocks[ProjectedBlockIndex::new(1)],
-        VisualBlock::Heading { .. }
-    ));
-    assert!(matches!(
-        document.blocks[ProjectedBlockIndex::new(2)],
-        VisualBlock::ListItem { .. }
-    ));
-    assert!(matches!(
-        document.blocks[ProjectedBlockIndex::new(3)],
-        VisualBlock::CodeBlock { .. }
-    ));
-    assert!(matches!(
-        document.blocks[ProjectedBlockIndex::new(4)],
-        VisualBlock::Paragraph { .. }
-    ));
-    assert!(matches!(
-        document.blocks[ProjectedBlockIndex::new(5)],
-        VisualBlock::Paragraph { .. }
-    ));
-    assert_eq!(document.blocks.len(), 6);
+    assert_eq!(
+        block_at_buffer(&buf, SourceLine::new(0)).unwrap().kind,
+        ProjectedBlockKind::Paragraph
+    );
+    assert_eq!(
+        block_at_buffer(&buf, SourceLine::new(1)).unwrap().kind,
+        ProjectedBlockKind::Heading { level: 1 }
+    );
+    assert_eq!(
+        block_at_buffer(&buf, SourceLine::new(2)).unwrap().kind,
+        ProjectedBlockKind::ListItem
+    );
+    let quoted_code = block_at_buffer(&buf, SourceLine::new(4)).unwrap();
+    assert_eq!(
+        quoted_code.kind,
+        ProjectedBlockKind::CodeBlock { is_mermaid: false }
+    );
+    assert_eq!(
+        quoted_code.source_range,
+        SourceLine::new(3)..SourceLine::new(6)
+    );
+    assert_eq!(
+        block_at_buffer(&buf, SourceLine::new(6)).unwrap().kind,
+        ProjectedBlockKind::Quote
+    );
+    assert_eq!(
+        block_at_buffer(&buf, SourceLine::new(7)).unwrap().kind,
+        ProjectedBlockKind::Paragraph
+    );
 }
 
 #[test]
@@ -458,133 +463,87 @@ fn test_bold_italic_parsing_and_combinations() {
 }
 
 #[test]
-fn test_visual_document_ast_and_position_projection() {
-    use crate::buffer::{Position, ProjectedBlockIndex, ProjectedLine, SourceLine, SourcePosition};
-    let source = |line, col| SourcePosition::new(SourceLine::new(line), col);
-    let visual = |block, line, col| {
-        VisualPosition::new(
-            ProjectedBlockIndex::new(block),
-            ProjectedLine::new(line),
-            col,
-        )
-    };
+fn test_projected_block_ranges_and_position_normalization() {
+    let empty_buf = TextBuffer::from_str("\n", None);
+    assert_eq!(
+        normalize_buffer_live_cursor(&empty_buf, Position::new(SourceLine::new(1), 0)),
+        Position::new(SourceLine::new(0), 0)
+    );
 
-    let empty_lines = vec!["".to_string(), "".to_string()];
-    let doc0 = VisualDocument::from_lines(&empty_lines);
-    assert_eq!(doc0.blocks.len(), 1);
-    match &doc0.blocks[crate::buffer::ProjectedBlockIndex::new(0)] {
-        VisualBlock::Paragraph { source_line } => {
-            assert_eq!(*source_line, SourceLine::new(0));
-        }
-        _ => panic!("Expected Paragraph block"),
-    }
-
-    let vpos0 = doc0.source_to_visual(source(0, 0));
-    assert_eq!(vpos0, visual(0, 0, 0));
-    let vpos1 = doc0.source_to_visual(source(1, 0));
-    assert_eq!(vpos1, visual(0, 0, 0));
-
-    let doc_lines = vec![
-        "# Heading 1".to_string(),
-        "".to_string(),
-        "Paragraph text".to_string(),
-        "".to_string(),
-        "```rust".to_string(),
-        "fn main() {".to_string(),
-        "    0".to_string(),
-        "}".to_string(),
-        "```".to_string(),
-        "".to_string(),
-        "| A | B |".to_string(),
-        "|---|---|".to_string(),
-        "| 1 | 2 |".to_string(),
-        "".to_string(),
-        "1. List item 1".to_string(),
-        "2. List item 2".to_string(),
-        "".to_string(),
-        "---".to_string(),
+    let doc_lines = [
+        "# Heading 1",
+        "",
+        "Paragraph text",
+        "",
+        "```rust",
+        "fn main() {",
+        "    0",
+        "}",
+        "```",
+        "",
+        "| A | B |",
+        "|---|---|",
+        "| 1 | 2 |",
+        "",
+        "1. List item 1",
+        "2. List item 2",
+        "",
+        "---",
     ];
+    let doc = TextBuffer::from_str(&doc_lines.join("\n"), None);
 
-    let doc = VisualDocument::from_lines(&doc_lines);
-    assert_eq!(doc.blocks.len(), 7);
-
-    assert!(matches!(
-        doc.blocks[crate::buffer::ProjectedBlockIndex::new(0)],
-        VisualBlock::Heading { .. }
-    ));
-    assert!(matches!(
-        doc.blocks[crate::buffer::ProjectedBlockIndex::new(1)],
-        VisualBlock::Paragraph { .. }
-    ));
-    assert!(matches!(
-        doc.blocks[crate::buffer::ProjectedBlockIndex::new(2)],
-        VisualBlock::CodeBlock { .. }
-    ));
-    assert!(matches!(
-        doc.blocks[crate::buffer::ProjectedBlockIndex::new(3)],
-        VisualBlock::Table { .. }
-    ));
-    assert!(matches!(
-        doc.blocks[crate::buffer::ProjectedBlockIndex::new(4)],
-        VisualBlock::ListItem { .. }
-    ));
-    assert!(matches!(
-        doc.blocks[crate::buffer::ProjectedBlockIndex::new(5)],
-        VisualBlock::ListItem { .. }
-    ));
-    assert!(matches!(
-        doc.blocks[crate::buffer::ProjectedBlockIndex::new(6)],
-        VisualBlock::ThematicBreak { .. }
-    ));
-
-    if let VisualBlock::CodeBlock {
-        code_line_count,
-        start_line,
-        end_line,
-    } = &doc.blocks[crate::buffer::ProjectedBlockIndex::new(2)]
-    {
-        assert_eq!(*code_line_count, crate::buffer::ProjectedLineCount::new(3));
-        assert_eq!(*start_line, SourceLine::new(4));
-        assert_eq!(*end_line, SourceLine::new(8));
-    } else {
-        panic!("Block 2 must be CodeBlock");
-    }
-
-    let code_block_count = doc.block_line_count(ProjectedBlockIndex::new(2));
-    assert_eq!(code_block_count.count(), 4);
-    assert!(code_block_count.contains(ProjectedLine::new(3)));
-    assert!(!code_block_count.contains(ProjectedLine::new(4)));
-    assert_eq!(code_block_count.last_line(), Some(ProjectedLine::new(3)));
     assert_eq!(
-        VisualDocument::default()
-            .block_line_count(ProjectedBlockIndex::new(0))
-            .last_line(),
-        None
+        block_at_buffer(&doc, SourceLine::new(0)).unwrap().kind,
+        ProjectedBlockKind::Heading { level: 1 }
+    );
+    assert_eq!(
+        block_at_buffer(&doc, SourceLine::new(2)).unwrap().kind,
+        ProjectedBlockKind::Paragraph
+    );
+    let code = block_at_buffer(&doc, SourceLine::new(6)).unwrap();
+    assert_eq!(
+        code.kind,
+        ProjectedBlockKind::CodeBlock { is_mermaid: false }
+    );
+    assert_eq!(code.source_range, SourceLine::new(4)..SourceLine::new(9));
+    assert_eq!(code.editable_lines, SourceLine::new(4)..SourceLine::new(8));
+
+    let table = block_at_buffer(&doc, SourceLine::new(10)).unwrap();
+    assert_eq!(
+        table.kind,
+        ProjectedBlockKind::Table {
+            delimiter_line: SourceLine::new(11),
+        }
+    );
+    assert_eq!(table.source_range, SourceLine::new(10)..SourceLine::new(13));
+    assert_eq!(
+        block_at_buffer(&doc, SourceLine::new(14)).unwrap().kind,
+        ProjectedBlockKind::ListItem
+    );
+    assert_eq!(
+        block_at_buffer(&doc, SourceLine::new(17)).unwrap().kind,
+        ProjectedBlockKind::ThematicBreak
     );
 
-    let vpos_code = doc.source_to_visual(source(6, 4));
-    assert_eq!(vpos_code, visual(2, 2, 4));
-    let spos_code = doc.visual_to_source(vpos_code);
     assert_eq!(
-        spos_code.to_position(),
-        Position::new(crate::buffer::SourceLine::new(6), 4)
+        normalize_buffer_live_cursor(&doc, Position::new(SourceLine::new(6), 4)),
+        Position::new(SourceLine::new(6), 4)
     );
-
-    let vpos_sep = doc.source_to_visual(source(9, 0));
-    assert_eq!(vpos_sep.block_idx.index(), 2);
-
-    let vpos_tbl_hdr = doc.source_to_visual(source(10, 2));
-    assert_eq!(vpos_tbl_hdr, visual(3, 0, 2));
     assert_eq!(
-        doc.visual_to_source(vpos_tbl_hdr).to_position(),
-        Position::new(crate::buffer::SourceLine::new(10), 2)
+        normalize_buffer_live_cursor(&doc, Position::new(SourceLine::new(8), 0)),
+        Position::new(SourceLine::new(7), 1)
     );
-
-    let vpos_tbl_row = doc.source_to_visual(source(12, 3));
-    assert_eq!(vpos_tbl_row, visual(3, 1, 3));
     assert_eq!(
-        doc.visual_to_source(vpos_tbl_row).to_position(),
-        Position::new(crate::buffer::SourceLine::new(12), 3)
+        normalize_buffer_live_cursor(&doc, Position::new(SourceLine::new(9), 0)),
+        Position::new(SourceLine::new(7), 0)
+    );
+    assert_eq!(
+        normalize_buffer_live_cursor(&doc, Position::new(SourceLine::new(10), 2)),
+        Position::new(SourceLine::new(10), 2)
+    );
+    assert_eq!(
+        normalize_buffer_live_cursor(&doc, Position::new(SourceLine::new(12), 3)),
+        Position::new(SourceLine::new(12), 3)
     );
 }
 
@@ -974,16 +933,13 @@ fn mermaid_fences_render_valid_diagrams_and_preserve_their_source() {
     assert_eq!(mid_scan[0].kind, BlockKind::MermaidBlockContent);
     assert_eq!(mid_scan[0].spans, parsed[2].spans);
 
-    let visual = VisualDocument::from_parsed(&lines, &parsed);
-    assert!(matches!(
-        &visual.blocks[crate::buffer::ProjectedBlockIndex::new(1)],
-        VisualBlock::CodeBlock {
-            start_line,
-            end_line,
-            ..
-        } if *start_line == crate::buffer::SourceLine::new(1)
-            && *end_line == crate::buffer::SourceLine::new(4)
-    ));
+    let buf = TextBuffer::from_str(&lines.join("\n"), None);
+    let mermaid = block_at_buffer(&buf, SourceLine::new(2)).unwrap();
+    assert_eq!(
+        mermaid.kind,
+        ProjectedBlockKind::CodeBlock { is_mermaid: true }
+    );
+    assert_eq!(mermaid.source_range, SourceLine::new(1)..SourceLine::new(5));
 }
 
 #[test]
@@ -1263,14 +1219,10 @@ fn blank_run_terminal_separator_classification_matches_projection() {
 }
 #[test]
 fn code_fence_footer_projects_to_last_editable_line() {
-    use crate::buffer::{SourceLine, SourcePosition};
-
     for text in ["```rust\nx\n```", "```rust\n```", "```rust\nx"] {
-        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
-        let document = VisualDocument::from_lines(&lines);
-        let last = SourceLine::new(lines.len() - 1);
-        let position =
-            document.visual_to_source(document.source_to_visual(SourcePosition::new(last, 0)));
+        let buf = TextBuffer::from_str(text, None);
+        let last = SourceLine::new(buf.line_count() - 1);
+        let position = normalize_buffer_live_cursor(&buf, Position::new(last, 0));
         let expected = if text.ends_with("```") {
             last - 1
         } else {

@@ -249,52 +249,6 @@ impl Default for DocumentLayoutCache {
 }
 
 impl DocumentLayoutCache {
-    /// Code footers draw a block border but have no editable projected text.
-    pub(crate) fn project_code_block_cursor(
-        &self,
-        position: crate::buffer::Position,
-    ) -> crate::buffer::Position {
-        let Some(row) = self.parsed_lines.row(position.line.index()) else {
-            return position;
-        };
-        if !matches!(
-            row.kind,
-            BlockKind::CodeBlock {
-                is_fence_start: false
-            } | BlockKind::MermaidBlock {
-                is_fence_start: false
-            }
-        ) {
-            return position;
-        }
-        let Some(previous) = position.line.checked_sub(1) else {
-            return position;
-        };
-        self.parsed_lines
-            .row(previous.index())
-            .map_or(position, |row| {
-                crate::buffer::Position::new(previous, row.raw_text.chars().count())
-            })
-    }
-
-    pub(crate) fn is_live_cursor_line(&self, line: SourceLine) -> bool {
-        self.parsed_lines.row(line.index()).is_some_and(|row| {
-            !self.separator(line.index())
-                && !matches!(
-                    row.kind,
-                    BlockKind::CodeBlock {
-                        is_fence_start: false
-                    } | BlockKind::MermaidBlock {
-                        is_fence_start: false
-                    } | BlockKind::MathBlock { .. }
-                        | BlockKind::Table {
-                            is_delimiter: true,
-                            ..
-                        }
-                )
-        })
-    }
-
     pub(crate) fn separator(&self, line: usize) -> bool {
         #[cfg(test)]
         if let Some(value) = self.separators.get(line) {

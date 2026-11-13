@@ -21,7 +21,7 @@ use crate::app::actions::{
     CloseFindBar, FindInDocument, FindNext, FindPrevious, ReplaceInDocument,
 };
 use crate::buffer::{Position, Selection, TextBuffer};
-use crate::markdown::{VisualDocument, get_block_prefix_len, toggle_task_checkbox};
+use crate::markdown::{normalize_buffer_live_cursor, toggle_task_checkbox};
 use crate::search::FindState;
 use crate::theme::{ActiveTheme, Theme};
 
@@ -732,40 +732,7 @@ impl Editor {
             return;
         }
 
-        let layout = self.layout_snapshot();
-        let pos = self.buffer.cursor_pos();
-        let mut target_pos = {
-            let mut start = pos.line.index();
-            while start > 0 && layout.quote_projection.separator(start) {
-                start -= 1;
-            }
-            let (range, parsed) = crate::markdown::MarkdownScanner::scan_window(
-                &self.buffer,
-                start..(pos.line.index() + 1).min(self.buffer.line_count()),
-            );
-            let separators: Vec<bool> = range
-                .clone()
-                .map(|row| layout.quote_projection.separator(row))
-                .collect();
-            let document = VisualDocument::from_parsed_with_separators(&parsed, &separators);
-            let local = crate::buffer::SourcePosition::new(
-                crate::buffer::SourceLine::new(pos.line.index() - range.start),
-                pos.col,
-            );
-            let projected = document.visual_to_source(document.source_to_visual(local));
-            Position::new(
-                crate::buffer::SourceLine::new(projected.line.index() + range.start),
-                projected.col,
-            )
-        };
-
-        let current_line_str = self.buffer.line_text(target_pos.line).unwrap_or_default();
-        let prefix_len = get_block_prefix_len(&current_line_str);
-        if prefix_len > 0 && target_pos.col < prefix_len {
-            target_pos.col = prefix_len.min(self.buffer.line_len(target_pos.line));
-        }
-
-        target_pos = layout.project_code_block_cursor(target_pos);
+        let target_pos = normalize_buffer_live_cursor(&self.buffer, self.buffer.cursor_pos());
         self.buffer.set_cursor(target_pos);
         self.pixel_column_goal = None;
     }
