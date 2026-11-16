@@ -1,5 +1,5 @@
 use super::indent::{leading_indent_len, quote_depth};
-use super::inline::{InlineSpan, parse_inline_spans};
+use super::inline::{InlineSpan, parse_inline_spans_with_render};
 use super::prefix::{
     BlockPrefix, fence_info, is_fence_line, is_thematic_break, parse_block_prefix,
 };
@@ -10,6 +10,18 @@ use crate::buffer::EditDelta;
 use crate::buffer::{LineSource, SourceLine};
 
 mod window;
+
+const MAX_UI_MATH_BLOCK_LINES: usize = 64;
+const MAX_UI_MATH_BLOCK_BYTES: usize = 2048;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum ScanResourcePolicy {
+    /// Compute Mermaid diagrams and all LaTeX expressions eagerly.
+    #[default]
+    Full,
+    /// UI fast path: read Mermaid from cache only, and render only lightweight math synchronously.
+    UiDeferred,
+}
 
 fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
     lines
@@ -484,7 +496,7 @@ impl MarkdownScanner {
         range: std::ops::Range<usize>,
     ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
         let index = buffer.line_index().structure_snapshot();
-        window::scan(buffer, &index, range)
+        window::scan(buffer, &index, range, ScanResourcePolicy::Full)
     }
 
     pub(crate) fn scan_snapshot_window(
@@ -492,7 +504,16 @@ impl MarkdownScanner {
         index: &crate::buffer::StructureIndex,
         range: std::ops::Range<usize>,
     ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
-        window::scan(source, index, range)
+        window::scan(source, index, range, ScanResourcePolicy::Full)
+    }
+
+    pub(crate) fn scan_snapshot_window_with_policy(
+        source: &crate::buffer::SourceSnapshot,
+        index: &crate::buffer::StructureIndex,
+        range: std::ops::Range<usize>,
+        policy: ScanResourcePolicy,
+    ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
+        window::scan(source, index, range, policy)
     }
 
     #[cfg(test)]
@@ -557,6 +578,7 @@ impl MarkdownScanner {
             range,
             initial_in_code_fence,
             initial_in_math_block,
+            ScanResourcePolicy::Full,
         )
     }
 
@@ -567,7 +589,15 @@ impl MarkdownScanner {
         range: std::ops::Range<usize>,
         initial_in_code_fence: bool,
         initial_in_math_block: bool,
+        policy: ScanResourcePolicy,
     ) -> Vec<ParsedLine> {
+        let allow_inline_math = true;
+        let render_mermaid = |slice: &[String]| -> Option<crate::mermaid::MermaidSvg> {
+            match policy {
+                ScanResourcePolicy::Full => crate::mermaid::prepare_mermaid_lines(slice),
+                ScanResourcePolicy::UiDeferred => crate::mermaid::get_cached_mermaid_lines(slice),
+            }
+        };
         let mut result = Vec::with_capacity(range.len());
         let mut in_code_fence = initial_in_code_fence;
         let mut in_math_block = initial_in_math_block;
@@ -582,9 +612,7 @@ impl MarkdownScanner {
                 let preview = open_fence_idx
                     .filter(|&open_idx| is_mermaid_fence(&lines[open_idx]))
                     .filter(|_| close_fence_idx < lines.len())
-                    .and_then(|open_idx| {
-                        crate::mermaid::prepare_mermaid_lines(&lines[open_idx + 1..close_fence_idx])
-                    });
+                    .and_then(|open_idx| render_mermaid(&lines[open_idx + 1..close_fence_idx]));
                 (
                     Some(highlight_fenced_slice(
                         lines,
@@ -640,7 +668,7 @@ impl MarkdownScanner {
                         let lang_str = stripped.trim().to_string();
                         let mermaid_preview = (is_mermaid_fence(raw_line)
                             && close_idx < lines.len())
-                        .then(|| crate::mermaid::prepare_mermaid_lines(&lines[idx + 1..close_idx]))
+                        .then(|| render_mermaid(&lines[idx + 1..close_idx]))
                         .flatten();
                         let is_mermaid = mermaid_preview.is_some();
                         current_mermaid_preview = mermaid_preview.clone();
@@ -745,7 +773,19 @@ impl MarkdownScanner {
                 }
                 if let Some(rendered) = close_idx.and_then(|close_idx| {
                     let tex = lines[idx + 1..close_idx].join("\n");
-                    crate::math::prepare_latex(&tex, true).map(|rendered| (tex, rendered))
+                    let allow_sync = match policy {
+                        ScanResourcePolicy::Full => true,
+                        ScanResourcePolicy::UiDeferred => {
+                            close_idx - idx <= MAX_UI_MATH_BLOCK_LINES
+                                && tex.len() <= MAX_UI_MATH_BLOCK_BYTES
+                        }
+                    };
+                    let svg = if allow_sync {
+                        crate::math::prepare_latex(&tex, true)
+                    } else {
+                        crate::math::get_cached_latex(&tex, true)
+                    };
+                    svg.map(|rendered| (tex, rendered))
                 }) {
                     spans.push(InlineSpan::math(
                         "$$",
@@ -828,7 +868,11 @@ impl MarkdownScanner {
                         marker_span.is_bold = true;
                     }
                     let mut inline_spans = vec![marker_span];
-                    inline_spans.extend(parse_inline_spans(content, actual_prefix_len));
+                    inline_spans.extend(parse_inline_spans_with_render(
+                        content,
+                        actual_prefix_len,
+                        allow_inline_math,
+                    ));
 
                     result.push(ParsedLine {
                         raw_text: raw_line.clone(),
@@ -848,7 +892,7 @@ impl MarkdownScanner {
                 current_table_alignments = None;
                 let alt = trimmed[2..bracket_end].to_string();
                 let url = trimmed[(bracket_end + 2)..(trimmed.len() - 1)].to_string();
-                let inline_spans = parse_inline_spans(raw_line, 0);
+                let inline_spans = parse_inline_spans_with_render(raw_line, 0, allow_inline_math);
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::Image { alt, url },
@@ -863,7 +907,7 @@ impl MarkdownScanner {
                 && trimmed.contains('|')
             {
                 let cells = parse_table_row_cells(raw_line);
-                let inline_spans = parse_inline_spans(raw_line, 0);
+                let inline_spans = parse_inline_spans_with_render(raw_line, 0, allow_inline_math);
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::Table {
@@ -884,7 +928,7 @@ impl MarkdownScanner {
             {
                 let alignments = parse_table_alignments(&lines[idx + 1]);
                 let cells = parse_table_row_cells(raw_line);
-                let inline_spans = parse_inline_spans(raw_line, 0);
+                let inline_spans = parse_inline_spans_with_render(raw_line, 0, allow_inline_math);
                 current_table_alignments = Some(alignments.clone());
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
@@ -901,7 +945,7 @@ impl MarkdownScanner {
             }
 
             current_table_alignments = None;
-            let inline_spans = parse_inline_spans(raw_line, 0);
+            let inline_spans = parse_inline_spans_with_render(raw_line, 0, allow_inline_math);
             result.push(ParsedLine {
                 raw_text: raw_line.clone(),
                 kind: BlockKind::Paragraph,

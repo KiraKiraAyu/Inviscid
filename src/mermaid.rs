@@ -145,7 +145,7 @@ fn render_uncached(source: &str) -> Option<MermaidSvg> {
     })
 }
 
-pub(crate) fn prepare_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
+fn source_from_lines(lines: &[String]) -> Option<String> {
     let source_byte_len = source_lines_byte_len(lines)?;
     let mut source = String::with_capacity(source_byte_len);
     for (index, line) in lines.iter().enumerate() {
@@ -154,7 +154,17 @@ pub(crate) fn prepare_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
         }
         source.push_str(line);
     }
+    Some(source)
+}
 
+pub(crate) fn get_cached_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
+    let source = source_from_lines(lines)?;
+    let cache = RENDER_CACHE.get()?;
+    cache.lock().get(&source).flatten()
+}
+
+pub(crate) fn prepare_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
+    let source = source_from_lines(lines)?;
     prepare_bounded_mermaid(&source)
 }
 

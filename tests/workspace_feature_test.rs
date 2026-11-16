@@ -57,31 +57,34 @@ fn test_project_panel_directory_scanning_and_filtering() {
     let (_app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
     cx.run_until_parked();
 
-    let fh = cx.update(|_window, cx| cx.focus_handle());
+    let panel_entity =
+        cx.update(|_window, cx| cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx)));
+    cx.run_until_parked();
 
-    let panel = ProjectPanel::new(Some(temp_dir.clone()), fh);
+    cx.update(|_window, cx| {
+        let panel = panel_entity.read(cx);
+        // Verify root_dir
+        assert_eq!(panel.root_dir(), Some(temp_dir.as_path()));
 
-    // Verify root_dir
-    assert_eq!(panel.root_dir(), Some(temp_dir.as_path()));
+        let entries = panel.entries();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
 
-    let entries = panel.entries();
-    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        // 1. Dirs first (docs, src), then files (README.md, z_notes.md)
+        assert_eq!(names, vec!["docs", "src", "README.md", "z_notes.md"]);
 
-    // 1. Dirs first (docs, src), then files (README.md, z_notes.md)
-    assert_eq!(names, vec!["docs", "src", "README.md", "z_notes.md"]);
+        // 2. Hidden entries (.git, .hidden_file) and target build dir MUST be filtered out
+        assert!(!names.contains(&".git"));
+        assert!(!names.contains(&".hidden_file"));
+        assert!(!names.contains(&"target"));
 
-    // 2. Hidden entries (.git, .hidden_file) and target build dir MUST be filtered out
-    assert!(!names.contains(&".git"));
-    assert!(!names.contains(&".hidden_file"));
-    assert!(!names.contains(&"target"));
-
-    // 3. Initial depth of top-level items is 0, and subdirs are collapsed
-    for entry in entries {
-        assert_eq!(entry.depth, 0);
-        if entry.is_dir() {
-            assert!(!entry.is_expanded());
+        // 3. Initial depth of top-level items is 0, and subdirs are collapsed
+        for entry in entries {
+            assert_eq!(entry.depth, 0);
+            if entry.is_dir() {
+                assert!(!entry.is_expanded());
+            }
         }
-    }
+    });
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -95,9 +98,9 @@ fn test_project_panel_expand_collapse_and_reveal() {
     let (_app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
     cx.run_until_parked();
 
-    let panel_entity = cx.update(|_window, cx| {
-        cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx.focus_handle()))
-    });
+    let panel_entity =
+        cx.update(|_window, cx| cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx)));
+    cx.run_until_parked();
 
     // Expand 'docs'
     let docs_path = temp_dir.join("docs");
@@ -106,6 +109,8 @@ fn test_project_panel_expand_collapse_and_reveal() {
             panel.toggle_expand(&docs_path, cx);
         });
     });
+    cx.run_until_parked();
+    cx.run_until_parked();
 
     let entries_after_expand = cx.update(|_window, cx| {
         panel_entity
@@ -135,6 +140,7 @@ fn test_project_panel_expand_collapse_and_reveal() {
             panel.collapse_all(cx);
         });
     });
+    cx.run_until_parked();
 
     let entries_after_collapse = cx.update(|_window, cx| {
         panel_entity
@@ -156,6 +162,7 @@ fn test_project_panel_expand_collapse_and_reveal() {
             panel.reveal_path(&intro_path, cx);
         });
     });
+    cx.run_until_parked();
 
     let is_docs_expanded = cx.update(|_window, cx| panel_entity.read(cx).is_expanded(&docs_path));
     assert!(is_docs_expanded, "reveal_path must expand ancestor folders");
@@ -774,9 +781,10 @@ fn test_project_panel_context_menu_open_and_close() {
 
     let (panel_entity, _ws_entity) = cx.update(|_window, cx| {
         let ws = app.read(cx).workspace().clone();
-        let panel = cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx.focus_handle()));
+        let panel = cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx));
         (panel, ws)
     });
+    cx.run_until_parked();
 
     let target_file = temp_dir.join("README.md");
 
@@ -1281,9 +1289,9 @@ fn test_inline_input_new_file_activates_inline_input(cx: &mut TestAppContext) {
     let (_app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
     cx.run_until_parked();
 
-    let panel_entity = cx.update(|_window, cx| {
-        cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx.focus_handle()))
-    });
+    let panel_entity =
+        cx.update(|_window, cx| cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx)));
+    cx.run_until_parked();
 
     // Expand "docs" directory
     cx.update(|_window, cx| {
@@ -1429,9 +1437,9 @@ fn test_project_panel_trash_and_delete_confirm_modal() {
     let (_app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
     cx.run_until_parked();
 
-    let panel_entity = cx.update(|_window, cx| {
-        cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx.focus_handle()))
-    });
+    let panel_entity =
+        cx.update(|_window, cx| cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx)));
+    cx.run_until_parked();
 
     // 1. Context Menu -> Trash action opens confirm modal
     cx.update(|window, cx| {
@@ -2632,9 +2640,9 @@ fn test_project_panel_folder_expanded_collapsed_icons() {
     let (_app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
     cx.run_until_parked();
 
-    let panel_entity = cx.update(|_window, cx| {
-        cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx.focus_handle()))
-    });
+    let panel_entity =
+        cx.update(|_window, cx| cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx)));
+    cx.run_until_parked();
 
     // 1. Initial state: 'docs' and 'src' are collapsed (is_expanded == false)
     cx.update(|_window, cx| {
@@ -2655,6 +2663,7 @@ fn test_project_panel_folder_expanded_collapsed_icons() {
             panel.toggle_expand(&docs_path, cx);
         });
     });
+    cx.run_until_parked();
 
     // Verify 'docs' is now expanded, while 'src' remains collapsed
     cx.update(|_window, cx| {
@@ -2680,6 +2689,7 @@ fn test_project_panel_folder_expanded_collapsed_icons() {
             panel.toggle_expand(&docs_path, cx);
         });
     });
+    cx.run_until_parked();
 
     cx.update(|_window, cx| {
         let panel = panel_entity.read(cx);

@@ -4579,7 +4579,12 @@ fn test_code_block_incremental_edit_and_syntax_cache_invalidation(cx: &mut gpui:
 #[gpui::test]
 fn test_quoted_code_block_incremental_edit_matches_full_rebuild(cx: &mut gpui::TestAppContext) {
     use crate::buffer::{Position, TextBuffer};
+    use crate::syntax::register_global_wasm_grammar;
     use gpui::{AppContext, Bounds, point, px, size};
+
+    let wasm_bytes = include_bytes!("../../tests/fixtures/tree-sitter-json.wasm");
+    register_global_wasm_grammar("json", wasm_bytes, None)
+        .expect("Failed to register JSON WASM grammar");
 
     let original = "> ```json\n> {\n>   \"count\": 1\n> }\n> ```\nafter";
     let edited = "> ```json\n> {\n>   \"count\": 2\n> }\n> ```\nafter";
@@ -5593,4 +5598,72 @@ fn layout_y_hit_testing_returns_source_lines_across_variable_heights() {
 
     let empty = DocumentLayoutCache::default();
     assert_eq!(empty.source_line_at_y(px(0.0)), None);
+}
+
+#[gpui::test]
+fn mermaid_svg_generation_is_deferred_to_background_worker(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    let diagram = "flowchart LR\nMermaidUiAsyncA --> MermaidUiAsyncB";
+    let text = format!("```mermaid\n{diagram}\n```\nparagraph");
+    let editor = cx.new(|cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&text, None), cx)
+    });
+
+    // Initial synchronous UI layout must not block to compile an uncached Mermaid SVG.
+    editor.update(cx, |ed, _| {
+        ed.ensure_layout_cache();
+        let row0 = ed.layout_snapshot().parsed_lines.row(0).unwrap();
+        assert!(
+            matches!(row0.kind, crate::markdown::BlockKind::CodeBlock { .. }),
+            "unexpected row0 before worker: kind={:?}, spans={:?}",
+            row0.kind,
+            row0.spans
+                .iter()
+                .map(|s| (&s.text, s.mermaid.is_some()))
+                .collect::<Vec<_>>()
+        );
+        assert!(row0.spans.iter().all(|span| span.mermaid.is_none()));
+        assert!(
+            crate::mermaid::get_cached_mermaid_lines(&[
+                "flowchart LR".to_string(),
+                "MermaidUiAsyncA --> MermaidUiAsyncB".to_string(),
+            ])
+            .is_none()
+        );
+    });
+
+    // Once background DocumentSession runs, Mermaid SVG is published without another edit.
+    cx.run_until_parked();
+    editor.read_with(cx, |ed, _| {
+        let row0 = ed.layout_snapshot().parsed_lines.row(0).unwrap();
+        assert!(matches!(
+            row0.kind,
+            crate::markdown::BlockKind::MermaidBlock {
+                is_fence_start: true
+            }
+        ));
+        assert!(row0.spans.iter().any(|span| span.mermaid.is_some()));
+    });
+}
+
+#[gpui::test]
+fn update_file_path_refreshes_baseline_asynchronously(cx: &mut gpui::TestAppContext) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let file_a = temp_dir.path().join("a.md");
+    let file_b = temp_dir.path().join("b.md");
+    std::fs::write(&file_a, "content a").unwrap();
+    std::fs::write(&file_b, "content b").unwrap();
+
+    let (editor, cx) = cx.add_window_view(|_window, cx| super::Editor::new_with_path(file_a, cx));
+    cx.run_until_parked();
+
+    editor.update(cx, |ed, cx| {
+        ed.update_file_path(file_b.clone(), cx);
+    });
+    cx.run_until_parked();
+
+    editor.read_with(cx, |ed, _| {
+        assert_eq!(ed.file_path(), Some(file_b.as_path()));
+        assert!(!ed.is_externally_modified());
+    });
 }

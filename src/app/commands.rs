@@ -13,12 +13,7 @@ pub fn sync_workspace_to_global(app: &InviscidWindow, cx: &mut Context<InviscidW
         app.workspace()
             .read(cx)
             .sync_workspace_state(&mut config, cx);
-        let config_to_save = config.clone();
-        cx.background_executor()
-            .spawn(async move {
-                config_to_save.save_session();
-            })
-            .detach();
+        config.persist_session_async(cx.background_executor());
         cx.set_global(config);
     }
 }
@@ -73,11 +68,7 @@ pub fn clear_recent_workspaces(cx: &mut App) {
         config_to_save = Some(config.clone());
     });
     if let Some(cfg) = config_to_save {
-        cx.background_executor()
-            .spawn(async move {
-                cfg.save_session();
-            })
-            .detach();
+        cfg.persist_session_async(cx.background_executor());
     }
 }
 
@@ -535,12 +526,8 @@ pub fn switch_theme_global(name: &str, cx: &mut App) {
         cx.update_global::<AppConfig, _>(|config, _cx| {
             config.theme = name.to_string();
         });
-        let config_to_save = cx.global::<AppConfig>().clone();
-        cx.background_executor()
-            .spawn(async move {
-                config_to_save.save_preferences();
-            })
-            .detach();
+        cx.global::<AppConfig>()
+            .persist_preferences_async(cx.background_executor());
         cx.refresh_windows();
     }
 }

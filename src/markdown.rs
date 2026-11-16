@@ -19,6 +19,7 @@ pub use inline::*;
 pub use outline::*;
 pub use prefix::*;
 pub use projection::*;
+pub(crate) use scanner::ScanResourcePolicy;
 pub use scanner::*;
 pub use table::*;
 pub use types::*;

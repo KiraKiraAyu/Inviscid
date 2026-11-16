@@ -2784,3 +2784,41 @@ fn test_replace_all_matches_atomic_undo() {
     buf.redo();
     assert_eq!(buf.to_string_content(), "xxx bbb xxx ccc xxx");
 }
+
+#[test]
+fn test_replace_all_matches_clearing_document_and_zero_materialization() {
+    use crate::search::{SearchOptions, SearchQuery};
+
+    let mut content = String::new();
+    for i in 0..5_000 {
+        if i == 10 || i == 4_990 {
+            content.push_str("needle target line\n");
+        } else {
+            content.push_str("plain unchanged line\n");
+        }
+    }
+    let mut buf = TextBuffer::from_str(&content, None);
+    let materializations_before = buf.full_line_materializations();
+    let query = SearchQuery::new("needle", SearchOptions::default()).unwrap();
+    let count = buf.replace_all_matches(&query, "REPLACED");
+    assert_eq!(count, 2);
+    assert_eq!(buf.full_line_materializations(), materializations_before);
+    assert_eq!(
+        buf.line_text(SourceLine::new(10)).as_deref(),
+        Some("REPLACED target line")
+    );
+    assert_eq!(
+        buf.line_text(SourceLine::new(4_990)).as_deref(),
+        Some("REPLACED target line")
+    );
+
+    // Clearing the entire buffer via replace_all normalizes to empty sentinel lines cleanly.
+    let mut clear_buf = TextBuffer::from_str("gone\ngone", None);
+    let clear_query = SearchQuery::new("gone", SearchOptions::default()).unwrap();
+    assert_eq!(clear_buf.replace_all_matches(&clear_query, ""), 2);
+    assert!(clear_buf.is_empty());
+    clear_buf.undo();
+    assert_eq!(clear_buf.to_string_content(), "gone\ngone");
+    clear_buf.redo();
+    assert!(clear_buf.is_empty());
+}

@@ -1,5 +1,5 @@
 use crate::buffer::{EditDelta, LineSource, SourceSnapshot, StructureIndex};
-use crate::markdown::{MarkdownScanner, ParsedLine};
+use crate::markdown::{MarkdownScanner, ParsedLine, ScanResourcePolicy};
 use std::{collections::VecDeque, ops::Range, sync::Arc};
 
 pub(crate) const WINDOW_ROWS: usize = 256;
@@ -146,7 +146,12 @@ impl EditWindowPatch {
                     && scan_target.len() <= max_len
                 {
                     let (scanned_range, mut scanned_rows) =
-                        MarkdownScanner::scan_snapshot_window(source, index, scan_target);
+                        MarkdownScanner::scan_snapshot_window_with_policy(
+                            source,
+                            index,
+                            scan_target,
+                            ScanResourcePolicy::UiDeferred,
+                        );
                     if scanned_range.start >= window.range.start
                         && scanned_range.end <= new_win_end
                         && scanned_range.start <= edit_start

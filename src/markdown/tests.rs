@@ -1433,6 +1433,47 @@ fn projected_block_unifies_containers_separators_and_normalization() {
         super::projection::adjacent_live_editable_line(&buffer, &index, SourceLine::new(11), false,),
         Some(SourceLine::new(9))
     );
+
+    // Table delimiter row jumps to header backwards and data row forwards.
+    let table = TextBuffer::from_str("| a | b |\n| --- | --- |\n| 1 | 2 |\n$$\n$$\nafter", None);
+    let table_index = StructureIndex::new(&table);
+    assert_eq!(
+        super::projection::adjacent_live_editable_line(
+            &table,
+            &table_index,
+            SourceLine::new(1),
+            false
+        ),
+        Some(SourceLine::new(0))
+    );
+    assert_eq!(
+        super::projection::adjacent_live_editable_line(
+            &table,
+            &table_index,
+            SourceLine::new(1),
+            true
+        ),
+        Some(SourceLine::new(2))
+    );
+    // Skipping across empty `$$\n$$` math block lands directly outside it.
+    assert_eq!(
+        super::projection::adjacent_live_editable_line(
+            &table,
+            &table_index,
+            SourceLine::new(2),
+            true
+        ),
+        Some(SourceLine::new(5))
+    );
+    assert_eq!(
+        super::projection::adjacent_live_editable_line(
+            &table,
+            &table_index,
+            SourceLine::new(5),
+            false
+        ),
+        Some(SourceLine::new(2))
+    );
 }
 
 #[test]

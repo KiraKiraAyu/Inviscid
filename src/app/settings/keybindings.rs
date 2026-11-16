@@ -68,12 +68,11 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Publishes an already-mutated keybinding config and drops any in-progress recording.
-    ///
-    /// The `AppConfig` keybinding setters persist on their own, so this path deliberately bypasses
-    /// [`update_config`] rather than writing `config.toml` a second time.
+    /// Publishes an already-mutated keybinding config, persists it asynchronously, and drops any
+    /// in-progress recording.
     pub(crate) fn commit_keybindings(&mut self, cfg: AppConfig, cx: &mut Context<Self>) {
         apply_configured_keys(&cfg, cx);
+        cfg.persist_preferences_async(cx.background_executor());
         cx.set_global(cfg);
         self.active_input = None;
         // Menus in other windows render shortcut hints straight from the keymap.

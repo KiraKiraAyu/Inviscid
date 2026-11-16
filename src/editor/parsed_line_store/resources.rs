@@ -2,7 +2,7 @@ use crate::markdown::{BlockKind, ParsedLine};
 use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Debug)]
-pub(super) struct Resource {
+pub(in crate::editor) struct Resource {
     pub range: Range<usize>,
     state: State,
 }

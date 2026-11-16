@@ -1,4 +1,7 @@
-use super::super::window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry};
+use super::super::{
+    parsed_line_store::resources::Resource,
+    window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry},
+};
 use crate::buffer::{
     LineSource, SourceLine, SourceSnapshot, StreamingBuffer, StructureIndex, TextBuffer,
 };
@@ -32,6 +35,7 @@ pub(crate) struct Publication {
 struct CachedWindow {
     window: WindowEntry,
     revision: u64,
+    resources: Vec<Resource>,
 }
 
 #[derive(Clone, Debug)]
@@ -121,19 +125,22 @@ impl DocumentSession {
         &self,
         buffer: &TextBuffer,
         incremental: Option<(&EditWindowPatch, VecDeque<WindowEntry>)>,
+        force: bool,
     ) {
         let mut state = self.state.lock();
-        if state
-            .target
-            .as_ref()
-            .is_some_and(|target| !target.from_disk && target.revision == buffer.revision())
+        if !force
+            && state
+                .target
+                .as_ref()
+                .is_some_and(|target| !target.from_disk && target.revision == buffer.revision())
         {
             return;
         }
-        let sequential = state
-            .target
-            .as_ref()
-            .is_some_and(|target| target.revision.checked_add(1) == Some(buffer.revision()));
+        let sequential = !force
+            && state
+                .target
+                .as_ref()
+                .is_some_and(|target| target.revision.checked_add(1) == Some(buffer.revision()));
         if sequential && let Some((patch, patched_windows)) = incremental {
             let mut windows: VecDeque<WindowEntry> = state
                 .windows
@@ -146,16 +153,20 @@ impl DocumentSession {
                 if !patched_windows.iter().any(|patched| {
                     window.range.start < patched.range.end && patched.range.start < window.range.end
                 }) {
+                    let resources = Resource::collect(window.range.start, &window.rows);
                     next_windows.push_back(CachedWindow {
                         window,
                         revision: buffer.revision(),
+                        resources,
                     });
                 }
             }
             for window in patched_windows {
+                let resources = Resource::collect(window.range.start, &window.rows);
                 next_windows.push_back(CachedWindow {
                     window,
                     revision: buffer.revision(),
+                    resources,
                 });
             }
             while next_windows.len() > MAX_WINDOWS {
@@ -242,7 +253,7 @@ impl DocumentSession {
         self.work.notify();
     }
 
-    fn prepare_pending(&self, path: &Path, force_refresh: bool) {
+    fn prepare_pending(&self, path: Option<&Path>, (images, syntax): (bool, bool)) {
         if self.cancelled.load(Ordering::Acquire) {
             return;
         }
@@ -252,14 +263,18 @@ impl DocumentSession {
                 return;
             };
             let range = clamp_request(&state.requested, target.source.line_count());
-            let already_covered = !force_refresh
-                && state.windows.iter().any(|cached| {
-                    cached.window.range.start <= range.start
-                        && cached.window.range.end >= range.end
-                        && (cached.revision == target.revision
-                            || (target.from_disk
-                                && cached.window.range.end < target.immutable_before))
-                });
+            let already_covered = state.windows.iter_mut().any(|cached| {
+                let covers = cached.window.range.start <= range.start
+                    && cached.window.range.end >= range.end
+                    && (cached.revision == target.revision
+                        || (target.from_disk && cached.window.range.end < target.immutable_before));
+                covers
+                    && (!(images || syntax)
+                        || !cached
+                            .resources
+                            .iter_mut()
+                            .any(|res| res.changed(images, syntax)))
+            });
             if already_covered {
                 if !target.from_disk && state.last_published_revision != Some(target.revision) {
                     let windows: VecDeque<PreparedWindow> = state
@@ -297,6 +312,7 @@ impl DocumentSession {
         if self.cancelled.load(Ordering::Acquire) {
             return;
         }
+        let resources = Resource::collect(scanned_range.start, &rows);
         let rows = Arc::new(rows);
         let mut state = self.state.lock();
         let Some(current) = state.target.clone() else {
@@ -316,6 +332,7 @@ impl DocumentSession {
                 rows,
             },
             revision: current.revision,
+            resources,
         });
         while state.windows.len() > MAX_WINDOWS {
             state.windows.pop_front();
@@ -397,24 +414,28 @@ impl DocumentSession {
         }
     }
 
-    pub async fn run_worker(self: Arc<Self>, path: PathBuf) {
+    fn wakeup_stream(&self) -> impl futures::Stream<Item = (bool, bool)> + Unpin {
         let work_events = self.work.subscribe();
         let resources = futures::stream::select(
-            crate::http::subscribe_image_updates().map(|_| true),
-            crate::syntax::subscribe_syntax_updates().map(|_| true),
+            crate::http::subscribe_image_updates().map(|_| (true, false)),
+            crate::syntax::subscribe_syntax_updates().map(|_| (false, true)),
         );
-        let mut wakeups = futures::stream::select(work_events.map(|_| false), resources);
-        let mut force_refresh = false;
+        futures::stream::select(work_events.map(|_| (false, false)), resources)
+    }
+
+    pub async fn run_worker(self: Arc<Self>, path: Option<PathBuf>) {
+        let mut wakeups = self.wakeup_stream();
+        let mut refresh = (false, false);
         loop {
             if self.cancelled.load(Ordering::Acquire) {
                 break;
             }
-            self.prepare_pending(&path, force_refresh);
+            self.prepare_pending(path.as_deref(), refresh);
             if self.cancelled.load(Ordering::Acquire) {
                 break;
             }
             match wakeups.next().await {
-                Some(refresh) => force_refresh = refresh,
+                Some(next) => refresh = next,
                 None => break,
             }
         }
@@ -428,12 +449,7 @@ impl DocumentSession {
         path: PathBuf,
     ) -> io::Result<()> {
         use futures::{FutureExt, channel::oneshot, select_biased};
-        let work_events = self.work.subscribe();
-        let resources = futures::stream::select(
-            crate::http::subscribe_image_updates().map(|_| true),
-            crate::syntax::subscribe_syntax_updates().map(|_| true),
-        );
-        let mut wakeups = futures::stream::select(work_events.map(|_| false), resources);
+        let mut wakeups = self.wakeup_stream();
 
         let (reader_tx, reader_rx) = oneshot::channel::<io::Result<()>>();
         let reader_session = self.clone();
@@ -449,19 +465,19 @@ impl DocumentSession {
             if self.cancelled.load(Ordering::Acquire) {
                 break;
             }
-            let force_refresh = select_biased! {
+            let refresh = select_biased! {
                 res = reader_rx => {
                     if let Some(handle) = reader_handle.take() {
                         let _ = handle.join();
                     }
                     match res {
-                        Ok(Ok(())) | Err(_) => false,
+                        Ok(Ok(())) | Err(_) => (false, false),
                         Ok(Err(error)) => return Err(error),
                     }
                 }
                 event = wakeups.next().fuse() => {
                     match event {
-                        Some(force_refresh) => force_refresh,
+                        Some(refresh) => refresh,
                         None => break,
                     }
                 }
@@ -469,7 +485,7 @@ impl DocumentSession {
             if self.cancelled.load(Ordering::Acquire) {
                 break;
             }
-            self.prepare_pending(&path, force_refresh);
+            self.prepare_pending(Some(path.as_path()), refresh);
         }
         if let Some(handle) = reader_handle.take() {
             let _ = handle.join();
@@ -910,7 +926,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         };
         buffer.record_single_line_edit(SourceLine::new(0), |line, _| *line = "# Edited".into());
-        session.submit_target(&buffer, None);
+        session.submit_target(&buffer, None, false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let edited_pub = loop {
             if let Some(Ok(pub_item)) = session.take()
@@ -1094,7 +1110,7 @@ mod tests {
             is_code_interior: false,
             code_close: None,
         };
-        session.submit_target(&buffer, Some((&patch, VecDeque::new())));
+        session.submit_target(&buffer, Some((&patch, VecDeque::new())), false);
         session.request(1025..1101);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let edited_pub = loop {
@@ -1134,7 +1150,16 @@ pub(crate) fn source_window(
                     is_fence_start: false,
                 },
                 Some(_) => BlockKind::CodeBlockContent,
-                None => BlockKind::Paragraph,
+                None => match index.math_range(SourceLine::new(line)) {
+                    Some((start, _)) if line == start.index() => {
+                        BlockKind::MathBlock { is_start: true }
+                    }
+                    Some((_, Some(end))) if line == end.index() => {
+                        BlockKind::MathBlock { is_start: false }
+                    }
+                    Some(_) => BlockKind::MathBlockContent,
+                    None => BlockKind::Paragraph,
+                },
             };
             let spans = vec![InlineSpan::plain(
                 raw_text.clone(),
@@ -1154,10 +1179,10 @@ pub(crate) fn source_window(
     }
 }
 
-fn prepare_resources(rows: &[ParsedLine], path: &std::path::Path) {
+fn prepare_resources(rows: &[ParsedLine], path: Option<&std::path::Path>) {
     for row in rows {
         if let BlockKind::Image { url, .. } = &row.kind {
-            crate::http::get_image_size(url, Some(path));
+            crate::http::get_image_size(url, path);
         }
     }
 }

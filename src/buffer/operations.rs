@@ -558,22 +558,15 @@ impl TextBuffer {
         query: &crate::search::SearchQuery,
         replacement: &str,
     ) -> usize {
-        let normalized_rep = replacement.replace("\r\n", "\n").replace('\r', "\n");
-        let text = self.to_string_normalized();
-        let (new_text, count) = query.replace_all(&text, &normalized_rep);
-        if count > 0 {
-            let mut lines: Vec<String> = new_text.split('\n').map(String::from).collect();
-            if lines.len() == 1 && lines[0].is_empty() {
-                lines.push(String::new());
-            }
-            self.replace_line_range(
-                SourceLine::new(0),
-                self.line_count(),
-                lines,
-                Selection::cursor(Position::default()),
-            );
+        if self.is_empty_doc {
+            return 0;
         }
-        count
+        let snapshot = self.replace_all_snapshot();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let Some(Some(prepared)) = snapshot.compute_replace(query, replacement, &cancel) else {
+            return 0;
+        };
+        self.apply_prepared_replace(prepared)
     }
 
     pub fn insert_newline(&mut self) {
@@ -658,5 +651,117 @@ impl TextBuffer {
         if self.selection.head != head {
             self.insert_text("");
         }
+    }
+}
+
+pub(crate) struct ReplaceAllSnapshot {
+    pub(in crate::buffer) rope: ropey::Rope,
+    pub(in crate::buffer) is_empty_doc: bool,
+    pub(in crate::buffer) line_count: usize,
+    pub(in crate::buffer) revision: u64,
+    pub(in crate::buffer) structure: Option<super::StructureIndex>,
+    pub(in crate::buffer) fingerprints: Option<super::fingerprint::LineFingerprints>,
+}
+
+pub(crate) struct PreparedReplaceAll {
+    pub(in crate::buffer) revision: u64,
+    pub(in crate::buffer) count: usize,
+    pub(in crate::buffer) start_line: SourceLine,
+    pub(in crate::buffer) old_count: usize,
+    pub(in crate::buffer) new_count: usize,
+    pub(in crate::buffer) old_empty_doc: bool,
+    pub(in crate::buffer) new_empty_doc: bool,
+    pub(in crate::buffer) old_document_line_count: usize,
+    pub(in crate::buffer) new_rope: ropey::Rope,
+    pub(in crate::buffer) old_lines: super::primitives::UndoLines,
+    pub(in crate::buffer) new_lines: super::primitives::UndoLines,
+    pub(in crate::buffer) removed_words: usize,
+    pub(in crate::buffer) inserted_words: usize,
+    pub(in crate::buffer) updated_structure: Option<super::StructureIndex>,
+    pub(in crate::buffer) updated_fingerprints: Option<super::fingerprint::LineFingerprints>,
+}
+
+impl ReplaceAllSnapshot {
+    /// Computes the replacement Rope, minimal undo line span, word delta, and cached indices
+    /// off the UI thread. Returns `None` if cancelled or `Some(None)` if zero matches.
+    pub(crate) fn compute_replace(
+        self,
+        query: &crate::search::SearchQuery,
+        replacement: &str,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<Option<PreparedReplaceAll>> {
+        if self.is_empty_doc {
+            return Some(None);
+        }
+        let computed = match crate::search::compute_rope_replace_all(
+            &self.rope,
+            query,
+            replacement,
+            cancel,
+        )? {
+            Some(computed) => computed,
+            None => return Some(None),
+        };
+
+        let mut new_rope = computed.new_rope;
+        let new_empty_doc = new_rope.len_chars() == 0
+            || (new_rope.len_lines() <= 2 && new_rope.bytes().all(|b| b == b'\n'));
+
+        let (start_line, old_count, new_count) = if new_empty_doc {
+            new_rope = ropey::Rope::new();
+            (0, self.line_count, 2)
+        } else {
+            let start_line = self.rope.byte_to_line(computed.first_match_byte);
+            let old_end_line = self.rope.byte_to_line(computed.last_match_end_byte);
+            let old_count = old_end_line + 1 - start_line;
+            let tail_lines = self.line_count - (old_end_line + 1);
+            let new_count = new_rope.len_lines() - tail_lines - start_line;
+            (start_line, old_count, new_count)
+        };
+
+        let old_lines =
+            super::primitives::UndoLines::capture(&self.rope, start_line, old_count, false);
+        let new_lines =
+            super::primitives::UndoLines::capture(&new_rope, start_line, new_count, new_empty_doc);
+        let removed_words = old_lines.word_count();
+        let inserted_words = new_lines.word_count();
+
+        let updated_structure = if new_empty_doc {
+            self.structure
+                .map(|_| super::StructureIndex::new(&[String::new(), String::new()]))
+        } else {
+            self.structure.map(|mut structure| {
+                let source = super::SourceSnapshot::from_rope(new_rope.clone());
+                structure.splice(
+                    start_line..start_line + old_count,
+                    &source,
+                    start_line..start_line + new_count,
+                );
+                structure
+            })
+        };
+
+        let updated_fingerprints = self.fingerprints.map(|mut fp| {
+            fp.update(&new_rope, start_line, old_count);
+            fp
+        });
+
+        Some(Some(PreparedReplaceAll {
+            revision: self.revision,
+            count: computed.count,
+            start_line: SourceLine::new(start_line),
+            old_count,
+            new_count,
+            old_empty_doc: self.is_empty_doc,
+            new_empty_doc,
+            old_document_line_count: self.line_count,
+            new_rope,
+            old_lines,
+            new_lines,
+            removed_words,
+            inserted_words,
+            updated_structure,
+            updated_fingerprints,
+        }))
     }
 }

@@ -27,6 +27,211 @@ pub fn find_matches(text: &str, query: &SearchQuery, max_matches: usize) -> Vec<
         .collect()
 }
 
+pub struct ComputedRopeReplace {
+    pub new_rope: Rope,
+    pub count: usize,
+    pub first_match_byte: usize,
+    pub last_match_end_byte: usize,
+}
+
+struct RopeReplaceBuilder<'a> {
+    rope: &'a Rope,
+    out: Rope,
+    staging: String,
+    cursor_byte: usize,
+    first_match_byte: usize,
+    last_match_end_byte: usize,
+    count: usize,
+}
+
+impl<'a> RopeReplaceBuilder<'a> {
+    fn new(rope: &'a Rope) -> Self {
+        Self {
+            rope,
+            out: Rope::new(),
+            staging: String::new(),
+            cursor_byte: 0,
+            first_match_byte: usize::MAX,
+            last_match_end_byte: 0,
+            count: 0,
+        }
+    }
+
+    fn flush_staging(&mut self) {
+        if !self.staging.is_empty() {
+            self.out.insert(self.out.len_chars(), &self.staging);
+            self.staging.clear();
+        }
+    }
+
+    fn push_unchanged(&mut self, start_byte: usize, end_byte: usize) {
+        if end_byte <= start_byte {
+            return;
+        }
+        let sc = self.rope.byte_to_char(start_byte);
+        let ec = self.rope.byte_to_char(end_byte);
+        if end_byte - start_byte >= 2048 {
+            self.flush_staging();
+            self.out.append(Rope::from(self.rope.slice(sc..ec)));
+        } else {
+            for chunk in self.rope.slice(sc..ec).chunks() {
+                self.staging.push_str(chunk);
+            }
+            if self.staging.len() >= 16_384 {
+                self.flush_staging();
+            }
+        }
+    }
+
+    fn replace(&mut self, start_byte: usize, end_byte: usize, replacement: &str) {
+        if self.count == 0 {
+            self.first_match_byte = start_byte;
+        }
+        self.last_match_end_byte = end_byte;
+        self.count += 1;
+        self.push_unchanged(self.cursor_byte, start_byte);
+        self.staging.push_str(replacement);
+        if self.staging.len() >= 16_384 {
+            self.flush_staging();
+        }
+        self.cursor_byte = end_byte;
+    }
+
+    fn finish(mut self) -> Option<ComputedRopeReplace> {
+        if self.count == 0 {
+            return None;
+        }
+        self.push_unchanged(self.cursor_byte, self.rope.len_bytes());
+        self.flush_staging();
+        Some(ComputedRopeReplace {
+            new_rope: self.out,
+            count: self.count,
+            first_match_byte: self.first_match_byte,
+            last_match_end_byte: self.last_match_end_byte,
+        })
+    }
+}
+
+fn scan_literal_matches_in_rope(
+    rope: &Rope,
+    query: &SearchQuery,
+    max_matches: usize,
+    cancel: &AtomicBool,
+    mut on_match: impl FnMut(usize, usize),
+) -> bool {
+    if cancel.load(Ordering::Relaxed) {
+        return false;
+    }
+    if max_matches == 0 {
+        return true;
+    }
+    // Unicode simple case folding preserves the number of scalars. Each literal
+    // scalar can therefore consume at most four bytes, plus one lookahead scalar
+    // for a whole-word boundary. Keep one preceding scalar for the left boundary.
+    let lookahead = query
+        .raw()
+        .chars()
+        .count()
+        .saturating_mul(4)
+        .saturating_add(4);
+    let mut window = String::new();
+    let mut base = 0;
+    let mut next_start = 0;
+    let mut count = 0usize;
+    for chunk in rope.chunks() {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        window.push_str(chunk);
+        let is_last = base + window.len() == rope.len_bytes();
+        let safe_end = if is_last {
+            window.len()
+        } else {
+            window.floor_char_boundary(window.len().saturating_sub(lookahead))
+        };
+        while next_start - base < safe_end {
+            if cancel.load(Ordering::Relaxed) {
+                return false;
+            }
+            let Some(found) = query.regex().find_at(&window, next_start - base) else {
+                break;
+            };
+            if found.start() >= safe_end {
+                break;
+            }
+            if found.is_empty() {
+                next_start = base + found.end() + 1;
+                continue;
+            }
+            let start = base + found.start();
+            let end = base + found.end();
+            on_match(start, end);
+            count += 1;
+            if count == max_matches {
+                return !cancel.load(Ordering::Relaxed);
+            }
+            next_start = end;
+        }
+        next_start = next_start.max(base + safe_end);
+        let consumed = next_start - base;
+        let retain_from = window[..consumed]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(i, _)| i);
+        window.drain(..retain_from);
+        base += retain_from;
+    }
+    !cancel.load(Ordering::Relaxed)
+}
+
+fn collect_rope_text_cancelable(rope: &Rope, cancel: &AtomicBool) -> Option<String> {
+    let mut text = String::with_capacity(rope.len_bytes());
+    for chunk in rope.chunks() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        text.push_str(chunk);
+    }
+    Some(text)
+}
+
+/// Computes a Rope replacement over an immutable snapshot without materializing a full `Vec<String>`.
+/// Returns `None` if cancelled; otherwise `Some(None)` for 0 matches or `Some(Some(_))`.
+pub fn compute_rope_replace_all(
+    rope: &Rope,
+    query: &SearchQuery,
+    replacement: &str,
+    cancel: &AtomicBool,
+) -> Option<Option<ComputedRopeReplace>> {
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    let normalized_rep = replacement.replace("\r\n", "\n").replace('\r', "\n");
+    let mut builder = RopeReplaceBuilder::new(rope);
+    if query.options().use_regex {
+        let text = collect_rope_text_cancelable(rope, cancel)?;
+        let mut expanded = String::new();
+        for caps in query.regex().captures_iter(&text) {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            let m = caps.get(0).unwrap();
+            if m.is_empty() {
+                continue;
+            }
+            expanded.clear();
+            caps.expand(&normalized_rep, &mut expanded);
+            builder.replace(m.start(), m.end(), &expanded);
+        }
+    } else if !scan_literal_matches_in_rope(rope, query, usize::MAX, cancel, |start, end| {
+        builder.replace(start, end, &normalized_rep);
+    }) {
+        return None;
+    }
+
+    (!cancel.load(Ordering::Relaxed)).then(|| builder.finish())
+}
+
 /// Searches an immutable snapshot. Cancellation discards the whole result.
 /// Literal queries retain only a bounded window; regex queries need contiguous text.
 pub fn find_matches_in_rope(
@@ -42,13 +247,7 @@ pub fn find_matches_in_rope(
         return Some(Vec::new());
     }
     if query.options().use_regex {
-        let mut text = String::with_capacity(rope.len_bytes());
-        for chunk in rope.chunks() {
-            if cancel.load(Ordering::Relaxed) {
-                return None;
-            }
-            text.push_str(chunk);
-        }
+        let text = collect_rope_text_cancelable(rope, cancel)?;
         let mut cursor = PositionCursor::default();
         let mut matches = Vec::new();
         for range in find_byte_ranges(&text, query).take(max_matches) {
@@ -63,62 +262,17 @@ pub fn find_matches_in_rope(
         return (!cancel.load(Ordering::Relaxed)).then_some(matches);
     }
 
-    // Unicode simple case folding preserves the number of scalars. Each literal
-    // scalar can therefore consume at most four bytes, plus one lookahead scalar
-    // for a whole-word boundary. Keep one preceding scalar for the left boundary.
-    let lookahead = query
-        .raw()
-        .chars()
-        .count()
-        .saturating_mul(4)
-        .saturating_add(4);
-    let mut window = String::new();
-    let mut base = 0;
-    let mut next_start = 0;
     let mut matches = Vec::new();
     let mut positions = RopePositionCursor::new(rope);
-    for chunk in rope.chunks() {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        window.push_str(chunk);
-        let is_last = base + window.len() == rope.len_bytes();
-        let safe_end = if is_last {
-            window.len()
-        } else {
-            window.floor_char_boundary(window.len().saturating_sub(lookahead))
-        };
-        while next_start - base < safe_end {
-            if cancel.load(Ordering::Relaxed) {
-                return None;
-            }
-            let Some(found) = query.regex().find_at(&window, next_start - base) else {
-                break;
-            };
-            if found.start() >= safe_end {
-                break;
-            }
-            let start = base + found.start();
-            let end = base + found.end();
-            matches.push(SearchMatch::new(
-                positions.advance_to(start),
-                positions.advance_to(end),
-            ));
-            if matches.len() == max_matches {
-                return (!cancel.load(Ordering::Relaxed)).then_some(matches);
-            }
-            next_start = end;
-        }
-        next_start = next_start.max(base + safe_end);
-        let consumed = next_start - base;
-        let retain_from = window[..consumed]
-            .char_indices()
-            .next_back()
-            .map_or(0, |(i, _)| i);
-        window.drain(..retain_from);
-        base += retain_from;
+    if !scan_literal_matches_in_rope(rope, query, max_matches, cancel, |start, end| {
+        matches.push(SearchMatch::new(
+            positions.advance_to(start),
+            positions.advance_to(end),
+        ));
+    }) {
+        return None;
     }
-    (!cancel.load(Ordering::Relaxed)).then_some(matches)
+    Some(matches)
 }
 
 struct RopePositionCursor<'a> {

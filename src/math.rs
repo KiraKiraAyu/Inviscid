@@ -139,6 +139,12 @@ fn formula_key(tex: &str, is_display: bool) -> Option<FormulaKey> {
     Some((tex.to_owned(), is_display))
 }
 
+pub(crate) fn get_cached_latex(tex: &str, is_display: bool) -> Option<MathSvg> {
+    let key = formula_key(tex, is_display)?;
+    let cache = RENDER_CACHE.get()?;
+    cache.lock().get(&key).flatten()
+}
+
 pub(crate) fn prepare_latex(tex: &str, is_display: bool) -> Option<MathSvg> {
     let key = formula_key(tex, is_display)?;
     let cache = RENDER_CACHE.get_or_init(Default::default);

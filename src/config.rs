@@ -1,7 +1,55 @@
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
+
+struct PathPersistSlot {
+    latest_seq: AtomicU64,
+    write_lock: Mutex<()>,
+}
+
+fn persist_slot_for(path: &PathBuf) -> Arc<PathPersistSlot> {
+    static SLOTS: OnceLock<Mutex<HashMap<PathBuf, Arc<PathPersistSlot>>>> = OnceLock::new();
+    let mut slots = SLOTS.get_or_init(Default::default).lock();
+    slots
+        .entry(path.clone())
+        .or_insert_with(|| {
+            Arc::new(PathPersistSlot {
+                latest_seq: AtomicU64::new(0),
+                write_lock: Mutex::new(()),
+            })
+        })
+        .clone()
+}
+
+fn spawn_atomic_toml_write<T: Serialize + Send + 'static>(
+    path: Option<PathBuf>,
+    value: T,
+    executor: &gpui::BackgroundExecutor,
+) {
+    let Some(path) = path else {
+        return;
+    };
+    let slot = persist_slot_for(&path);
+    let seq = slot.latest_seq.fetch_add(1, Ordering::AcqRel) + 1;
+    executor
+        .spawn(async move {
+            let _guard = slot.write_lock.lock();
+            if slot.latest_seq.load(Ordering::Acquire) != seq {
+                return;
+            }
+            if let Ok(content) = toml::to_string_pretty(&value) {
+                let _ = crate::fs::atomic_write(&path, &content);
+            }
+        })
+        .detach();
+}
 
 use crate::editor::RenderMode;
 
@@ -252,6 +300,15 @@ impl AppConfig {
         }
     }
 
+    /// Serializes and persists user preferences on a background thread in latest-snapshot order.
+    pub fn persist_preferences_async(&self, executor: &gpui::BackgroundExecutor) {
+        spawn_atomic_toml_write(
+            self.config_file_path.clone(),
+            self.preferences.clone(),
+            executor,
+        );
+    }
+
     pub fn get_keybinding(&self, action: &str, default_key: &str) -> String {
         self.custom_keybindings
             .get(action)
@@ -262,17 +319,14 @@ impl AppConfig {
     pub fn set_keybinding(&mut self, action: impl Into<String>, keystroke: impl Into<String>) {
         self.custom_keybindings
             .insert(action.into(), keystroke.into());
-        self.save_preferences();
     }
 
     pub fn reset_keybinding(&mut self, action: &str) {
         self.custom_keybindings.remove(action);
-        self.save_preferences();
     }
 
     pub fn reset_all_keybindings(&mut self) {
         self.custom_keybindings.clear();
-        self.save_preferences();
     }
 
     pub fn clear_recent_workspaces(&mut self) {
@@ -286,6 +340,11 @@ impl AppConfig {
                 let _ = crate::fs::atomic_write(path, &content);
             }
         }
+    }
+
+    /// Serializes and persists session state on a background thread in latest-snapshot order.
+    pub fn persist_session_async(&self, executor: &gpui::BackgroundExecutor) {
+        spawn_atomic_toml_write(self.state_file_path.clone(), self.session.clone(), executor);
     }
 
     /// Records the current workspace state and adds it to recent workspaces in memory.
@@ -631,5 +690,28 @@ mod tests {
         fs::write(&config_path, "grammar_base_url = \"\"\n").unwrap();
         let offline_config = AppConfig::load_from_paths(config_path.clone(), state_path);
         assert_eq!(offline_config.grammar_base_url, "");
+    }
+
+    #[gpui::test]
+    fn test_async_persist_writes_latest_preferences_snapshot(cx: &mut gpui::TestAppContext) {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        let state_path = temp_dir.path().join("state.toml");
+        let mut config = AppConfig {
+            config_file_path: Some(config_path.clone()),
+            state_file_path: Some(state_path),
+            ..AppConfig::default()
+        };
+
+        cx.update(|cx| {
+            for size in [14.0, 16.0, 18.0, 21.0] {
+                config.editor_font_size = size;
+                config.persist_preferences_async(cx.background_executor());
+            }
+        });
+        cx.run_until_parked();
+
+        let loaded = AppConfig::load_from_paths(config_path, temp_dir.path().join("state.toml"));
+        assert_eq!(loaded.editor_font_size, 21.0);
     }
 }

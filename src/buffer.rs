@@ -741,7 +741,102 @@ impl TextBuffer {
         self.finish_content_metrics(start_line, replaced_lines, inserted_lines);
     }
 
-    fn apply_history_content(
+    pub(crate) fn replace_all_snapshot(&self) -> operations::ReplaceAllSnapshot {
+        let structure = self
+            .line_index_cache
+            .borrow()
+            .as_ref()
+            .filter(|cached| cached.revision == self.revision)
+            .map(|cached| cached.structure_snapshot());
+        let fingerprints = match &self.line_fingerprints {
+            fingerprint::FingerprintState::Ready(fp) => Some(fp.clone()),
+            fingerprint::FingerprintState::Pending { .. } => None,
+        };
+        operations::ReplaceAllSnapshot {
+            rope: self.rope.clone(),
+            is_empty_doc: self.is_empty_doc,
+            line_count: self.line_count(),
+            revision: self.revision,
+            structure,
+            fingerprints,
+        }
+    }
+
+    pub(crate) fn apply_prepared_replace(
+        &mut self,
+        prepared: operations::PreparedReplaceAll,
+    ) -> usize {
+        if self.revision != prepared.revision || prepared.count == 0 {
+            return 0;
+        }
+        self.column_goal = None;
+        let cursor_before = self.selection;
+        let version_before = self.version;
+        let selection_after = Selection::cursor(Position::default());
+        let content_changed =
+            prepared.old_lines != prepared.new_lines || prepared.new_empty_doc != self.is_empty_doc;
+        if !content_changed && cursor_before == selection_after {
+            return prepared.count;
+        }
+
+        if content_changed {
+            self.version = self.version.wrapping_add(1);
+            self.rope = prepared.new_rope;
+            self.is_empty_doc = prepared.new_empty_doc;
+            if let Some(fp) = prepared.updated_fingerprints {
+                if matches!(
+                    self.line_fingerprints,
+                    fingerprint::FingerprintState::Ready(_)
+                ) {
+                    self.line_fingerprints = fingerprint::FingerprintState::Ready(fp);
+                }
+            } else if let fingerprint::FingerprintState::Ready(fingerprints) =
+                &mut self.line_fingerprints
+            {
+                fingerprints.update(&self.rope, prepared.start_line.index(), prepared.old_count);
+            }
+            self.record_content_delta(
+                prepared.start_line,
+                prepared.old_count,
+                prepared.new_count,
+                prepared.removed_words,
+                prepared.inserted_words,
+            );
+            if let Some(structure) = prepared.updated_structure {
+                *self.line_index_cache.borrow_mut() = Some(movement::LineIndex::from_structure(
+                    self.revision,
+                    structure,
+                ));
+            }
+        }
+
+        self.selection = selection_after;
+        let step = UndoStep {
+            start_line: prepared.start_line,
+            old_lines: if content_changed {
+                prepared.old_lines
+            } else {
+                UndoLines::capture(&self.rope, 0, 0, false)
+            },
+            new_lines: if content_changed {
+                prepared.new_lines
+            } else {
+                UndoLines::capture(&self.rope, 0, 0, false)
+            },
+            old_empty_doc: prepared.old_empty_doc,
+            new_empty_doc: self.is_empty_doc,
+            old_document_line_count: prepared.old_document_line_count,
+            new_document_line_count: self.line_count(),
+            cursor_before,
+            cursor_after: self.selection,
+            version_before,
+            version_after: self.version,
+        };
+        self.push_undo_step(step, false);
+        prepared.count
+    }
+
+    pub(in crate::buffer) fn apply_history_content(
         &mut self,
         start_line: SourceLine,
         replaced_lines: &UndoLines,
@@ -937,17 +1032,33 @@ impl TextBuffer {
         removed_words: usize,
         inserted_words: usize,
     ) {
-        self.total_word_count = self.total_word_count - removed_words + inserted_words;
         if let fingerprint::FingerprintState::Ready(fingerprints) = &mut self.line_fingerprints {
             fingerprints.update(&self.rope, start_line.index(), old_line_count);
         }
+        self.record_content_delta(
+            start_line,
+            old_line_count,
+            new_line_count,
+            removed_words,
+            inserted_words,
+        );
+    }
+
+    fn record_content_delta(
+        &mut self,
+        start_line: SourceLine,
+        old_line_count: usize,
+        new_line_count: usize,
+        removed_words: usize,
+        inserted_words: usize,
+    ) {
+        self.total_word_count = self.total_word_count - removed_words + inserted_words;
         self.revision = self.revision.wrapping_add(1);
         self.last_edit_delta = Some(EditDelta {
             start_line,
             old_line_count,
             new_line_count,
         });
-
         self.update_empty_doc_state();
     }
 

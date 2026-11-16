@@ -163,15 +163,18 @@ impl Default for SyntaxRegistry {
 
 impl SyntaxRegistry {
     pub fn new() -> Self {
-        let default_url = if cfg!(test) {
-            String::new()
+        let (default_url, cache_dir) = if cfg!(test) {
+            (String::new(), None)
         } else {
-            GrammarCdnPreset::DEFAULT.url().to_string()
+            (
+                GrammarCdnPreset::DEFAULT.url().to_string(),
+                AppConfig::grammars_cache_dir(),
+            )
         };
         Self {
             entries: HashMap::new(),
             base_url: default_url,
-            cache_dir: AppConfig::grammars_cache_dir(),
+            cache_dir,
         }
     }
 
@@ -186,6 +189,10 @@ impl SyntaxRegistry {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    pub fn cache_dir(&self) -> Option<&Path> {
+        self.cache_dir.as_deref()
     }
 
     pub fn set_cache_dir(&mut self, cache_dir: Option<PathBuf>) {
@@ -218,6 +225,14 @@ impl SyntaxRegistry {
             canonical_id.to_string(),
             GrammarState::Failed(reason.into()),
         );
+    }
+
+    /// Transitions `canonical_id` to `Failed` only if it is still `Loading`, so a stale
+    /// background failure cannot overwrite a grammar that was synchronously registered or loaded.
+    pub fn mark_failed_if_loading(&mut self, canonical_id: &str, reason: impl Into<String>) {
+        if matches!(self.entries.get(canonical_id), Some(GrammarState::Loading)) {
+            self.mark_failed(canonical_id, reason);
+        }
     }
 
     /// Synchronously compiles and registers a `.wasm` grammar in this registry.
@@ -547,7 +562,8 @@ pub fn highlight_code_block(lang_hint: &str, lines: &[String]) -> Vec<Vec<Inline
         return highlight_lines_with_grammar(&loaded, lines);
     }
 
-    let cache_dir = read_registry(|reg| reg.cache_dir.clone());
+    let (cache_dir, has_remote_url) =
+        read_registry(|reg| (reg.cache_dir.clone(), !reg.base_url().is_empty()));
     let is_local = if let Some(ref cache_root) = cache_dir {
         find_grammar_in_dirs_by_id(&canonical_id, &[cache_root.as_path()]).is_some()
     } else {
@@ -565,6 +581,12 @@ pub fn highlight_code_block(lang_hint: &str, lines: &[String]) -> Vec<Vec<Inline
         if should_spawn {
             spawn_local_grammar_loader(canonical_id);
         }
+    } else if !has_remote_url {
+        write_registry(|reg| {
+            if reg.get_state(&canonical_id).is_none() {
+                reg.mark_failed(&canonical_id, "Remote downloading is disabled");
+            }
+        });
     } else {
         let should_schedule = write_registry(|reg| {
             if reg.get_state(&canonical_id).is_some() {
@@ -607,7 +629,9 @@ fn spawn_local_grammar_loader(canonical_id: String) {
                         "Warning: Failed to load local grammar '{}': {:#}",
                         canonical_id, err
                     );
-                    write_registry(|reg| reg.mark_failed(&canonical_id, format!("{err:#}")));
+                    write_registry(|reg| {
+                        reg.mark_failed_if_loading(&canonical_id, format!("{err:#}"))
+                    });
                 }
             }
         }
@@ -753,11 +777,16 @@ impl DebouncedGrammarLoader {
 }
 
 fn dispatch_remote_loader(canonical_id: String, cancel_token: Arc<AtomicBool>) {
+    if read_registry(|reg| reg.get_loaded(&canonical_id).is_some()) {
+        return;
+    }
     let (base_url, cache_dir) =
         read_registry(|reg| (reg.base_url().to_string(), reg.cache_dir.clone()));
 
     if base_url.is_empty() {
-        write_registry(|reg| reg.mark_failed(&canonical_id, "Remote downloading is disabled"));
+        write_registry(|reg| {
+            reg.mark_failed_if_loading(&canonical_id, "Remote downloading is disabled")
+        });
         return;
     }
 
@@ -766,7 +795,9 @@ fn dispatch_remote_loader(canonical_id: String, cancel_token: Arc<AtomicBool>) {
 
     let ct = cancel_token.clone();
     pool.spawn_front_cancelable(cancel_token.clone(), move || {
-        if ct.load(Ordering::Relaxed) {
+        if ct.load(Ordering::Relaxed)
+            || read_registry(|reg| reg.get_loaded(&canonical_id).is_some())
+        {
             return;
         }
 
@@ -812,7 +843,7 @@ fn dispatch_remote_loader(canonical_id: String, cancel_token: Arc<AtomicBool>) {
                         "Warning: Failed to load Tree-sitter grammar '{canonical_id}': {err_msg}"
                     );
                 }
-                write_registry(|reg| reg.mark_failed(&canonical_id, err_msg));
+                write_registry(|reg| reg.mark_failed_if_loading(&canonical_id, err_msg));
             }
         }
     });

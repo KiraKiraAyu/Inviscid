@@ -209,9 +209,8 @@ impl Workspace {
             );
         });
         let tab_bar_sub = Self::subscribe_tab_bar(&tab_bar, cx);
-        let project_panel = cx.new(|cx| {
-            crate::app::project_panel::ProjectPanel::new(root_dir.clone(), cx.focus_handle())
-        });
+        let project_panel =
+            cx.new(|cx| crate::app::project_panel::ProjectPanel::new(root_dir.clone(), cx));
         let initial_active_file = file_path.clone();
         project_panel.update(cx, |p, cx| {
             p.set_active_file(initial_active_file, cx);
@@ -321,9 +320,8 @@ impl Workspace {
             );
         });
         let tab_bar_sub = Self::subscribe_tab_bar(&tab_bar, cx);
-        let project_panel = cx.new(|cx| {
-            crate::app::project_panel::ProjectPanel::new(ws.root_dir.clone(), cx.focus_handle())
-        });
+        let project_panel =
+            cx.new(|cx| crate::app::project_panel::ProjectPanel::new(ws.root_dir.clone(), cx));
         project_panel.update(cx, |p, cx| {
             p.set_active_file(ws.active_file.clone(), cx);
             p.prewarm_filter_index(cx);

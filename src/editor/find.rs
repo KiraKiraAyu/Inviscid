@@ -17,6 +17,7 @@ const MAX_FIND_MATCHES: usize = 10_000;
 pub(crate) struct FindSearch {
     generation: u64,
     pending: Option<PendingFindSearch>,
+    pending_replace: Option<PendingFindReplace>,
     actions: VecDeque<FindAction>,
     reveal: bool,
 }
@@ -25,6 +26,7 @@ impl FindSearch {
     fn cancel(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.pending = None;
+        self.pending_replace = None;
     }
 }
 
@@ -35,6 +37,17 @@ struct PendingFindSearch {
 }
 
 impl Drop for PendingFindSearch {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+struct PendingFindReplace {
+    cancel: Arc<AtomicBool>,
+    _task: Task<()>,
+}
+
+impl Drop for PendingFindReplace {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -404,17 +417,54 @@ impl Editor {
         let Some(query) = self.find_state.query().cloned() else {
             return;
         };
-        let count = self.buffer.replace_all_matches(&query, replacement);
-        if count > 0 {
-            self.find_search.reveal = true;
-            self.refresh_find_matches(cx);
-            if !self.find_state.is_stale(self.buffer.revision()) {
-                self.find_search.reveal = false;
-                self.reveal_current_match(cx);
-            }
-            self.sync_find_bar(cx);
-            cx.notify();
+        if self.buffer.is_empty() {
+            return;
         }
+
+        self.find_search.pending_replace = None;
+        let revision = self.buffer.revision();
+        let generation = self.find_search.generation;
+        let snapshot = self.buffer.replace_all_snapshot();
+        let replacement = replacement.to_owned();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { snapshot.compute_replace(&query, &replacement, &worker_cancel) });
+        let task = cx.spawn(async move |this, cx| {
+            let Some(outcome) = work.await else {
+                return;
+            };
+            let _ = this.update(cx, |ed, cx| {
+                if ed.find_search.generation != generation {
+                    return;
+                }
+                ed.find_search.pending_replace = None;
+                if ed.buffer.revision() != revision {
+                    ed.clear_pending_find_actions();
+                    ed.refresh_find_matches(cx);
+                    return;
+                }
+                let Some(prepared) = outcome else {
+                    return;
+                };
+                let count = ed.buffer.apply_prepared_replace(prepared);
+                if count > 0 {
+                    ed.find_search.reveal = true;
+                    ed.refresh_find_matches(cx);
+                    if !ed.find_state.is_stale(ed.buffer.revision()) {
+                        ed.find_search.reveal = false;
+                        ed.reveal_current_match(cx);
+                    }
+                    ed.sync_find_bar(cx);
+                    cx.notify();
+                }
+            });
+        });
+        self.find_search.pending_replace = Some(PendingFindReplace {
+            cancel,
+            _task: task,
+        });
     }
 
     fn step_match(

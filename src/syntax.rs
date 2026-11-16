@@ -310,4 +310,32 @@ mod tests {
                 .load(Ordering::Relaxed)
         );
     }
+
+    #[test]
+    fn test_syntax_registry_disables_host_cache_and_cdn_by_default_in_tests() {
+        let mut registry = SyntaxRegistry::new();
+        assert!(registry.base_url().is_empty());
+        assert!(registry.cache_dir().is_none());
+        let custom_dir = std::env::temp_dir().join("inviscid_custom_grammar_cache_dir");
+        registry.set_cache_dir(Some(custom_dir.clone()));
+        assert_eq!(registry.cache_dir(), Some(custom_dir.as_path()));
+    }
+
+    #[test]
+    fn test_mark_failed_if_loading_preserves_loaded_grammar() {
+        let mut registry = SyntaxRegistry::new();
+        registry.mark_loading("json");
+        registry
+            .register_wasm_bytes("json", JSON_GRAMMAR_WASM, None)
+            .unwrap();
+        registry.mark_failed_if_loading("json", "stale remote timeout");
+        assert!(registry.get_loaded("json").is_some());
+
+        registry.mark_loading("missing_lang");
+        registry.mark_failed_if_loading("missing_lang", "not found");
+        assert!(matches!(
+            registry.get_state("missing_lang"),
+            Some(GrammarState::Failed(_))
+        ));
+    }
 }

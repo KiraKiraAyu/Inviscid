@@ -21,7 +21,7 @@ fn char_kind(c: char) -> CharKind {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LineIndex {
-    revision: u64,
+    pub(in crate::buffer) revision: u64,
     structure: super::structure_index::StructureIndex,
 }
 
@@ -32,6 +32,16 @@ impl LineIndex {
 
     pub(crate) fn structure(&self) -> &super::StructureIndex {
         &self.structure
+    }
+
+    pub(in crate::buffer) fn from_structure(
+        revision: u64,
+        structure: super::StructureIndex,
+    ) -> Self {
+        Self {
+            revision,
+            structure,
+        }
     }
 
     fn build(buffer: &TextBuffer) -> Self {

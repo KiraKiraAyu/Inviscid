@@ -240,12 +240,17 @@ pub(crate) fn is_live_line_editable(
     index: &StructureIndex,
     line: SourceLine,
 ) -> bool {
-    if line.index() >= lines.line_count() {
-        return false;
-    }
     let Some(block) = block_at(lines, index, line) else {
         return false;
     };
+    is_block_line_editable(lines, &block, line)
+}
+
+fn is_block_line_editable(
+    lines: &(impl LineSource + ?Sized),
+    block: &ProjectedBlock,
+    line: SourceLine,
+) -> bool {
     if matches!(block.kind, ProjectedBlockKind::Paragraph) {
         let raw = lines.source_line(line);
         if is_table_delimiter_row(&raw) {
@@ -255,7 +260,8 @@ pub(crate) fn is_live_line_editable(
     block.is_editable_line(line)
 }
 
-/// Finds the nearest Live Preview editable line strictly before or after `from_line`.
+/// Finds the nearest Live Preview editable line strictly before or after `from_line`,
+/// jumping across multi-line block boundaries via `StructureIndex`.
 pub(crate) fn adjacent_live_editable_line(
     lines: &(impl LineSource + ?Sized),
     index: &StructureIndex,
@@ -263,16 +269,53 @@ pub(crate) fn adjacent_live_editable_line(
     forward: bool,
 ) -> Option<SourceLine> {
     let count = lines.line_count();
-    if forward {
-        ((from_line.index() + 1)..count)
-            .map(SourceLine::new)
-            .find(|&line| is_live_line_editable(lines, index, line))
+    let mut candidate = if forward {
+        (from_line.index() + 1 < count).then(|| from_line + 1)
     } else {
-        (0..from_line.index().min(count))
-            .rev()
+        from_line
+            .index()
+            .min(count)
+            .checked_sub(1)
             .map(SourceLine::new)
-            .find(|&line| is_live_line_editable(lines, index, line))
+    };
+
+    while let Some(line) = candidate {
+        let block = block_at(lines, index, line)?;
+        if is_block_line_editable(lines, &block, line) {
+            return Some(line);
+        }
+
+        candidate = if matches!(block.kind, ProjectedBlockKind::Table { .. }) {
+            if forward {
+                (line.index() + 1 < count).then(|| line + 1)
+            } else {
+                line.index().checked_sub(1).map(SourceLine::new)
+            }
+        } else if forward {
+            if line < block.editable_lines.start
+                && block.editable_lines.start < block.editable_lines.end
+            {
+                Some(block.editable_lines.start)
+            } else {
+                let next = block.source_range.end.index().max(line.index() + 1);
+                (next < count).then(|| SourceLine::new(next))
+            }
+        } else if line >= block.editable_lines.end
+            && block.editable_lines.start < block.editable_lines.end
+        {
+            Some(block.editable_lines.end - 1)
+        } else {
+            block
+                .source_range
+                .start
+                .index()
+                .min(line.index())
+                .checked_sub(1)
+                .map(SourceLine::new)
+        };
     }
+
+    None
 }
 
 /// Normalizes a cursor position into the closest valid Live Preview editable coordinate.

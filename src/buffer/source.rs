@@ -119,6 +119,15 @@ pub struct SourceSnapshot {
 }
 
 impl SourceSnapshot {
+    pub(in crate::buffer) fn from_rope(rope: Rope) -> Self {
+        let lines = rope.len_lines();
+        Self {
+            rope,
+            lines,
+            structure: None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn replace_rows(&mut self, changes: &[(usize, String)]) {
         while self.rope.len_lines() < self.lines {

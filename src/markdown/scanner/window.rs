@@ -1,4 +1,4 @@
-use super::{MarkdownScanner, ParsedLine};
+use super::{MarkdownScanner, ParsedLine, ScanResourcePolicy};
 use crate::buffer::{LineSource, SourceLine, StructureIndex};
 use std::ops::Range;
 
@@ -9,6 +9,7 @@ pub(super) fn scan(
     source: &(impl LineSource + ?Sized),
     index: &StructureIndex,
     requested: Range<usize>,
+    policy: ScanResourcePolicy,
 ) -> (Range<usize>, Vec<ParsedLine>) {
     assert!(requested.start <= requested.end && requested.end <= source.line_count());
     if requested.is_empty() {
@@ -16,13 +17,14 @@ pub(super) fn scan(
     }
     let bounded_code = |row: usize| -> Option<(usize, Option<usize>)> {
         let (start, end) = index.fence_range(SourceLine::new(row))?;
-        let is_small_mermaid = end.is_some_and(|close| {
-            close.index() - start.index() <= MAX_PREVIEW_BLOCK_EXPANSION && {
-                let line = source.source_line(start);
-                let prefix = index.quote_prefix(start);
-                super::is_mermaid_fence(&line[prefix..])
-            }
-        });
+        let is_small_mermaid = matches!(policy, ScanResourcePolicy::Full)
+            && end.is_some_and(|close| {
+                close.index() - start.index() <= MAX_PREVIEW_BLOCK_EXPANSION && {
+                    let line = source.source_line(start);
+                    let prefix = index.quote_prefix(start);
+                    super::is_mermaid_fence(&line[prefix..])
+                }
+            });
         (!is_small_mermaid).then_some((start.index(), end.map(|e| e.index())))
     };
     if requested.clone().any(|row| bounded_code(row).is_some()) {
@@ -34,14 +36,14 @@ pub(super) fn scan(
                     .end
                     .min(close.map_or(requested.end, |end| end + 1));
                 let mut parsed = if row == open {
-                    scan_normalized(source, index, row..stop, false)
+                    scan_normalized(source, index, row..stop, false, policy)
                 } else {
                     let ctx_start = row
                         .saturating_sub(CODE_HIGHLIGHT_CONTEXT_LINES)
                         .max(open + 1);
                     let skip = 1 + (row - ctx_start);
                     let indices = std::iter::once(open).chain(ctx_start..stop);
-                    scan_normalized(source, index, indices, false)
+                    scan_normalized(source, index, indices, false, policy)
                         .into_iter()
                         .skip(skip)
                         .collect()
@@ -54,7 +56,7 @@ pub(super) fn scan(
                 while row < requested.end && bounded_code(row).is_none() {
                     row += 1;
                 }
-                let (range, parsed) = scan_complete(source, index, start..row);
+                let (range, parsed) = scan_complete(source, index, start..row, policy);
                 rows.extend(
                     parsed
                         .into_iter()
@@ -65,13 +67,14 @@ pub(super) fn scan(
         }
         return (requested, rows);
     }
-    scan_complete(source, index, requested)
+    scan_complete(source, index, requested, policy)
 }
 
 fn scan_complete(
     source: &(impl LineSource + ?Sized),
     index: &StructureIndex,
     requested: Range<usize>,
+    policy: ScanResourcePolicy,
 ) -> (Range<usize>, Vec<ParsedLine>) {
     assert!(requested.start <= requested.end && requested.end <= source.line_count());
     if requested.is_empty() {
@@ -112,7 +115,7 @@ fn scan_complete(
     let initial_in_math_block = index
         .math_range(SourceLine::new(range.start))
         .is_some_and(|(start, _)| start.index() < range.start);
-    let mut parsed = scan_normalized(source, index, range.clone(), initial_in_math_block);
+    let mut parsed = scan_normalized(source, index, range.clone(), initial_in_math_block, policy);
     apply_quote_edges(source, index, range.start, &mut parsed);
     (range, parsed)
 }
@@ -122,6 +125,7 @@ fn scan_normalized(
     index: &StructureIndex,
     source_rows: impl Iterator<Item = usize> + Clone,
     initial_in_math_block: bool,
+    policy: ScanResourcePolicy,
 ) -> Vec<ParsedLine> {
     let raw: Vec<String> = source_rows
         .clone()
@@ -145,6 +149,7 @@ fn scan_normalized(
         0..raw.len(),
         false,
         initial_in_math_block,
+        policy,
     )
 }
 

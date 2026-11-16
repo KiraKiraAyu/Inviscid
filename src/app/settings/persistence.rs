@@ -42,7 +42,7 @@ pub(crate) fn write_config(
     if cfg == before {
         return;
     }
-    cfg.save_preferences();
+    cfg.persist_preferences_async(cx.background_executor());
     cx.set_global(cfg);
     if repaint_all {
         cx.refresh_windows();

@@ -232,6 +232,7 @@ struct InlineStyleContext<'a> {
     is_strikethrough: bool,
     is_link: bool,
     link_url: Option<&'a str>,
+    skip_uncached_math: bool,
 }
 
 impl InlineStyleContext<'_> {
@@ -476,6 +477,16 @@ pub fn parse_inline_spans(text: &str, base_offset: usize) -> Vec<InlineSpan> {
     parse_inline_spans_internal(text, base_offset, InlineStyleContext::default(), 0)
 }
 
+pub(crate) fn parse_inline_spans_with_render(
+    text: &str,
+    base_offset: usize,
+    allow_math_render: bool,
+) -> Vec<InlineSpan> {
+    let mut ctx = InlineStyleContext::default();
+    ctx.skip_uncached_math = !allow_math_render;
+    parse_inline_spans_internal(text, base_offset, ctx, 0)
+}
+
 #[cfg(test)]
 mod math_placeholder_tests {
     use super::parse_inline_spans;
@@ -574,7 +585,12 @@ fn parse_inline_spans_internal(
                 let source: String = chars[i..end_idx].iter().collect();
                 flush_normal(&mut normal_buffer, normal_start, i, &mut spans);
                 let range = (base_offset + i, base_offset + end_idx);
-                if let Some(rendered) = crate::math::prepare_latex(&tex, is_display) {
+                let rendered = if ctx.skip_uncached_math {
+                    crate::math::get_cached_latex(&tex, is_display)
+                } else {
+                    crate::math::prepare_latex(&tex, is_display)
+                };
+                if let Some(rendered) = rendered {
                     spans.push(ctx.make_math_span(source, tex, range, rendered, is_display));
                 } else {
                     spans.push(ctx.make_span(source, range, range, false));

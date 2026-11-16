@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-mod resources;
+pub(in crate::editor) mod resources;
 use resources::Resource;
 
 /// Parsed source rows shared by immutable layout snapshots.
@@ -22,6 +22,7 @@ pub struct ParsedLineStore {
 #[derive(Clone, Debug)]
 struct WindowStore {
     prepared: Option<Arc<super::loading::PreparedSnapshot>>,
+    session: Option<Arc<super::loading::DocumentSession>>,
     source: crate::buffer::SourceSnapshot,
     index: crate::buffer::StructureIndex,
     windows: RefCell<VecDeque<WindowEntry>>,
@@ -70,6 +71,7 @@ impl ParsedLineStore {
             eager: Arc::default(),
             windows: Some(Arc::new(WindowStore {
                 prepared: None,
+                session: None,
                 source: buffer.source_snapshot(),
                 index: buffer.line_index().structure_snapshot(),
                 windows: RefCell::default(),
@@ -78,6 +80,16 @@ impl ParsedLineStore {
             })),
             resources: Arc::default(),
         }
+    }
+
+    pub(crate) fn with_session(
+        mut self,
+        session: Option<Arc<super::loading::DocumentSession>>,
+    ) -> Self {
+        if let Some(store) = &mut self.windows {
+            Arc::make_mut(store).session = session;
+        }
+        self
     }
 
     pub fn row(&self, line: usize) -> Option<ParsedRow> {
@@ -190,11 +202,17 @@ impl ParsedLineStore {
             }
         }
 
+        let session = prev_store
+            .session
+            .clone()
+            .or_else(|| prev_store.prepared.as_ref().map(|p| p.session.clone()));
+
         Self {
             #[cfg(test)]
             eager: Arc::default(),
             windows: Some(Arc::new(WindowStore {
                 prepared: None,
+                session,
                 source,
                 index,
                 windows: RefCell::new(windows),
@@ -257,11 +275,16 @@ impl ParsedLineStore {
         }) {
             windows.remove(position).unwrap()
         } else {
-            let (range, mut rows) = crate::markdown::MarkdownScanner::scan_snapshot_window(
-                &store.source,
-                &store.index,
-                requested,
-            );
+            if let Some(session) = &store.session {
+                session.request(requested.clone());
+            }
+            let (range, mut rows) =
+                crate::markdown::MarkdownScanner::scan_snapshot_window_with_policy(
+                    &store.source,
+                    &store.index,
+                    requested,
+                    crate::markdown::ScanResourcePolicy::UiDeferred,
+                );
             apply_preedit(&mut rows, range.start, store.preedit.as_ref());
             store.scanned.set(store.scanned.get() + rows.len());
             let mut resources = self.resources.borrow_mut();
@@ -332,11 +355,13 @@ impl ParsedLineStore {
                 {
                     continue;
                 }
-                let (range, rows) = crate::markdown::MarkdownScanner::scan_snapshot_window(
-                    &store.source,
-                    &store.index,
-                    range,
-                );
+                let (range, rows) =
+                    crate::markdown::MarkdownScanner::scan_snapshot_window_with_policy(
+                        &store.source,
+                        &store.index,
+                        range,
+                        crate::markdown::ScanResourcePolicy::UiDeferred,
+                    );
                 scanned += rows.len();
                 for window in windows.iter_mut() {
                     let start = range.start.max(window.range.start);
@@ -351,6 +376,7 @@ impl ParsedLineStore {
             }
             self.windows = Some(Arc::new(WindowStore {
                 prepared: store.prepared.clone(),
+                session: store.session.clone(),
                 source: store.source.clone(),
                 index: store.index.clone(),
                 windows: RefCell::new(windows),

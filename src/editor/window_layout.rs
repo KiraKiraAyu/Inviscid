@@ -116,27 +116,17 @@ impl Editor {
 
             let (local_new_range, is_code_interior, code_close) = if structural {
                 (begin..self.buffer.line_count(), false, None)
-            } else if let Some((open, close)) = self
+            } else if let Some((_open, close)) = self
                 .buffer
                 .line_index()
                 .structure()
                 .fence_range(SourceLine::new(start))
             {
-                let is_small_mermaid = close.is_some_and(|c| {
-                    c.index() - open.index() <= 1024
-                        && crate::markdown::mermaid_block_range_with_projection(&projection, open)
-                            .is_some()
-                });
-                if is_small_mermaid {
-                    let close_idx = close.unwrap().index();
-                    (open.index()..close_idx + 1, false, None)
-                } else {
-                    (
-                        start..(start + delta.new_line_count).min(self.buffer.line_count()),
-                        true,
-                        close.map(|c| c.index()),
-                    )
-                }
+                (
+                    start..(start + delta.new_line_count).min(self.buffer.line_count()),
+                    true,
+                    close.map(|c| c.index()),
+                )
             } else {
                 let line_delta = delta.new_line_count as isize - delta.old_line_count as isize;
                 let ctx_begin = start
@@ -178,6 +168,7 @@ impl Editor {
                 prev_parsed_lines.apply_edit(&self.buffer, patch, preedit.clone())
             } else {
                 ParsedLineStore::windowed(&self.buffer)
+                    .with_session(self.background_session.clone())
                     .with_prepared(
                         self.prepared_document
                             .clone()
@@ -188,9 +179,14 @@ impl Editor {
         } else {
             prev_parsed_lines
         };
+        let reset_metrics = initial || (!same_buffer && !incremental);
         if !self.is_loading
-            && let Some(snapshot) = &self.prepared_document
-            && snapshot.revision != self.buffer.revision()
+            && let Some(session) = &self.background_session
+            && (reset_metrics
+                || self
+                    .prepared_document
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.revision != self.buffer.revision()))
         {
             if let Some(patch) = &edit_patch {
                 let donated = if preedit.is_none() {
@@ -198,11 +194,9 @@ impl Editor {
                 } else {
                     VecDeque::new()
                 };
-                snapshot
-                    .session
-                    .submit_target(&self.buffer, Some((patch, donated)));
+                session.submit_target(&self.buffer, Some((patch, donated)), false);
             } else {
-                snapshot.session.submit_target(&self.buffer, None);
+                session.submit_target(&self.buffer, None, reset_metrics);
             }
         }
         let mut cached = self.layout_cache.borrow_mut();
@@ -286,8 +280,12 @@ impl Editor {
         cache.quote_projection = projection;
         #[cfg(test)]
         {
-            cache.separators = Arc::default();
-            cache.quote_ranges = Arc::default();
+            if !cache.separators.is_empty() {
+                cache.separators = Arc::default();
+            }
+            if !cache.quote_ranges.is_empty() {
+                cache.quote_ranges = Arc::default();
+            }
         }
         for region in self.display_map.fold_map().folded_regions() {
             let start = (region.start_line.index() + 1).min(cache.metrics.len());

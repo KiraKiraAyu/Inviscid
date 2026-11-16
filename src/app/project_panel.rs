@@ -98,6 +98,8 @@ pub struct ProjectPanel {
     root_dir: Option<PathBuf>,
     expanded_dirs: HashSet<PathBuf>,
     entries: Vec<FileTreeEntry>,
+    tree_scan_generation: u64,
+    tree_scan_cancel: Arc<AtomicBool>,
     all_entries: Vec<FileTreeEntry>,
     all_entries_loaded: bool,
     filter_query: String,
@@ -130,7 +132,7 @@ impl Focusable for ProjectPanel {
 }
 
 impl ProjectPanel {
-    pub fn new(root_dir: Option<PathBuf>, focus_handle: FocusHandle) -> Self {
+    pub fn new(root_dir: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         let mut expanded_dirs = HashSet::new();
         if let Some(ref root) = root_dir {
             expanded_dirs.insert(root.clone());
@@ -140,6 +142,8 @@ impl ProjectPanel {
             root_dir,
             expanded_dirs,
             entries: Vec::new(),
+            tree_scan_generation: 0,
+            tree_scan_cancel: Arc::new(AtomicBool::new(false)),
             all_entries: Vec::new(),
             all_entries_loaded: false,
             filter_query: String::new(),
@@ -148,7 +152,7 @@ impl ProjectPanel {
             filter_collapsed_dirs: HashSet::new(),
             filter_scan_pending: false,
             filter_scan_cancel: Arc::new(AtomicBool::new(false)),
-            focus_handle,
+            focus_handle: cx.focus_handle(),
             active_context_menu: None,
             active_confirm_modal: None,
             clipboard: FileClipboard::None,
@@ -163,7 +167,7 @@ impl ProjectPanel {
             filter_input: None,
             filter_subscription: None,
         };
-        panel.rebuild_entries();
+        panel.refresh_entries(cx);
         panel
     }
 
@@ -366,7 +370,7 @@ impl ProjectPanel {
                     self.selected_path = None;
                 }
                 self.refresh_all_entries(cx);
-                self.rebuild_entries();
+                self.refresh_entries(cx);
                 cx.notify();
             }
             Err(e) => {
@@ -395,7 +399,7 @@ impl ProjectPanel {
         }
         self.filter_collapsed_dirs.clear();
         self.refresh_all_entries(cx);
-        self.rebuild_entries();
+        self.refresh_entries(cx);
         cx.notify();
     }
 
@@ -432,7 +436,7 @@ impl ProjectPanel {
             }
         }
         if !is_filtering {
-            self.rebuild_entries();
+            self.refresh_entries(cx);
         }
         cx.notify();
     }
@@ -453,7 +457,7 @@ impl ProjectPanel {
             }
         }
         if changed {
-            self.rebuild_entries();
+            self.refresh_entries(cx);
             cx.notify();
         }
     }
@@ -464,7 +468,7 @@ impl ProjectPanel {
         if let Some(ref root) = self.root_dir {
             self.expanded_dirs.insert(root.clone());
         }
-        self.rebuild_entries();
+        self.refresh_entries(cx);
         cx.notify();
     }
 
@@ -628,7 +632,7 @@ impl ProjectPanel {
                 Ok(new_path) => {
                     self.expanded_dirs.insert(parent);
                     self.refresh_all_entries(cx);
-                    self.rebuild_entries();
+                    self.refresh_entries(cx);
                     self.selected_path = Some(new_path.clone());
                     cx.emit(ProjectPanelEvent::PathCreated(new_path.clone()));
                     cx.emit(ProjectPanelEvent::OpenFile(new_path));
@@ -648,7 +652,7 @@ impl ProjectPanel {
                         self.expanded_dirs.insert(parent);
                         self.expanded_dirs.insert(new_path.clone());
                         self.refresh_all_entries(cx);
-                        self.rebuild_entries();
+                        self.refresh_entries(cx);
                         self.selected_path = Some(new_path);
                     }
                     Err(e) => {
@@ -672,7 +676,7 @@ impl ProjectPanel {
                             new: new_path.clone(),
                         });
                         self.refresh_all_entries(cx);
-                        self.rebuild_entries();
+                        self.refresh_entries(cx);
                         self.selected_path = Some(new_path);
                     }
                     Err(e) => {
@@ -715,7 +719,7 @@ impl ProjectPanel {
             ContextMenuAction::NewFile | ContextMenuAction::NewFolder => {
                 let (parent, depth) = self.new_entry_slot(&state);
                 self.expanded_dirs.insert(parent.clone());
-                self.rebuild_entries();
+                self.refresh_entries(cx);
                 let kind = if action == ContextMenuAction::NewFolder {
                     InlineInputKind::NewFolder { parent }
                 } else {
@@ -735,7 +739,7 @@ impl ProjectPanel {
                         self.expanded_dirs.insert(parent.to_path_buf());
                     }
                     self.refresh_all_entries(cx);
-                    self.rebuild_entries();
+                    self.refresh_entries(cx);
                     cx.notify();
                 }
                 Err(e) => fs_ops::report_error("duplicate", &target, &e),
@@ -851,7 +855,7 @@ impl ProjectPanel {
                 }
                 self.expanded_dirs.insert(dest_dir);
                 self.refresh_all_entries(cx);
-                self.rebuild_entries();
+                self.refresh_entries(cx);
                 cx.notify();
             }
             Err(e) => fs_ops::report_error("paste", &src, &e),
@@ -906,13 +910,45 @@ impl ProjectPanel {
         }
     }
 
-    fn rebuild_entries(&mut self) {
-        self.entries.clear();
-        if let Some(ref root) = self.root_dir
-            && root.is_dir()
-        {
-            scan_dir_recursive(root, 0, &self.expanded_dirs, &mut self.entries);
-        }
+    fn refresh_entries(&mut self, cx: &mut Context<Self>) {
+        self.tree_scan_generation = self.tree_scan_generation.wrapping_add(1);
+        self.tree_scan_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.tree_scan_cancel = cancel.clone();
+
+        let Some(root) = self.root_dir.clone() else {
+            self.entries.clear();
+            cx.notify();
+            return;
+        };
+
+        let generation = self.tree_scan_generation;
+        let expanded = self.expanded_dirs.clone();
+        let bg_cancel = cancel.clone();
+        let bg_root = root.clone();
+        let task = cx.background_executor().spawn(async move {
+            let mut entries = Vec::new();
+            if bg_root.is_dir() {
+                scan_dir_recursive(&bg_root, 0, &expanded, &mut entries, &bg_cancel);
+            }
+            (!bg_cancel.load(Ordering::Relaxed)).then_some(entries)
+        });
+        cx.spawn(async move |this, cx| {
+            let Some(entries) = task.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                if this.tree_scan_generation != generation
+                    || this.root_dir.as_ref() != Some(&root)
+                    || !Arc::ptr_eq(&this.tree_scan_cancel, &cancel)
+                {
+                    return;
+                }
+                this.entries = entries;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn cancel_filter_scan(&mut self) {
@@ -1068,8 +1104,15 @@ fn scan_dir_recursive(
     depth: usize,
     expanded: &HashSet<PathBuf>,
     out: &mut Vec<FileTreeEntry>,
+    cancel: &AtomicBool,
 ) {
+    if cancel.load(Ordering::Relaxed) {
+        return;
+    }
     for entry in read_tree_entries(dir) {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         if entry.is_dir {
             let is_expanded = expanded.contains(&entry.path) && entry.can_recurse;
             out.push(FileTreeEntry::new_dir(
@@ -1079,7 +1122,7 @@ fn scan_dir_recursive(
                 is_expanded,
             ));
             if is_expanded {
-                scan_dir_recursive(&entry.path, depth + 1, expanded, out);
+                scan_dir_recursive(&entry.path, depth + 1, expanded, out, cancel);
             }
         } else {
             out.push(FileTreeEntry::new_file(entry.path, entry.name, depth));
@@ -1516,9 +1559,10 @@ mod tests {
         std::fs::write(nested_dir.join("needle.rs"), "").unwrap();
         let root = temp_dir.path().to_path_buf();
 
-        let panel = cx.update(|cx| cx.new(|cx| ProjectPanel::new(Some(root), cx.focus_handle())));
+        let panel = cx.update(|cx| cx.new(|cx| ProjectPanel::new(Some(root), cx)));
 
         panel.read_with(cx, |panel, _| {
+            assert!(panel.entries.is_empty());
             assert!(panel.all_entries.is_empty());
             assert!(!panel.all_entries_loaded);
         });
@@ -1543,7 +1587,7 @@ mod tests {
         std::fs::create_dir(&nested_dir).unwrap();
         std::fs::write(nested_dir.join("needle.rs"), "").unwrap();
         let root = temp_dir.path().to_path_buf();
-        let panel = cx.update(|cx| cx.new(|cx| ProjectPanel::new(Some(root), cx.focus_handle())));
+        let panel = cx.update(|cx| cx.new(|cx| ProjectPanel::new(Some(root), cx)));
 
         panel.update(cx, |panel, cx| panel.prewarm_filter_index(cx));
         cx.run_until_parked();
@@ -1660,7 +1704,7 @@ mod tests {
         }
 
         let (host, cx) = cx.add_window_view(|_window, cx| {
-            let panel = cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx.focus_handle()));
+            let panel = cx.new(|cx| ProjectPanel::new(Some(temp_dir.clone()), cx));
             PanelHost { panel }
         });
         cx.run_until_parked();

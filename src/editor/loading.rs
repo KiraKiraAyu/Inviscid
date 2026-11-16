@@ -18,6 +18,9 @@ impl Editor {
 
     pub(crate) fn begin_loading(&mut self, path: PathBuf) {
         self.display_map = super::DisplayMap::new();
+        if let Some(session) = self.background_session.take() {
+            session.cancel();
+        }
         if let Some(snapshot) = self.prepared_document.take() {
             snapshot.session.cancel();
         }
@@ -66,6 +69,20 @@ impl Editor {
                 if !self.is_loading && file.revision != self.buffer.revision() {
                     return;
                 }
+                let target_line_count = if self.is_loading {
+                    file.buffer
+                        .as_ref()
+                        .map_or_else(|| self.buffer.line_count(), |b| b.line_count())
+                } else {
+                    self.buffer.line_count()
+                };
+                if file
+                    .windows
+                    .iter()
+                    .any(|win| win.range.end > target_line_count)
+                {
+                    return;
+                }
                 let has_disk_buffer = file.buffer.is_some();
                 let finishing = self.is_loading && file.complete;
                 if self.is_loading
@@ -99,6 +116,7 @@ impl Editor {
                     })
                     .map(|win| win.range.clone())
                     .collect();
+                self.background_session = Some(session.clone());
                 self.prepared_document = Some(Arc::new(PreparedSnapshot {
                     revision: self.buffer.revision(),
                     session: session.clone(),
@@ -116,9 +134,15 @@ impl Editor {
                         let cache = Arc::make_mut(&mut cache);
                         cache.parsed_lines =
                             super::parsed_line_store::ParsedLineStore::windowed(&self.buffer)
+                                .with_session(Some(session.clone()))
                                 .with_prepared(self.prepared_document.clone());
+                        let max_len = cache.metrics.len();
                         for range in &changed_ranges {
-                            cache.metrics.invalidate_measured(range.clone());
+                            let start = range.start.min(max_len);
+                            let end = range.end.min(max_len);
+                            if start < end {
+                                cache.metrics.invalidate_measured(start..end);
+                            }
                         }
                     }
                 }
@@ -173,25 +197,30 @@ pub(crate) fn spawn_session(
     let reader_path = path.clone();
     let read_work = executor.spawn(async move { reader_session.run_reader(reader_path) });
     let worker_session = session.clone();
-    let prepare_work = executor.spawn(async move { worker_session.run_worker(path).await });
+    let prepare_work = executor.spawn(async move { worker_session.run_worker(Some(path)).await });
     (read_work, prepare_work, CancelSession(session.clone()))
 }
 
-pub(crate) fn spawn_editor_load(path: PathBuf, cx: &mut Context<Editor>) -> gpui::Task<()> {
-    let requested_path = path.clone();
-    let session = DocumentSession::new();
+fn listen_to_session(
+    session: Arc<DocumentSession>,
+    keep_running_work: impl Send + 'static,
+    cx: &mut Context<Editor>,
+) -> gpui::Task<()> {
     let mut updates = session.updates.subscribe();
-    let session_work = spawn_session(&session, path, cx.background_executor());
     cx.spawn(async move |this, cx| {
         use futures::StreamExt;
-        let _session_work = session_work;
+        let _keep_alive = keep_running_work;
         while updates.next().await.is_some() {
             let Some(result) = session.take() else {
                 continue;
             };
             let keep_running = this
                 .update(cx, |editor, cx| {
-                    if editor.file_path() != Some(requested_path.as_path()) {
+                    if !editor
+                        .background_session
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, &session))
+                    {
                         return false;
                     }
                     editor.install_publication(&session, result, cx);
@@ -203,4 +232,31 @@ pub(crate) fn spawn_editor_load(path: PathBuf, cx: &mut Context<Editor>) -> gpui
             }
         }
     })
+}
+
+pub(crate) fn spawn_editor_load(
+    path: PathBuf,
+    cx: &mut Context<Editor>,
+) -> (Arc<DocumentSession>, gpui::Task<()>) {
+    let session = DocumentSession::new();
+    let session_work = spawn_session(&session, path, cx.background_executor());
+    let task = listen_to_session(session.clone(), session_work, cx);
+    (session, task)
+}
+
+pub(crate) fn spawn_editor_worker(
+    doc_path: Option<PathBuf>,
+    cx: &mut Context<Editor>,
+) -> (Arc<DocumentSession>, gpui::Task<()>) {
+    let session = DocumentSession::new();
+    let worker_session = session.clone();
+    let prepare_work = cx
+        .background_executor()
+        .spawn(async move { worker_session.run_worker(doc_path).await });
+    let task = listen_to_session(
+        session.clone(),
+        (prepare_work, CancelSession(session.clone())),
+        cx,
+    );
+    (session, task)
 }
