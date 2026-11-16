@@ -87,7 +87,7 @@ impl SettingsWindow {
             .h(ControlHeight::SM)
             .px(Spacing::MDS)
             .rounded(Radius::SM)
-            .bg(theme.bg_toolbar)
+            .bg(theme.bg_surface)
             .border_1()
             .border_color(theme.border_subtle)
             .hover(|s| s.bg(theme.btn_hover))

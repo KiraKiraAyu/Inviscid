@@ -2,9 +2,9 @@ name = "GitHub Light"
 
 [colors]
 bg_app = "#eaeef2"
+bg_surface = "#f3f5f8"
 bg_editor = "#ffffff"
-bg_toolbar = "#eaeef2"
-bg_statusbar = "#eaeef2"
+bg_elevated = "#ffffff"
 border = "#d0d7de"
 border_subtle = "#dae0e7"
 

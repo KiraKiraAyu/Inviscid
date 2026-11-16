@@ -58,7 +58,7 @@ impl SearchPanel {
                                                 IconName::Close,
                                                 theme,
                                             )
-                                            .bg(theme.bg_toolbar)
+                                            .bg(theme.bg_surface)
                                             .on_mouse_down(
                                                 MouseButton::Left,
                                                 cx.listener(|this, _: &MouseDownEvent, _, cx| {

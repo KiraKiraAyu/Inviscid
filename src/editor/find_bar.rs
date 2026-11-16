@@ -62,7 +62,7 @@ impl FindBar {
                 .height(ControlHeight::SM)
                 .radius(Radius::MD)
                 .padding_x(Spacing::SM)
-                .bg(crate::ui::TextInputBg::Editor)
+                .bg(crate::ui::TextInputBg::Surface)
         });
         let replace_input = cx.new(|cx| {
             TextInput::new("", cx)
@@ -71,7 +71,7 @@ impl FindBar {
                 .height(ControlHeight::SM)
                 .radius(Radius::MD)
                 .padding_x(Spacing::SM)
-                .bg(crate::ui::TextInputBg::Editor)
+                .bg(crate::ui::TextInputBg::Surface)
         });
         let _input_sub = cx.subscribe(&input, |this, _, event: &TextInputEvent, cx| match event {
             TextInputEvent::Changed(_) => this.emit_query(cx),
@@ -364,7 +364,7 @@ impl Render for FindBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (bg, border_subtle, muted, danger) = (
-            theme.bg_toolbar,
+            theme.bg_elevated,
             theme.border_subtle,
             theme.text_muted,
             theme.text_danger,

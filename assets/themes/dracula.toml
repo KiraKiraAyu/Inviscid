@@ -2,9 +2,9 @@ name = "Dracula"
 
 [colors]
 bg_app = "#191a21"
+bg_surface = "#21222c"
 bg_editor = "#282a36"
-bg_toolbar = "#191a21"
-bg_statusbar = "#191a21"
+bg_elevated = "#313442"
 border = "#44475a"
 border_subtle = "#343746"
 

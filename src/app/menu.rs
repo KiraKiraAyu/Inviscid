@@ -224,7 +224,7 @@ pub fn render_menu_dropdown(
         .left_0()
         .w(px(width))
         .p(Spacing::XS)
-        .bg(theme.bg_editor)
+        .bg(theme.bg_elevated)
         .rounded(Radius::LG)
         .shadow_lg()
         .flex()

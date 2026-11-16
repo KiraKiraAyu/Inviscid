@@ -257,7 +257,7 @@ impl SettingsWindow {
                 .height(ControlHeight::MD)
                 .radius(Radius::MD)
                 .padding_x(Spacing::MDS)
-                .bg(crate::ui::TextInputBg::Toolbar);
+                .bg(crate::ui::TextInputBg::Surface);
             input.buffer_mut().select_all();
             input
         });

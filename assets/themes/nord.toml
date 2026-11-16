@@ -2,9 +2,9 @@ name = "Nord"
 
 [colors]
 bg_app = "#242933"
+bg_surface = "#292f3a"
 bg_editor = "#2e3440"
-bg_toolbar = "#242933"
-bg_statusbar = "#242933"
+bg_elevated = "#373e4d"
 border = "#434c5e"
 border_subtle = "#3b4252"
 

@@ -124,7 +124,7 @@ impl ContextMenuBuilder {
             .left(coords.x)
             .w(MENU_WIDTH)
             .p(CONTAINER_PADDING)
-            .bg(theme.bg_editor)
+            .bg(theme.bg_elevated)
             .rounded(Radius::LG)
             .shadow_lg()
             .flex()

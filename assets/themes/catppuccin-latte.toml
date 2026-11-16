@@ -2,9 +2,9 @@ name = "Catppuccin Latte"
 
 [colors]
 bg_app = "#dce0e8"
+bg_surface = "#e6e9ef"
 bg_editor = "#eff1f5"
-bg_toolbar = "#dce0e8"
-bg_statusbar = "#dce0e8"
+bg_elevated = "#f8f9fc"
 border = "#bcc0cc"
 border_subtle = "#ccd0da"
 

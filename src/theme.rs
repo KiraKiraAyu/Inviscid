@@ -106,11 +106,11 @@ macro_rules! define_theme {
 }
 
 define_theme! {
-    // Base backgrounds and borders
+    // Base surface hierarchy (outer frame -> recessed surface -> editor canvas -> elevated overlay)
     bg_app,
+    bg_surface,
     bg_editor,
-    bg_toolbar,
-    bg_statusbar,
+    bg_elevated,
     border,
     border_subtle,
 

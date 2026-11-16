@@ -82,18 +82,18 @@ impl SearchPanel {
                 .id("workspace_search_input")
                 .placeholder("Search in files")
                 .height(ControlHeight::SM)
-                .radius(Radius::SM)
+                .radius(Radius::MD)
                 .padding_x(Spacing::SM)
-                .bg(TextInputBg::Toolbar)
+                .bg(TextInputBg::Surface)
         });
         let replace_input = cx.new(|cx| {
             TextInput::new("", cx)
                 .id("workspace_search_replace_input")
                 .placeholder("Replace")
                 .height(ControlHeight::SM)
-                .radius(Radius::SM)
+                .radius(Radius::MD)
                 .padding_x(Spacing::SM)
-                .bg(TextInputBg::Toolbar)
+                .bg(TextInputBg::Surface)
         });
         // `escape` never reaches the input as `Cancel`: the `CloseSearchPanel` binding claims it
         // first and closes the panel with access to the window.

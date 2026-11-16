@@ -25,7 +25,7 @@ use crate::ui::{calculate_caret_size, start_cursor_animation};
 pub enum TextInputBg {
     #[default]
     Editor,
-    Toolbar,
+    Surface,
     Transparent,
 }
 
@@ -1053,7 +1053,7 @@ impl TextInput {
 
         let bg = match self.bg {
             TextInputBg::Editor => theme.bg_editor,
-            TextInputBg::Toolbar => theme.bg_toolbar,
+            TextInputBg::Surface => theme.bg_surface,
             TextInputBg::Transparent => gpui::transparent_black(),
         };
 
