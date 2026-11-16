@@ -24,9 +24,12 @@ impl Editor {
         self.load_task = None;
         self.auto_save_task = None;
         self.file_watch_task = None;
+        self.external_check_task = None;
         self.fingerprint_task = None;
         self.reset_find_search();
         self.external_change = ExternalChangeState::None;
+        self.external_baseline_overridden = false;
+        self.baseline_generation = self.baseline_generation.wrapping_add(1);
         self.buffer.set_file_path(Some(path));
         self.load_error = None;
         self.is_loading = true;
@@ -123,6 +126,8 @@ impl Editor {
                     self.is_loading = false;
                     self.external_disk_hash = Some(file.disk_hash);
                     self.external_change = ExternalChangeState::None;
+                    self.external_baseline_overridden = false;
+                    self.baseline_generation = self.baseline_generation.wrapping_add(1);
                     self.schedule_fingerprints(cx);
                     self.start_file_watcher(cx);
                     self.refresh_find_matches(cx);

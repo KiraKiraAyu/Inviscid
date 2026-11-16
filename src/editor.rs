@@ -10,7 +10,6 @@ pub(crate) struct LayoutStats {
     pub lines_measured: usize,
     pub cache_deep_clones: usize,
 }
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -217,8 +216,11 @@ pub struct Editor {
     fingerprint_task: Option<Task<()>>,
     pub(crate) auto_save_delay: std::time::Duration,
     pub(crate) file_watch_task: Option<Task<()>>,
+    pub(crate) external_check_task: Option<Task<()>>,
     pub(crate) external_change: ExternalChangeState,
     pub(crate) external_disk_hash: Option<u64>,
+    pub(crate) external_baseline_overridden: bool,
+    pub(crate) baseline_generation: u64,
 
     pub(crate) has_explicit_render_mode: bool,
     pub(crate) font_size: f32,
@@ -256,19 +258,43 @@ pub enum EditorEvent {
     ScrollChanged,
 }
 
+struct SaveSnapshot {
+    rope: ropey::Rope,
+    line_ending: crate::buffer::LineEnding,
+    is_empty_doc: bool,
+    revision: u64,
+    line_count: usize,
+    char_count: usize,
+    ready_hash: Option<u64>,
+}
+
+impl SaveSnapshot {
+    fn write_to(
+        self,
+        path: &Path,
+    ) -> std::io::Result<(std::time::SystemTime, u64, crate::buffer::SavedBaseline)> {
+        let (saved_mtime, written_hash) =
+            crate::fs::save_rope_snapshot(path, &self.rope, self.line_ending, self.is_empty_doc)?;
+        let content_hash = self
+            .ready_hash
+            .unwrap_or_else(|| TextBuffer::compute_rope_content_hash(&self.rope));
+        Ok((
+            saved_mtime,
+            written_hash,
+            crate::buffer::SavedBaseline {
+                content_hash,
+                revision: self.revision,
+                line_count: self.line_count,
+                char_count: self.char_count,
+                is_empty_doc: self.is_empty_doc,
+            },
+        ))
+    }
+}
+
 impl EventEmitter<EditorEvent> for Editor {}
 
 impl Editor {
-    fn hash_file_content(content: &str) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        content.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    fn read_file_hash(path: &Path) -> std::io::Result<u64> {
-        std::fs::read_to_string(path).map(|content| Self::hash_file_content(&content))
-    }
-
     #[inline]
     pub fn viewport_bounds_val(&self) -> Bounds<Pixels> {
         self.viewport_bounds
@@ -435,7 +461,10 @@ impl Editor {
         self.external_disk_hash = self
             .buffer
             .file_path()
-            .and_then(|path| Self::read_file_hash(path).ok());
+            .and_then(|path| crate::fs::read_file_hash(path).ok());
+        self.external_baseline_overridden = false;
+        self.external_check_task = None;
+        self.baseline_generation = self.baseline_generation.wrapping_add(1);
         self.buffer.set_last_saved_mtime(
             self.buffer
                 .file_path()
@@ -455,7 +484,7 @@ impl Editor {
     pub fn new_with_buffer(buffer: TextBuffer, cx: &mut Context<Self>) -> Self {
         let disk_hash = buffer
             .file_path()
-            .and_then(|path| Self::read_file_hash(path).ok());
+            .and_then(|path| crate::fs::read_file_hash(path).ok());
         Self::new_with_buffer_and_disk_hash(buffer, disk_hash, cx)
     }
 
@@ -537,8 +566,11 @@ impl Editor {
             fingerprint_task: None,
             auto_save_delay: std::time::Duration::from_millis(1000),
             file_watch_task: None,
+            external_check_task: None,
             external_change: ExternalChangeState::None,
             external_disk_hash,
+            external_baseline_overridden: false,
+            baseline_generation: 0,
             text_system: None,
             space_width_memo: std::cell::Cell::new(None),
             find_state: FindState::new(),
@@ -980,37 +1012,88 @@ impl Editor {
         if !self.can_edit() {
             return Err(std::io::Error::other("File is not editable"));
         }
-        if self.external_change_pending() || self.is_externally_modified() {
-            self.external_change = if self.buffer.file_path().is_some_and(|path| !path.exists()) {
-                ExternalChangeState::Deleted
-            } else {
-                ExternalChangeState::Pending
-            };
-            cx.emit(EditorEvent::ExternalChangeChanged(self.external_change));
-            cx.notify();
+        if self.external_change_pending() {
             return Err(std::io::Error::other(
                 "File changed externally; reload it or keep the local version before saving",
             ));
         }
-        if let Some(path) = self.buffer.file_path_buf() {
-            let content_hash = Self::hash_file_content(&self.buffer.to_string_content());
-            let saved_mtime =
-                crate::fs::save_document_chunks(&path, self.buffer.chunks_with_line_ending())?;
-            let baseline = self.buffer.saved_baseline_snapshot();
-            self.buffer.mark_saved_as(baseline);
-            self.buffer.set_last_saved_mtime(Some(saved_mtime));
-            self.external_disk_hash = Some(content_hash);
-            let dirty = self.buffer.is_dirty();
-            cx.emit(EditorEvent::TitleChanged);
-            cx.emit(EditorEvent::DirtyChanged(dirty));
-            cx.notify();
-            Ok(cx.spawn(async move |_this, _cx| Ok(())))
-        } else {
-            Err(std::io::Error::new(
+        let Some(path) = self.buffer.file_path_buf() else {
+            return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "No file path specified for saving",
-            ))
+            ));
+        };
+
+        enum SaveOutcome {
+            Conflict(ExternalChangeState),
+            Saved {
+                saved_mtime: std::time::SystemTime,
+                written_hash: u64,
+                baseline: crate::buffer::SavedBaseline,
+            },
         }
+
+        let snapshot = self.capture_save_snapshot();
+        let expected_disk_hash = self.external_disk_hash;
+        let allow_overwrite = std::mem::take(&mut self.external_baseline_overridden);
+
+        let bg_path = path.clone();
+        let write_work = cx.background_executor().spawn(async move {
+            if !allow_overwrite {
+                let conflict = match crate::fs::read_file_hash(&bg_path) {
+                    Ok(current_hash) if expected_disk_hash != Some(current_hash) => {
+                        Some(ExternalChangeState::Pending)
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::NotFound
+                            && expected_disk_hash.is_some() =>
+                    {
+                        Some(ExternalChangeState::Deleted)
+                    }
+                    _ => None,
+                };
+                if let Some(state) = conflict {
+                    return Ok::<_, std::io::Error>(SaveOutcome::Conflict(state));
+                }
+            }
+            let (saved_mtime, written_hash, baseline) = snapshot.write_to(&bg_path)?;
+            Ok(SaveOutcome::Saved {
+                saved_mtime,
+                written_hash,
+                baseline,
+            })
+        });
+
+        Ok(cx.spawn(async move |this, cx| {
+            let outcome = write_work.await?;
+            this.update(cx, |editor, cx| match outcome {
+                SaveOutcome::Conflict(state) => {
+                    editor.external_change = state;
+                    cx.emit(EditorEvent::ExternalChangeChanged(state));
+                    cx.notify();
+                    Err(std::io::Error::other(
+                        "File changed externally; reload it or keep the local version before saving",
+                    ))
+                }
+                SaveOutcome::Saved {
+                    saved_mtime,
+                    written_hash,
+                    baseline,
+                } => {
+                    if editor.file_path() == Some(path.as_path()) {
+                        editor.apply_saved_state(
+                            saved_mtime,
+                            written_hash,
+                            baseline,
+                            false,
+                            cx,
+                        );
+                    }
+                    Ok(())
+                }
+            })
+            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())))
+        }))
     }
 
     pub fn save_file_as_async(
@@ -1023,31 +1106,66 @@ impl Editor {
             return cx
                 .spawn(async move |_this, _cx| Err(std::io::Error::other("File is not editable")));
         }
-        match crate::fs::save_document_chunks(&path, self.buffer.chunks_with_line_ending()) {
-            Ok(saved_mtime) => {
-                let content_hash = Self::hash_file_content(&self.buffer.to_string_content());
-                let baseline = self.buffer.saved_baseline_snapshot();
-                self.buffer.set_file_path(Some(path));
-                self.buffer.mark_saved_as(baseline);
-                self.buffer.set_last_saved_mtime(Some(saved_mtime));
-                self.external_disk_hash = Some(content_hash);
-                self.external_change = ExternalChangeState::None;
-                self.start_file_watcher(cx);
-                let dirty = self.buffer.is_dirty();
-                cx.emit(EditorEvent::TitleChanged);
-                cx.emit(EditorEvent::DirtyChanged(dirty));
-                cx.emit(EditorEvent::ExternalChangeChanged(self.external_change));
-                cx.notify();
-                cx.spawn(async move |_this, _cx| Ok(()))
-            }
-            Err(e) => cx.spawn(async move |_this, _cx| Err(e)),
+
+        let snapshot = self.capture_save_snapshot();
+        let bg_path = path.clone();
+        let write_work = cx
+            .background_executor()
+            .spawn(async move { snapshot.write_to(&bg_path) });
+
+        cx.spawn(async move |this, cx| {
+            let (saved_mtime, written_hash, baseline) = write_work.await?;
+            this.update(cx, |editor, cx| {
+                editor.buffer.set_file_path(Some(path));
+                editor.apply_saved_state(saved_mtime, written_hash, baseline, true, cx);
+            })
+            .map_err(|e| std::io::Error::other(e.to_string()))
+        })
+    }
+
+    fn capture_save_snapshot(&self) -> SaveSnapshot {
+        SaveSnapshot {
+            rope: self.buffer.text_snapshot(),
+            line_ending: self.buffer.line_ending(),
+            is_empty_doc: self.buffer.is_empty(),
+            revision: self.buffer.revision(),
+            line_count: self.buffer.line_count(),
+            char_count: self.buffer.char_count(),
+            ready_hash: self.buffer.prepared_content_hash(),
         }
+    }
+
+    fn apply_saved_state(
+        &mut self,
+        saved_mtime: std::time::SystemTime,
+        written_hash: u64,
+        baseline: crate::buffer::SavedBaseline,
+        restart_watcher: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.buffer.mark_saved_as(baseline);
+        self.buffer.set_last_saved_mtime(Some(saved_mtime));
+        self.external_disk_hash = Some(written_hash);
+        self.external_baseline_overridden = false;
+        self.external_change = ExternalChangeState::None;
+        self.baseline_generation = self.baseline_generation.wrapping_add(1);
+        if restart_watcher {
+            self.external_check_task = None;
+            self.start_file_watcher(cx);
+        }
+        let dirty = self.buffer.is_dirty();
+        cx.emit(EditorEvent::TitleChanged);
+        cx.emit(EditorEvent::DirtyChanged(dirty));
+        cx.emit(EditorEvent::ExternalChangeChanged(
+            ExternalChangeState::None,
+        ));
+        cx.notify();
     }
 
     /// Returns true if the file on disk has been modified externally since it was opened or last saved.
     pub fn is_externally_modified(&self) -> bool {
         if let Some(path) = self.buffer.file_path() {
-            return match Self::read_file_hash(path) {
+            return match crate::fs::read_file_hash(path) {
                 Ok(current_hash) => self.external_disk_hash != Some(current_hash),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     self.external_disk_hash.is_some()
@@ -1077,26 +1195,44 @@ impl Editor {
     /// Clears the conflict marker while retaining the current buffer. A subsequent save will
     /// intentionally replace the current on-disk version.
     pub fn keep_local_changes(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = self.buffer.file_path() {
-            match Self::read_file_hash(path) {
-                Ok(hash) => self.external_disk_hash = Some(hash),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    self.external_disk_hash = None;
-                }
-                Err(error) => {
-                    eprintln!(
-                        "Failed to update external file baseline for {:?}: {}",
-                        path, error
-                    );
-                }
-            }
-            self.buffer.set_last_saved_mtime(
-                std::fs::metadata(path)
-                    .ok()
-                    .and_then(|metadata| metadata.modified().ok()),
-            );
-        }
         self.external_change = ExternalChangeState::None;
+        self.external_baseline_overridden = true;
+        self.baseline_generation = self.baseline_generation.wrapping_add(1);
+        let generation = self.baseline_generation;
+        if let Some(path) = self.buffer.file_path_buf() {
+            let bg_path = path.clone();
+            let check = cx.background_executor().spawn(async move {
+                let hash = crate::fs::read_file_hash(&bg_path);
+                let mtime = std::fs::metadata(&bg_path)
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok());
+                (hash, mtime)
+            });
+            self.external_check_task = Some(cx.spawn(async move |this, cx| {
+                let (hash, mtime) = check.await;
+                let _ = this.update(cx, |editor, _cx| {
+                    if editor.baseline_generation != generation
+                        || editor.file_path() != Some(path.as_path())
+                    {
+                        return;
+                    }
+                    match hash {
+                        Ok(h) => editor.external_disk_hash = Some(h),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            editor.external_disk_hash = None;
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "Failed to update external file baseline for {:?}: {}",
+                                path, error
+                            );
+                        }
+                    }
+                    editor.buffer.set_last_saved_mtime(mtime);
+                    editor.external_baseline_overridden = false;
+                });
+            }));
+        }
         cx.emit(EditorEvent::ExternalChangeChanged(self.external_change));
         cx.notify();
     }
@@ -1107,34 +1243,48 @@ impl Editor {
         let Some(path) = self.buffer.file_path_buf() else {
             return;
         };
-
-        let disk_hash = match Self::read_file_hash(&path) {
-            Ok(hash) => Some(hash),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.set_external_change_state(ExternalChangeState::Deleted, cx);
-                return;
-            }
-            Err(error) => {
-                eprintln!(
-                    "Failed to inspect file {:?} after a watcher event: {}",
-                    path, error
-                );
-                return;
-            }
-        };
-        if self.external_disk_hash == disk_hash {
-            self.set_external_change_state(ExternalChangeState::None, cx);
-            return;
-        }
-
-        if self.is_dirty() {
-            self.set_external_change_state(ExternalChangeState::Pending, cx);
-        } else if let Err(error) = self.reload_file(cx) {
-            eprintln!(
-                "Failed to reload externally modified file {:?}: {}",
-                path, error
-            );
-        }
+        let generation = self.baseline_generation;
+        let bg_path = path.clone();
+        let check = cx
+            .background_executor()
+            .spawn(async move { crate::fs::read_file_hash(&bg_path) });
+        self.external_check_task = Some(cx.spawn(async move |this, cx| {
+            let result = check.await;
+            let _ = this.update(cx, |editor, cx| {
+                if editor.baseline_generation != generation
+                    || editor.file_path() != Some(path.as_path())
+                {
+                    return;
+                }
+                let disk_hash = match result {
+                    Ok(hash) => Some(hash),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        editor.set_external_change_state(ExternalChangeState::Deleted, cx);
+                        return;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "Failed to inspect file {:?} after a watcher event: {}",
+                            path, error
+                        );
+                        return;
+                    }
+                };
+                if editor.external_disk_hash == disk_hash {
+                    editor.external_baseline_overridden = false;
+                    editor.set_external_change_state(ExternalChangeState::None, cx);
+                    return;
+                }
+                if editor.is_dirty() {
+                    editor.set_external_change_state(ExternalChangeState::Pending, cx);
+                } else if let Err(error) = editor.reload_file(cx) {
+                    eprintln!(
+                        "Failed to reload externally modified file {:?}: {}",
+                        path, error
+                    );
+                }
+            });
+        }));
     }
 
     fn set_external_change_state(&mut self, state: ExternalChangeState, cx: &mut Context<Self>) {

@@ -4678,7 +4678,6 @@ fn test_external_change_reloads_clean_editor(cx: &mut gpui::TestAppContext) {
     cx.update(|_window, cx| {
         editor.update(cx, |ed, cx| {
             ed.handle_external_file_change(cx);
-            assert!(ed.is_loading());
         });
     });
     cx.run_until_parked();
@@ -4711,6 +4710,11 @@ fn test_external_change_preserves_dirty_editor_until_reload(cx: &mut gpui::TestA
     cx.update(|_window, cx| {
         editor.update(cx, |ed, cx| {
             ed.handle_external_file_change(cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
             assert_eq!(ed.buffer().to_string_content(), " localbefore");
             assert!(ed.external_change_pending());
             assert!(ed.save_file_async(cx).is_err());
@@ -4794,6 +4798,11 @@ fn test_keep_local_changes_allows_explicit_save(cx: &mut gpui::TestAppContext) {
     cx.update(|_window, cx| {
         editor.update(cx, |ed, cx| {
             ed.handle_external_file_change(cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
             assert!(ed.external_change_pending());
             ed.keep_local_changes(cx);
             assert!(!ed.external_change_pending());
@@ -4823,6 +4832,11 @@ fn test_deleted_file_can_be_kept_and_recreated(cx: &mut gpui::TestAppContext) {
     cx.update(|_window, cx| {
         editor.update(cx, |ed, cx| {
             ed.handle_external_file_change(cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
             assert_eq!(
                 ed.external_change_state(),
                 super::ExternalChangeState::Deleted
@@ -4839,6 +4853,64 @@ fn test_deleted_file_can_be_kept_and_recreated(cx: &mut gpui::TestAppContext) {
     cx.run_until_parked();
 
     assert_eq!(std::fs::read_to_string(&test_file).unwrap(), "before");
+}
+
+#[gpui::test]
+fn async_save_preserves_mid_save_edits_and_rejects_unnotified_disk_conflicts(
+    cx: &mut gpui::TestAppContext,
+) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let test_file = temp_dir.path().join("async_save_conflict.md");
+    std::fs::write(&test_file, "initial").unwrap();
+
+    let (editor, cx) =
+        cx.add_window_view(|_window, cx| super::Editor::new_with_path(test_file.clone(), cx));
+    cx.run_until_parked();
+
+    // 1. Editing during an in-flight async save writes the snapshot cleanly and keeps is_dirty().
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.perform_edit(cx, |ed| ed.buffer_mut().insert_text("first "));
+            let task = ed.save_file_async(cx).expect("save starts asynchronously");
+            cx.spawn(async move |_this, _cx| task.await.unwrap())
+                .detach();
+            ed.perform_edit(cx, |ed| ed.buffer_mut().insert_text("second "));
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(&test_file).unwrap(),
+        "first initial"
+    );
+    editor.read_with(cx, |ed, _| {
+        assert!(ed.is_dirty());
+        assert_eq!(ed.buffer().to_string_content(), "first second initial");
+    });
+
+    // 2. Unnotified external disk modification aborts async save cleanly and sets Pending.
+    std::fs::write(&test_file, "external change").unwrap();
+    let result_slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = result_slot.clone();
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            let task = ed
+                .save_file_async(cx)
+                .expect("conflict checked in background");
+            cx.spawn(async move |_this, _cx| {
+                *slot.lock().unwrap() = Some(task.await);
+            })
+            .detach();
+        });
+    });
+    cx.run_until_parked();
+    assert!(result_slot.lock().unwrap().take().unwrap().is_err());
+    assert_eq!(
+        std::fs::read_to_string(&test_file).unwrap(),
+        "external change"
+    );
+    editor.read_with(cx, |ed, _| {
+        assert!(ed.external_change_pending());
+    });
 }
 
 #[gpui::test]

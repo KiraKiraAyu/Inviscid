@@ -1,9 +1,89 @@
 //! File system utilities.
 
+use crate::buffer::LineEnding;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::io::Write;
+use std::hash::Hasher;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::time::SystemTime;
+
+const IO_BUF_BYTES: usize = 64 * 1024;
+
+/// Computes the exact disk content hash (matching `DefaultHasher` on `str`) by
+/// streaming file bytes without reading the entire document into a `String`.
+pub fn read_file_hash(path: &Path) -> std::io::Result<u64> {
+    let file = fs::File::open(path)?;
+    let mut reader = BufReader::with_capacity(IO_BUF_BYTES, file);
+    let mut hasher = DefaultHasher::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let count = match reader.read(&mut buf) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            break;
+        }
+        hasher.write(&buf[..count]);
+    }
+    // Match `Hash for str` / `StreamingBuffer::disk_hash` trailing delimiter.
+    hasher.write_u8(0xff);
+    Ok(hasher.finish())
+}
+
+/// Streams a `ropey::Rope` snapshot directly to disk with the target line ending,
+/// returning `(mtime, disk_hash)` in a single pass with zero full-document allocation.
+pub fn save_rope_snapshot(
+    path: &Path,
+    rope: &ropey::Rope,
+    line_ending: LineEnding,
+    is_empty_doc: bool,
+) -> std::io::Result<(SystemTime, u64)> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+
+    let mut writer = BufWriter::with_capacity(IO_BUF_BYTES, file);
+    let mut hasher = DefaultHasher::new();
+    if !is_empty_doc {
+        let ending = line_ending.as_str().as_bytes();
+        for chunk in rope.chunks() {
+            if line_ending == LineEnding::Lf {
+                let bytes = chunk.as_bytes();
+                writer.write_all(bytes)?;
+                hasher.write(bytes);
+            } else {
+                let mut first = true;
+                for segment in chunk.split('\n') {
+                    if !first {
+                        writer.write_all(ending)?;
+                        hasher.write(ending);
+                    }
+                    first = false;
+                    if !segment.is_empty() {
+                        let bytes = segment.as_bytes();
+                        writer.write_all(bytes)?;
+                        hasher.write(bytes);
+                    }
+                }
+            }
+        }
+    }
+    writer.flush()?;
+    hasher.write_u8(0xff);
+
+    let mtime = writer.get_ref().metadata()?.modified()?;
+    Ok((mtime, hasher.finish()))
+}
 
 /// Saves a document directly to disk by streaming string chunks into a buffered writer.
 ///

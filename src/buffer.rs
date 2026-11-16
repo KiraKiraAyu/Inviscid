@@ -499,22 +499,45 @@ impl TextBuffer {
         self.rope.clone()
     }
 
-    /// Yields chunks for each line and line ending.
-    pub fn chunks_with_line_ending(&self) -> impl Iterator<Item = String> {
-        let content = self.to_string_content();
+    /// Yields chunks for each line and line ending lazily without materializing the document.
+    pub fn chunks_with_line_ending(&self) -> impl Iterator<Item = String> + '_ {
         let ending = self.line_ending.as_str();
-        let mut chunks = Vec::new();
-        for segment in content.split_inclusive(ending) {
-            if let Some(line) = segment.strip_suffix(ending) {
-                if !line.is_empty() {
-                    chunks.push(line.to_owned());
-                }
-                chunks.push(ending.to_owned());
-            } else if !segment.is_empty() {
-                chunks.push(segment.to_owned());
+        let mut lines = (!self.is_empty())
+            .then(|| self.rope.lines())
+            .into_iter()
+            .flatten();
+        let mut pending: Option<String> = None;
+        std::iter::from_fn(move || {
+            if let Some(next) = pending.take() {
+                return Some(next);
             }
+            for line in lines.by_ref() {
+                let mut text = line.to_string();
+                if text.ends_with('\n') {
+                    text.pop();
+                    if text.is_empty() {
+                        return Some(ending.to_owned());
+                    }
+                    pending = Some(ending.to_owned());
+                    return Some(text);
+                }
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+            None
+        })
+    }
+
+    pub fn prepared_content_hash(&self) -> Option<u64> {
+        match &self.line_fingerprints {
+            fingerprint::FingerprintState::Ready(fingerprints) => Some(fingerprints.content_hash()),
+            fingerprint::FingerprintState::Pending { .. } => None,
         }
-        chunks.into_iter()
+    }
+
+    pub fn compute_rope_content_hash(rope: &Rope) -> u64 {
+        fingerprint::LineFingerprints::new(rope).content_hash()
     }
 
     pub fn word_count(&self) -> usize {
