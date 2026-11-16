@@ -104,11 +104,7 @@ pub fn render_live_line_content(
                     .w_full()
                     .mt(px(6.0))
                     .bg(theme.code_block_header_bg)
-                    .border_t_1()
-                    .border_l_1()
-                    .border_r_1()
-                    .border_color(theme.code_block_border)
-                    .rounded_t(px(6.0))
+                    .rounded_t(px(10.0))
                     .px(px(14.0))
                     .py(px(4.0))
                     .flex()
@@ -133,11 +129,7 @@ pub fn render_live_line_content(
                     .h(px(6.0))
                     .mb(px(6.0))
                     .bg(theme.code_block_bg)
-                    .border_b_1()
-                    .border_l_1()
-                    .border_r_1()
-                    .border_color(theme.code_block_border)
-                    .rounded_b(px(6.0));
+                    .rounded_b(px(10.0));
                 closing.into_any_element()
             }
         }
@@ -166,9 +158,6 @@ pub fn render_live_line_content(
             let content = div()
                 .w_full()
                 .bg(theme.code_block_bg)
-                .border_l_1()
-                .border_r_1()
-                .border_color(theme.code_block_border)
                 .px(px(14.0))
                 .py(px(1.0))
                 .child(text_canvas);

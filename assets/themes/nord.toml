@@ -22,9 +22,9 @@ heading_marker = "#4c566a"
 inline_code_bg = "#3b425288"
 inline_code_fg = "#8fbcbb"
 
-code_block_bg = "#2e3440"
+code_block_bg = "#292f3a"
 code_block_border = "#434c5e"
-code_block_header_bg = "#3b4252"
+code_block_header_bg = "#242933"
 code_block_header_fg = "#88c0d0"
 code_block_text = "#d8dee9"
 
