@@ -94,6 +94,7 @@ fn deleting_to_empty_keeps_line_deltas_and_cached_index_consistent() {
         buffer.replace_line_range(SourceLine::new(start), count, inserted, buffer.selection());
         assert_eq!(buffer.to_string_normalized(), "");
         assert_eq!(buffer.line_count(), 2);
+        let mut expected_classified = classified;
         for (phase, old_count) in [before_count, 2, before_count].into_iter().enumerate() {
             let delta = buffer.last_edit_delta.unwrap();
             assert_eq!(
@@ -101,24 +102,18 @@ fn deleting_to_empty_keeps_line_deltas_and_cached_index_consistent() {
                 buffer.line_count(),
                 "{input:?}"
             );
+            expected_classified += delta.new_line_count;
+            assert_eq!(
+                buffer.line_index().classified_lines(),
+                expected_classified,
+                "index rebuilt in phase {phase} for {input:?}"
+            );
             if phase == 0 {
-                assert_eq!(
-                    buffer.line_index().classified_lines(),
-                    classified + delta.new_line_count,
-                    "index rebuilt for {input:?}"
-                );
                 buffer.undo();
                 assert_eq!(buffer.to_string_normalized(), input);
             } else if phase == 1 {
-                // Undo restores an earlier version, so the existing cache policy rebuilds.
-                assert_eq!(buffer.line_index().classified_lines(), before_count);
                 buffer.redo();
                 assert_eq!(buffer.to_string_normalized(), "");
-            } else {
-                assert_eq!(
-                    buffer.line_index().classified_lines(),
-                    before_count + delta.new_line_count
-                );
             }
         }
     }

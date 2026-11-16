@@ -21,7 +21,6 @@ fn char_kind(c: char) -> CharKind {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LineIndex {
-    version: usize,
     revision: u64,
     structure: super::structure_index::StructureIndex,
 }
@@ -37,15 +36,13 @@ impl LineIndex {
 
     fn build(buffer: &TextBuffer) -> Self {
         Self {
-            version: buffer.version,
             revision: buffer.revision,
             structure: super::structure_index::StructureIndex::new(buffer),
         }
     }
 
     fn update(&mut self, buffer: &TextBuffer) {
-        if self.version.checked_add(1) == Some(buffer.version)
-            && self.revision.checked_add(1) == Some(buffer.revision)
+        if self.revision.checked_add(1) == Some(buffer.revision)
             && let Some(delta) = buffer.last_edit_delta
             && delta.start_line.index() + delta.old_line_count <= self.structure.len()
             && self.structure.len() - delta.old_line_count + delta.new_line_count
@@ -57,7 +54,6 @@ impl LineIndex {
                 buffer,
                 start..start + delta.new_line_count,
             );
-            self.version = buffer.version;
             self.revision = buffer.revision;
         } else {
             *self = Self::build(buffer);
@@ -152,6 +148,32 @@ mod structure_cache_tests {
         buffer.redo();
         assert_matches_full_scan(&buffer);
     }
+
+    #[test]
+    fn undo_and_redo_update_structure_incrementally_without_full_rebuild() {
+        let content = "paragraph\n".repeat(2000);
+        let mut buffer = TextBuffer::from_str(&content, None);
+        let initial_classified = buffer.line_index().classified_lines();
+        assert_eq!(initial_classified, buffer.line_count());
+
+        buffer.set_cursor(Position::new(SourceLine::new(2), 0));
+        buffer.insert_text("```rust\n");
+        let after_insert = buffer.line_index().classified_lines();
+        assert!(after_insert < initial_classified + 10);
+        assert!(buffer.is_in_code_fence(SourceLine::new(1500)));
+
+        buffer.undo();
+        let after_undo = buffer.line_index().classified_lines();
+        assert!(after_undo < after_insert + 10);
+        assert!(!buffer.is_in_code_fence(SourceLine::new(1500)));
+        assert_matches_full_scan(&buffer);
+
+        buffer.redo();
+        let after_redo = buffer.line_index().classified_lines();
+        assert!(after_redo < after_undo + 10);
+        assert!(buffer.is_in_code_fence(SourceLine::new(1500)));
+        assert_matches_full_scan(&buffer);
+    }
 }
 
 impl TextBuffer {
@@ -159,7 +181,6 @@ impl TextBuffer {
         {
             let cache = self.line_index_cache.borrow();
             if let Some(index) = cache.as_ref()
-                && index.version == self.version
                 && index.revision == self.revision
             {
                 return Ref::map(cache, |c| c.as_ref().unwrap());
