@@ -121,13 +121,13 @@ impl RenderOnce for MenuTrigger {
                 "menu_trigger".into(),
                 category as u64,
             ))
-            .h(ControlHeight::SM)
-            .px(px(7.0))
+            .h(ControlHeight::MD)
+            .px(Spacing::SM)
             .flex()
             .flex_row()
             .items_center()
             .justify_center()
-            .rounded(Radius::SM)
+            .rounded(Radius::LG)
             .bg(if is_active {
                 theme.btn_hover
             } else {
@@ -220,15 +220,13 @@ pub fn render_menu_dropdown(
         .id("menu_dropdown_card")
         .occlude()
         .absolute()
-        .top(px(30.0))
+        .top(px(34.0))
         .left_0()
         .w(px(width))
         .p(Spacing::XS)
         .bg(theme.bg_editor)
-        .border_1()
-        .border_color(theme.border)
-        .rounded(Radius::MD)
-        .shadow_md()
+        .rounded(Radius::LG)
+        .shadow_lg()
         .flex()
         .flex_col()
         .on_mouse_down_out(|_, window, cx| {

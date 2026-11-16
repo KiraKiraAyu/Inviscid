@@ -262,9 +262,9 @@ impl ProjectPanel {
                 .id("project_file_filter")
                 .placeholder("Filter files")
                 .height(ControlHeight::SM)
-                .radius(Radius::SM)
+                .radius(Radius::LG)
                 .padding_x(Spacing::SM)
-                .bg(TextInputBg::Toolbar)
+                .bg(TextInputBg::Editor)
         });
         let subscription =
             cx.subscribe(&input, |this, _, event: &TextInputEvent, cx| match event {
@@ -1297,6 +1297,7 @@ impl Render for ProjectPanel {
         }))
         .flex_1()
         .w_full()
+        .px(Spacing::SM)
         .py(crate::ui::dock_panel::LIST_VERTICAL_PADDING);
 
         let on_action = {
@@ -1398,12 +1399,13 @@ impl Render for ProjectPanel {
             }))
             .w_full()
             .h_full()
-            .bg(theme.bg_toolbar)
+            .bg(theme.bg_app)
             .flex()
             .flex_col()
             .overflow_hidden()
             .on_mouse_down(MouseButton::Right, bg_right_click)
             .on_mouse_down(MouseButton::Left, bg_left_click)
+            .child(crate::ui::dock_panel::section_header("EXPLORER", &theme))
             .when(self.show_filter, |this| {
                 let input = self.ensure_filter_input(cx);
                 this.child(div().flex_none().w_full().p(Spacing::SM).child(input))

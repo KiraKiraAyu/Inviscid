@@ -15,7 +15,7 @@ pub struct StatusBar {
 }
 
 impl StatusBar {
-    pub const HEIGHT: Pixels = ControlHeight::LG;
+    pub const HEIGHT: Pixels = ControlHeight::XL;
 
     pub fn new(meta: Option<EditorStatusMeta>, active_sidebar: Option<SidebarView>) -> Self {
         Self {
@@ -90,11 +90,8 @@ impl Render for StatusBar {
             .w_full()
             .h(Self::HEIGHT)
             .flex_none()
-            .bg(theme.bg_statusbar)
-            .border_t_1()
-            .border_color(theme.border)
-            .pl(Spacing::XS)
-            .pr(Spacing::XS)
+            .bg(theme.bg_app)
+            .px(px(6.0))
             .flex()
             .flex_row()
             .items_center()
@@ -251,11 +248,11 @@ fn render_sidebar_switch(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .size(ControlHeight::SM)
+        .size(ControlHeight::MD)
         .flex()
         .items_center()
         .justify_center()
-        .rounded(Radius::SM)
+        .rounded(Radius::LG)
         .cursor_pointer()
         .when(is_active, |this| this.bg(theme.btn_active))
         .hover(|s| s.bg(theme.btn_hover))

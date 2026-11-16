@@ -60,18 +60,18 @@ impl FindBar {
                 .id("find_bar_input")
                 .placeholder("Find")
                 .height(ControlHeight::SM)
-                .radius(Radius::SM)
+                .radius(Radius::MD)
                 .padding_x(Spacing::SM)
-                .bg(crate::ui::TextInputBg::Toolbar)
+                .bg(crate::ui::TextInputBg::Editor)
         });
         let replace_input = cx.new(|cx| {
             TextInput::new("", cx)
                 .id("find_bar_replace_input")
                 .placeholder("Replace")
                 .height(ControlHeight::SM)
-                .radius(Radius::SM)
+                .radius(Radius::MD)
                 .padding_x(Spacing::SM)
-                .bg(crate::ui::TextInputBg::Toolbar)
+                .bg(crate::ui::TextInputBg::Editor)
         });
         let _input_sub = cx.subscribe(&input, |this, _, event: &TextInputEvent, cx| match event {
             TextInputEvent::Changed(_) => this.emit_query(cx),
@@ -236,13 +236,7 @@ impl FindBar {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(Radius::SM)
-            .border_1()
-            .border_color(if is_on {
-                theme.text_accent
-            } else {
-                transparent_black()
-            })
+            .rounded(Radius::MD)
             .when(is_on, |this| this.bg(theme.btn_active))
             .text_size(FontSize::CAPTION)
             .font_weight(if is_on {
@@ -384,8 +378,9 @@ impl Render for FindBar {
             .w_full()
             .flex_none()
             .bg(bg)
-            .border_b_1()
-            .border_color(border_subtle)
+            .rounded(Radius::XL)
+            .shadow_lg()
+            .p(Spacing::XXS)
             .flex()
             .flex_col()
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -500,8 +495,6 @@ impl Render for FindBar {
                     div()
                         .w_full()
                         .h(Self::HEIGHT)
-                        .border_t_1()
-                        .border_color(border_subtle)
                         .px(Spacing::SM)
                         .flex()
                         .flex_row()

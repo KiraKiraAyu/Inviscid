@@ -19,7 +19,7 @@ pub struct WindowTitleBar {
 }
 
 impl WindowTitleBar {
-    pub const HEIGHT: Pixels = ControlHeight::LG;
+    pub const HEIGHT: Pixels = ControlHeight::XL;
 
     pub fn new() -> Self {
         Self {
@@ -63,9 +63,7 @@ impl RenderOnce for WindowTitleBar {
             .w_full()
             .h(Self::HEIGHT)
             .flex_none()
-            .bg(theme.bg_toolbar)
-            .border_b_1()
-            .border_color(theme.border)
+            .bg(theme.bg_app)
             .pl(titlebar_left_padding())
             .flex()
             .flex_row()

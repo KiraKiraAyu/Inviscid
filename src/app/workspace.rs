@@ -114,6 +114,9 @@ impl Workspace {
             tab_bar::TabBarEvent::RevealInProjectPanel(idx) => {
                 this.reveal_tab_in_project_panel(*idx, cx);
             }
+            tab_bar::TabBarEvent::EdgeFlushChanged => {
+                cx.notify();
+            }
         })
     }
 
@@ -1426,6 +1429,21 @@ impl Render for Workspace {
         let sidebar_visible = self.sidebar_visible;
         let has_tabs = !self.tabs.is_empty();
         let has_workspace = self.root_dir.is_some();
+        let (flush_left, flush_right) = if has_tabs {
+            self.tab_bar.read(cx).active_tab_edge_flush()
+        } else {
+            (false, false)
+        };
+        let canvas_tl_radius = if flush_left {
+            px(0.0)
+        } else {
+            crate::ui::Radius::CANVAS
+        };
+        let canvas_tr_radius = if flush_right {
+            px(0.0)
+        } else {
+            crate::ui::Radius::CANVAS
+        };
         let theme = cx
             .try_global::<ThemeManager>()
             .map(|m| m.theme())
@@ -1474,26 +1492,38 @@ impl Render for Workspace {
                             .flex_1()
                             .min_w_0()
                             .h_full()
+                            .when(!sidebar_visible, |this| this.pl(crate::ui::Spacing::SM))
+                            .when(!self.outline_visible, |this| {
+                                this.pr(crate::ui::Spacing::SM)
+                            })
                             .flex()
-                            .flex_col()
-                            .when(has_tabs, |this| this.child(self.tab_bar.clone()))
-                            .child(div().flex_1().min_h_0().w_full().overflow_hidden().child(
-                                if active_is_search {
-                                    self.search_panel.clone().into_any_element()
-                                } else if let Some(editor) = active_editor {
-                                    editor.into_any_element()
-                                } else if has_workspace {
-                                    div()
-                                        .flex_1()
-                                        .w_full()
-                                        .h_full()
-                                        .bg(theme.bg_editor)
-                                        .into_any_element()
-                                } else {
-                                    welcome::render_welcome_view(&self.focus_handle, &theme, cx)
-                                        .into_any_element()
-                                },
-                            )),
+                            // Reverse column order paints TabBar after the editor so its 1px
+                            // bottom apron and concave fillets seal cleanly over the canvas edge.
+                            .flex_col_reverse()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .w_full()
+                                    .when(has_tabs, |this| this.mt(px(-1.0)))
+                                    .bg(theme.bg_editor)
+                                    .rounded_tl(canvas_tl_radius)
+                                    .rounded_tr(canvas_tr_radius)
+                                    .rounded_bl(crate::ui::Radius::CANVAS)
+                                    .rounded_br(crate::ui::Radius::CANVAS)
+                                    .overflow_hidden()
+                                    .child(if active_is_search {
+                                        self.search_panel.clone().into_any_element()
+                                    } else if let Some(editor) = active_editor {
+                                        editor.into_any_element()
+                                    } else if has_workspace {
+                                        div().flex_1().w_full().h_full().into_any_element()
+                                    } else {
+                                        welcome::render_welcome_view(&self.focus_handle, &theme, cx)
+                                            .into_any_element()
+                                    }),
+                            )
+                            .when(has_tabs, |this| this.child(self.tab_bar.clone())),
                     )
                     .when(self.outline_visible, |this| {
                         this.child(sidebar::render_outline_resize_handle(

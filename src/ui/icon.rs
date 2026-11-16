@@ -19,6 +19,7 @@ pub enum IconName {
     Settings,
     Keyboard,
     Lock,
+    Pin,
     Search,
 }
 
@@ -42,6 +43,7 @@ impl IconName {
             Self::Settings => "icons/settings.svg",
             Self::Keyboard => "icons/keyboard.svg",
             Self::Lock => "icons/lock.svg",
+            Self::Pin => "icons/pin.svg",
             Self::Search => "icons/search.svg",
         }
     }
@@ -65,6 +67,7 @@ impl IconName {
             Self::Settings,
             Self::Keyboard,
             Self::Lock,
+            Self::Pin,
             Self::Search,
         ]
     }

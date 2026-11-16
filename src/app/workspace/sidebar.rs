@@ -108,27 +108,17 @@ fn render_docked_panel(
     width: Pixels,
     content: AnyElement,
     theme: &Theme,
-    side: DockedPanelSide,
+    _side: DockedPanelSide,
 ) -> impl IntoElement {
-    let panel = div()
+    div()
         .id(id)
         .w(width)
         .h_full()
-        .bg(theme.bg_toolbar)
+        .bg(theme.bg_app)
         .flex()
         .flex_col()
-        .overflow_hidden();
-
-    match side {
-        DockedPanelSide::Left => panel
-            .border_r_1()
-            .border_color(theme.border_subtle)
-            .child(content),
-        DockedPanelSide::Right => panel
-            .border_l_1()
-            .border_color(theme.border_subtle)
-            .child(content),
-    }
+        .overflow_hidden()
+        .child(content)
 }
 
 pub fn render_sidebar_resize_handle(
@@ -171,15 +161,30 @@ fn render_panel_resize_handle(
         DockedPanelSide::Right => (px(-3.0), px(-2.0)),
     };
 
+    let hover_color = theme.text_accent.opacity(0.45);
+    let active_color = theme.text_accent;
+
     div()
         .id(id)
+        .group("panel_resize")
         .h_full()
         .w(px(5.0))
         .ml(left_margin)
         .mr(right_margin)
+        .flex()
+        .items_center()
+        .justify_center()
         .cursor_col_resize()
-        .hover(|s| s.bg(theme.border))
-        .when(is_resizing, |s| s.bg(theme.text_accent))
+        .child(
+            div()
+                .w(px(3.0))
+                .h(px(32.0))
+                .rounded_full()
+                .when(!is_resizing, |s| {
+                    s.group_hover("panel_resize", move |s| s.bg(hover_color))
+                })
+                .when(is_resizing, |s| s.bg(active_color)),
+        )
         .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
             if let Some(ws) = ws_weak.upgrade() {
                 ws.update(cx, |this, cx| {

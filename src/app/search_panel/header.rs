@@ -25,12 +25,10 @@ impl SearchPanel {
 
         div()
             .w_full()
-            .p(Spacing::SM)
+            .p(Spacing::MD)
             .flex()
             .flex_col()
             .gap(Spacing::XS)
-            .border_b_1()
-            .border_color(theme.border_subtle)
             .child(
                 div()
                     .w_full()
@@ -246,13 +244,7 @@ impl SearchPanel {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(Radius::SM)
-            .border_1()
-            .border_color(if is_on {
-                theme.text_accent
-            } else {
-                gpui::transparent_black()
-            })
+            .rounded(Radius::MD)
             .when(is_on, |this| this.bg(theme.btn_active))
             .text_size(FontSize::CAPTION)
             .font_weight(if is_on {

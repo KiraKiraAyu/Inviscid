@@ -1191,8 +1191,6 @@ impl TextInput {
             .flex_1()
             .overflow_hidden()
             .bg(bg)
-            .border_1()
-            .border_color(theme.border)
             .rounded(self.radius)
             .cursor_text()
             .on_mouse_down(

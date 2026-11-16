@@ -125,10 +125,8 @@ impl ContextMenuBuilder {
             .w(MENU_WIDTH)
             .p(CONTAINER_PADDING)
             .bg(theme.bg_editor)
-            .border_1()
-            .border_color(theme.border)
-            .rounded(Radius::MD)
-            .shadow_md()
+            .rounded(Radius::LG)
+            .shadow_lg()
             .flex()
             .flex_col()
             .on_mouse_down_out(move |_, window, cx| {

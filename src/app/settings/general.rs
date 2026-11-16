@@ -255,8 +255,9 @@ impl SettingsWindow {
             let mut input = TextInput::new(&current, cx)
                 .placeholder("https://... (leave empty for offline)")
                 .height(ControlHeight::MD)
-                .radius(Radius::SM)
-                .padding_x(Spacing::MDS);
+                .radius(Radius::MD)
+                .padding_x(Spacing::MDS)
+                .bg(crate::ui::TextInputBg::Toolbar);
             input.buffer_mut().select_all();
             input
         });

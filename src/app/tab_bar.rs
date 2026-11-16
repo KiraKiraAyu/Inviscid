@@ -1,5 +1,5 @@
 use crate::theme::{DEFAULT_THEME, ThemeManager};
-use crate::ui::{ControlHeight, FontSize, Icon, IconName, IconSize, Radius, Spacing};
+use crate::ui::{FontSize, Icon, IconName, IconSize, Radius, Spacing};
 use gpui::prelude::*;
 use gpui::*;
 
@@ -33,6 +33,7 @@ pub enum TabBarEvent {
     RevealInFileExplorer(usize),
     TogglePin(usize),
     RevealInProjectPanel(usize),
+    EdgeFlushChanged,
 }
 
 impl EventEmitter<TabBarEvent> for TabBar {}
@@ -47,10 +48,117 @@ pub struct TabBar {
     scroll_handle: ScrollHandle,
     tab_scroll: crate::ui::SmoothScrollPhysics,
     scroll_task: Option<Task<()>>,
+    last_edge_flush: (bool, bool),
+}
+
+#[derive(Clone, Copy)]
+enum FilletSide {
+    Left,
+    Right,
+}
+
+/// Paints an outward concave corner fillet (`10x11`) whose bottom `1px` apron overlaps the
+/// editor top edge to prevent subpixel seams at fractional display scaling.
+fn render_tab_concave_fillet(side: FilletSide, color: Hsla) -> impl IntoElement {
+    let offset = px(-10.0);
+    canvas(
+        |_bounds, _window, _cx| {},
+        move |bounds, (), window, _cx| {
+            let r = px(10.0);
+            let x0 = bounds.origin.x;
+            let y0 = bounds.origin.y;
+            let x1 = x0 + r;
+            let y_arc = y0 + r;
+            let y1 = y0 + px(11.0);
+
+            let mut builder = PathBuilder::fill();
+            match side {
+                FilletSide::Left => {
+                    builder.move_to(point(x1, y0));
+                    builder.line_to(point(x1, y1));
+                    builder.line_to(point(x0, y1));
+                    builder.line_to(point(x0, y_arc));
+                    builder.arc_to(point(r, r), px(0.0), false, false, point(x1, y0));
+                }
+                FilletSide::Right => {
+                    builder.move_to(point(x0, y0));
+                    builder.line_to(point(x0, y1));
+                    builder.line_to(point(x1, y1));
+                    builder.line_to(point(x1, y_arc));
+                    builder.arc_to(point(r, r), px(0.0), false, true, point(x0, y0));
+                }
+            }
+            builder.close();
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, color);
+            }
+        },
+    )
+    .absolute()
+    .bottom_0()
+    .when(matches!(side, FilletSide::Left), |this| this.left(offset))
+    .when(matches!(side, FilletSide::Right), |this| this.right(offset))
+    .w(px(10.0))
+    .h(px(11.0))
 }
 
 impl TabBar {
-    pub const HEIGHT: Pixels = ControlHeight::TITLEBAR;
+    pub const HEIGHT: Pixels = px(35.0);
+
+    /// Returns `(flush_left, flush_right)` indicating whether the active tab's left or right
+    /// edge touches the tab viewport boundary, so the canvas drops the matching top corner radius.
+    pub fn active_tab_edge_flush(&self) -> (bool, bool) {
+        if self.tabs_meta.is_empty() {
+            return (false, false);
+        }
+        let offset_x = self.scroll_handle.offset().x;
+        let viewport = self.scroll_handle.bounds();
+        if viewport.size.width > px(0.0)
+            && let Some(item_bounds) = self.scroll_handle.bounds_for_item(self.active_tab_idx)
+        {
+            let vis_left = item_bounds.left() + offset_x;
+            let vis_right = item_bounds.right() + offset_x;
+            return (
+                vis_left <= viewport.left() + px(1.0),
+                vis_right >= viewport.right() - px(1.0),
+            );
+        }
+        let max_x = self.scroll_handle.max_offset().width;
+        let flush_left = self.active_tab_idx == 0 && (-offset_x) <= px(1.0);
+        let flush_right = max_x > px(0.0)
+            && self.active_tab_idx + 1 == self.tabs_meta.len()
+            && (-offset_x) >= max_x - px(1.0);
+        (flush_left, flush_right)
+    }
+
+    pub fn is_first_tab_flush_left(&self) -> bool {
+        self.active_tab_edge_flush().0
+    }
+
+    fn scroll_active_tab_into_view(&self) {
+        self.scroll_handle.scroll_to_item(self.active_tab_idx);
+        let viewport = self.scroll_handle.bounds();
+        if viewport.size.width > px(0.0)
+            && let Some(item_bounds) = self.scroll_handle.bounds_for_item(self.active_tab_idx)
+        {
+            let mut offset = self.scroll_handle.offset();
+            if item_bounds.left() + offset.x < viewport.left() {
+                offset.x = viewport.left() - item_bounds.left();
+            } else if item_bounds.right() + offset.x > viewport.right() {
+                offset.x = viewport.right() - item_bounds.right();
+            }
+            self.scroll_handle.set_offset(offset);
+        }
+    }
+
+    fn sync_edge_flush(&mut self, cx: &mut Context<Self>) {
+        let edge = self.active_tab_edge_flush();
+        if edge != self.last_edge_flush {
+            self.last_edge_flush = edge;
+            cx.emit(TabBarEvent::EdgeFlushChanged);
+            cx.notify();
+        }
+    }
 
     fn compute_duplicate_titles(tabs: &[TabMeta]) -> std::collections::HashSet<String> {
         let mut counts = std::collections::HashMap::new();
@@ -69,6 +177,7 @@ impl TabBar {
         if !tabs_meta.is_empty() {
             scroll_handle.scroll_to_item(active_tab_idx);
         }
+        let last_edge_flush = (active_tab_idx == 0 && !tabs_meta.is_empty(), false);
         Self {
             tabs_meta,
             duplicate_titles,
@@ -79,6 +188,7 @@ impl TabBar {
             scroll_handle,
             tab_scroll: crate::ui::SmoothScrollPhysics::new(),
             scroll_task: None,
+            last_edge_flush,
         }
     }
 
@@ -113,8 +223,13 @@ impl TabBar {
             // Only scroll to the active item if active tab actually changed or tabs count changed.
             // Avoids resetting user's manual scroll position on sidebar drag or tab dirty changes.
             if active_changed || tabs_len_changed {
-                self.scroll_handle.scroll_to_item(active_tab_idx);
+                if tabs_changed {
+                    self.scroll_handle.scroll_to_item(active_tab_idx);
+                } else {
+                    self.scroll_active_tab_into_view();
+                }
             }
+            self.last_edge_flush = self.active_tab_edge_flush();
             cx.notify();
         }
     }
@@ -261,6 +376,7 @@ impl TabBar {
                     self.tab_scroll.scroll_direct(delta, max_scroll);
                     self.scroll_handle
                         .set_offset(Point::new(-self.tab_scroll.current_scroll_top, px(0.0)));
+                    self.sync_edge_flush(cx);
                     cx.notify();
                 }
             }
@@ -322,26 +438,20 @@ impl Render for TabBar {
 
         let sidebar_width = self.sidebar_offset;
         let duplicate_titles = &self.duplicate_titles;
+        let edge_flush = self.active_tab_edge_flush();
+        self.last_edge_flush = edge_flush;
+        let edge_watch_weak = this_weak.clone();
 
         div()
             .w_full()
             .h(Self::HEIGHT)
             .flex_none()
-            .bg(theme.bg_toolbar)
+            .bg(transparent_black())
             .relative()
             .flex()
             .flex_row()
-            .items_center()
+            .items_end()
             .justify_between()
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .border_b_1()
-                    .border_color(theme.border_subtle),
-            )
             .child(
                 div()
                     .id("tab_bar_scroll")
@@ -355,7 +465,8 @@ impl Render for TabBar {
                     .h_full()
                     .flex()
                     .flex_row()
-                    .items_center()
+                    .items_end()
+                    .gap(Spacing::XS)
                     .children(self.tabs_meta.iter().enumerate().map(|(tab_idx, meta)| {
                         let is_active = tab_idx == active_tab_idx;
                         let is_pinned = meta.is_pinned;
@@ -369,28 +480,44 @@ impl Render for TabBar {
                         } else {
                             None
                         };
+                        let inactive_hover = theme.btn_hover.opacity(0.55);
                         div()
                             .id(ElementId::NamedInteger("tab_item".into(), tab_idx as u64))
                             .flex_none()
                             .group("tab")
                             .relative()
-                            .h_full()
                             .flex()
                             .flex_row()
                             .items_center()
                             .justify_center()
+                            .pl(Spacing::LG)
+                            .pr(Spacing::MDS)
                             .gap(Spacing::SMD)
-                            .px(Spacing::XXL)
-                            .border_r_1()
-                            .border_color(theme.border_subtle)
-                            .bg(if is_active {
-                                theme.bg_editor
-                            } else {
-                                theme.bg_toolbar
+                            .when(is_active, |this| {
+                                this.h(Self::HEIGHT)
+                                    .pb(px(1.0))
+                                    .rounded_tl(Radius::TAB)
+                                    .rounded_tr(Radius::TAB)
+                                    .bg(theme.bg_editor)
+                                    .when(!edge_flush.0, |this| {
+                                        this.child(render_tab_concave_fillet(
+                                            FilletSide::Left,
+                                            theme.bg_editor,
+                                        ))
+                                    })
+                                    .when(!edge_flush.1, |this| {
+                                        this.child(render_tab_concave_fillet(
+                                            FilletSide::Right,
+                                            theme.bg_editor,
+                                        ))
+                                    })
                             })
-                            .when(is_active, |this| this.pb(px(1.0)))
                             .when(!is_active, |this| {
-                                this.border_b_1().border_color(theme.border_subtle)
+                                this.h(px(24.0))
+                                    .mb(px(6.0))
+                                    .rounded(Radius::LG)
+                                    .bg(transparent_black())
+                                    .hover(move |s| s.bg(inactive_hover))
                             })
                             .cursor_pointer()
                             .on_click(cx.listener(move |_this, _event, _window, cx| {
@@ -457,7 +584,7 @@ impl Render for TabBar {
                                     .text_color(if is_active {
                                         theme.text_primary
                                     } else {
-                                        theme.text_secondary
+                                        theme.text_muted
                                     })
                                     .child(fname),
                             )
@@ -488,37 +615,76 @@ impl Render for TabBar {
                                         .bg(theme.inline_code_fg),
                                 )
                             })
-                            .when(!is_pinned, |this| {
-                                this.child(
-                                    div()
-                                        .id(ElementId::NamedInteger(
-                                            "tab_close".into(),
-                                            tab_idx as u64,
-                                        ))
-                                        .absolute()
-                                        .right(Spacing::XS)
-                                        .w(IconSize::Medium.pixels())
-                                        .h(IconSize::Medium.pixels())
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(Radius::XS)
-                                        .opacity(0.0)
-                                        .group_hover("tab", |s| s.opacity(1.0))
-                                        .hover(|s| s.bg(theme.btn_hover))
-                                        .active(|s| s.bg(theme.btn_active))
-                                        .on_click(cx.listener(move |_this, _event, _window, cx| {
-                                            cx.stop_propagation();
-                                            cx.emit(TabBarEvent::Close(tab_idx));
-                                        }))
-                                        .child(
-                                            Icon::new(IconName::Close)
-                                                .size(IconSize::Indicator)
-                                                .color(theme.text_secondary),
-                                        ),
-                                )
+                            .child(if is_pinned {
+                                div()
+                                    .id(ElementId::NamedInteger("tab_pin".into(), tab_idx as u64))
+                                    .ml(Spacing::XS)
+                                    .flex_none()
+                                    .w(IconSize::Medium.pixels())
+                                    .h(IconSize::Medium.pixels())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(Radius::SM)
+                                    .hover(|s| s.bg(theme.btn_hover))
+                                    .active(|s| s.bg(theme.btn_active))
+                                    .on_click(cx.listener(move |_this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        cx.emit(TabBarEvent::TogglePin(tab_idx));
+                                    }))
+                                    .child(Icon::new(IconName::Pin).size(IconSize::XSmall).color(
+                                        if is_active {
+                                            theme.text_accent
+                                        } else {
+                                            theme.text_muted
+                                        },
+                                    ))
+                            } else {
+                                div()
+                                    .id(ElementId::NamedInteger("tab_close".into(), tab_idx as u64))
+                                    .ml(Spacing::XS)
+                                    .flex_none()
+                                    .w(IconSize::Medium.pixels())
+                                    .h(IconSize::Medium.pixels())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(Radius::SM)
+                                    .opacity(0.0)
+                                    .group_hover("tab", |s| s.opacity(1.0))
+                                    .hover(|s| s.bg(theme.btn_hover))
+                                    .active(|s| s.bg(theme.btn_active))
+                                    .on_click(cx.listener(move |_this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        cx.emit(TabBarEvent::Close(tab_idx));
+                                    }))
+                                    .child(
+                                        Icon::new(IconName::Close)
+                                            .size(IconSize::Indicator)
+                                            .color(theme.text_secondary),
+                                    )
                             })
                     })),
+            )
+            .child(
+                canvas(
+                    |_bounds, _window, _cx| {},
+                    move |_bounds, (), _window, cx| {
+                        let Some(tb) = edge_watch_weak.upgrade() else {
+                            return;
+                        };
+                        if tb.read(cx).active_tab_edge_flush() != edge_flush {
+                            let tb_defer = edge_watch_weak.clone();
+                            cx.defer(move |cx| {
+                                if let Some(tb) = tb_defer.upgrade() {
+                                    tb.update(cx, |this, cx| this.sync_edge_flush(cx));
+                                }
+                            });
+                        }
+                    },
+                )
+                .size_0()
+                .absolute(),
             )
             .when_some(self.active_context_menu.clone(), |this, menu_state| {
                 let safe_bounds = crate::app::workspace::workspace_safe_bounds(window.bounds());
@@ -736,6 +902,13 @@ mod tests {
         tab_bar.update(cx, |tb, cx| {
             tb.sync(tabs.clone(), 1, false, px(100.0), cx);
             assert_eq!(tb.active_tab_idx(), 1);
+            assert!(!tb.is_first_tab_flush_left());
+        });
+
+        // Switching back to the first tab restores flush-left connection
+        tab_bar.update(cx, |tb, cx| {
+            tb.sync(tabs.clone(), 0, false, px(100.0), cx);
+            assert!(tb.is_first_tab_flush_left());
         });
     }
 }

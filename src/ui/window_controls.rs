@@ -1,6 +1,6 @@
 use gpui::{
     App, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
-    StatefulInteractiveElement, Styled, Window, div, px, white,
+    StatefulInteractiveElement, Styled, Window, div, white,
 };
 
 use crate::platform::{
@@ -101,7 +101,7 @@ impl RenderOnce for CaptionButton {
             .id(self.id())
             .justify_center()
             .occlude()
-            .w(px(36.))
+            .w(ControlHeight::XL)
             .h_full()
             .text_color(theme.text_primary)
             .hover(move |s| s.bg(hover_bg).text_color(hover_fg))

@@ -47,8 +47,12 @@ impl Radius {
     pub const LG: Pixels = px(8.0);
     /// 12px: Standalone frameless windows (About window, modal panels).
     pub const XL: Pixels = px(12.0);
-    /// 14px: Large decorative squircle containers (e.g. About window app icon).
+    /// 14px: Large decorative squircle containers (e.g. About window app icon) and active folder tabs.
     pub const XXL: Pixels = px(14.0);
+    /// 14px: Active folder tab top corner radius.
+    pub const TAB: Pixels = px(14.0);
+    /// 20px: Main editing canvas corner radius.
+    pub const CANVAS: Pixels = px(20.0);
     /// 9999px: Fully rounded / capsule (Switch track and thumb, circular badges).
     pub const FULL: Pixels = px(9999.0);
 }

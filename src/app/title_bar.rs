@@ -112,12 +112,11 @@ impl Render for TitleBar {
                         div()
                             .id("app_menu_hamburger_btn")
                             .debug_selector(|| "app_menu_hamburger_btn".into())
-                            .h(ControlHeight::SM)
-                            .px(Spacing::SMD)
+                            .size(ControlHeight::MD)
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(Radius::SM)
+                            .rounded(Radius::LG)
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.btn_hover))
                             .active(|s| s.bg(theme.btn_active))
@@ -138,14 +137,14 @@ impl Render for TitleBar {
                             .relative()
                             .id("workspace_selector_btn")
                             .debug_selector(|| "workspace_selector_btn".into())
-                            .h(ControlHeight::SM)
-                            .px(Spacing::SM)
-                            .rounded(Radius::SM)
+                            .h(ControlHeight::MD)
+                            .px(Spacing::MDS)
+                            .rounded(Radius::FULL)
                             .cursor_pointer()
                             .bg(if is_workspace_menu_active {
                                 theme.btn_hover
                             } else {
-                                transparent_black()
+                                theme.text_primary.opacity(0.05)
                             })
                             .hover(|s| s.bg(theme.btn_hover))
                             .active(|s| s.bg(theme.btn_active))
@@ -170,7 +169,7 @@ impl Render for TitleBar {
                                 this.child(
                                     Icon::new(IconName::Folder)
                                         .size(IconSize::Small)
-                                        .color(theme.text_secondary),
+                                        .color(theme.text_accent),
                                 )
                             })
                             .child(

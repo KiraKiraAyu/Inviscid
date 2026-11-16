@@ -23,6 +23,7 @@ use crate::buffer::{Position, Selection, TextBuffer};
 use crate::markdown::{normalize_buffer_live_cursor, toggle_task_checkbox};
 use crate::search::FindState;
 use crate::theme::{ActiveTheme, Theme};
+use crate::ui::Spacing;
 
 pub mod actions;
 pub mod display_map;
@@ -1409,7 +1410,6 @@ impl Editor {
             .track_focus(&self.focus_handle)
             .w_full()
             .h_full()
-            .bg(theme.bg_editor)
             .flex()
             .items_center()
             .justify_center()
@@ -1475,7 +1475,6 @@ impl Render for Editor {
         if self.is_loading && self.buffer.is_empty() {
             return div()
                 .size_full()
-                .bg(theme.bg_editor)
                 .track_focus(&self.focus_handle)
                 .flex()
                 .items_center()
@@ -1498,8 +1497,6 @@ impl Render for Editor {
             self.blink_task = None;
         }
 
-        let bg_color = theme.bg_editor;
-
         let cursor_style = if self.hovered_link.is_some() {
             CursorStyle::PointingHand
         } else {
@@ -1510,8 +1507,7 @@ impl Render for Editor {
             .key_context(crate::ui::key_context::EDITOR)
             .id("editor_view")
             .track_focus(&self.focus_handle)
-            .cursor(cursor_style)
-            .bg(bg_color);
+            .cursor(cursor_style);
 
         let element = Self::register_actions(element, cx);
         if self.needs_focus_after_find {
@@ -1539,8 +1535,25 @@ impl Render for Editor {
             .on_action(cx.listener(|this, _: &CloseFindBar, window, cx| {
                 this.close_find_bar(Some(window), cx)
             }))
-            .when_some(self.find_bar(), |this, bar| this.child(bar.clone()))
-            .child(div().flex_1().size_full().overflow_hidden().child(element))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .size_full()
+                    .overflow_hidden()
+                    .child(element)
+                    .when_some(self.find_bar(), |this, bar| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(Spacing::MD)
+                                .right(Spacing::LG)
+                                .w(px(500.0))
+                                .max_w(relative(0.92))
+                                .child(bar.clone()),
+                        )
+                    }),
+            )
             .into_any_element()
     }
 }

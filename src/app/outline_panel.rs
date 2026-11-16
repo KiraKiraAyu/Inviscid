@@ -163,6 +163,7 @@ impl OutlinePanel {
         .track_scroll(self.scroll_handle.clone())
         .flex_1()
         .w_full()
+        .px(crate::ui::tokens::Spacing::SM)
         .py(LIST_VERTICAL_PADDING)
     }
 }
@@ -181,10 +182,11 @@ impl Render for OutlinePanel {
             .key_context(crate::ui::key_context::WORKSPACE)
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(theme.bg_toolbar)
+            .bg(theme.bg_app)
             .flex()
             .flex_col()
             .overflow_hidden()
+            .child(dock_panel::section_header("OUTLINE", &theme))
             .child(entries)
     }
 }

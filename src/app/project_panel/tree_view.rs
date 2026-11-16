@@ -90,7 +90,7 @@ pub fn render_inline_row(
         .id("inline_tree_input_row")
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .h(px(22.0))
+        .h(px(26.0))
         .w_full()
         .block_mouse_except_scroll()
         .pl(indent)
@@ -99,7 +99,7 @@ pub fn render_inline_row(
         .flex_row()
         .items_center()
         .gap(px(5.0))
-        .rounded(Radius::XS)
+        .rounded(Radius::LG)
         .bg(theme.btn_active)
         .child(if is_dir {
             let folder_icon = if is_expanded {

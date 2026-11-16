@@ -1,10 +1,10 @@
 name = "GitHub Light"
 
 [colors]
-bg_app = "#f6f8fa"
+bg_app = "#eaeef2"
 bg_editor = "#ffffff"
-bg_toolbar = "#f6f8fa"
-bg_statusbar = "#e6eaef"
+bg_toolbar = "#eaeef2"
+bg_statusbar = "#eaeef2"
 border = "#d0d7de"
 border_subtle = "#dae0e7"
 
