@@ -1,7 +1,10 @@
-use super::{Editor, RenderMode, line_metrics::LineMetrics, parsed_line_store::ParsedLineStore};
+use super::{
+    Editor, RenderMode, line_metrics::LineMetrics, parsed_line_store::ParsedLineStore,
+    window_cache::EditWindowPatch,
+};
 use crate::{buffer::SourceLine, markdown::QuoteProjection};
 use gpui::{Pixels, px};
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 impl Editor {
     pub(super) fn ensure_window_layout(
@@ -12,12 +15,6 @@ impl Editor {
         image: usize,
         syntax: usize,
     ) {
-        if let Some(snapshot) = &self.prepared_document
-            && snapshot.revision != self.buffer.revision()
-            && !self.is_loading
-        {
-            snapshot.session.submit_target(&self.buffer);
-        }
         let current = self.layout_cache.borrow().clone();
         let same_buffer = current.buffer_revision == self.buffer.revision()
             && current.lines_len == self.buffer.line_count()
@@ -61,6 +58,7 @@ impl Editor {
             anchor.and_then(|line| current.metrics.top_relative(line, self.scroll.anchor_line));
         let mut mapped_anchor = anchor;
         let mut dirty = Vec::new();
+        let mut edit_patch = None;
         if incremental {
             let delta = delta.unwrap();
             let start = delta.start_line.index();
@@ -75,8 +73,9 @@ impl Editor {
             });
             let old_pair = current
                 .quote_projection
-                .block_pair(start.min(current.lines_len - 1));
-            let new_pair = projection.block_pair(start.min(self.buffer.line_count() - 1));
+                .block_pair(start.min(current.lines_len.saturating_sub(1)));
+            let new_pair =
+                projection.block_pair(start.min(self.buffer.line_count().saturating_sub(1)));
             let end = old_pair
                 .map_or(start + delta.new_line_count, |(_, end)| {
                     (end.index() + 1).saturating_sub(delta.old_line_count) + delta.new_line_count
@@ -114,8 +113,98 @@ impl Editor {
                     (end + 2).min(self.buffer.line_count())
                 },
             );
+
+            let (local_new_range, is_code_interior, code_close) = if structural {
+                (begin..self.buffer.line_count(), false, None)
+            } else if let Some((open, close)) = self
+                .buffer
+                .line_index()
+                .structure()
+                .fence_range(SourceLine::new(start))
+            {
+                let is_small_mermaid = close.is_some_and(|c| {
+                    c.index() - open.index() <= 1024
+                        && crate::markdown::mermaid_block_range_with_projection(&projection, open)
+                            .is_some()
+                });
+                if is_small_mermaid {
+                    let close_idx = close.unwrap().index();
+                    (open.index()..close_idx + 1, false, None)
+                } else {
+                    (
+                        start..(start + delta.new_line_count).min(self.buffer.line_count()),
+                        true,
+                        close.map(|c| c.index()),
+                    )
+                }
+            } else {
+                let line_delta = delta.new_line_count as isize - delta.old_line_count as isize;
+                let ctx_begin = start
+                    .saturating_sub(1)
+                    .min(old_context.start)
+                    .min(new_context.start);
+                let shifted_old_end =
+                    (old_context.end as isize + line_delta).max(ctx_begin as isize) as usize;
+                let ctx_end = (start + delta.new_line_count + 1)
+                    .max(shifted_old_end)
+                    .max(new_context.end)
+                    .min(self.buffer.line_count());
+                (ctx_begin..ctx_end, false, None)
+            };
+
+            edit_patch = Some(EditWindowPatch {
+                delta,
+                structural,
+                local_new_range,
+                is_code_interior,
+                code_close,
+            });
         }
+        let prev_parsed_lines = current.parsed_lines.clone();
         drop(current);
+        let preedit = if !same_buffer {
+            self.marked_range.clone().and_then(|range| {
+                let start = self.buffer.utf16_offset_to_pos(range.start);
+                let end = self.buffer.utf16_offset_to_pos(range.end);
+                (start.line == end.line).then_some((start.line.index(), start.col..end.col))
+            })
+        } else {
+            None
+        };
+        let next_parsed_lines = if !same_buffer {
+            if let Some(patch) = &edit_patch
+                && !self.is_loading
+            {
+                prev_parsed_lines.apply_edit(&self.buffer, patch, preedit.clone())
+            } else {
+                ParsedLineStore::windowed(&self.buffer)
+                    .with_prepared(
+                        self.prepared_document
+                            .clone()
+                            .filter(|snapshot| snapshot.revision == self.buffer.revision()),
+                    )
+                    .with_preedit(preedit.clone())
+            }
+        } else {
+            prev_parsed_lines
+        };
+        if !self.is_loading
+            && let Some(snapshot) = &self.prepared_document
+            && snapshot.revision != self.buffer.revision()
+        {
+            if let Some(patch) = &edit_patch {
+                let donated = if preedit.is_none() {
+                    next_parsed_lines.snapshot_windows()
+                } else {
+                    VecDeque::new()
+                };
+                snapshot
+                    .session
+                    .submit_target(&self.buffer, Some((patch, donated)));
+            } else {
+                snapshot.session.submit_target(&self.buffer, None);
+            }
+        }
         let mut cached = self.layout_cache.borrow_mut();
         let cache = Arc::make_mut(&mut cached);
         if initial || (!same_buffer && !incremental) || !same_view {
@@ -138,18 +227,7 @@ impl Editor {
                 .splice_estimated(start..start + delta.old_line_count, delta.new_line_count);
         }
         if !same_buffer {
-            let preedit = self.marked_range.clone().and_then(|range| {
-                let start = self.buffer.utf16_offset_to_pos(range.start);
-                let end = self.buffer.utf16_offset_to_pos(range.end);
-                (start.line == end.line).then_some((start.line.index(), start.col..end.col))
-            });
-            cache.parsed_lines = ParsedLineStore::windowed(&self.buffer)
-                .with_prepared(
-                    self.prepared_document
-                        .clone()
-                        .filter(|snapshot| snapshot.revision == self.buffer.revision()),
-                )
-                .with_preedit(preedit);
+            cache.parsed_lines = next_parsed_lines;
         }
         if same_view && (cache.active_line != active || cache.active_col != col) {
             let map_old = |line: usize| {

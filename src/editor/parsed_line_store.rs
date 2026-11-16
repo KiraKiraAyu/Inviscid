@@ -1,3 +1,4 @@
+use super::window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry, apply_preedit};
 use crate::markdown::ParsedLine;
 use std::{
     cell::RefCell,
@@ -18,23 +19,14 @@ pub struct ParsedLineStore {
     resources: Arc<RefCell<Vec<Resource>>>,
 }
 
-const WINDOW_ROWS: usize = 256;
-const MAX_WINDOWS: usize = 8;
-
 #[derive(Clone, Debug)]
 struct WindowStore {
     prepared: Option<Arc<super::loading::PreparedSnapshot>>,
     source: crate::buffer::SourceSnapshot,
     index: crate::buffer::StructureIndex,
-    windows: RefCell<VecDeque<ParsedWindow>>,
+    windows: RefCell<VecDeque<WindowEntry>>,
     scanned: std::cell::Cell<usize>,
     preedit: Option<(usize, Range<usize>)>,
-}
-
-#[derive(Clone, Debug)]
-struct ParsedWindow {
-    range: Range<usize>,
-    rows: Arc<Vec<ParsedLine>>,
 }
 
 /// Owns its window so eviction cannot invalidate an in-flight row reader.
@@ -126,6 +118,93 @@ impl ParsedLineStore {
         self
     }
 
+    pub(crate) fn snapshot_windows(&self) -> VecDeque<WindowEntry> {
+        let Some(store) = &self.windows else {
+            return VecDeque::new();
+        };
+        if let Some(prepared) = &store.prepared {
+            return prepared.windows.clone();
+        }
+        store.windows.borrow().clone()
+    }
+
+    pub(crate) fn apply_edit(
+        &self,
+        buffer: &crate::buffer::TextBuffer,
+        patch: &EditWindowPatch,
+        preedit: Option<(usize, Range<usize>)>,
+    ) -> Self {
+        let Some(prev_store) = &self.windows else {
+            return Self::windowed(buffer).with_preedit(preedit);
+        };
+        let mut windows = if let Some(prepared) = &prev_store.prepared {
+            prepared.windows.clone()
+        } else {
+            prev_store.windows.borrow().clone()
+        };
+        use crate::buffer::LineSource;
+        let source = buffer.source_snapshot();
+        let index = buffer.line_index().structure_snapshot();
+        let (scanned, rescanned_ranges) =
+            patch.apply_edit(&mut windows, &source, &index, preedit.as_ref());
+
+        let mut resources: Vec<Resource> = if patch.structural {
+            let cut = patch.local_new_range.start;
+            self.resources
+                .borrow()
+                .iter()
+                .filter(|res| res.range.end <= cut)
+                .cloned()
+                .collect()
+        } else {
+            let line_delta = patch.line_delta();
+            let dirty_old = patch.dirty_old_range();
+            self.resources
+                .borrow()
+                .iter()
+                .filter_map(|res| {
+                    if res.range.end <= dirty_old.start {
+                        Some(res.clone())
+                    } else if res.range.start >= dirty_old.end {
+                        let mut shifted = res.clone();
+                        shifted.range = super::window_cache::shift_range(&res.range, line_delta);
+                        Some(shifted)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        for range in rescanned_ranges {
+            if let Some(window) = windows
+                .iter()
+                .find(|win| win.range.start <= range.start && range.end <= win.range.end)
+            {
+                let start = range.start - window.range.start;
+                let end = range.end - window.range.start;
+                for resource in Resource::collect(range.start, &window.rows[start..end]) {
+                    if !resources.iter().any(|old| old.range == resource.range) {
+                        resources.push(resource);
+                    }
+                }
+            }
+        }
+
+        Self {
+            #[cfg(test)]
+            eager: Arc::default(),
+            windows: Some(Arc::new(WindowStore {
+                prepared: None,
+                source,
+                index,
+                windows: RefCell::new(windows),
+                scanned: std::cell::Cell::new(scanned),
+                preedit,
+            })),
+            resources: Arc::new(RefCell::new(resources)),
+        }
+    }
+
     pub fn read_range(&self, range: Range<usize>) -> ParsedSlice {
         assert!(range.start <= range.end && range.end <= self.len());
         let Some(store) = &self.windows else {
@@ -146,12 +225,12 @@ impl ParsedLineStore {
         }
     }
 
-    fn load_window(&self, store: &WindowStore, requested: Range<usize>) -> ParsedWindow {
+    fn load_window(&self, store: &WindowStore, requested: Range<usize>) -> WindowEntry {
         if let Some(prepared) = &store.prepared {
             if let Some(window) = prepared.windows.iter().rev().find(|window| {
                 window.range.start <= requested.start && window.range.end >= requested.end
             }) {
-                return ParsedWindow {
+                return WindowEntry {
                     range: window.range.clone(),
                     rows: window.rows.clone(),
                 };
@@ -162,7 +241,7 @@ impl ParsedLineStore {
                 return window.clone();
             }
             let window = super::loading::source_window(&store.source, requested);
-            let window = ParsedWindow {
+            let window = WindowEntry {
                 range: window.range,
                 rows: window.rows,
             };
@@ -183,21 +262,7 @@ impl ParsedLineStore {
                 &store.index,
                 requested,
             );
-            if let Some((line, columns)) = &store.preedit
-                && range.contains(line)
-            {
-                let row = &mut rows[line - range.start];
-                row.spans =
-                    crate::markdown::mark_ime_preedit(&row.spans, (columns.start, columns.end));
-                if let crate::markdown::BlockKind::Table { cells, .. } = &mut row.kind {
-                    for cell in cells {
-                        cell.spans = crate::markdown::mark_ime_preedit(
-                            &cell.spans,
-                            (columns.start, columns.end),
-                        );
-                    }
-                }
-            }
+            apply_preedit(&mut rows, range.start, store.preedit.as_ref());
             store.scanned.set(store.scanned.get() + rows.len());
             let mut resources = self.resources.borrow_mut();
             for resource in Resource::collect(range.start, &rows) {
@@ -205,7 +270,7 @@ impl ParsedLineStore {
                     resources.push(resource);
                 }
             }
-            ParsedWindow {
+            WindowEntry {
                 range,
                 rows: Arc::new(rows),
             }

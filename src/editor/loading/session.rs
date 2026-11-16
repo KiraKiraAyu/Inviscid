@@ -1,3 +1,4 @@
+use super::super::window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry};
 use crate::buffer::{
     LineSource, SourceLine, SourceSnapshot, StreamingBuffer, StructureIndex, TextBuffer,
 };
@@ -16,14 +17,8 @@ use std::{
 };
 
 const READ_BYTES: usize = 64 * 1024;
-const WINDOW_ROWS: usize = 256;
-const MAX_WINDOWS: usize = 8;
 
-#[derive(Clone, Debug)]
-pub(crate) struct PreparedWindow {
-    pub range: Range<usize>,
-    pub rows: Arc<Vec<ParsedLine>>,
-}
+pub(crate) type PreparedWindow = WindowEntry;
 
 pub(crate) struct Publication {
     pub buffer: Option<TextBuffer>,
@@ -35,8 +30,7 @@ pub(crate) struct Publication {
 
 #[derive(Clone, Debug)]
 struct CachedWindow {
-    range: Range<usize>,
-    rows: Arc<Vec<ParsedLine>>,
+    window: WindowEntry,
     revision: u64,
 }
 
@@ -57,6 +51,7 @@ struct SessionState {
     requested: Range<usize>,
     target: Option<WorkTarget>,
     windows: VecDeque<CachedWindow>,
+    last_published_revision: Option<u64>,
 }
 
 /// Decoupled reader mailbox, viewport request target, and background window cache.
@@ -97,6 +92,7 @@ impl DocumentSession {
                 requested: 0..WINDOW_ROWS * 2,
                 target: None,
                 windows: VecDeque::new(),
+                last_published_revision: None,
             }),
             work: VersionedNotifier::new(),
             updates: VersionedNotifier::new(),
@@ -121,7 +117,11 @@ impl DocumentSession {
         }
     }
 
-    pub fn submit_target(&self, buffer: &TextBuffer) {
+    pub fn submit_target(
+        &self,
+        buffer: &TextBuffer,
+        incremental: Option<(&EditWindowPatch, VecDeque<WindowEntry>)>,
+    ) {
         let mut state = self.state.lock();
         if state
             .target
@@ -130,7 +130,41 @@ impl DocumentSession {
         {
             return;
         }
-        state.windows.clear();
+        let sequential = state
+            .target
+            .as_ref()
+            .is_some_and(|target| target.revision.checked_add(1) == Some(buffer.revision()));
+        if sequential && let Some((patch, patched_windows)) = incremental {
+            let mut windows: VecDeque<WindowEntry> = state
+                .windows
+                .drain(..)
+                .map(|cached| cached.window)
+                .collect();
+            patch.shift_or_invalidate(&mut windows);
+            let mut next_windows = VecDeque::with_capacity(MAX_WINDOWS);
+            for window in windows {
+                if !patched_windows.iter().any(|patched| {
+                    window.range.start < patched.range.end && patched.range.start < window.range.end
+                }) {
+                    next_windows.push_back(CachedWindow {
+                        window,
+                        revision: buffer.revision(),
+                    });
+                }
+            }
+            for window in patched_windows {
+                next_windows.push_back(CachedWindow {
+                    window,
+                    revision: buffer.revision(),
+                });
+            }
+            while next_windows.len() > MAX_WINDOWS {
+                next_windows.pop_front();
+            }
+            state.windows = next_windows;
+        } else {
+            state.windows.clear();
+        }
         let disk_hash = state.target.as_ref().map_or(0, |t| t.disk_hash);
         state.target = Some(WorkTarget {
             source: buffer.source_snapshot(),
@@ -173,7 +207,7 @@ impl DocumentSession {
         let mut state = self.state.lock();
         state
             .windows
-            .retain(|window| window.range.end < previous_tail);
+            .retain(|cached| cached.window.range.end < previous_tail);
         state.target = Some(WorkTarget {
             source: source.clone(),
             index,
@@ -187,10 +221,7 @@ impl DocumentSession {
         let mut windows: VecDeque<PreparedWindow> = state
             .windows
             .iter()
-            .map(|window| PreparedWindow {
-                range: window.range.clone(),
-                rows: window.rows.clone(),
-            })
+            .map(|cached| cached.window.clone())
             .collect();
         if !windows
             .iter()
@@ -205,6 +236,7 @@ impl DocumentSession {
             complete,
             disk_hash,
         }));
+        state.last_published_revision = Some(revision);
         drop(state);
         self.updates.notify();
         self.work.notify();
@@ -215,19 +247,45 @@ impl DocumentSession {
             return;
         }
         let target = {
-            let state = self.state.lock();
+            let mut state = self.state.lock();
             let Some(target) = state.target.clone() else {
                 return;
             };
             let range = clamp_request(&state.requested, target.source.line_count());
             let already_covered = !force_refresh
-                && state.windows.iter().any(|window| {
-                    window.range.start <= range.start
-                        && window.range.end >= range.end
-                        && (window.revision == target.revision
-                            || (target.from_disk && window.range.end < target.immutable_before))
+                && state.windows.iter().any(|cached| {
+                    cached.window.range.start <= range.start
+                        && cached.window.range.end >= range.end
+                        && (cached.revision == target.revision
+                            || (target.from_disk
+                                && cached.window.range.end < target.immutable_before))
                 });
             if already_covered {
+                if !target.from_disk && state.last_published_revision != Some(target.revision) {
+                    let windows: VecDeque<PreparedWindow> = state
+                        .windows
+                        .iter()
+                        .map(|cached| cached.window.clone())
+                        .collect();
+                    let (prev_buffer, prev_complete, prev_hash) = match state.latest.take() {
+                        Some(Ok(prev)) => (prev.buffer, prev.complete, prev.disk_hash),
+                        Some(Err(err)) => {
+                            state.latest = Some(Err(err));
+                            return;
+                        }
+                        None => (None, false, 0),
+                    };
+                    state.latest = Some(Ok(Publication {
+                        buffer: prev_buffer,
+                        revision: target.revision,
+                        windows,
+                        complete: target.complete || prev_complete,
+                        disk_hash: target.disk_hash.max(prev_hash),
+                    }));
+                    state.last_published_revision = Some(target.revision);
+                    drop(state);
+                    self.updates.notify();
+                }
                 return;
             }
             (target, range)
@@ -249,10 +307,14 @@ impl DocumentSession {
         if !still_valid {
             return;
         }
-        state.windows.retain(|window| window.range != scanned_range);
+        state
+            .windows
+            .retain(|cached| cached.window.range != scanned_range);
         state.windows.push_back(CachedWindow {
-            range: scanned_range,
-            rows,
+            window: WindowEntry {
+                range: scanned_range,
+                rows,
+            },
             revision: current.revision,
         });
         while state.windows.len() > MAX_WINDOWS {
@@ -261,10 +323,7 @@ impl DocumentSession {
         let windows: VecDeque<PreparedWindow> = state
             .windows
             .iter()
-            .map(|window| PreparedWindow {
-                range: window.range.clone(),
-                rows: window.rows.clone(),
-            })
+            .map(|cached| cached.window.clone())
             .collect();
         let (prev_buffer, prev_complete, prev_hash) = match state.latest.take() {
             Some(Ok(prev)) => (prev.buffer, prev.complete, prev.disk_hash),
@@ -281,6 +340,7 @@ impl DocumentSession {
             complete: current.complete || prev_complete,
             disk_hash: current.disk_hash.max(prev_hash),
         }));
+        state.last_published_revision = Some(current.revision);
         drop(state);
         self.updates.notify();
     }
@@ -850,7 +910,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         };
         buffer.record_single_line_edit(SourceLine::new(0), |line, _| *line = "# Edited".into());
-        session.submit_target(&buffer);
+        session.submit_target(&buffer, None);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let edited_pub = loop {
             if let Some(Ok(pub_item)) = session.take()
@@ -987,6 +1047,72 @@ mod tests {
         });
         session.cancel();
         resume.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn incremental_edit_shifts_windows_and_adopts_donated_patch() {
+        let mut doc = String::from("# Head\n\nBody\n\n");
+        doc.push_str(&"paragraph\n".repeat(1600));
+        let session = DocumentSession::new();
+        let worker_session = session.clone();
+        let worker = std::thread::spawn(move || {
+            futures::executor::block_on(
+                worker_session.read_and_prepare(io::Cursor::new(doc), "shift.md".into()),
+            )
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut buffer = loop {
+            if let Some(Ok(pub_item)) = session.take()
+                && pub_item.complete
+                && let Some(buffer) = pub_item.buffer
+            {
+                break buffer;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        session.request(1024..1100);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let shifted_before = loop {
+            if let Some(Ok(pub_item)) = session.take()
+                && let Some(win) = pub_item.windows.iter().find(|w| w.range == (1024..1280))
+            {
+                break win.rows.clone();
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+
+        buffer.set_cursor(crate::buffer::Position::new(SourceLine::new(2), 0));
+        buffer.insert_text("Added\n");
+        let delta = buffer.last_edit_delta().unwrap();
+        let patch = EditWindowPatch {
+            delta,
+            structural: false,
+            local_new_range: 1..5,
+            is_code_interior: false,
+            code_close: None,
+        };
+        session.submit_target(&buffer, Some((&patch, VecDeque::new())));
+        session.request(1025..1101);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let edited_pub = loop {
+            if let Some(Ok(pub_item)) = session.take()
+                && pub_item.revision == buffer.revision()
+            {
+                break pub_item;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        let shifted_after = edited_pub
+            .windows
+            .iter()
+            .find(|w| w.range == (1025..1281))
+            .expect("shifted window retained");
+        assert!(Arc::ptr_eq(&shifted_before, &shifted_after.rows));
+        session.cancel();
         worker.join().unwrap().unwrap();
     }
 }

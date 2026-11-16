@@ -43,6 +43,7 @@ mod scroll_anchor;
 pub mod shaping;
 #[cfg(test)]
 mod tests;
+mod window_cache;
 mod window_layout;
 
 pub use actions::*;
@@ -1248,12 +1249,6 @@ impl Editor {
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.is_loading
-            && let Some(snapshot) = &self.prepared_document
-            && snapshot.revision != self.buffer.revision()
-        {
-            snapshot.session.submit_target(&self.buffer);
-        }
         if self.text_system.is_none() {
             // Layout measurement must shape text exactly like painting does, which requires the
             // window's text system; drop anything measured with the headless fallback.

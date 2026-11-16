@@ -77,7 +77,14 @@ impl Editor {
                     .as_ref()
                     .filter(|prev| prev.revision == self.buffer.revision())
                     .map(|prev| prev.windows.clone())
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| {
+                        let cache = self.layout_cache.borrow();
+                        if cache.buffer_revision == self.buffer.revision() {
+                            cache.parsed_lines.snapshot_windows()
+                        } else {
+                            Default::default()
+                        }
+                    });
                 let changed_ranges: Vec<_> = file
                     .windows
                     .iter()

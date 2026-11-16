@@ -360,3 +360,56 @@ fn view_changes_reuse_parsing_and_measure_only_viewport(cx: &mut gpui::TestAppCo
         }
     });
 }
+
+#[gpui::test]
+fn editing_prose_near_fences_only_rescans_local_slice_and_keeps_windows(
+    cx: &mut gpui::TestAppContext,
+) {
+    let mut text = String::from("# Heading\n\nParagraph zero\n\n");
+    for i in 0..8 {
+        text.push_str(&format!(
+            "```rust\nfn block_{i}() -> usize {{ {i} }}\n```\n\nLine between {i}\n\n"
+        ));
+    }
+    text.push_str(&"trailing line\n".repeat(1200));
+
+    let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
+    editor.update(cx, |ed, cx| {
+        ed.viewport_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(900.0), px(700.0)));
+        ed.ensure_layout_cache();
+        // Prime window 0..256 and window 768..1024
+        let _ = ed.layout_snapshot().parsed_lines.row(800);
+        let far_win_before = ed
+            .layout_snapshot()
+            .parsed_lines
+            .snapshot_windows()
+            .into_iter()
+            .find(|w| w.range.start == 768)
+            .unwrap();
+
+        ed.layout_stats.set(super::super::LayoutStats::default());
+        ed.perform_edit(cx, |ed| {
+            ed.buffer_mut()
+                .set_cursor(crate::buffer::Position::new(SourceLine::new(2), 0));
+            ed.buffer_mut().insert_text("Inserted line\n");
+        });
+        let layout = ed.layout_snapshot();
+        let stats = ed.layout_stats.get();
+        assert_eq!(stats.full_rebuilds, 0);
+        assert!(
+            stats.lines_scanned <= 8,
+            "prose edit must not rescan 256-row window or fenced blocks: {stats:?}"
+        );
+        let far_win_after = layout
+            .parsed_lines
+            .snapshot_windows()
+            .into_iter()
+            .find(|w| w.range.start == 769)
+            .unwrap();
+        assert!(Arc::ptr_eq(&far_win_before.rows, &far_win_after.rows));
+        assert_eq!(
+            layout.parsed_lines.row(2).unwrap().raw_text,
+            "Inserted line"
+        );
+    });
+}
