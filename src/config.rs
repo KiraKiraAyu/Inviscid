@@ -28,6 +28,18 @@ fn persist_slot_for(path: &PathBuf) -> Arc<PathPersistSlot> {
         .clone()
 }
 
+fn write_atomic_toml_sync<T: Serialize>(path: Option<&PathBuf>, value: &T) {
+    let Some(path) = path else {
+        return;
+    };
+    let slot = persist_slot_for(path);
+    let _seq = slot.latest_seq.fetch_add(1, Ordering::AcqRel) + 1;
+    let _guard = slot.write_lock.lock();
+    if let Ok(content) = toml::to_string_pretty(value) {
+        let _ = crate::fs::atomic_write(path, &content);
+    }
+}
+
 fn spawn_atomic_toml_write<T: Serialize + Send + 'static>(
     path: Option<PathBuf>,
     value: T,
@@ -51,7 +63,233 @@ fn spawn_atomic_toml_write<T: Serialize + Send + 'static>(
         .detach();
 }
 
+use crate::app::SidebarView;
 use crate::editor::RenderMode;
+
+pub const DEFAULT_WINDOW_WIDTH: f32 = 1080.0;
+pub const DEFAULT_WINDOW_HEIGHT: f32 = 780.0;
+pub const MIN_WINDOW_WIDTH: f32 = 360.0;
+pub const MIN_WINDOW_HEIGHT: f32 = 240.0;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowMode {
+    #[default]
+    Windowed,
+    Maximized,
+    Fullscreen,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct SerializedBounds {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for SerializedBounds {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: DEFAULT_WINDOW_WIDTH,
+            height: DEFAULT_WINDOW_HEIGHT,
+        }
+    }
+}
+
+impl SerializedBounds {
+    pub fn from_gpui_bounds(bounds: gpui::Bounds<gpui::Pixels>) -> Self {
+        Self {
+            x: f32::from(bounds.origin.x),
+            y: f32::from(bounds.origin.y),
+            width: f32::from(bounds.size.width),
+            height: f32::from(bounds.size.height),
+        }
+    }
+
+    pub fn to_gpui_bounds(self) -> gpui::Bounds<gpui::Pixels> {
+        gpui::Bounds::new(
+            gpui::point(gpui::px(self.x), gpui::px(self.y)),
+            gpui::size(gpui::px(self.width), gpui::px(self.height)),
+        )
+    }
+
+    pub fn is_valid(self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && self.width.is_finite()
+            && self.height.is_finite()
+            && self.width >= MIN_WINDOW_WIDTH
+            && self.height >= MIN_WINDOW_HEIGHT
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct WindowLayoutState {
+    pub mode: WindowMode,
+    pub bounds: SerializedBounds,
+    pub display_uuid: Option<String>,
+}
+
+impl WindowLayoutState {
+    /// Captures the current window bounds, mode, and display UUID if the window has valid non-minimized geometry.
+    pub fn from_window(window: &gpui::Window, cx: &gpui::App) -> Option<Self> {
+        let live_bounds = window.bounds();
+        // On Windows, minimizing moves the live window rect to (-32000, -32000) and GetWindowPlacement
+        // clears SW_SHOWMAXIMIZED even when WPF_RESTORETOMAXIMIZED is set; avoid clobbering state.
+        if f32::from(live_bounds.origin.x) <= -16000.0
+            || f32::from(live_bounds.origin.y) <= -16000.0
+            || f32::from(live_bounds.size.width) < MIN_WINDOW_WIDTH
+            || f32::from(live_bounds.size.height) < MIN_WINDOW_HEIGHT
+        {
+            return None;
+        }
+
+        let (mode, gpui_bounds) = match window.window_bounds() {
+            gpui::WindowBounds::Windowed(bounds) => (WindowMode::Windowed, bounds),
+            gpui::WindowBounds::Maximized(bounds) => (WindowMode::Maximized, bounds),
+            gpui::WindowBounds::Fullscreen(bounds) => (WindowMode::Fullscreen, bounds),
+        };
+        let bounds = SerializedBounds::from_gpui_bounds(gpui_bounds);
+        if !bounds.is_valid() {
+            return None;
+        }
+        let display_uuid = window
+            .display(cx)
+            .and_then(|display| display.uuid().ok())
+            .map(|uuid| uuid.to_string());
+
+        Some(Self {
+            mode,
+            bounds,
+            display_uuid,
+        })
+    }
+
+    pub fn default_window_bounds(cx: &gpui::App) -> (Option<gpui::DisplayId>, gpui::WindowBounds) {
+        let size = gpui::size(
+            gpui::px(DEFAULT_WINDOW_WIDTH),
+            gpui::px(DEFAULT_WINDOW_HEIGHT),
+        );
+        (
+            None,
+            gpui::WindowBounds::Windowed(gpui::Bounds::centered(None, size, cx)),
+        )
+    }
+
+    /// Resolves persisted window geometry onto currently connected displays, falling back safely if
+    /// the original monitor was disconnected or the saved bounds are invalid/off-screen.
+    pub fn resolve(&self, cx: &gpui::App) -> (Option<gpui::DisplayId>, gpui::WindowBounds) {
+        if !self.bounds.is_valid() {
+            return Self::default_window_bounds(cx);
+        }
+
+        let saved = self.bounds.to_gpui_bounds();
+        let displays = cx.displays();
+        let matched_display = self
+            .display_uuid
+            .as_deref()
+            .and_then(|uuid| {
+                displays.iter().find(|display| {
+                    display
+                        .uuid()
+                        .ok()
+                        .is_some_and(|candidate| candidate.to_string() == uuid)
+                })
+            })
+            .or_else(|| {
+                if self.display_uuid.is_none() {
+                    let center = saved.center();
+                    displays.iter().find(|d| d.bounds().contains(&center))
+                } else {
+                    None
+                }
+            });
+
+        let target_display = matched_display.cloned().or_else(|| cx.primary_display());
+        let display_id = target_display.as_ref().map(|d| d.id());
+
+        let clamped_size = if let Some(ref display) = target_display {
+            let max_size = display.bounds().size;
+            gpui::size(
+                saved
+                    .size
+                    .width
+                    .min(max_size.width)
+                    .max(gpui::px(MIN_WINDOW_WIDTH).min(max_size.width)),
+                saved
+                    .size
+                    .height
+                    .min(max_size.height)
+                    .max(gpui::px(MIN_WINDOW_HEIGHT).min(max_size.height)),
+            )
+        } else {
+            saved.size
+        };
+
+        let resolved_bounds = if let Some(display) = matched_display
+            && display.bounds().contains(&saved.center())
+        {
+            gpui::Bounds::new(saved.origin, clamped_size)
+        } else {
+            gpui::Bounds::centered(display_id, clamped_size, cx)
+        };
+
+        let window_bounds = match self.mode {
+            WindowMode::Windowed => gpui::WindowBounds::Windowed(resolved_bounds),
+            WindowMode::Maximized => gpui::WindowBounds::Maximized(resolved_bounds),
+            WindowMode::Fullscreen => gpui::WindowBounds::Fullscreen(resolved_bounds),
+        };
+
+        (display_id, window_bounds)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UiLayoutState {
+    pub window_bounds: Option<WindowLayoutState>,
+    pub sidebar_visible: bool,
+    pub sidebar_width: Option<f32>,
+    pub sidebar_view: SidebarView,
+    pub outline_visible: bool,
+    pub outline_width: Option<f32>,
+}
+
+impl Default for UiLayoutState {
+    fn default() -> Self {
+        Self {
+            window_bounds: None,
+            sidebar_visible: true,
+            sidebar_width: None,
+            sidebar_view: SidebarView::default(),
+            outline_visible: false,
+            outline_width: None,
+        }
+    }
+}
+
+impl UiLayoutState {
+    pub fn from_workspace_and_fallback(
+        ws: &WorkspaceState,
+        fallback: Option<&UiLayoutState>,
+    ) -> Self {
+        Self {
+            window_bounds: ws
+                .window_bounds
+                .clone()
+                .or_else(|| fallback.and_then(|f| f.window_bounds.clone())),
+            sidebar_visible: ws.sidebar_visible,
+            sidebar_width: ws.sidebar_width,
+            sidebar_view: ws.sidebar_view,
+            outline_visible: ws.outline_visible,
+            outline_width: ws.outline_width,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -61,7 +299,10 @@ pub struct WorkspaceState {
     pub open_files: Vec<PathBuf>,
     pub sidebar_visible: bool,
     pub sidebar_width: Option<f32>,
+    pub sidebar_view: SidebarView,
+    pub outline_visible: bool,
     pub outline_width: Option<f32>,
+    pub window_bounds: Option<WindowLayoutState>,
 }
 
 impl Default for WorkspaceState {
@@ -72,7 +313,10 @@ impl Default for WorkspaceState {
             open_files: Vec::new(),
             sidebar_visible: true,
             sidebar_width: None,
+            sidebar_view: SidebarView::default(),
+            outline_visible: false,
             outline_width: None,
+            window_bounds: None,
         }
     }
 }
@@ -152,6 +396,7 @@ impl Default for UserPreferences {
 pub struct SessionState {
     pub last_workspace: Option<WorkspaceState>,
     pub recent_workspaces: Vec<WorkspaceState>,
+    pub last_layout: Option<UiLayoutState>,
 }
 
 /// Application configuration and session state stored as a GPUI global.
@@ -195,6 +440,96 @@ impl AppConfig {
     #[inline]
     pub fn recent_workspaces(&self) -> &[WorkspaceState] {
         &self.session.recent_workspaces
+    }
+
+    #[inline]
+    pub fn last_layout(&self) -> Option<&UiLayoutState> {
+        self.session.last_layout.as_ref()
+    }
+
+    /// Resolves initial window geometry for app launch, preferring the restored workspace's
+    /// saved window bounds (when `restore_workspace` is active and no CLI file was passed)
+    /// and falling back to the global `last_layout` window bounds or default centered size.
+    pub fn resolve_initial_window_bounds(
+        &self,
+        has_initial_path: bool,
+        cx: &gpui::App,
+    ) -> (Option<gpui::DisplayId>, gpui::WindowBounds) {
+        let workspace_bounds = if !has_initial_path && self.restore_workspace {
+            self.session
+                .last_workspace
+                .as_ref()
+                .and_then(|ws| ws.window_bounds.as_ref())
+        } else {
+            None
+        };
+        let fallback_bounds = self
+            .session
+            .last_layout
+            .as_ref()
+            .and_then(|layout| layout.window_bounds.as_ref());
+
+        workspace_bounds
+            .or(fallback_bounds)
+            .map(|wb| wb.resolve(cx))
+            .unwrap_or_else(|| WindowLayoutState::default_window_bounds(cx))
+    }
+
+    /// Resolves window geometry for opening a new window: offsets from the active window when one
+    /// exists, or falls back to the persisted layout window bounds.
+    pub fn resolve_new_window_bounds(
+        &self,
+        cx: &mut gpui::App,
+    ) -> (Option<gpui::DisplayId>, gpui::WindowBounds) {
+        if let Some(active_window) = cx.active_window()
+            && let Ok((active_bounds, display)) = active_window.update(cx, |_, window, cx| {
+                (window.window_bounds(), window.display(cx))
+            })
+        {
+            let display_id = display.as_ref().map(|d| d.id());
+            let resolved = match active_bounds {
+                gpui::WindowBounds::Windowed(mut b) => {
+                    b.origin.x += gpui::px(24.0);
+                    b.origin.y += gpui::px(24.0);
+                    if let Some(d) = display
+                        && !d.bounds().contains(&b.center())
+                    {
+                        b = gpui::Bounds::centered(Some(d.id()), b.size, cx);
+                    }
+                    gpui::WindowBounds::Windowed(b)
+                }
+                gpui::WindowBounds::Maximized(b) => gpui::WindowBounds::Maximized(b),
+                gpui::WindowBounds::Fullscreen(b) => gpui::WindowBounds::Fullscreen(b),
+            };
+            return (display_id, resolved);
+        }
+
+        self.resolve_initial_window_bounds(true, cx)
+    }
+
+    /// Returns previously saved `window_bounds` for a workspace matching `state`, or from `last_layout`.
+    pub fn existing_window_bounds_for(&self, state: &WorkspaceState) -> Option<WindowLayoutState> {
+        self.session
+            .recent_workspaces
+            .iter()
+            .find(|w| Self::same_workspace_identity(w, state))
+            .and_then(|w| w.window_bounds.clone())
+            .or_else(|| {
+                self.session
+                    .last_layout
+                    .as_ref()
+                    .and_then(|l| l.window_bounds.clone())
+            })
+    }
+
+    fn same_workspace_identity(a: &WorkspaceState, b: &WorkspaceState) -> bool {
+        if let (Some(dir_a), Some(dir_b)) = (&a.root_dir, &b.root_dir) {
+            dir_a == dir_b
+        } else if a.root_dir.is_none() && b.root_dir.is_none() && b.active_file.is_some() {
+            a.active_file == b.active_file
+        } else {
+            a == b
+        }
     }
 }
 
@@ -295,11 +630,7 @@ impl AppConfig {
 
     /// Persists user preferences to `config.toml` atomically when `config_file_path` is set.
     pub fn save_preferences(&self) {
-        if let Some(ref path) = self.config_file_path {
-            if let Ok(content) = toml::to_string_pretty(&self.preferences) {
-                let _ = crate::fs::atomic_write(path, &content);
-            }
-        }
+        write_atomic_toml_sync(self.config_file_path.as_ref(), &self.preferences);
     }
 
     /// Serializes and persists user preferences on a background thread in latest-snapshot order.
@@ -337,11 +668,7 @@ impl AppConfig {
 
     /// Persists session state to `state.toml` atomically when `state_file_path` is set.
     pub fn save_session(&self) {
-        if let Some(ref path) = self.state_file_path {
-            if let Ok(content) = toml::to_string_pretty(&self.session) {
-                let _ = crate::fs::atomic_write(path, &content);
-            }
-        }
+        write_atomic_toml_sync(self.state_file_path.as_ref(), &self.session);
     }
 
     /// Serializes and persists session state on a background thread in latest-snapshot order.
@@ -349,21 +676,16 @@ impl AppConfig {
         spawn_atomic_toml_write(self.state_file_path.clone(), self.session.clone(), executor);
     }
 
-    /// Records the current workspace state and adds it to recent workspaces in memory.
+    /// Records the current workspace state and updates both recent workspaces and global UI layout.
     pub fn update_last_workspace(&mut self, state: WorkspaceState) {
+        let layout =
+            UiLayoutState::from_workspace_and_fallback(&state, self.session.last_layout.as_ref());
+        self.session.last_layout = Some(layout);
+
         if !state.is_empty() {
-            self.session.recent_workspaces.retain(|w| {
-                if let (Some(a), Some(b)) = (&w.root_dir, &state.root_dir) {
-                    a != b
-                } else if w.root_dir.is_none()
-                    && state.root_dir.is_none()
-                    && state.active_file.is_some()
-                {
-                    w.active_file != state.active_file
-                } else {
-                    w != &state
-                }
-            });
+            self.session
+                .recent_workspaces
+                .retain(|w| !Self::same_workspace_identity(w, &state));
             self.session.recent_workspaces.insert(0, state.clone());
             if self.session.recent_workspaces.len() > 10 {
                 self.session.recent_workspaces.truncate(10);
@@ -390,7 +712,19 @@ mod tests {
             ],
             sidebar_visible: true,
             sidebar_width: Some(260.0),
+            sidebar_view: SidebarView::Search,
+            outline_visible: true,
             outline_width: Some(300.0),
+            window_bounds: Some(WindowLayoutState {
+                mode: WindowMode::Maximized,
+                bounds: SerializedBounds {
+                    x: 120.0,
+                    y: 80.0,
+                    width: 1280.0,
+                    height: 820.0,
+                },
+                display_uuid: Some("00000000-0000-0000-0000-000000000001".to_string()),
+            }),
         };
 
         let mut config = AppConfig::default();
@@ -404,6 +738,7 @@ mod tests {
         let serialized = toml::to_string_pretty(&config.session).unwrap();
         let deserialized: SessionState = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.last_workspace, Some(state));
+        assert!(deserialized.last_layout.is_some());
     }
 
     #[test]
@@ -421,7 +756,10 @@ mod tests {
         assert_eq!(ws.root_dir, None);
         assert!(ws.sidebar_visible);
         assert_eq!(ws.sidebar_width, None);
+        assert_eq!(ws.sidebar_view, SidebarView::Files);
+        assert!(!ws.outline_visible);
         assert_eq!(ws.outline_width, None);
+        assert_eq!(ws.window_bounds, None);
     }
 
     #[test]
@@ -435,6 +773,7 @@ mod tests {
                 sidebar_visible: true,
                 sidebar_width: None,
                 outline_width: None,
+                ..WorkspaceState::default()
             };
             config.update_last_workspace(state);
         }
@@ -452,6 +791,7 @@ mod tests {
             sidebar_visible: true,
             sidebar_width: None,
             outline_width: None,
+            ..WorkspaceState::default()
         };
         config.update_last_workspace(state_10);
         assert_eq!(config.recent_workspaces().len(), 10);
@@ -472,6 +812,7 @@ mod tests {
             sidebar_visible: true,
             sidebar_width: None,
             outline_width: None,
+            ..WorkspaceState::default()
         };
         config.update_last_workspace(state_file_a);
 
@@ -482,6 +823,7 @@ mod tests {
             sidebar_visible: false,
             sidebar_width: Some(250.0),
             outline_width: None,
+            ..WorkspaceState::default()
         };
         config.update_last_workspace(state_file_a_updated.clone());
 
@@ -535,6 +877,7 @@ mod tests {
             sidebar_visible: true,
             sidebar_width: None,
             outline_width: None,
+            ..WorkspaceState::default()
         };
         config.update_last_workspace(ws);
         config.save_session();
@@ -621,6 +964,7 @@ mod tests {
             sidebar_visible: true,
             sidebar_width: None,
             outline_width: None,
+            ..WorkspaceState::default()
         });
         assert_eq!(config.recent_workspaces().len(), 1);
 
@@ -644,6 +988,7 @@ mod tests {
                 sidebar_visible: true,
                 sidebar_width: None,
                 outline_width: None,
+                ..WorkspaceState::default()
             }),
             recent_workspaces: vec![
                 WorkspaceState {
@@ -653,6 +998,7 @@ mod tests {
                     sidebar_visible: true,
                     sidebar_width: None,
                     outline_width: None,
+                    ..WorkspaceState::default()
                 },
                 WorkspaceState {
                     root_dir: Some(valid_folder.clone()),
@@ -661,8 +1007,10 @@ mod tests {
                     sidebar_visible: true,
                     sidebar_width: None,
                     outline_width: None,
+                    ..WorkspaceState::default()
                 },
             ],
+            last_layout: None,
         };
         let toml_str = toml::to_string_pretty(&session).unwrap();
         fs::write(&state_path, toml_str).unwrap();
@@ -715,5 +1063,186 @@ mod tests {
 
         let loaded = AppConfig::load_from_paths(config_path, temp_dir.path().join("state.toml"));
         assert_eq!(loaded.editor_font_size, 21.0);
+    }
+
+    #[gpui::test]
+    fn test_window_layout_state_resolve_handles_valid_and_offscreen_bounds(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let display = cx.primary_display().expect("test display");
+            let uuid = display.uuid().unwrap().to_string();
+
+            // 1. Valid bounds on matching display UUID preserve origin, size, and mode.
+            let valid = WindowLayoutState {
+                mode: WindowMode::Maximized,
+                bounds: SerializedBounds {
+                    x: 100.0,
+                    y: 80.0,
+                    width: 1200.0,
+                    height: 760.0,
+                },
+                display_uuid: Some(uuid),
+            };
+            let (resolved_display, resolved_wb) = valid.resolve(cx);
+            assert_eq!(resolved_display, Some(display.id()));
+            assert_eq!(
+                resolved_wb,
+                gpui::WindowBounds::Maximized(gpui::Bounds::new(
+                    gpui::point(gpui::px(100.0), gpui::px(80.0)),
+                    gpui::size(gpui::px(1200.0), gpui::px(760.0)),
+                ))
+            );
+
+            // 2. Disconnected display UUID falls back to primary display keeping clamped size.
+            let disconnected = WindowLayoutState {
+                mode: WindowMode::Windowed,
+                bounds: SerializedBounds {
+                    x: 3200.0,
+                    y: 200.0,
+                    width: 1400.0,
+                    height: 900.0,
+                },
+                display_uuid: Some("disconnected-monitor-uuid".to_string()),
+            };
+            let (fallback_display, fallback_wb) = disconnected.resolve(cx);
+            assert_eq!(fallback_display, Some(display.id()));
+            let gpui::WindowBounds::Windowed(centered_bounds) = fallback_wb else {
+                panic!("expected windowed bounds");
+            };
+            assert_eq!(
+                centered_bounds.size,
+                gpui::size(gpui::px(1400.0), gpui::px(900.0))
+            );
+            assert!(display.bounds().contains(&centered_bounds.center()));
+
+            // 3. Invalid undersized bounds fall back to default centered size.
+            let invalid = WindowLayoutState {
+                mode: WindowMode::Windowed,
+                bounds: SerializedBounds {
+                    x: f32::NAN,
+                    y: 0.0,
+                    width: 100.0,
+                    height: 50.0,
+                },
+                display_uuid: None,
+            };
+            let (_, default_wb) = invalid.resolve(cx);
+            assert_eq!(
+                default_wb.get_bounds().size,
+                gpui::size(
+                    gpui::px(DEFAULT_WINDOW_WIDTH),
+                    gpui::px(DEFAULT_WINDOW_HEIGHT)
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn test_empty_workspace_updates_last_layout_without_setting_last_workspace() {
+        let mut config = AppConfig::default();
+        let initial_wb = WindowLayoutState {
+            mode: WindowMode::Windowed,
+            bounds: SerializedBounds {
+                x: 50.0,
+                y: 60.0,
+                width: 1280.0,
+                height: 800.0,
+            },
+            display_uuid: None,
+        };
+
+        config.update_last_workspace(WorkspaceState {
+            root_dir: Some(PathBuf::from("/proj")),
+            active_file: None,
+            open_files: Vec::new(),
+            sidebar_visible: true,
+            sidebar_width: Some(300.0),
+            sidebar_view: SidebarView::Search,
+            outline_visible: true,
+            outline_width: Some(260.0),
+            window_bounds: Some(initial_wb.clone()),
+        });
+        assert!(config.last_workspace().is_some());
+
+        // Closing workspace or toggling sidebar on welcome view sends an empty WorkspaceState
+        // without window_bounds; last_workspace becomes None, while last_layout keeps window_bounds
+        // and updates sidebar/outline state.
+        config.update_last_workspace(WorkspaceState {
+            root_dir: None,
+            active_file: None,
+            open_files: Vec::new(),
+            sidebar_visible: false,
+            sidebar_width: Some(220.0),
+            sidebar_view: SidebarView::Files,
+            outline_visible: true,
+            outline_width: Some(340.0),
+            window_bounds: None,
+        });
+
+        assert_eq!(config.last_workspace(), None);
+        let layout = config.last_layout().expect("last_layout must be kept");
+        assert_eq!(layout.window_bounds.as_ref(), Some(&initial_wb));
+        assert!(!layout.sidebar_visible);
+        assert_eq!(layout.sidebar_width, Some(220.0));
+        assert!(layout.outline_visible);
+        assert_eq!(layout.outline_width, Some(340.0));
+    }
+
+    #[gpui::test]
+    fn test_resolve_initial_window_bounds_respects_restore_workspace(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let ws_wb = WindowLayoutState {
+                mode: WindowMode::Maximized,
+                bounds: SerializedBounds {
+                    x: 40.0,
+                    y: 40.0,
+                    width: 1300.0,
+                    height: 850.0,
+                },
+                display_uuid: None,
+            };
+            let layout_wb = WindowLayoutState {
+                mode: WindowMode::Windowed,
+                bounds: SerializedBounds {
+                    x: 120.0,
+                    y: 120.0,
+                    width: 960.0,
+                    height: 680.0,
+                },
+                display_uuid: None,
+            };
+
+            let mut config = AppConfig::default();
+            config.session.last_workspace = Some(WorkspaceState {
+                root_dir: Some(PathBuf::from("/proj")),
+                window_bounds: Some(ws_wb),
+                ..WorkspaceState::default()
+            });
+            config.session.last_layout = Some(UiLayoutState {
+                window_bounds: Some(layout_wb),
+                ..UiLayoutState::default()
+            });
+
+            config.restore_workspace = true;
+            let (_, wb_restored) = config.resolve_initial_window_bounds(false, cx);
+            assert!(matches!(wb_restored, gpui::WindowBounds::Maximized(_)));
+
+            // With CLI initial file or restore_workspace = false, uses global last_layout bounds.
+            let (_, wb_cli) = config.resolve_initial_window_bounds(true, cx);
+            assert_eq!(
+                wb_cli.get_bounds().size,
+                gpui::size(gpui::px(960.0), gpui::px(680.0))
+            );
+
+            config.restore_workspace = false;
+            let (_, wb_no_restore) = config.resolve_initial_window_bounds(false, cx);
+            assert_eq!(
+                wb_no_restore.get_bounds().size,
+                gpui::size(gpui::px(960.0), gpui::px(680.0))
+            );
+        });
     }
 }

@@ -662,6 +662,7 @@ fn test_clear_recent_workspaces_action() {
                 sidebar_visible: true,
                 sidebar_width: None,
                 outline_width: None,
+                ..WorkspaceState::default()
             },
             WorkspaceState {
                 root_dir: Some(PathBuf::from("/project_2")),
@@ -670,6 +671,7 @@ fn test_clear_recent_workspaces_action() {
                 sidebar_visible: true,
                 sidebar_width: None,
                 outline_width: None,
+                ..WorkspaceState::default()
             },
         ];
         cx.set_global(config);
@@ -712,6 +714,7 @@ fn test_restore_recent_workspace_closes_dropdown_menu() {
         sidebar_visible: true,
         sidebar_width: None,
         outline_width: None,
+        ..WorkspaceState::default()
     };
 
     cx.update(|cx| {
@@ -3756,6 +3759,7 @@ fn test_workspace_from_state_with_missing_files_active_idx() {
         sidebar_visible: true,
         sidebar_width: Some(240.0),
         outline_width: None,
+        ..WorkspaceState::default()
     };
 
     let (_app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
@@ -3803,6 +3807,7 @@ fn test_workspace_restore_from_state_preserves_entities_and_focus() {
         sidebar_visible: false,
         sidebar_width: Some(280.0),
         outline_width: None,
+        ..WorkspaceState::default()
     };
 
     cx.update(|window, cx| {

@@ -3,18 +3,54 @@ use std::path::PathBuf;
 
 use crate::app::actions::OpenWorkspaceMatch;
 use crate::app::{ActiveMenu, InviscidWindow, SidebarView};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, WindowLayoutState};
 use crate::editor::RenderMode;
 use crate::theme::ThemeManager;
 
-pub fn sync_workspace_to_global(app: &InviscidWindow, cx: &mut Context<InviscidWindow>) {
+pub fn main_window_options(
+    display_id: Option<DisplayId>,
+    window_bounds: WindowBounds,
+) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(window_bounds),
+        display_id,
+        titlebar: Some(TitlebarOptions {
+            title: Some("Inviscid".into()),
+            appears_transparent: true,
+            traffic_light_position: None,
+        }),
+        window_decorations: Some(WindowDecorations::Client),
+        window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
+        is_movable: true,
+        focus: false,
+        show: false,
+        ..Default::default()
+    }
+}
+
+pub fn sync_workspace_in_memory(app: &InviscidWindow, cx: &mut App) {
     if cx.has_global::<AppConfig>() {
         let mut config = cx.global::<AppConfig>().clone();
-        app.workspace()
-            .read(cx)
-            .sync_workspace_state(&mut config, cx);
-        config.persist_session_async(cx.background_executor());
+        app.workspace().read(cx).sync_workspace_state_with_window(
+            &mut config,
+            app.cached_window_bounds().cloned(),
+            cx,
+        );
         cx.set_global(config);
+    }
+}
+
+pub fn sync_workspace_to_global(app: &InviscidWindow, cx: &mut Context<InviscidWindow>) {
+    sync_workspace_in_memory(app, cx);
+    if let Some(config) = cx.try_global::<AppConfig>() {
+        config.persist_session_async(cx.background_executor());
+    }
+}
+
+pub fn sync_workspace_to_global_sync(app: &InviscidWindow, cx: &mut Context<InviscidWindow>) {
+    sync_workspace_in_memory(app, cx);
+    if let Some(config) = cx.try_global::<AppConfig>() {
+        config.save_session();
     }
 }
 
@@ -227,34 +263,14 @@ pub fn keep_local_changes(app: &mut InviscidWindow, cx: &mut Context<InviscidWin
 }
 
 pub fn new_window(cx: &mut App) {
-    let bounds = if let Some(active_window) = cx.active_window() {
-        if let Ok(active_bounds) = active_window.update(cx, |_, window, _| window.bounds()) {
-            let mut b = active_bounds;
-            b.origin.x += px(24.0);
-            b.origin.y += px(24.0);
-            b
-        } else {
-            Bounds::centered(None, size(px(1080.0), px(780.0)), cx)
-        }
-    } else {
-        Bounds::centered(None, size(px(1080.0), px(780.0)), cx)
-    };
+    let (display_id, window_bounds) = cx
+        .try_global::<AppConfig>()
+        .cloned()
+        .map(|cfg| cfg.resolve_new_window_bounds(cx))
+        .unwrap_or_else(|| WindowLayoutState::default_window_bounds(cx));
 
     cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Inviscid".into()),
-                appears_transparent: true,
-                traffic_light_position: None,
-            }),
-            window_decorations: Some(WindowDecorations::Client),
-            window_min_size: Some(size(px(360.0), px(240.0))),
-            is_movable: true,
-            focus: false,
-            show: false,
-            ..Default::default()
-        },
+        main_window_options(display_id, window_bounds),
         |window, cx| {
             let app = cx.new(InviscidWindow::new);
             app.read(cx)

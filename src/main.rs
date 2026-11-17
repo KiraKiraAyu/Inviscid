@@ -1,10 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(dead_code)]
 use gpui::prelude::*;
-use gpui::{
-    App, Application, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions, px,
-    size,
-};
+use gpui::{App, Application};
 use inviscid::InviscidWindow;
 use inviscid::app;
 use inviscid::assets::Assets;
@@ -36,25 +33,44 @@ fn main() {
 
             // Bind default and configured keybindings
             app::actions::apply_configured_keys(&config, cx);
+            let (display_id, window_bounds) =
+                config.resolve_initial_window_bounds(initial_file.is_some(), cx);
             cx.set_global(config);
 
+            cx.on_window_closed(|cx| {
+                if let Some(config) = cx.try_global::<AppConfig>() {
+                    config.save_session();
+                }
+            })
+            .detach();
+
+            cx.on_app_quit(|cx| {
+                let active = cx.active_window();
+                for handle in cx.windows() {
+                    if Some(handle) != active
+                        && let Some(window_handle) = handle.downcast::<InviscidWindow>()
+                    {
+                        let _ = window_handle.update(cx, |app, window, cx| {
+                            app.persist_window_state_sync(window, cx);
+                        });
+                    }
+                }
+                if let Some(window_handle) =
+                    active.and_then(|handle| handle.downcast::<InviscidWindow>())
+                {
+                    let _ = window_handle.update(cx, |app, window, cx| {
+                        app.persist_window_state_sync(window, cx);
+                    });
+                } else if let Some(config) = cx.try_global::<AppConfig>() {
+                    config.save_session();
+                }
+                async {}
+            })
+            .detach();
+
             // Open initial window
-            let bounds = Bounds::centered(None, size(px(1080.0), px(780.0)), cx);
             cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Inviscid".into()),
-                        appears_transparent: true,
-                        traffic_light_position: None,
-                    }),
-                    window_decorations: Some(WindowDecorations::Client),
-                    window_min_size: Some(size(px(360.0), px(240.0))),
-                    is_movable: true,
-                    focus: false,
-                    show: false,
-                    ..Default::default()
-                },
+                app::commands::main_window_options(display_id, window_bounds),
                 |window, cx| {
                     let app = cx.new(|cx| InviscidWindow::open_initial(initial_file, cx));
                     window.activate_window();

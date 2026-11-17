@@ -31,6 +31,55 @@ enum PanelResizeTarget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceEvent {
     TitleChanged,
+    LayoutChanged,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PanelLayoutValues {
+    sidebar_visible: bool,
+    sidebar_width: Pixels,
+    sidebar_view: SidebarView,
+    outline_visible: bool,
+    outline_width: Pixels,
+}
+
+impl PanelLayoutValues {
+    fn from_workspace_state(ws: &WorkspaceState) -> Self {
+        Self {
+            sidebar_visible: ws.sidebar_visible,
+            sidebar_width: sidebar::clamp_sidebar_width(px(ws
+                .sidebar_width
+                .unwrap_or(DEFAULT_SIDEBAR_WIDTH))),
+            sidebar_view: ws.sidebar_view,
+            outline_visible: ws.outline_visible,
+            outline_width: sidebar::clamp_sidebar_width(px(ws
+                .outline_width
+                .unwrap_or(DEFAULT_SIDEBAR_WIDTH))),
+        }
+    }
+
+    fn from_app_config(cx: &App) -> Self {
+        match cx.try_global::<AppConfig>().and_then(|c| c.last_layout()) {
+            Some(layout) => Self {
+                sidebar_visible: layout.sidebar_visible,
+                sidebar_width: sidebar::clamp_sidebar_width(px(layout
+                    .sidebar_width
+                    .unwrap_or(DEFAULT_SIDEBAR_WIDTH))),
+                sidebar_view: layout.sidebar_view,
+                outline_visible: layout.outline_visible,
+                outline_width: sidebar::clamp_sidebar_width(px(layout
+                    .outline_width
+                    .unwrap_or(DEFAULT_SIDEBAR_WIDTH))),
+            },
+            None => Self {
+                sidebar_visible: true,
+                sidebar_width: px(DEFAULT_SIDEBAR_WIDTH),
+                sidebar_view: SidebarView::default(),
+                outline_visible: false,
+                outline_width: px(DEFAULT_SIDEBAR_WIDTH),
+            },
+        }
+    }
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -154,52 +203,34 @@ impl Workspace {
         )
     }
 
-    pub fn new(initial_path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    fn build_with_layout(
+        root_dir: Option<PathBuf>,
+        active_file: Option<PathBuf>,
+        tabs: Vec<TabItem>,
+        active_tab_idx: usize,
+        layout: PanelLayoutValues,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
-        let (root_dir, file_path) = match initial_path {
-            Some(p) if p.is_dir() => {
-                let target = Self::find_folder_target_file(&p);
-                (Some(p), target)
-            }
-            Some(p) => {
-                let parent = p.parent().map(|d| d.to_path_buf());
-                (parent, Some(p))
-            }
-            None => (None, None),
-        };
-
-        let (tabs, active_tab_idx, tabs_meta, status_meta) = if let Some(path) = file_path.clone() {
-            let (editor, subscription, load_task) = Self::init_editor(Some(path), cx);
-            let meta = editor.read(cx).status_meta();
-            let tab_meta = tab_bar::TabMeta {
-                is_loading: editor.read(cx).is_loading(),
-                title: editor.read(cx).title(),
-                is_dirty: editor.read(cx).is_dirty(),
-                dir_hint: editor.read(cx).dir_hint(),
-                is_pinned: false,
-                is_read_only: editor.read(cx).is_read_only(),
-                has_file_path: editor.read(cx).file_path().is_some(),
-                supports_editing: editor.read(cx).is_editable(),
-            };
-            (
-                vec![TabItem {
-                    _load_task: load_task,
-                    editor,
-                    kind: TabKind::Editor,
-                    is_pinned: false,
-                    _subscription: subscription,
-                }],
-                0,
-                vec![tab_meta],
-                meta,
-            )
+        let status_meta = if tabs.is_empty() {
+            None
         } else {
-            (Vec::new(), 0, Vec::new(), None)
+            tabs[active_tab_idx].editor.read(cx).status_meta()
         };
-
-        let status_bar =
-            cx.new(|_cx| status_bar::StatusBar::new(status_meta, Some(SidebarView::default())));
-        let sidebar_offset = px(DEFAULT_SIDEBAR_WIDTH);
+        let active_sidebar = layout.sidebar_visible.then_some(layout.sidebar_view);
+        let status_bar = cx.new(|_cx| {
+            let mut sb = status_bar::StatusBar::new(status_meta, active_sidebar);
+            if layout.outline_visible {
+                sb.set_outline_visible(true, _cx);
+            }
+            sb
+        });
+        let tabs_meta = tabs::collect_tabs_meta(&tabs, cx);
+        let sidebar_offset = if layout.sidebar_visible {
+            layout.sidebar_width
+        } else {
+            px(0.0)
+        };
         let has_workspace_root = root_dir.is_some();
         let tab_bar = cx.new(|_cx| tab_bar::TabBar::new(tabs_meta.clone(), active_tab_idx));
         tab_bar.update(cx, |tb, cx| {
@@ -214,9 +245,9 @@ impl Workspace {
         let tab_bar_sub = Self::subscribe_tab_bar(&tab_bar, cx);
         let project_panel =
             cx.new(|cx| crate::app::project_panel::ProjectPanel::new(root_dir.clone(), cx));
-        let initial_active_file = file_path.clone();
         project_panel.update(cx, |p, cx| {
-            p.set_active_file(initial_active_file, cx);
+            p.set_active_file(active_file, cx);
+            p.set_filter_visible(layout.sidebar_view == SidebarView::Search, cx);
             p.prewarm_filter_index(cx);
         });
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
@@ -236,13 +267,13 @@ impl Workspace {
             outline_panel,
             _outline_panel_sub: outline_panel_sub,
             root_dir,
-            sidebar_visible: true,
-            sidebar_width: px(DEFAULT_SIDEBAR_WIDTH),
-            sidebar_view: SidebarView::default(),
-            outline_visible: false,
+            sidebar_visible: layout.sidebar_visible,
+            sidebar_width: layout.sidebar_width,
+            sidebar_view: layout.sidebar_view,
+            outline_visible: layout.outline_visible,
             outline_source: None,
             outline_task: None,
-            outline_width: px(DEFAULT_SIDEBAR_WIDTH),
+            outline_width: layout.outline_width,
             search_panel,
             resize_target: None,
             panel_drag_start_x: None,
@@ -250,6 +281,39 @@ impl Workspace {
         };
         workspace.sync_outline_panel(cx);
         workspace
+    }
+
+    pub fn new(initial_path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+        let (root_dir, file_path) = match initial_path {
+            Some(p) if p.is_dir() => {
+                let target = Self::find_folder_target_file(&p);
+                (Some(p), target)
+            }
+            Some(p) => {
+                let parent = p.parent().map(|d| d.to_path_buf());
+                (parent, Some(p))
+            }
+            None => (None, None),
+        };
+
+        let (tabs, active_tab_idx) = if let Some(path) = file_path.clone() {
+            let (editor, subscription, load_task) = Self::init_editor(Some(path), cx);
+            (
+                vec![TabItem {
+                    _load_task: load_task,
+                    editor,
+                    kind: TabKind::Editor,
+                    is_pinned: false,
+                    _subscription: subscription,
+                }],
+                0,
+            )
+        } else {
+            (Vec::new(), 0)
+        };
+
+        let layout = PanelLayoutValues::from_app_config(cx);
+        Self::build_with_layout(root_dir, file_path, tabs, active_tab_idx, layout, cx)
     }
 
     fn load_tabs_from_state(ws: &WorkspaceState, cx: &mut Context<Self>) -> (Vec<TabItem>, usize) {
@@ -287,98 +351,29 @@ impl Workspace {
     }
 
     pub fn from_state(ws: &WorkspaceState, cx: &mut Context<Self>) -> Self {
-        let focus_handle = cx.focus_handle();
         let (tabs, active_tab_idx) = Self::load_tabs_from_state(ws, cx);
-
-        let status_meta = if tabs.is_empty() {
-            None
-        } else {
-            tabs[active_tab_idx].editor.read(cx).status_meta()
-        };
-        let active_sidebar = ws.sidebar_visible.then_some(SidebarView::default());
-        let status_bar = cx.new(|_cx| status_bar::StatusBar::new(status_meta, active_sidebar));
-        let tabs_meta = tabs::collect_tabs_meta(&tabs, cx);
-        let sidebar_width = px(ws
-            .sidebar_width
-            .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
-            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
-        let outline_width = px(ws
-            .outline_width
-            .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
-            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
-        let sidebar_offset = if ws.sidebar_visible {
-            sidebar_width
-        } else {
-            px(0.0)
-        };
-        let has_workspace_root = ws.root_dir.is_some();
-        let tab_bar = cx.new(|_cx| tab_bar::TabBar::new(tabs_meta.clone(), active_tab_idx));
-        tab_bar.update(cx, |tb, cx| {
-            tb.sync(
-                tabs_meta,
-                active_tab_idx,
-                has_workspace_root,
-                sidebar_offset,
-                cx,
-            );
-        });
-        let tab_bar_sub = Self::subscribe_tab_bar(&tab_bar, cx);
-        let project_panel =
-            cx.new(|cx| crate::app::project_panel::ProjectPanel::new(ws.root_dir.clone(), cx));
-        project_panel.update(cx, |p, cx| {
-            p.set_active_file(ws.active_file.clone(), cx);
-            p.prewarm_filter_index(cx);
-        });
-        let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
-        let outline_panel = cx.new(|cx| OutlinePanel::new(cx.focus_handle()));
-        let outline_panel_sub = Self::subscribe_outline_panel(&outline_panel, cx);
-        let search_panel = cx.new(SearchPanel::new);
-        search_panel.update(cx, |sp, cx| sp.set_root_dir(ws.root_dir.clone(), cx));
-        let mut workspace = Self {
-            focus_handle,
+        let layout = PanelLayoutValues::from_workspace_state(ws);
+        Self::build_with_layout(
+            ws.root_dir.clone(),
+            ws.active_file.clone(),
             tabs,
             active_tab_idx,
-            tab_bar,
-            _tab_bar_sub: tab_bar_sub,
-            status_bar,
-            project_panel,
-            _project_panel_sub: project_panel_sub,
-            outline_panel,
-            _outline_panel_sub: outline_panel_sub,
-            root_dir: ws.root_dir.clone(),
-            sidebar_visible: ws.sidebar_visible,
-            sidebar_width,
-            sidebar_view: SidebarView::default(),
-            outline_visible: false,
-            outline_source: None,
-            outline_task: None,
-            outline_width,
-            search_panel,
-            resize_target: None,
-            panel_drag_start_x: None,
-            panel_drag_start_width: None,
-        };
-        workspace.sync_outline_panel(cx);
-        workspace
+            layout,
+            cx,
+        )
     }
 
     pub fn restore_from_state(&mut self, ws: &WorkspaceState, cx: &mut Context<Self>) {
+        let layout = PanelLayoutValues::from_workspace_state(ws);
         self.root_dir = ws.root_dir.clone();
-        self.sidebar_visible = ws.sidebar_visible;
-        self.sidebar_view = SidebarView::Files;
-        self.outline_visible = false;
+        self.sidebar_visible = layout.sidebar_visible;
+        self.sidebar_view = layout.sidebar_view;
+        self.outline_visible = layout.outline_visible;
         self.status_bar.update(cx, |status_bar, cx| {
-            status_bar.set_outline_visible(false, cx)
+            status_bar.set_outline_visible(layout.outline_visible, cx)
         });
-        let sidebar_width = px(ws
-            .sidebar_width
-            .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
-            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
-        self.sidebar_width = sidebar_width;
-        self.outline_width = px(ws
-            .outline_width
-            .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
-            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+        self.sidebar_width = layout.sidebar_width;
+        self.outline_width = layout.outline_width;
         self.resize_target = None;
         self.panel_drag_start_x = None;
         self.panel_drag_start_width = None;
@@ -390,7 +385,7 @@ impl Workspace {
         self.project_panel.update(cx, |p, cx| {
             p.set_root_dir(ws.root_dir.clone(), cx);
             p.set_active_file(ws.active_file.clone(), cx);
-            p.set_filter_visible(false, cx);
+            p.set_filter_visible(layout.sidebar_view == SidebarView::Search, cx);
         });
 
         self.sync_sidebar_state(cx);
@@ -1037,6 +1032,15 @@ impl Workspace {
     }
 
     pub fn sync_workspace_state(&self, config: &mut AppConfig, cx: &App) {
+        self.sync_workspace_state_with_window(config, None, cx);
+    }
+
+    pub fn sync_workspace_state_with_window(
+        &self,
+        config: &mut AppConfig,
+        window_bounds: Option<crate::config::WindowLayoutState>,
+        cx: &App,
+    ) {
         let mut open_files = Vec::new();
         let mut active_file = None;
 
@@ -1051,14 +1055,22 @@ impl Workspace {
             }
         }
 
-        config.update_last_workspace(WorkspaceState {
+        let mut state = WorkspaceState {
             root_dir: self.root_dir.clone(),
             active_file,
             open_files,
             sidebar_visible: self.sidebar_visible,
             sidebar_width: Some(f32::from(self.sidebar_width)),
+            sidebar_view: self.sidebar_view,
+            outline_visible: self.outline_visible,
             outline_width: Some(f32::from(self.outline_width)),
-        });
+            window_bounds,
+        };
+        if state.window_bounds.is_none() {
+            state.window_bounds = config.existing_window_bounds_for(&state);
+        }
+
+        config.update_last_workspace(state);
     }
 
     pub fn root_dir(&self) -> Option<&std::path::Path> {
@@ -1169,9 +1181,17 @@ impl Workspace {
     }
 
     pub fn finish_panel_resize(&mut self, cx: &mut Context<Self>) {
-        self.resize_target = None;
+        let target = self.resize_target.take();
         self.panel_drag_start_x = None;
-        self.panel_drag_start_width = None;
+        let start_width = self.panel_drag_start_width.take();
+        let changed = match (target, start_width) {
+            (Some(PanelResizeTarget::Sidebar), Some(start)) => start != self.sidebar_width,
+            (Some(PanelResizeTarget::Outline), Some(start)) => start != self.outline_width,
+            _ => false,
+        };
+        if changed {
+            cx.emit(WorkspaceEvent::LayoutChanged);
+        }
         cx.notify();
     }
 
@@ -1182,23 +1202,44 @@ impl Workspace {
     }
 
     pub fn reset_sidebar_width(&mut self, cx: &mut Context<Self>) {
-        if self.is_resizing_sidebar() {
-            self.finish_panel_resize(cx);
+        let was_resizing = self.is_resizing_sidebar();
+        let start_width = self.panel_drag_start_width;
+        if was_resizing {
+            self.resize_target = None;
+            self.panel_drag_start_x = None;
+            self.panel_drag_start_width = None;
         }
+        let prev = start_width.unwrap_or(self.sidebar_width);
         self.set_sidebar_width(px(DEFAULT_SIDEBAR_WIDTH), cx);
+        if prev != self.sidebar_width {
+            cx.emit(WorkspaceEvent::LayoutChanged);
+        } else if was_resizing {
+            cx.notify();
+        }
     }
 
     pub fn reset_outline_width(&mut self, cx: &mut Context<Self>) {
-        if self.is_resizing_outline() {
-            self.finish_panel_resize(cx);
+        let was_resizing = self.is_resizing_outline();
+        let start_width = self.panel_drag_start_width;
+        if was_resizing {
+            self.resize_target = None;
+            self.panel_drag_start_x = None;
+            self.panel_drag_start_width = None;
         }
+        let prev = start_width.unwrap_or(self.outline_width);
         self.set_outline_width(px(DEFAULT_SIDEBAR_WIDTH), cx);
+        if prev != self.outline_width {
+            cx.emit(WorkspaceEvent::LayoutChanged);
+        } else if was_resizing {
+            cx.notify();
+        }
     }
 
     pub fn set_sidebar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if self.sidebar_visible != visible {
             self.sidebar_visible = visible;
             self.sync_sidebar_state(cx);
+            cx.emit(WorkspaceEvent::LayoutChanged);
             cx.notify();
         }
     }
@@ -1212,6 +1253,7 @@ impl Workspace {
             self.sidebar_visible = true;
             self.sidebar_view = view;
             self.sync_sidebar_state(cx);
+            cx.emit(WorkspaceEvent::LayoutChanged);
             cx.notify();
         }
     }
@@ -1235,6 +1277,7 @@ impl Workspace {
         } else {
             self.focus_active_editor(window, cx);
         }
+        cx.emit(WorkspaceEvent::LayoutChanged);
         cx.notify();
     }
 

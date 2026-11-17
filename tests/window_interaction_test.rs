@@ -679,6 +679,7 @@ fn test_inviscid_window_open_initial_and_lib_reexport() {
         sidebar_visible: true,
         sidebar_width: None,
         outline_width: None,
+        ..WorkspaceState::default()
     };
 
     cx.update(|_window, cx| {
@@ -702,4 +703,103 @@ fn test_inviscid_window_open_initial_and_lib_reexport() {
     assert_eq!(ws_root, Some(temp_dir.clone()));
 
     let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_zed_style_layout_persistence_across_restart_and_drag_resize() {
+    use gpui::px;
+    use inviscid::InviscidWindow;
+    use inviscid::app::SidebarView;
+    use inviscid::config::{SerializedBounds, UiLayoutState, WindowLayoutState, WindowMode};
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let cfg_path = temp_dir.path().join("config.toml");
+    let state_path = temp_dir.path().join("state.toml");
+
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        let mut config = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
+        config.restore_workspace = false;
+        cx.set_global(ThemeManager::from_config(&config));
+        cx.set_global(config);
+        inviscid::app::actions::bind_default_bindings(cx);
+    });
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::open_initial(None, cx));
+    cx.run_until_parked();
+
+    // Drag sidebar width, switch to Search sidebar, open outline panel, and drag outline width.
+    cx.update(|window, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| {
+            ws.show_sidebar(SidebarView::Search, cx);
+            ws.toggle_outline_panel(window, cx);
+            ws.start_sidebar_resize(px(240.0), cx);
+            ws.handle_panel_resize_drag(px(330.0), cx);
+            ws.finish_panel_resize(cx);
+            ws.start_outline_resize(px(800.0), cx);
+            ws.handle_panel_resize_drag(px(720.0), cx);
+            ws.finish_panel_resize(cx);
+        });
+    });
+    cx.run_until_parked();
+
+    // Persist window state synchronously (simulating window close / app quit).
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.persist_window_state_sync(window, cx);
+        });
+    });
+
+    // Reload from disk and verify layout + window bounds persisted even on empty workspace.
+    let reloaded = AppConfig::load_from_paths(cfg_path, state_path);
+    let layout = reloaded
+        .last_layout()
+        .expect("last_layout must be persisted to state.toml");
+    assert!(layout.sidebar_visible);
+    assert_eq!(layout.sidebar_width, Some(330.0));
+    assert_eq!(layout.sidebar_view, SidebarView::Search);
+    assert!(layout.outline_visible);
+    assert_eq!(layout.outline_width, Some(320.0));
+    assert!(layout.window_bounds.is_some());
+
+    // Simulate next launch with restore_workspace = false and custom saved layout.
+    let mut cx2 = TestAppContext::single();
+    cx2.update(|cx| {
+        let mut config = reloaded;
+        config.restore_workspace = false;
+        config.session.last_layout = Some(UiLayoutState {
+            window_bounds: Some(WindowLayoutState {
+                mode: WindowMode::Windowed,
+                bounds: SerializedBounds {
+                    x: 80.0,
+                    y: 60.0,
+                    width: 1200.0,
+                    height: 820.0,
+                },
+                display_uuid: None,
+            }),
+            sidebar_visible: false,
+            sidebar_width: Some(330.0),
+            sidebar_view: SidebarView::Search,
+            outline_visible: true,
+            outline_width: Some(320.0),
+        });
+        cx.set_global(ThemeManager::from_config(&config));
+        cx.set_global(config);
+        inviscid::app::actions::bind_default_bindings(cx);
+    });
+
+    let (app2, cx2) = cx2.add_window_view(|_window, cx| InviscidWindow::open_initial(None, cx));
+    cx2.run_until_parked();
+
+    cx2.update(|_window, cx| {
+        let ws = app2.read(cx).workspace().read(cx);
+        assert_eq!(ws.tab_count(), 0);
+        assert!(!ws.sidebar_visible());
+        assert_eq!(ws.sidebar_width(), px(330.0));
+        assert!(ws.outline_visible());
+        assert_eq!(ws.outline_width(), px(320.0));
+        assert!(ws.status_bar().read(cx).outline_visible());
+    });
 }

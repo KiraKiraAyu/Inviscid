@@ -27,7 +27,7 @@ pub use tab_bar::{TabBar, TabMeta};
 pub use title_bar::{TitleBar, TitleBarEvent};
 pub use workspace::Workspace;
 
-use crate::config::{AppConfig, WorkspaceState};
+use crate::config::{AppConfig, WindowLayoutState, WorkspaceState};
 use crate::theme::ThemeManager;
 
 /// Root view entity for an Inviscid editor window.
@@ -36,8 +36,12 @@ pub struct InviscidWindow {
     titlebar: Entity<TitleBar>,
     workspace: Entity<Workspace>,
     active_menu: Option<ActiveMenu>,
+    cached_window_bounds: Option<WindowLayoutState>,
+    window_persistence_attached: bool,
     _workspace_subscription: Subscription,
     _titlebar_subscription: Subscription,
+    _window_subscriptions: Vec<Subscription>,
+    _bounds_persist_task: Option<Task<()>>,
 }
 
 impl InviscidWindow {
@@ -61,6 +65,9 @@ impl InviscidWindow {
                     this.titlebar
                         .update(cx, |tb, cx| tb.notify_workspace_updated(cx));
                 }
+                crate::app::workspace::WorkspaceEvent::LayoutChanged => {
+                    commands::sync_workspace_to_global(this, cx);
+                }
             },
         );
 
@@ -81,8 +88,12 @@ impl InviscidWindow {
             titlebar,
             workspace,
             active_menu: None,
+            cached_window_bounds: None,
+            window_persistence_attached: false,
             _workspace_subscription,
             _titlebar_subscription,
+            _window_subscriptions: Vec::new(),
+            _bounds_persist_task: None,
         }
     }
 
@@ -129,6 +140,69 @@ impl InviscidWindow {
 
     pub fn titlebar(&self) -> &Entity<TitleBar> {
         &self.titlebar
+    }
+
+    pub fn cached_window_bounds(&self) -> Option<&WindowLayoutState> {
+        self.cached_window_bounds.as_ref()
+    }
+
+    fn attach_window_observers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.window_persistence_attached {
+            return;
+        }
+        self.window_persistence_attached = true;
+
+        let bounds_sub = cx.observe_window_bounds(window, |this, window, cx| {
+            this.handle_window_bounds_changed(window, cx);
+        });
+        let activation_sub = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.refresh_window_bounds_in_memory(window, cx);
+            }
+        });
+        self._window_subscriptions.push(bounds_sub);
+        self._window_subscriptions.push(activation_sub);
+
+        let weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let _ = weak.update(cx, |this, cx| {
+                this.persist_window_state_sync(window, cx);
+            });
+            true
+        });
+    }
+
+    fn handle_window_bounds_changed(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(bounds) = WindowLayoutState::from_window(window, cx) else {
+            return;
+        };
+        if self.cached_window_bounds.as_ref() != Some(&bounds) {
+            self.cached_window_bounds = Some(bounds);
+            commands::sync_workspace_in_memory(self, cx);
+            self._bounds_persist_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    commands::sync_workspace_to_global(this, cx);
+                });
+            }));
+        }
+    }
+
+    fn refresh_window_bounds_in_memory(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(bounds) = WindowLayoutState::from_window(window, cx) {
+            self.cached_window_bounds = Some(bounds);
+        }
+        commands::sync_workspace_in_memory(self, cx);
+    }
+
+    pub fn persist_window_state_sync(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self._bounds_persist_task = None;
+        if let Some(bounds) = WindowLayoutState::from_window(window, cx) {
+            self.cached_window_bounds = Some(bounds);
+        }
+        commands::sync_workspace_to_global_sync(self, cx);
     }
 
     pub fn active_menu(&self) -> Option<ActiveMenu> {
@@ -186,6 +260,7 @@ impl InviscidWindow {
 
 impl Render for InviscidWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.attach_window_observers(window, cx);
         // App actions need a dispatch path even before an editor or panel takes focus.
         if window.focused(cx).is_none() {
             window.focus(&self.focus_handle);
