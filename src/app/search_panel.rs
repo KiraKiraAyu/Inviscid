@@ -48,6 +48,7 @@ pub struct SearchPanel {
     input: Entity<TextInput>,
     replace_input: Entity<TextInput>,
     scroll_handle: UniformListScrollHandle,
+    results_scroll: crate::ui::SmoothScrollController,
     root_dir: Option<PathBuf>,
     file_cache: WorkspaceFileCache,
     prewarm_cancel: Arc<AtomicBool>,
@@ -117,6 +118,7 @@ impl SearchPanel {
             input,
             replace_input,
             scroll_handle: UniformListScrollHandle::default(),
+            results_scroll: crate::ui::SmoothScrollController::vertical(),
             root_dir: None,
             file_cache: WorkspaceFileCache::default(),
             prewarm_cancel: Arc::new(AtomicBool::new(false)),
@@ -142,6 +144,12 @@ impl SearchPanel {
             cx.notify();
         });
         window.focus(&self.input.read(cx).focus_handle(cx));
+    }
+
+    #[inline]
+    pub(super) fn scroll_access(&mut self) -> (&mut crate::ui::SmoothScrollController, ScrollHandle) {
+        let handle = self.scroll_handle.0.borrow().base_handle.clone();
+        (&mut self.results_scroll, handle)
     }
 
     pub fn set_root_dir(&mut self, root_dir: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -526,7 +534,13 @@ async fn scan_workspace(
 }
 
 impl Render for SearchPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::SmoothScrollController::continue_on_window(
+            self,
+            window,
+            cx,
+            Self::scroll_access,
+        );
         self.ensure_rows();
         let theme = cx.global::<ThemeManager>().theme().clone();
         let body = if self.results.is_empty() {

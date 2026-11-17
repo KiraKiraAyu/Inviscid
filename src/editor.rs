@@ -201,6 +201,7 @@ pub struct Editor {
 
     pub(crate) scroll: ScrollState,
     pub(crate) scroll_task: Option<Task<()>>,
+    pub(crate) scroll_frame_scheduled: bool,
     pub(crate) drag_scroll_task: Option<Task<()>>,
     pub(crate) _async_update_task: Option<Task<()>>,
     pub(crate) load_task: Option<Task<()>>,
@@ -355,7 +356,7 @@ impl Editor {
 
     #[inline]
     pub fn has_scroll_task(&self) -> bool {
-        self.scroll_task.is_some()
+        self.scroll_task.is_some() || self.scroll_frame_scheduled
     }
 
     #[inline]
@@ -551,6 +552,7 @@ impl Editor {
             blink_task: None,
             scroll: ScrollState::new(),
             scroll_task: None,
+            scroll_frame_scheduled: false,
             drag_scroll_task: None,
             _async_update_task: Some(async_update_task),
             load_task: None,
@@ -778,19 +780,41 @@ impl Editor {
         self.pixel_column_goal = None;
     }
 
+    fn step_scroll_frame(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.scroll.is_animating() {
+            return false;
+        }
+        let previous = self.scroll.current_scroll_top;
+        let still_animating = self.scroll.step_interpolation();
+        if self.scroll.current_scroll_top != previous {
+            cx.emit(EditorEvent::ScrollChanged);
+        }
+        still_animating
+    }
+
+    pub(crate) fn start_scroll_animation_on_window(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::ui::schedule_vsync_scroll_frame(
+            self,
+            window,
+            cx,
+            |editor| (&mut editor.scroll_frame_scheduled, &mut editor.scroll_task),
+            Self::step_scroll_frame,
+        );
+    }
+
     pub(crate) fn start_scroll_animation(&mut self, cx: &mut Context<Self>) {
+        if self.scroll_frame_scheduled {
+            return;
+        }
         crate::ui::start_scroll_animation_with_event(
             self,
             cx,
             |editor| &mut editor.scroll_task,
-            |editor, cx| {
-                let previous = editor.scroll.current_scroll_top;
-                let still_animating = editor.scroll.step_interpolation();
-                if editor.scroll.current_scroll_top != previous {
-                    cx.emit(EditorEvent::ScrollChanged);
-                }
-                still_animating
-            },
+            Self::step_scroll_frame,
         );
     }
 

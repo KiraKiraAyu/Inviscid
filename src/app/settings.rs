@@ -42,6 +42,8 @@ pub struct SettingsWindow {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) active_category: SettingsCategory,
     pub(crate) active_input: Option<ActiveInput>,
+    scroll_handle: ScrollHandle,
+    content_scroll: crate::ui::SmoothScrollController,
 }
 
 impl Focusable for SettingsWindow {
@@ -56,7 +58,15 @@ impl SettingsWindow {
             focus_handle: cx.focus_handle(),
             active_category: SettingsCategory::General,
             active_input: None,
+            scroll_handle: ScrollHandle::new(),
+            content_scroll: crate::ui::SmoothScrollController::vertical(),
         }
+    }
+
+    #[inline]
+    fn scroll_access(&mut self) -> (&mut crate::ui::SmoothScrollController, ScrollHandle) {
+        let handle = self.scroll_handle.clone();
+        (&mut self.content_scroll, handle)
     }
 
     pub fn focus(&self, window: &mut Window) {
@@ -66,6 +76,8 @@ impl SettingsWindow {
     pub fn set_category(&mut self, category: SettingsCategory, cx: &mut Context<Self>) {
         self.active_category = category;
         self.active_input = None;
+        self.scroll_handle.set_offset(Point::default());
+        self.content_scroll.reset();
         cx.notify();
     }
 
@@ -166,6 +178,12 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::SmoothScrollController::continue_on_window(
+            self,
+            window,
+            cx,
+            Self::scroll_access,
+        );
         let theme = cx.global::<ThemeManager>().theme().clone();
         let config = cx.global::<AppConfig>();
         window.set_rem_size(px(config.ui_font_size));
@@ -229,7 +247,7 @@ impl Render for SettingsWindow {
                     .flex()
                     .flex_row()
                     .child(self.render_sidebar(cx))
-                    .child(
+                    .child(crate::ui::SmoothScrollController::wrap(
                         div()
                             .id("settings_content_panel")
                             .flex_1()
@@ -239,10 +257,13 @@ impl Render for SettingsWindow {
                             .mb(Spacing::SM)
                             .bg(theme.bg_editor)
                             .rounded(Radius::CANVAS)
+                            .track_scroll(&self.scroll_handle)
                             .overflow_y_scroll()
                             .p(Spacing::XL)
                             .child(panel),
-                    ),
+                        cx,
+                        Self::scroll_access,
+                    )),
             )
     }
 }

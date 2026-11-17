@@ -3308,22 +3308,23 @@ fn test_editor_smooth_scrolling_physics() {
             assert!(editor.scroll_state().is_animating());
             assert!(editor.has_scroll_task());
 
-            // 3. Step physics at halfway point (80ms):
-            // Distance = 100px. At 80ms, 87.5% progress -> current = 45 + 87.5 = 132.5px
-            let animating = editor.scroll_state_mut().step_interpolation_with_elapsed(std::time::Duration::from_millis(80));
+            // 3. Step physics at halfway point (100ms of 200ms inverse-delta EaseInOut):
+            let animating = editor.scroll_state_mut().step_interpolation_with_elapsed(std::time::Duration::from_millis(100));
             assert!(animating);
-            assert_eq!(editor.scroll_state().current_scroll_top, px(132.5));
+            let mid_pos = editor.scroll_state().current_scroll_top;
+            assert!((mid_pos - px(95.0)).abs() < px(0.01), "unexpected midpoint: {:?}", mid_pos);
 
             // 4. Continuous Impulse Stacking:
-            // Spin wheel again at 80ms (l.y = -1.0) -> target advances by 100px (145 -> 245)
-            // anim_start_scroll_top re-anchors to current (132.5px) without stutter
+            // Spin wheel again at 100ms -> target advances by 100px (145 -> 245)
+            // anim_start_scroll_top re-anchors to current while preserving velocity via EaseInOutWithInitialSlope
             editor.handle_scroll_wheel(&wheel_event, cx);
             assert_eq!(editor.scroll_state().target_scroll_top, px(245.0));
-            assert_eq!(editor.scroll_state().anim_start_scroll_top, px(132.5));
-            assert_eq!(editor.scroll_state().current_scroll_top, px(132.5));
+            assert_eq!(editor.scroll_state().anim_start_scroll_top, mid_pos);
+            assert_eq!(editor.scroll_state().current_scroll_top, mid_pos);
 
-            // Complete the new animation (160ms) -> stops crisply at 245px
-            let animating = editor.scroll_state_mut().step_interpolation_with_elapsed(std::time::Duration::from_millis(160));
+            // Complete the new adaptive duration -> stops crisply at 245px
+            let duration = editor.scroll_state().anim_duration;
+            let animating = editor.scroll_state_mut().step_interpolation_with_elapsed(duration);
             assert!(!animating);
             assert_eq!(editor.scroll_state().current_scroll_top, px(245.0));
             assert!(!editor.scroll_state().is_animating());

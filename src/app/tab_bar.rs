@@ -46,8 +46,7 @@ pub struct TabBar {
     sidebar_offset: Pixels,
     active_context_menu: Option<TabContextMenuState>,
     scroll_handle: ScrollHandle,
-    tab_scroll: crate::ui::SmoothScrollPhysics,
-    scroll_task: Option<Task<()>>,
+    tab_scroll: crate::ui::SmoothScrollController,
     last_edge_flush: (bool, bool),
 }
 
@@ -186,8 +185,7 @@ impl TabBar {
             sidebar_offset: px(0.0),
             active_context_menu: None,
             scroll_handle,
-            tab_scroll: crate::ui::SmoothScrollPhysics::new(),
-            scroll_task: None,
+            tab_scroll: crate::ui::SmoothScrollController::horizontal(),
             last_edge_flush,
         }
     }
@@ -353,63 +351,49 @@ impl TabBar {
         cx.notify();
     }
 
-    pub fn handle_scroll_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let max_scroll = self.scroll_handle.max_offset().width;
-        if max_scroll <= px(0.0) {
-            return;
-        }
-
-        let actual_left = (-self.scroll_handle.offset().x).clamp(px(0.0), max_scroll);
-        if !self.tab_scroll.is_animating()
-            && (self.tab_scroll.current_scroll_top - actual_left).abs() > px(1.0)
-        {
-            self.tab_scroll.current_scroll_top = actual_left;
-            self.tab_scroll.target_scroll_top = actual_left;
-            self.tab_scroll.anim_start_scroll_top = actual_left;
-        }
-
-        match event.delta {
-            ScrollDelta::Pixels(p) => {
-                let delta = if p.x.abs() > px(0.01) { p.x } else { p.y };
-                if delta.abs() > px(0.01) {
-                    self.scroll_task = None;
-                    self.tab_scroll.scroll_direct(delta, max_scroll);
-                    self.scroll_handle
-                        .set_offset(Point::new(-self.tab_scroll.current_scroll_top, px(0.0)));
-                    self.sync_edge_flush(cx);
-                    cx.notify();
-                }
-            }
-            ScrollDelta::Lines(l) => {
-                let delta_lines = if l.x.abs() > 0.01 { l.x } else { l.y };
-                let delta = px(delta_lines * crate::ui::WHEEL_LINE_STEP_PX);
-                if delta.abs() > px(0.01) {
-                    self.tab_scroll.scroll_by_wheel(delta, max_scroll);
-                    self.start_scroll_animation(cx);
-                    cx.notify();
-                }
-            }
-        }
+    #[inline]
+    fn scroll_access(&mut self) -> (&mut crate::ui::SmoothScrollController, ScrollHandle) {
+        let handle = self.scroll_handle.clone();
+        (&mut self.tab_scroll, handle)
     }
 
-    pub(crate) fn start_scroll_animation(&mut self, cx: &mut Context<Self>) {
-        crate::ui::start_scroll_animation(
+    pub fn handle_scroll_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        crate::ui::SmoothScrollController::handle_wheel_with(
             self,
+            event,
+            None,
             cx,
-            |tab_bar| &mut tab_bar.scroll_task,
-            |tab_bar| {
-                let still_animating = tab_bar.tab_scroll.step_interpolation();
-                tab_bar
-                    .scroll_handle
-                    .set_offset(Point::new(-tab_bar.tab_scroll.current_scroll_top, px(0.0)));
-                still_animating
-            },
+            Self::scroll_access,
+            Self::sync_edge_flush,
+        );
+    }
+
+    pub fn handle_scroll_wheel_in_window(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::ui::SmoothScrollController::handle_wheel_with(
+            self,
+            event,
+            Some(window),
+            cx,
+            Self::scroll_access,
+            Self::sync_edge_flush,
         );
     }
 }
 
 impl Render for TabBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::SmoothScrollController::continue_on_window_with(
+            self,
+            window,
+            cx,
+            Self::scroll_access,
+            Self::sync_edge_flush,
+        );
         let theme = cx
             .try_global::<ThemeManager>()
             .map(|m| m.theme())
@@ -452,15 +436,11 @@ impl Render for TabBar {
             .flex_row()
             .items_end()
             .justify_between()
-            .child(
+            .child(crate::ui::SmoothScrollController::wrap_with(
                 div()
                     .id("tab_bar_scroll")
                     .track_scroll(&self.scroll_handle)
                     .overflow_x_scroll()
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-                        cx.stop_propagation();
-                        this.handle_scroll_wheel(event, cx);
-                    }))
                     .flex_1()
                     .h_full()
                     .flex()
@@ -665,7 +645,10 @@ impl Render for TabBar {
                                     )
                             })
                     })),
-            )
+                cx,
+                Self::scroll_access,
+                Self::sync_edge_flush,
+            ))
             .child(
                 canvas(
                     |_bounds, _window, _cx| {},

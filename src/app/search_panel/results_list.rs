@@ -18,51 +18,55 @@ const LINE_NUMBER_WIDTH: Pixels = px(32.0);
 impl SearchPanel {
     pub(super) fn render_results_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = cx.entity().downgrade();
-        uniform_list(
-            "search_results",
-            self.rows.len(),
-            move |range, _window, cx| {
-                let Some(panel) = panel.upgrade() else {
-                    return Vec::new();
-                };
-                let theme = cx.global::<ThemeManager>().theme();
-                let this = panel.read(cx);
-                range
-                    .filter_map(|row_idx| {
-                        let element = match *this.rows.get(row_idx)? {
-                            ResultRow::FileHeader(file_idx) => {
-                                let file = this.results.files().get(file_idx)?;
-                                let is_collapsed = this.collapsed_files.contains(&file.path);
-                                render_file_header(row_idx, file, is_collapsed, &panel, theme)
+        crate::ui::SmoothScrollController::wrap(
+            uniform_list(
+                "search_results",
+                self.rows.len(),
+                move |range, _window, cx| {
+                    let Some(panel) = panel.upgrade() else {
+                        return Vec::new();
+                    };
+                    let theme = cx.global::<ThemeManager>().theme();
+                    let this = panel.read(cx);
+                    range
+                        .filter_map(|row_idx| {
+                            let element = match *this.rows.get(row_idx)? {
+                                ResultRow::FileHeader(file_idx) => {
+                                    let file = this.results.files().get(file_idx)?;
+                                    let is_collapsed = this.collapsed_files.contains(&file.path);
+                                    render_file_header(row_idx, file, is_collapsed, &panel, theme)
+                                        .into_any_element()
+                                }
+                                ResultRow::Match {
+                                    file_idx,
+                                    match_idx,
+                                } => {
+                                    let file = this.results.files().get(file_idx)?;
+                                    let m = file.matches.get(match_idx)?;
+                                    render_match_row(
+                                        row_idx,
+                                        &file.path,
+                                        m,
+                                        this.replacing,
+                                        this.show_replace,
+                                        &panel,
+                                        theme,
+                                    )
                                     .into_any_element()
-                            }
-                            ResultRow::Match {
-                                file_idx,
-                                match_idx,
-                            } => {
-                                let file = this.results.files().get(file_idx)?;
-                                let m = file.matches.get(match_idx)?;
-                                render_match_row(
-                                    row_idx,
-                                    &file.path,
-                                    m,
-                                    this.replacing,
-                                    this.show_replace,
-                                    &panel,
-                                    theme,
-                                )
-                                .into_any_element()
-                            }
-                        };
-                        Some(element)
-                    })
-                    .collect()
-            },
+                                }
+                            };
+                            Some(element)
+                        })
+                        .collect()
+                },
+            )
+            .track_scroll(self.scroll_handle.clone())
+            .flex_1()
+            .w_full()
+            .py(Spacing::XS),
+            cx,
+            Self::scroll_access,
         )
-        .track_scroll(self.scroll_handle.clone())
-        .flex_1()
-        .w_full()
-        .py(Spacing::XS)
     }
 }
 

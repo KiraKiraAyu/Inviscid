@@ -20,6 +20,7 @@ pub struct OutlinePanel {
     active_line: Option<SourceLine>,
     editor_focus_handle: Option<FocusHandle>,
     scroll_handle: UniformListScrollHandle,
+    outline_scroll: crate::ui::SmoothScrollController,
 }
 
 impl Focusable for OutlinePanel {
@@ -36,7 +37,14 @@ impl OutlinePanel {
             active_line: None,
             editor_focus_handle: None,
             scroll_handle: UniformListScrollHandle::default(),
+            outline_scroll: crate::ui::SmoothScrollController::vertical(),
         }
+    }
+
+    #[inline]
+    fn scroll_access(&mut self) -> (&mut crate::ui::SmoothScrollController, ScrollHandle) {
+        let handle = self.scroll_handle.0.borrow().base_handle.clone();
+        (&mut self.outline_scroll, handle)
     }
 
     pub fn entries(&self) -> &[OutlineItem] {
@@ -104,72 +112,82 @@ impl OutlinePanel {
 
     fn render_entries(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = cx.entity().downgrade();
-        uniform_list(
-            "outline_entries",
-            self.entries.len(),
-            move |range, _window, cx| {
-                let Some(panel) = panel.upgrade() else {
-                    return Vec::new();
-                };
-                let theme = cx.global::<ThemeManager>().theme();
-                let this = panel.read(cx);
-                range
-                    .filter_map(|index| {
-                        let entry = this.entries.get(index)?.clone();
-                        let selected = this
-                            .active_line
-                            .is_some_and(|line| line == entry.source_line);
-                        let indent = px(10.0 + (entry.level.saturating_sub(1) as f32 * 14.0));
-                        let panel_click = panel.downgrade();
-                        let editor_focus_handle = this.editor_focus_handle.clone();
-                        let label = if entry.title.is_empty() {
-                            "Untitled heading".to_string()
-                        } else {
-                            entry.title.clone()
-                        };
-                        Some(
-                            dock_panel::row(indent, theme)
-                                .id(("outline_entry", index))
-                                .on_click(move |_, window, cx| {
-                                    if let Some(focus_handle) = &editor_focus_handle {
-                                        window.focus(focus_handle);
-                                    }
-                                    if let Some(panel) = panel_click.upgrade() {
-                                        panel.update(cx, |this, cx| {
-                                            this.select(entry.source_line, cx);
-                                        });
-                                    }
-                                })
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_size(FontSize::SM)
-                                        .text_color(if selected {
-                                            theme.text_accent
-                                        } else {
-                                            theme.text_secondary
-                                        })
-                                        .flex_1()
-                                        .child(label),
-                                )
-                                .into_any_element(),
-                        )
-                    })
-                    .collect()
-            },
+        crate::ui::SmoothScrollController::wrap(
+            uniform_list(
+                "outline_entries",
+                self.entries.len(),
+                move |range, _window, cx| {
+                    let Some(panel) = panel.upgrade() else {
+                        return Vec::new();
+                    };
+                    let theme = cx.global::<ThemeManager>().theme();
+                    let this = panel.read(cx);
+                    range
+                        .filter_map(|index| {
+                            let entry = this.entries.get(index)?.clone();
+                            let selected = this
+                                .active_line
+                                .is_some_and(|line| line == entry.source_line);
+                            let indent = px(10.0 + (entry.level.saturating_sub(1) as f32 * 14.0));
+                            let panel_click = panel.downgrade();
+                            let editor_focus_handle = this.editor_focus_handle.clone();
+                            let label = if entry.title.is_empty() {
+                                "Untitled heading".to_string()
+                            } else {
+                                entry.title.clone()
+                            };
+                            Some(
+                                dock_panel::row(indent, theme)
+                                    .id(("outline_entry", index))
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(focus_handle) = &editor_focus_handle {
+                                            window.focus(focus_handle);
+                                        }
+                                        if let Some(panel) = panel_click.upgrade() {
+                                            panel.update(cx, |this, cx| {
+                                                this.select(entry.source_line, cx);
+                                            });
+                                        }
+                                    })
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_size(FontSize::SM)
+                                            .text_color(if selected {
+                                                theme.text_accent
+                                            } else {
+                                                theme.text_secondary
+                                            })
+                                            .flex_1()
+                                            .child(label),
+                                    )
+                                    .into_any_element(),
+                            )
+                        })
+                        .collect()
+                },
+            )
+            .track_scroll(self.scroll_handle.clone())
+            .flex_1()
+            .w_full()
+            .px(crate::ui::tokens::Spacing::SM)
+            .py(LIST_VERTICAL_PADDING),
+            cx,
+            Self::scroll_access,
         )
-        .track_scroll(self.scroll_handle.clone())
-        .flex_1()
-        .w_full()
-        .px(crate::ui::tokens::Spacing::SM)
-        .py(LIST_VERTICAL_PADDING)
     }
 }
 
 impl Render for OutlinePanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::SmoothScrollController::continue_on_window(
+            self,
+            window,
+            cx,
+            Self::scroll_access,
+        );
         let theme = cx.global::<ThemeManager>().theme().clone();
         let entries = if self.entries.is_empty() {
             dock_panel::empty_state("No headings", &theme).into_any_element()

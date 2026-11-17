@@ -117,8 +117,7 @@ pub struct ProjectPanel {
     /// Keeps the focus-lost handler alive; it can only be built during render, which needs a window.
     blur_subscription: Option<Subscription>,
     scroll_handle: UniformListScrollHandle,
-    tree_scroll: TreeScrollState,
-    scroll_task: Option<Task<()>>,
+    tree_scroll: crate::ui::SmoothScrollController,
     active_file: Option<PathBuf>,
     show_filter: bool,
     filter_input: Option<Entity<TextInput>>,
@@ -160,8 +159,7 @@ impl ProjectPanel {
             selected_path: None,
             blur_subscription: None,
             scroll_handle: UniformListScrollHandle::default(),
-            tree_scroll: TreeScrollState::new(),
-            scroll_task: None,
+            tree_scroll: crate::ui::SmoothScrollController::vertical(),
             active_file: None,
             show_filter: false,
             filter_input: None,
@@ -180,13 +178,19 @@ impl ProjectPanel {
     /// Accessor for the tree scroll state.
     #[inline]
     pub fn tree_scroll(&self) -> &TreeScrollState {
-        &self.tree_scroll
+        &self.tree_scroll.physics
     }
 
     /// Mutable accessor for the tree scroll state.
     #[inline]
     pub fn tree_scroll_mut(&mut self) -> &mut TreeScrollState {
-        &mut self.tree_scroll
+        &mut self.tree_scroll.physics
+    }
+
+    #[inline]
+    fn scroll_access(&mut self) -> (&mut crate::ui::SmoothScrollController, ScrollHandle) {
+        let handle = self.scroll_handle();
+        (&mut self.tree_scroll, handle)
     }
 
     /// Accessor for current root directory.
@@ -327,8 +331,7 @@ impl ProjectPanel {
             self.filtered_indices.clear();
             self.start_filter_scan(cx);
         }
-        self.scroll_task = None;
-        self.tree_scroll = TreeScrollState::new();
+        self.tree_scroll.reset();
         self.scroll_handle
             .0
             .borrow()
@@ -480,58 +483,21 @@ impl ProjectPanel {
         }
     }
 
-    pub(crate) fn start_scroll_animation(&mut self, cx: &mut Context<Self>) {
-        crate::ui::start_scroll_animation(
-            self,
-            cx,
-            |panel| &mut panel.scroll_task,
-            |panel| {
-                let still_animating = panel.tree_scroll.step_interpolation();
-                panel
-                    .scroll_handle()
-                    .set_offset(Point::new(px(0.0), -panel.tree_scroll.current_scroll_top));
-                still_animating
-            },
-        );
-    }
-
     /// Handles mouse wheel and precision touchpad events with smooth scroll physics
-    pub(crate) fn handle_scroll_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let scroll_handle = self.scroll_handle();
-        let max_scroll = scroll_handle.max_offset().height;
-        if max_scroll <= px(0.0) {
-            return;
-        }
-
-        // Sync with actual offset if not animating (handles window resize / collapse)
-        let actual_top = (-scroll_handle.offset().y).clamp(px(0.0), max_scroll);
-        if !self.tree_scroll.is_animating()
-            && (self.tree_scroll.current_scroll_top - actual_top).abs() > px(1.0)
-        {
-            self.tree_scroll.current_scroll_top = actual_top;
-            self.tree_scroll.target_scroll_top = actual_top;
-            self.tree_scroll.anim_start_scroll_top = actual_top;
-        }
-
-        match event.delta {
-            ScrollDelta::Pixels(p) => {
-                if p.y.abs() > px(0.01) {
-                    self.scroll_task = None;
-                    self.tree_scroll.scroll_direct(p.y, max_scroll);
-                    scroll_handle
-                        .set_offset(Point::new(px(0.0), -self.tree_scroll.current_scroll_top));
-                    cx.notify();
-                }
-            }
-            ScrollDelta::Lines(l) => {
-                let delta_y = px(l.y * crate::ui::WHEEL_LINE_STEP_PX);
-                if delta_y.abs() > px(0.01) {
-                    self.tree_scroll.scroll_by_wheel(delta_y, max_scroll);
-                    self.start_scroll_animation(cx);
-                    cx.notify();
-                }
-            }
-        }
+    #[cfg(test)]
+    pub(crate) fn handle_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::ui::SmoothScrollController::handle_wheel(
+            self,
+            event,
+            Some(window),
+            cx,
+            Self::scroll_access,
+        );
     }
 
     /// Opens context menu manually (useful for testing or programmatic triggering).
@@ -1241,6 +1207,12 @@ impl Render for ProjectPanel {
             });
             self.blur_subscription = Some(sub);
         }
+        crate::ui::SmoothScrollController::continue_on_window(
+            self,
+            window,
+            cx,
+            Self::scroll_access,
+        );
 
         let theme = cx.global::<ThemeManager>().theme().clone();
 
@@ -1261,44 +1233,45 @@ impl Render for ProjectPanel {
 
         let panel_weak = cx.entity().downgrade();
 
-        let tree_items = uniform_list("project_panel_tree_scroll", tree_item_count, {
-            let panel_weak = panel_weak.clone();
-            move |range, _window, cx| {
-                let Some(panel) = panel_weak.upgrade() else {
-                    return Vec::new();
-                };
-                let theme = cx.global::<ThemeManager>().theme().clone();
-                let panel = panel.read(cx);
-                let is_filtering = !panel.filter_query.trim().is_empty();
-                tree_view::build_tree_items(
-                    tree_view::TreeItemList {
-                        entries: if is_filtering {
-                            &panel.all_entries
-                        } else {
-                            &panel.entries
+        let tree_items = crate::ui::SmoothScrollController::wrap(
+            uniform_list("project_panel_tree_scroll", tree_item_count, {
+                let panel_weak = panel_weak.clone();
+                move |range, _window, cx| {
+                    let Some(panel) = panel_weak.upgrade() else {
+                        return Vec::new();
+                    };
+                    let theme = cx.global::<ThemeManager>().theme().clone();
+                    let panel = panel.read(cx);
+                    let is_filtering = !panel.filter_query.trim().is_empty();
+                    tree_view::build_tree_items(
+                        tree_view::TreeItemList {
+                            entries: if is_filtering {
+                                &panel.all_entries
+                            } else {
+                                &panel.entries
+                            },
+                            visible_indices: is_filtering
+                                .then_some(panel.filtered_indices.as_slice()),
+                            inline_input: panel.inline_input.as_ref(),
+                            selected_path: panel.selected_path.as_deref(),
+                            active_file: panel.active_file.as_deref(),
+                            root_dir: panel.root_dir.as_deref(),
+                            panel: &panel_weak,
                         },
-                        visible_indices: is_filtering.then_some(panel.filtered_indices.as_slice()),
-                        inline_input: panel.inline_input.as_ref(),
-                        selected_path: panel.selected_path.as_deref(),
-                        active_file: panel.active_file.as_deref(),
-                        root_dir: panel.root_dir.as_deref(),
-                        panel: &panel_weak,
-                    },
-                    range,
-                    &theme,
-                    cx,
-                )
-            }
-        })
-        .track_scroll(self.scroll_handle.clone())
-        .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-            cx.stop_propagation();
-            this.handle_scroll_wheel(event, cx);
-        }))
-        .flex_1()
-        .w_full()
-        .px(Spacing::SM)
-        .py(crate::ui::dock_panel::LIST_VERTICAL_PADDING);
+                        range,
+                        &theme,
+                        cx,
+                    )
+                }
+            })
+            .track_scroll(self.scroll_handle.clone())
+            .flex_1()
+            .w_full()
+            .px(Spacing::SM)
+            .py(crate::ui::dock_panel::LIST_VERTICAL_PADDING),
+            cx,
+            Self::scroll_access,
+        );
 
         let on_action = {
             let panel_weak = panel_weak.clone();
@@ -1728,14 +1701,15 @@ mod tests {
         );
 
         // A mouse wheel notch becomes an animated impulse on the shared physics state.
-        cx.update(|_window, cx| {
+        cx.update(|window, cx| {
             let event = ScrollWheelEvent {
                 delta: ScrollDelta::Lines(gpui::Point::new(0.0, -3.0)),
                 ..Default::default()
             };
             host.update(cx, |host, cx| {
-                host.panel
-                    .update(cx, |panel, cx| panel.handle_scroll_wheel(&event, cx));
+                host.panel.update(cx, |panel, cx| {
+                    panel.handle_scroll_wheel(&event, window, cx)
+                });
             });
         });
 

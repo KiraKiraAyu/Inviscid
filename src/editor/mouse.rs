@@ -622,8 +622,8 @@ impl Editor {
         cx: &Context<Editor>,
     ) -> Stateful<EditorElement> {
         element
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-                this.handle_scroll_wheel(event, cx);
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                this.handle_scroll_wheel_in_window(event, window, cx);
             }))
             .on_mouse_down(
                 MouseButton::Left,
@@ -645,6 +645,24 @@ impl Editor {
     }
 
     pub fn handle_scroll_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        self.apply_scroll_wheel(event, None, cx);
+    }
+
+    pub fn handle_scroll_wheel_in_window(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_scroll_wheel(event, Some(window), cx);
+    }
+
+    fn apply_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         let max_scroll = self.get_max_scroll_top();
         match event.delta {
             ScrollDelta::Pixels(p) => {
@@ -659,7 +677,11 @@ impl Editor {
                 let delta_y = px(l.y * crate::ui::WHEEL_LINE_STEP_PX);
                 if delta_y.abs() > px(0.01) {
                     self.scroll.scroll_by_wheel(delta_y, max_scroll);
-                    self.start_scroll_animation(cx);
+                    if let Some(window) = window {
+                        self.start_scroll_animation_on_window(window, cx);
+                    } else {
+                        self.start_scroll_animation(cx);
+                    }
                     cx.notify();
                 }
             }

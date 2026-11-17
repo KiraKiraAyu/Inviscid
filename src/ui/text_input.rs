@@ -115,7 +115,12 @@ pub struct TextInput {
     pub(crate) is_dragging: bool,
     pub(crate) drag_anchor: Option<usize>,
     pub(crate) scroll_offset: Rc<Cell<Pixels>>,
+    pub(crate) max_scroll: Rc<Cell<Pixels>>,
     pub(crate) last_bounds: Rc<Cell<Bounds<Pixels>>>,
+    scroll_physics: crate::ui::SmoothScrollPhysics,
+    scroll_task: Option<Task<()>>,
+    scroll_frame_scheduled: bool,
+    follow_cursor: bool,
     reported_revision: u64,
 }
 
@@ -156,7 +161,12 @@ impl TextInput {
             is_dragging: false,
             drag_anchor: None,
             scroll_offset: Rc::new(Cell::new(px(0.0))),
+            max_scroll: Rc::new(Cell::new(px(0.0))),
             last_bounds: Rc::new(Cell::new(Bounds::default())),
+            scroll_physics: crate::ui::SmoothScrollPhysics::new(),
+            scroll_task: None,
+            scroll_frame_scheduled: false,
+            follow_cursor: true,
             reported_revision,
         }
     }
@@ -264,6 +274,33 @@ impl TextInput {
         self.scroll_offset.set(offset);
     }
 
+    fn step_scroll_frame(&mut self) -> bool {
+        if !self.scroll_physics.is_animating() {
+            return false;
+        }
+        let still_animating = self.scroll_physics.step_interpolation();
+        self.scroll_offset
+            .set(self.scroll_physics.current_scroll_top);
+        still_animating
+    }
+
+    fn schedule_vsync_scroll<H: TextInputHost>(
+        host: &mut H,
+        window: &mut Window,
+        cx: &mut Context<H>,
+    ) {
+        crate::ui::schedule_vsync_scroll_frame(
+            host,
+            window,
+            cx,
+            |host| {
+                let input = host.text_input_mut();
+                (&mut input.scroll_frame_scheduled, &mut input.scroll_task)
+            },
+            |host, _cx| host.text_input_mut().step_scroll_frame(),
+        );
+    }
+
     pub fn sanitize_input(&self, text: &str) -> String {
         let filter = self.char_filter;
         text.chars().filter(|&c| filter(c)).collect()
@@ -276,6 +313,9 @@ impl TextInput {
             self.buffer.insert_text("");
             self.marked_range = None;
             self.scroll_offset.set(px(0.0));
+            self.scroll_task = None;
+            self.scroll_physics.set_direct(px(0.0), px(0.0));
+            self.follow_cursor = true;
             true
         } else {
             false
@@ -290,6 +330,10 @@ impl TextInput {
     }
 
     pub fn on_mutation(&mut self, cx: &mut Context<Self>) {
+        self.follow_cursor = true;
+        self.scroll_task = None;
+        self.scroll_physics
+            .set_direct(self.scroll_offset.get(), self.max_scroll.get());
         self.reset_cursor_blink(cx);
         let revision = self.buffer.revision();
         if revision != self.reported_revision {
@@ -601,7 +645,13 @@ pub(crate) trait TextInputHost: EntityInputHandler + 'static {
     fn on_commit(&mut self, cx: &mut Context<Self>);
     fn on_cancel(&mut self, cx: &mut Context<Self>);
     fn on_mutation(&mut self, cx: &mut Context<Self>) {
-        self.text_input_mut().reset_blink_host(cx);
+        let input = self.text_input_mut();
+        input.follow_cursor = true;
+        input.scroll_task = None;
+        input
+            .scroll_physics
+            .set_direct(input.scroll_offset.get(), input.max_scroll.get());
+        input.reset_blink_host(cx);
     }
 
     fn handle_host_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
@@ -731,6 +781,7 @@ struct TextInputPrepaint {
     caret_bounds: Option<Bounds<Pixels>>,
     cursor_color: Hsla,
     scroll_offset: Pixels,
+    max_scroll: Pixels,
 }
 
 #[derive(Clone)]
@@ -744,6 +795,7 @@ struct TextInputSnapshot {
     padding_x: Pixels,
     is_dragging: bool,
     scroll_offset: Pixels,
+    follow_cursor: bool,
 }
 
 fn shape_prepaint(
@@ -812,6 +864,7 @@ fn shape_prepaint(
             caret_bounds,
             cursor_color,
             scroll_offset: px(0.0),
+            max_scroll: px(0.0),
         };
     }
 
@@ -864,25 +917,35 @@ fn shape_prepaint(
             caret_bounds: None,
             cursor_color,
             scroll_offset: px(0.0),
+            max_scroll: px(0.0),
         };
     };
 
     let viewport_width = (bounds.size.width - snapshot.padding_x * 2.0).max(px(0.0));
     let text_width = wrapped_line.unwrapped_layout.width;
+    let max_scroll = if viewport_width > px(0.0) {
+        (text_width + caret_w - viewport_width).max(px(0.0))
+    } else {
+        px(0.0)
+    };
     let cursor_byte = char_col_to_byte_offset(line_str, snapshot.cursor_col);
     let cursor_x = wrapped_line
         .position_for_index(cursor_byte, line_height)
         .map(|p| p.x)
         .unwrap_or(px(0.0));
 
-    let scroll_offset = calculate_scroll_offset(
-        snapshot.scroll_offset,
-        cursor_x,
-        caret_w,
-        viewport_width,
-        text_width,
-        px(8.0),
-    );
+    let scroll_offset = if snapshot.follow_cursor {
+        calculate_scroll_offset(
+            snapshot.scroll_offset,
+            cursor_x,
+            caret_w,
+            viewport_width,
+            text_width,
+            px(8.0),
+        )
+    } else {
+        snapshot.scroll_offset.clamp(px(0.0), max_scroll)
+    };
     let content_origin_x = base_origin_x - scroll_offset;
 
     let selection_quad = if !selection.is_empty() {
@@ -926,6 +989,7 @@ fn shape_prepaint(
         caret_bounds,
         cursor_color,
         scroll_offset,
+        max_scroll,
     }
 }
 
@@ -1042,6 +1106,7 @@ impl TextInput {
         let prepaint_focus = focus_handle.clone();
         let bounds_cell = self.last_bounds.clone();
         let scroll_cell = self.scroll_offset.clone();
+        let max_scroll_cell = self.max_scroll.clone();
         let is_dragging = self.is_dragging;
         let padding_x = self.padding_x;
 
@@ -1067,32 +1132,55 @@ impl TextInput {
             padding_x: self.padding_x,
             is_dragging: self.is_dragging,
             scroll_offset: self.scroll_offset.get(),
+            follow_cursor: self.follow_cursor,
         };
 
         div()
             .id(self.id.clone())
             .key_context(self.key_context)
             .track_focus(&self.focus_handle)
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                let delta_x = match event.delta {
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                let (max_scroll, actual) = {
+                    let input = this.text_input();
+                    (input.max_scroll.get(), input.scroll_offset.get())
+                };
+                if max_scroll <= px(0.0) {
+                    return;
+                }
+                cx.stop_propagation();
+                {
+                    let input = this.text_input_mut();
+                    input.follow_cursor = false;
+                    if !input.scroll_physics.is_animating()
+                        && (input.scroll_physics.current_scroll_top - actual).abs() > px(1.0)
+                    {
+                        input.scroll_physics.set_direct(actual, max_scroll);
+                    }
+                }
+                match event.delta {
                     ScrollDelta::Pixels(p) => {
-                        if p.x.abs() > px(0.0) {
-                            p.x
-                        } else {
-                            p.y
+                        let delta = if p.x.abs() > px(0.01) { p.x } else { p.y };
+                        if delta.abs() > px(0.01) {
+                            let input = this.text_input_mut();
+                            input.scroll_task = None;
+                            input.scroll_physics.scroll_direct(delta, max_scroll);
+                            input
+                                .scroll_offset
+                                .set(input.scroll_physics.current_scroll_top);
+                            cx.notify();
                         }
                     }
                     ScrollDelta::Lines(l) => {
-                        let dy = if l.x.abs() > 0.0 { l.x } else { l.y };
-                        px(dy * 20.0)
+                        let dy = if l.x.abs() > 0.01 { l.x } else { l.y };
+                        let delta = px(dy * crate::ui::WHEEL_LINE_STEP_PX);
+                        if delta.abs() > px(0.01) {
+                            this.text_input_mut()
+                                .scroll_physics
+                                .scroll_by_wheel(delta, max_scroll);
+                            Self::schedule_vsync_scroll(this, window, cx);
+                            cx.notify();
+                        }
                     }
-                };
-                if delta_x != px(0.0) {
-                    let input = this.text_input_mut();
-                    let cur = input.scroll_offset.get();
-                    let new_offset = (cur - delta_x).max(px(0.0));
-                    input.scroll_offset.set(new_offset);
-                    this.on_mutation(cx);
                 }
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -1229,6 +1317,7 @@ impl TextInput {
 
                         let focused = prepaint_focus.is_focused(window);
                         let prepaint = shape_prepaint(&snapshot, bounds, focused, theme, window);
+                        max_scroll_cell.set(prepaint.max_scroll);
                         scroll_cell.set(prepaint.scroll_offset);
                         prepaint
                     },

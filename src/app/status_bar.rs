@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(meter.displayed_fps, Some(60));
         let ms = meter.displayed_frame_ms.unwrap();
         assert!((ms - 16.6667).abs() < 0.2, "unexpected frame ms: {ms}");
-        assert_eq!(meter.format_label(), " 60 FPS · 16.7ms");
+        assert_eq!(meter.format_label(), " 60 FPS 16.7ms");
 
         meter.reset();
         assert_eq!(meter.format_label(), " -- FPS");

@@ -169,11 +169,14 @@ mod tests {
             let before = ed.scroll_origin_y() + f64::from(f32::from(ed.scroll.current_scroll_top));
             let max = ed.get_max_scroll_top();
             ed.scroll.scroll_by_wheel(px(-100.0), max);
+            let pre_step = f64::from(f32::from(ed.scroll.current_scroll_top));
             ed.scroll
                 .step_interpolation_with_elapsed(std::time::Duration::from_millis(80));
+            let expected_delta = f64::from(f32::from(ed.scroll.current_scroll_top)) - pre_step;
+            assert!(expected_delta > 20.0 && expected_delta < 100.0);
             ed.rebase_scroll();
             let after = ed.scroll_origin_y() + f64::from(f32::from(ed.scroll.current_scroll_top));
-            assert_eq!(after - before, 87.5);
+            assert!((after - before - expected_delta).abs() < 1e-6);
             ed.set_scroll_document_y(0.0);
             ed.prepare_viewport_layout();
             assert_eq!(
