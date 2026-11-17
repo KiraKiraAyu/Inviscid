@@ -18,12 +18,12 @@ pub mod workspace;
 pub use about::AboutWindow;
 pub use menu::ActiveMenu;
 pub use outline_panel::{OutlinePanel, OutlinePanelEvent};
-pub use project_panel::{FileTreeEntry, FileTreeEntryKind, ProjectPanel};
+pub use project_panel::{DraggedProjectEntry, FileTreeEntry, FileTreeEntryKind, ProjectPanel};
 pub use search_panel::SearchPanel;
 pub use settings::SettingsWindow;
 pub use sidebar_view::SidebarView;
 pub use status_bar::StatusBar;
-pub use tab_bar::{TabBar, TabMeta};
+pub use tab_bar::{DraggedTab, TabBar, TabMeta};
 pub use title_bar::{TitleBar, TitleBarEvent};
 pub use workspace::Workspace;
 

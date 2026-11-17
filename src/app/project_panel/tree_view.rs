@@ -3,7 +3,7 @@ use gpui::*;
 use std::{ops::Range, path::Path};
 
 use crate::app::project_panel::inline_input::{InlineInput, InlineInputKind};
-use crate::app::project_panel::{FileTreeEntry, ProjectPanel};
+use crate::app::project_panel::{DraggedProjectEntry, FileTreeEntry, ProjectPanel};
 use crate::theme::Theme;
 use crate::ui::dock_panel;
 use crate::ui::{FontSize, Icon, IconName, IconSize, Radius, Spacing};
@@ -233,72 +233,126 @@ pub fn build_tree_items(
         };
 
         let row_path = entry_path.clone();
-        let row =
-            dock_panel::row(indent, theme)
-                .id(ElementId::NamedInteger(
-                    "file_tree_entry".into(),
-                    entry_idx as u64,
-                ))
-                .bg(bg_color)
-                .block_mouse_except_scroll()
-                .on_click(move |_, window, cx| {
-                    if let Some(panel) = panel_click.upgrade() {
+        let target_dir = super::directory_of(&row_path, is_dir);
+        let drag_entry = DraggedProjectEntry {
+            path: row_path.clone(),
+            name: entry.name.clone(),
+            is_dir,
+        };
+        let row = dock_panel::row(indent, theme)
+            .id(ElementId::NamedInteger(
+                "file_tree_entry".into(),
+                entry_idx as u64,
+            ))
+            .bg(bg_color)
+            .block_mouse_except_scroll()
+            .on_drag(drag_entry, |dragged, _offset, _window, cx| {
+                cx.new(|_cx| dragged.clone())
+            })
+            .drag_over::<DraggedProjectEntry>({
+                let target_dir = target_dir.clone();
+                let drag_bg = theme.selection;
+                move |style, dragged, _window, _cx| {
+                    if super::fs_ops::can_move_entry(&dragged.path, &target_dir) {
+                        style.bg(drag_bg)
+                    } else {
+                        style
+                    }
+                }
+            })
+            .when(is_dir, |this| {
+                let panel_drag_move = panel_weak.clone();
+                let dir_path = row_path.clone();
+                this.on_drag_move::<DraggedProjectEntry>(move |event, _window, cx| {
+                    let hovered = event.bounds.contains(&event.event.position);
+                    let dragged = event.drag(cx);
+                    let can_expand =
+                        hovered && dragged.path != dir_path && !dir_path.starts_with(&dragged.path);
+                    if let Some(panel) = panel_drag_move.upgrade() {
                         panel.update(cx, |this, cx| {
-                            this.select_and_activate_entry(entry_path.clone(), is_dir, window, cx);
+                            let viewport = this.scroll_handle().bounds();
+                            let in_viewport = viewport.size.height <= px(0.0)
+                                || viewport.contains(&event.event.position);
+                            if can_expand && in_viewport {
+                                this.update_drag_hover_dir(Some(dir_path.clone()), cx);
+                            } else if this.drag_hover_dir.as_deref() == Some(dir_path.as_path()) {
+                                this.update_drag_hover_dir(None, cx);
+                            }
                         });
                     }
                 })
-                .on_mouse_down(MouseButton::Right, {
-                    let entry_path = row_path.clone();
-                    move |event, window, cx| {
-                        cx.stop_propagation();
-                        if let Some(panel) = panel_right_click.upgrade() {
-                            panel.update(cx, |this, cx| {
-                                this.open_entry_context_menu(
-                                    entry_path.clone(),
-                                    is_dir,
-                                    event.position,
-                                    window,
-                                    cx,
-                                );
-                            });
-                        }
+            })
+            .on_drop({
+                let panel_drop = panel_weak.clone();
+                let target_dir = target_dir.clone();
+                move |dragged: &DraggedProjectEntry, _window, cx| {
+                    if let Some(panel) = panel_drop.upgrade() {
+                        panel.update(cx, |this, cx| {
+                            this.move_entry_to(&dragged.path, &target_dir, cx);
+                        });
                     }
-                })
-                .when(is_dir, |this| {
-                    let folder_icon = if entry.is_expanded() {
-                        IconName::FolderOpen
+                }
+            })
+            .on_click(move |_, window, cx| {
+                if let Some(panel) = panel_click.upgrade() {
+                    panel.update(cx, |this, cx| {
+                        this.select_and_activate_entry(entry_path.clone(), is_dir, window, cx);
+                    });
+                }
+            })
+            .on_mouse_down(MouseButton::Right, {
+                let entry_path = row_path.clone();
+                move |event, window, cx| {
+                    cx.stop_propagation();
+                    if let Some(panel) = panel_right_click.upgrade() {
+                        panel.update(cx, |this, cx| {
+                            this.open_entry_context_menu(
+                                entry_path.clone(),
+                                is_dir,
+                                event.position,
+                                window,
+                                cx,
+                            );
+                        });
+                    }
+                }
+            })
+            .when(is_dir, |this| {
+                let folder_icon = if entry.is_expanded() {
+                    IconName::FolderOpen
+                } else {
+                    IconName::Folder
+                };
+                this.child(
+                    Icon::new(folder_icon)
+                        .size(IconSize::XSmall)
+                        .color(if is_selected {
+                            theme.text_primary
+                        } else {
+                            theme.text_accent
+                        }),
+                )
+            })
+            .when(!is_dir, |this| {
+                this.child(Icon::new(IconName::FileText).size(IconSize::XSmall).color(
+                    if is_selected {
+                        theme.text_primary
+                    } else if is_active {
+                        theme.text_accent
                     } else {
-                        IconName::Folder
-                    };
-                    this.child(Icon::new(folder_icon).size(IconSize::XSmall).color(
-                        if is_selected {
-                            theme.text_primary
-                        } else {
-                            theme.text_accent
-                        },
-                    ))
-                })
-                .when(!is_dir, |this| {
-                    this.child(Icon::new(IconName::FileText).size(IconSize::XSmall).color(
-                        if is_selected {
-                            theme.text_primary
-                        } else if is_active {
-                            theme.text_accent
-                        } else {
-                            theme.text_muted
-                        },
-                    ))
-                })
-                .child(
-                    div()
-                        .text_size(FontSize::SM)
-                        .text_color(text_color)
-                        .whitespace_nowrap()
-                        .flex_1()
-                        .overflow_hidden()
-                        .child(entry.name.clone()),
-                );
+                        theme.text_muted
+                    },
+                ))
+            })
+            .child(
+                div()
+                    .text_size(FontSize::SM)
+                    .text_color(text_color)
+                    .whitespace_nowrap()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(entry.name.clone()),
+            );
 
         item_elements.push(row.into_any_element());
     }

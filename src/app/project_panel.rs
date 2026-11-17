@@ -6,9 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::actions::{CopyEntry, CutEntry, DeleteEntry, PasteEntry, RenameEntry, TrashEntry};
-use crate::theme::ThemeManager;
+use crate::theme::{DEFAULT_THEME, ThemeManager};
 use crate::ui::text_input::{TextInput, TextInputBg, TextInputEvent};
-use crate::ui::tokens::{ControlHeight, Radius, Spacing};
+use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
+use crate::ui::{Icon, IconName, IconSize};
 
 pub mod confirm_modal;
 pub mod context_menu;
@@ -84,6 +85,52 @@ struct ScannedTreeEntry {
 pub type TreeScrollState = crate::ui::SmoothScrollPhysics;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraggedProjectEntry {
+    pub path: PathBuf,
+    pub name: String,
+    pub is_dir: bool,
+}
+
+impl Render for DraggedProjectEntry {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx
+            .try_global::<ThemeManager>()
+            .map(|m| m.theme())
+            .unwrap_or(&DEFAULT_THEME);
+        let (icon_name, icon_color) = if self.is_dir {
+            (IconName::Folder, theme.text_accent)
+        } else {
+            (IconName::FileText, theme.text_muted)
+        };
+        div()
+            .font_family(crate::platform::platform_ui_font())
+            .px(Spacing::SM)
+            .py(Spacing::XS)
+            .bg(theme.bg_elevated)
+            .border_1()
+            .border_color(theme.border)
+            .rounded(Radius::MD)
+            .shadow_md()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(5.0))
+            .child(
+                Icon::new(icon_name)
+                    .size(IconSize::XSmall)
+                    .color(icon_color),
+            )
+            .child(
+                div()
+                    .text_size(FontSize::SM)
+                    .text_color(theme.text_primary)
+                    .whitespace_nowrap()
+                    .child(self.name.clone()),
+            )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectPanelEvent {
     OpenFile(PathBuf),
     PathRenamed { old: PathBuf, new: PathBuf },
@@ -122,6 +169,8 @@ pub struct ProjectPanel {
     show_filter: bool,
     filter_input: Option<Entity<TextInput>>,
     filter_subscription: Option<Subscription>,
+    drag_hover_dir: Option<PathBuf>,
+    drag_hover_task: Option<Task<()>>,
 }
 
 impl Focusable for ProjectPanel {
@@ -131,6 +180,8 @@ impl Focusable for ProjectPanel {
 }
 
 impl ProjectPanel {
+    pub const DRAG_EXPAND_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
     pub fn new(root_dir: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         let mut expanded_dirs = HashSet::new();
         if let Some(ref root) = root_dir {
@@ -164,6 +215,8 @@ impl ProjectPanel {
             show_filter: false,
             filter_input: None,
             filter_subscription: None,
+            drag_hover_dir: None,
+            drag_hover_task: None,
         };
         panel.refresh_entries(cx);
         panel
@@ -397,6 +450,8 @@ impl ProjectPanel {
         self.active_context_menu = None;
         self.inline_input = None;
         self.selected_path = None;
+        self.drag_hover_dir = None;
+        self.drag_hover_task = None;
         if let Some(ref r) = self.root_dir {
             self.expanded_dirs.insert(r.clone());
         }
@@ -404,6 +459,112 @@ impl ProjectPanel {
         self.refresh_all_entries(cx);
         self.refresh_entries(cx);
         cx.notify();
+    }
+
+    /// Returns whether `dir_path` is expanded in the currently active view (filtered or unfiltered).
+    pub fn is_dir_currently_expanded(&self, dir_path: &Path) -> bool {
+        if !self.filter_query.trim().is_empty() {
+            !self.filter_collapsed_dirs.contains(dir_path)
+        } else {
+            self.expanded_dirs.contains(dir_path)
+        }
+    }
+
+    /// Tracks the directory currently hovered by an active drag and auto-expands it after 500ms.
+    pub(crate) fn update_drag_hover_dir(
+        &mut self,
+        hovered_dir: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.drag_hover_dir == hovered_dir {
+            return;
+        }
+        self.drag_hover_dir = hovered_dir.clone();
+        self.drag_hover_task = None;
+
+        let Some(dir_path) = hovered_dir else {
+            return;
+        };
+        if self.is_dir_currently_expanded(&dir_path) {
+            return;
+        }
+
+        self.drag_hover_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Self::DRAG_EXPAND_DELAY)
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if !cx.has_active_drag() {
+                    this.drag_hover_dir = None;
+                    this.drag_hover_task = None;
+                    return;
+                }
+                if this.drag_hover_dir.as_deref() == Some(dir_path.as_path()) {
+                    this.drag_hover_dir = None;
+                    this.drag_hover_task = None;
+                    if !this.is_dir_currently_expanded(&dir_path) {
+                        this.toggle_expand(&dir_path, cx);
+                    }
+                }
+            });
+        }));
+    }
+
+    /// Moves `src` (file or directory) into `dest_dir`, updating tree expansion/selection and
+    /// notifying listeners (such as open editor tabs) of the path change.
+    pub fn move_entry_to(&mut self, src: &Path, dest_dir: &Path, cx: &mut Context<Self>) -> bool {
+        self.drag_hover_dir = None;
+        self.drag_hover_task = None;
+        self.commit_or_cancel_inline_input(cx);
+
+        if !fs_ops::can_move_entry(src, dest_dir) {
+            return false;
+        }
+
+        match fs_ops::move_entry(src, dest_dir) {
+            Ok(new_path) => {
+                remap_path_set(&mut self.expanded_dirs, src, &new_path);
+                remap_path_set(&mut self.filter_collapsed_dirs, src, &new_path);
+                self.expanded_dirs.insert(dest_dir.to_path_buf());
+                self.filter_collapsed_dirs.remove(dest_dir);
+
+                if let Some(selected) = self.selected_path.as_deref()
+                    && let Some(remapped) = remap_moved_path(selected, src, &new_path)
+                {
+                    self.selected_path = Some(remapped);
+                } else {
+                    self.selected_path = Some(new_path.clone());
+                }
+
+                if let Some(active) = self.active_file.as_deref()
+                    && let Some(remapped) = remap_moved_path(active, src, &new_path)
+                {
+                    self.active_file = Some(remapped);
+                }
+
+                match &mut self.clipboard {
+                    FileClipboard::Cut(p) | FileClipboard::Copy(p) => {
+                        if let Some(remapped) = remap_moved_path(p, src, &new_path) {
+                            *p = remapped;
+                        }
+                    }
+                    FileClipboard::None => {}
+                }
+
+                cx.emit(ProjectPanelEvent::PathRenamed {
+                    old: src.to_path_buf(),
+                    new: new_path,
+                });
+                self.refresh_all_entries(cx);
+                self.refresh_entries(cx);
+                cx.notify();
+                true
+            }
+            Err(e) => {
+                fs_ops::report_error("move", src, &e);
+                false
+            }
+        }
     }
 
     /// Toggles directory expanded/collapsed state and updates the visible list.
@@ -812,6 +973,12 @@ impl ProjectPanel {
             Ok(target) => {
                 if is_cut {
                     self.clipboard = FileClipboard::None;
+                    if target == src {
+                        cx.notify();
+                        return;
+                    }
+                    remap_path_set(&mut self.expanded_dirs, &src, &target);
+                    remap_path_set(&mut self.filter_collapsed_dirs, &src, &target);
                     cx.emit(ProjectPanelEvent::PathRenamed {
                         old: src,
                         new: target,
@@ -1055,12 +1222,36 @@ impl ProjectPanel {
     }
 }
 
-/// The directory a paste lands in: `path` itself when it is one, otherwise its parent.
-fn directory_of(path: &Path, is_dir: bool) -> PathBuf {
+/// The directory a paste or drop lands in: `path` itself when it is one, otherwise its parent.
+pub(crate) fn directory_of(path: &Path, is_dir: bool) -> PathBuf {
     if is_dir {
         path.to_path_buf()
     } else {
         path.parent().unwrap_or(path).to_path_buf()
+    }
+}
+
+fn remap_moved_path(path: &Path, old_prefix: &Path, new_prefix: &Path) -> Option<PathBuf> {
+    if path == old_prefix {
+        Some(new_prefix.to_path_buf())
+    } else if let Ok(suffix) = path.strip_prefix(old_prefix) {
+        Some(new_prefix.join(suffix))
+    } else {
+        None
+    }
+}
+
+fn remap_path_set(set: &mut HashSet<PathBuf>, old_prefix: &Path, new_prefix: &Path) {
+    let matches: Vec<PathBuf> = set
+        .iter()
+        .filter(|path| *path == old_prefix || path.starts_with(old_prefix))
+        .cloned()
+        .collect();
+    for old_path in matches {
+        set.remove(&old_path);
+        if let Some(remapped) = remap_moved_path(&old_path, old_prefix, new_prefix) {
+            set.insert(remapped);
+        }
     }
 }
 
@@ -1376,6 +1567,26 @@ impl Render for ProjectPanel {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .drag_over::<DraggedProjectEntry>({
+                let root_dir = self.root_dir.clone();
+                let drag_bg = theme.selection.opacity(0.35);
+                move |style, dragged, _window, _cx| {
+                    if let Some(ref root) = root_dir
+                        && fs_ops::can_move_entry(&dragged.path, root)
+                    {
+                        style.bg(drag_bg)
+                    } else {
+                        style
+                    }
+                }
+            })
+            .on_drop(
+                cx.listener(|this, dragged: &DraggedProjectEntry, _window, cx| {
+                    if let Some(root) = this.root_dir.clone() {
+                        this.move_entry_to(&dragged.path, &root, cx);
+                    }
+                }),
+            )
             .on_mouse_down(MouseButton::Right, bg_right_click)
             .on_mouse_down(MouseButton::Left, bg_left_click)
             .child(crate::ui::dock_panel::section_header("EXPLORER", &theme))

@@ -101,3 +101,34 @@ pub fn toggle_tab_pin(tabs: &mut Vec<TabItem>, tab_idx: usize) {
     let insert_idx = tabs.iter().take_while(|t| t.is_pinned).count();
     tabs.insert(insert_idx, tab);
 }
+
+/// Moves the tab at `from_idx` to `to_idx`, adopting the target slot's pinned state so the
+/// `[pinned..., unpinned...]` partition invariant is preserved (matching Zed).
+pub fn move_tab(tabs: &mut Vec<TabItem>, from_idx: usize, to_idx: usize) -> Option<usize> {
+    if from_idx >= tabs.len() || to_idx >= tabs.len() {
+        return None;
+    }
+    let target_is_pinned = tabs[to_idx].is_pinned;
+    if from_idx == to_idx && tabs[from_idx].is_pinned == target_is_pinned {
+        return None;
+    }
+    let mut tab = tabs.remove(from_idx);
+    tab.is_pinned = target_is_pinned;
+    tabs.insert(to_idx, tab);
+    Some(to_idx)
+}
+
+/// Moves the tab at `from_idx` to the end of the tab strip and unpins it.
+pub fn move_tab_to_end(tabs: &mut Vec<TabItem>, from_idx: usize) -> Option<usize> {
+    if from_idx >= tabs.len() {
+        return None;
+    }
+    let last_idx = tabs.len() - 1;
+    if from_idx == last_idx && !tabs[from_idx].is_pinned {
+        return None;
+    }
+    let mut tab = tabs.remove(from_idx);
+    tab.is_pinned = false;
+    tabs.push(tab);
+    Some(last_idx)
+}

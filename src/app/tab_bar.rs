@@ -1,7 +1,9 @@
+use crate::app::project_panel::DraggedProjectEntry;
 use crate::theme::{DEFAULT_THEME, ThemeManager};
 use crate::ui::{FontSize, Icon, IconName, IconSize, Radius, Spacing};
 use gpui::prelude::*;
 use gpui::*;
+use std::path::PathBuf;
 
 pub mod context_menu;
 use context_menu::{TabContextMenuAction, TabContextMenuState};
@@ -19,6 +21,87 @@ pub struct TabMeta {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraggedTab {
+    pub ix: usize,
+    pub title: String,
+    pub dir_hint: Option<String>,
+    pub is_dirty: bool,
+    pub is_pinned: bool,
+    pub is_read_only: bool,
+    pub is_search_tab: bool,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx
+            .try_global::<ThemeManager>()
+            .map(|m| m.theme())
+            .unwrap_or(&DEFAULT_THEME);
+        div()
+            .font_family(crate::platform::platform_ui_font())
+            .h(px(28.0))
+            .px(Spacing::MD)
+            .bg(theme.bg_elevated)
+            .border_1()
+            .border_color(theme.border)
+            .rounded(Radius::LG)
+            .shadow_md()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(Spacing::SMD)
+            .when(self.is_read_only, |this| {
+                this.child(
+                    Icon::new(IconName::Lock)
+                        .size(IconSize::Indicator)
+                        .color(theme.text_secondary),
+                )
+            })
+            .when(self.is_search_tab, |this| {
+                this.child(
+                    Icon::new(IconName::Search)
+                        .size(IconSize::Indicator)
+                        .color(theme.text_secondary),
+                )
+            })
+            .child(
+                div()
+                    .text_size(FontSize::SM)
+                    .line_height(relative(1.0))
+                    .whitespace_nowrap()
+                    .text_color(theme.text_primary)
+                    .child(self.title.clone()),
+            )
+            .when_some(self.dir_hint.clone(), |this, hint| {
+                this.child(
+                    div()
+                        .text_size(FontSize::CAPTION)
+                        .line_height(relative(1.0))
+                        .whitespace_nowrap()
+                        .text_color(theme.text_muted)
+                        .child(hint),
+                )
+            })
+            .when(self.is_dirty, |this| {
+                this.child(
+                    div()
+                        .w(px(5.0))
+                        .h(px(5.0))
+                        .rounded_full()
+                        .bg(theme.inline_code_fg),
+                )
+            })
+            .when(self.is_pinned, |this| {
+                this.child(
+                    Icon::new(IconName::Pin)
+                        .size(IconSize::XSmall)
+                        .color(theme.text_accent),
+                )
+            })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabBarEvent {
     Select(usize),
     Close(usize),
@@ -33,6 +116,15 @@ pub enum TabBarEvent {
     RevealInFileExplorer(usize),
     TogglePin(usize),
     RevealInProjectPanel(usize),
+    MoveTab {
+        from_idx: usize,
+        to_idx: usize,
+    },
+    MoveTabToEnd(usize),
+    DropProjectEntry {
+        path: PathBuf,
+        target_idx: Option<usize>,
+    },
     EdgeFlushChanged,
 }
 
@@ -54,6 +146,19 @@ pub struct TabBar {
 enum FilletSide {
     Left,
     Right,
+}
+
+fn apply_tab_drop_indicator(
+    style: StyleRefinement,
+    side: FilletSide,
+    hover_bg: Hsla,
+    accent: Hsla,
+) -> StyleRefinement {
+    let style = style.bg(hover_bg).border_color(accent);
+    match side {
+        FilletSide::Left => style.border_l_2().rounded_tl(px(0.0)).rounded_bl(px(0.0)),
+        FilletSide::Right => style.border_r_2().rounded_tr(px(0.0)).rounded_br(px(0.0)),
+    }
 }
 
 /// Paints an outward concave corner fillet (`10x11`) whose bottom `1px` apron overlaps the
@@ -323,6 +428,11 @@ impl TabBar {
         self.active_tab_idx
     }
 
+    #[inline]
+    pub fn scroll_handle(&self) -> &ScrollHandle {
+        &self.scroll_handle
+    }
+
     /// Returns whether the tab at `idx` should display its directory hint.
     /// A directory hint is only shown if there are multiple tabs sharing the same title.
     pub fn should_show_dir_hint(&self, idx: usize) -> bool {
@@ -447,6 +557,19 @@ impl Render for TabBar {
                     .flex_row()
                     .items_end()
                     .gap(Spacing::XS)
+                    .on_drop(cx.listener(|_this, dragged: &DraggedTab, _window, cx| {
+                        cx.emit(TabBarEvent::MoveTabToEnd(dragged.ix));
+                    }))
+                    .on_drop(
+                        cx.listener(|_this, entry: &DraggedProjectEntry, _window, cx| {
+                            if !entry.is_dir {
+                                cx.emit(TabBarEvent::DropProjectEntry {
+                                    path: entry.path.clone(),
+                                    target_idx: None,
+                                });
+                            }
+                        }),
+                    )
                     .children(self.tabs_meta.iter().enumerate().map(|(tab_idx, meta)| {
                         let is_active = tab_idx == active_tab_idx;
                         let is_pinned = meta.is_pinned;
@@ -461,6 +584,21 @@ impl Render for TabBar {
                             None
                         };
                         let inactive_hover = theme.btn_hover.opacity(0.55);
+                        let hover_bg = if is_active {
+                            theme.bg_editor
+                        } else {
+                            inactive_hover
+                        };
+                        let accent = theme.text_accent;
+                        let dragged_tab = DraggedTab {
+                            ix: tab_idx,
+                            title: fname.clone(),
+                            dir_hint: dir_hint.clone(),
+                            is_dirty: is_d,
+                            is_pinned,
+                            is_read_only: meta.is_read_only,
+                            is_search_tab,
+                        };
                         div()
                             .id(ElementId::NamedInteger("tab_item".into(), tab_idx as u64))
                             .flex_none()
@@ -500,6 +638,60 @@ impl Render for TabBar {
                                     .hover(move |s| s.bg(inactive_hover))
                             })
                             .cursor_pointer()
+                            .on_drag(dragged_tab, |dragged, _offset, _window, cx| {
+                                cx.new(|_cx| dragged.clone())
+                            })
+                            .drag_over::<DraggedTab>(move |style, dragged: &DraggedTab, _, _| {
+                                if dragged.ix < tab_idx {
+                                    apply_tab_drop_indicator(
+                                        style,
+                                        FilletSide::Right,
+                                        hover_bg,
+                                        accent,
+                                    )
+                                } else if dragged.ix > tab_idx {
+                                    apply_tab_drop_indicator(
+                                        style,
+                                        FilletSide::Left,
+                                        hover_bg,
+                                        accent,
+                                    )
+                                } else {
+                                    style
+                                }
+                            })
+                            .drag_over::<DraggedProjectEntry>(move |style, entry, _, _| {
+                                if !entry.is_dir {
+                                    apply_tab_drop_indicator(
+                                        style,
+                                        FilletSide::Left,
+                                        hover_bg,
+                                        accent,
+                                    )
+                                } else {
+                                    style
+                                }
+                            })
+                            .on_drop(cx.listener(
+                                move |_this, dragged: &DraggedTab, _window, cx| {
+                                    if dragged.ix != tab_idx {
+                                        cx.emit(TabBarEvent::MoveTab {
+                                            from_idx: dragged.ix,
+                                            to_idx: tab_idx,
+                                        });
+                                    }
+                                },
+                            ))
+                            .on_drop(cx.listener(
+                                move |_this, entry: &DraggedProjectEntry, _window, cx| {
+                                    if !entry.is_dir {
+                                        cx.emit(TabBarEvent::DropProjectEntry {
+                                            path: entry.path.clone(),
+                                            target_idx: Some(tab_idx),
+                                        });
+                                    }
+                                },
+                            ))
                             .on_click(cx.listener(move |_this, _event, _window, cx| {
                                 cx.emit(TabBarEvent::Select(tab_idx));
                             }))
@@ -608,6 +800,9 @@ impl Render for TabBar {
                                     .rounded(Radius::SM)
                                     .hover(|s| s.bg(theme.btn_hover))
                                     .active(|s| s.bg(theme.btn_active))
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation();
+                                    })
                                     .on_click(cx.listener(move |_this, _event, _window, cx| {
                                         cx.stop_propagation();
                                         cx.emit(TabBarEvent::TogglePin(tab_idx));
@@ -634,6 +829,9 @@ impl Render for TabBar {
                                     .group_hover("tab", |s| s.opacity(1.0))
                                     .hover(|s| s.bg(theme.btn_hover))
                                     .active(|s| s.bg(theme.btn_active))
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation();
+                                    })
                                     .on_click(cx.listener(move |_this, _event, _window, cx| {
                                         cx.stop_propagation();
                                         cx.emit(TabBarEvent::Close(tab_idx));

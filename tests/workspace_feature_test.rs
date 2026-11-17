@@ -3841,3 +3841,589 @@ fn test_workspace_restore_from_state_preserves_entities_and_focus() {
     let _ = fs::remove_dir_all(&temp_dir1);
     let _ = fs::remove_dir_all(&temp_dir2);
 }
+
+#[test]
+fn test_project_panel_drag_move_updates_open_tabs_and_preserves_subtrees() {
+    let mut tcx = TestAppContext::single();
+    let (temp_dir, app, panel, cx) = mount_focused_panel(&mut tcx, "drag_move_panel");
+
+    let docs_dir = temp_dir.join("docs");
+    let src_dir = temp_dir.join("src");
+    let nested_dir = src_dir.join("nested");
+    fs::create_dir_all(&nested_dir).unwrap();
+    let nested_file = nested_dir.join("mod.md");
+    fs::write(&nested_file, "# Nested").unwrap();
+    let notes_file = temp_dir.join("z_notes.md");
+
+    cx.update(|_window, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| {
+            ws.open_file(notes_file.clone(), cx);
+            ws.open_file(nested_file.clone(), cx);
+        });
+        panel.update(cx, |panel, cx| {
+            panel.toggle_expand(&src_dir, cx);
+            panel.toggle_expand(&nested_dir, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    // Move a single open file into `docs/`
+    let moved_file_ok = cx.update(|_window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.move_entry_to(&notes_file, &docs_dir, cx)
+        })
+    });
+    assert!(moved_file_ok);
+    cx.run_until_parked();
+
+    let moved_notes = docs_dir.join("z_notes.md");
+    assert!(!notes_file.exists());
+    assert!(moved_notes.exists());
+
+    // Move expanded `src/` directory into `docs/`, verifying expanded subtrees and open tab paths remap
+    let moved_dir_ok = cx.update(|_window, cx| {
+        panel.update(cx, |panel, cx| panel.move_entry_to(&src_dir, &docs_dir, cx))
+    });
+    assert!(moved_dir_ok);
+    cx.run_until_parked();
+
+    let moved_src = docs_dir.join("src");
+    let moved_nested = moved_src.join("nested");
+    let moved_nested_file = moved_nested.join("mod.md");
+    assert!(!src_dir.exists());
+    assert!(moved_nested_file.exists());
+
+    cx.update(|_window, cx| {
+        let panel = panel.read(cx);
+        assert!(panel.is_expanded(&docs_dir));
+        assert!(panel.is_expanded(&moved_src));
+        assert!(panel.is_expanded(&moved_nested));
+
+        let ws = app.read(cx).workspace().read(cx);
+        let tab_paths: Vec<Option<PathBuf>> = ws
+            .tabs()
+            .iter()
+            .map(|t| t.editor.read(cx).file_path().map(PathBuf::from))
+            .collect();
+        assert!(tab_paths.contains(&Some(moved_notes)));
+        assert!(tab_paths.contains(&Some(moved_nested_file)));
+    });
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_project_panel_drag_move_refuses_collisions_and_invalid_targets() {
+    let mut tcx = TestAppContext::single();
+    let (temp_dir, _app, panel, cx) = mount_focused_panel(&mut tcx, "drag_move_refuse");
+
+    let docs_dir = temp_dir.join("docs");
+    let docs_sub = docs_dir.join("sub");
+    fs::create_dir_all(&docs_sub).unwrap();
+    fs::write(docs_dir.join("README.md"), "# Docs Readme").unwrap();
+    let root_readme = temp_dir.join("README.md");
+
+    cx.update(|_window, cx| {
+        panel.update(cx, |panel, cx| {
+            // Same name already exists in docs/
+            assert!(!panel.move_entry_to(&root_readme, &docs_dir, cx));
+            // Same parent directory (root -> root)
+            assert!(!panel.move_entry_to(&root_readme, &temp_dir, cx));
+            // Moving directory into itself or its descendant
+            assert!(!panel.move_entry_to(&docs_dir, &docs_dir, cx));
+            assert!(!panel.move_entry_to(&docs_dir, &docs_sub, cx));
+        });
+    });
+
+    assert_eq!(
+        fs::read_to_string(&root_readme).unwrap(),
+        "# My Project\nHello World"
+    );
+    assert_eq!(
+        fs::read_to_string(docs_dir.join("README.md")).unwrap(),
+        "# Docs Readme"
+    );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_project_panel_drag_hover_auto_expands_collapsed_dir_after_delay() {
+    let mut tcx = TestAppContext::single();
+    let (temp_dir, _app, panel, cx) = mount_focused_panel(&mut tcx, "drag_hover_expand");
+
+    let docs_dir = temp_dir.join("docs");
+    let z_notes = temp_dir.join("z_notes.md");
+
+    let list_bounds = cx.update(|_window, cx| {
+        let p = panel.read(cx);
+        assert!(!p.is_expanded(&docs_dir));
+        p.scroll_handle().bounds()
+    });
+    assert!(list_bounds.size.height > px(0.0));
+
+    // Row 0: docs, Row 1: src, Row 2: README.md, Row 3: z_notes.md
+    let row_center = |idx: usize| {
+        gpui::point(
+            list_bounds.origin.x + px(40.0),
+            list_bounds.origin.y + px(4.0 + idx as f32 * 26.0 + 13.0),
+        )
+    };
+    let docs_pos = row_center(0);
+    let notes_pos = row_center(3);
+
+    // Start dragging z_notes.md
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: notes_pos,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: notes_pos + gpui::point(px(6.0), px(0.0)),
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: gpui::Modifiers::default(),
+    });
+    cx.run_until_parked();
+    assert!(cx.update(|_window, cx| cx.has_active_drag()));
+
+    // Hover over collapsed `docs/` directory
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: docs_pos,
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: gpui::Modifiers::default(),
+    });
+    cx.run_until_parked();
+    assert!(!cx.update(|_window, cx| panel.read(cx).is_expanded(&docs_dir)));
+
+    // After 500ms hover, `docs/` automatically expands; dropping moves z_notes.md into `docs/`
+    cx.background_executor
+        .advance_clock(ProjectPanel::DRAG_EXPAND_DELAY);
+    cx.background_executor.run_until_parked();
+    cx.run_until_parked();
+    assert!(cx.update(|_window, cx| panel.read(cx).is_expanded(&docs_dir)));
+
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: docs_pos,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+    });
+    cx.run_until_parked();
+
+    assert!(!z_notes.exists());
+    assert!(docs_dir.join("z_notes.md").exists());
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_workspace_tab_drag_reorder_and_pin_boundary_crossing() {
+    let mut tcx = TestAppContext::single();
+    init_test_globals(&mut tcx);
+
+    let temp_dir = create_temp_workspace_dir("tab_drag_reorder");
+    let f_readme = temp_dir.join("README.md");
+    let f_notes = temp_dir.join("z_notes.md");
+    let f_intro = temp_dir.join("docs/intro.md");
+    let f_main = temp_dir.join("src/main.rs");
+
+    let (app, cx) = tcx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let ws_entity = cx.update(|_window, cx| app.read(cx).workspace().clone());
+    cx.update(|window, cx| {
+        ws_entity.update(cx, |ws, cx| {
+            ws.open_file(f_readme.clone(), cx);
+            ws.open_file(f_notes.clone(), cx);
+            ws.open_file(f_intro.clone(), cx);
+            ws.open_file(f_main.clone(), cx);
+            // Pin first tab (f_readme -> index 0)
+            ws.toggle_tab_pin(0, cx);
+            // Open FindBar on active tab (f_main at index 3)
+            ws.switch_tab(3, cx);
+            let active_ed = ws.active_editor().unwrap().clone();
+            active_ed.update(cx, |ed, cx| {
+                ed.open_find_bar(window, cx);
+                let bar = ed.find_bar().cloned().unwrap();
+                bar.update(cx, |bar, cx| bar.focus_query(Some("main"), window, cx));
+            });
+        });
+    });
+    cx.run_until_parked();
+
+    // Drag unpinned tab at index 2 (f_intro) onto pinned tab at index 0 (f_readme) via UI events
+    let tab_bar = cx.update(|_window, cx| ws_entity.read(cx).tab_bar().clone());
+    let (tab0_pos, tab2_pos) = cx.update(|_window, cx| {
+        let handle = tab_bar.read(cx).scroll_handle();
+        let b0 = handle.bounds_for_item(0).unwrap();
+        let b2 = handle.bounds_for_item(2).unwrap();
+        (
+            gpui::point(b0.left() + px(20.0), b0.center().y),
+            gpui::point(b2.left() + px(20.0), b2.center().y),
+        )
+    });
+
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: tab2_pos,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: tab2_pos + gpui::point(px(6.0), px(0.0)),
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: gpui::Modifiers::default(),
+    });
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: tab0_pos,
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: gpui::Modifiers::default(),
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: tab0_pos,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+    });
+    cx.run_until_parked();
+
+    // f_intro should now be at index 0 and automatically pinned, with FindBar transferred
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        let state: Vec<(Option<PathBuf>, bool)> = ws
+            .tabs()
+            .iter()
+            .map(|t| {
+                (
+                    t.editor.read(cx).file_path().map(PathBuf::from),
+                    t.is_pinned,
+                )
+            })
+            .collect();
+        assert_eq!(
+            state,
+            vec![
+                (Some(f_intro.clone()), true),
+                (Some(f_readme.clone()), true),
+                (Some(f_notes.clone()), false),
+                (Some(f_main.clone()), false),
+            ]
+        );
+        assert_eq!(ws.active_tab_idx(), 0);
+        let active_ed = ws.active_editor().unwrap().read(cx);
+        assert!(active_ed.is_find_bar_visible());
+        assert_eq!(
+            active_ed.find_bar().unwrap().read(cx).query_text(cx),
+            "main"
+        );
+    });
+
+    // Dragging a pinned tab (index 0) across the boundary to an unpinned tab (index 2) unpins it
+    cx.update(|_window, cx| {
+        ws_entity.update(cx, |ws, cx| {
+            ws.move_tab(0, 2, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        let state: Vec<(Option<PathBuf>, bool)> = ws
+            .tabs()
+            .iter()
+            .map(|t| {
+                (
+                    t.editor.read(cx).file_path().map(PathBuf::from),
+                    t.is_pinned,
+                )
+            })
+            .collect();
+        assert_eq!(
+            state,
+            vec![
+                (Some(f_readme.clone()), true),
+                (Some(f_notes.clone()), false),
+                (Some(f_intro.clone()), false),
+                (Some(f_main.clone()), false),
+            ]
+        );
+        assert_eq!(ws.active_tab_idx(), 2);
+    });
+
+    // Moving the remaining pinned tab (index 0) to the end unpins it
+    cx.update(|_window, cx| {
+        ws_entity.update(cx, |ws, cx| {
+            ws.move_tab_to_end(0, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        let state: Vec<(Option<PathBuf>, bool)> = ws
+            .tabs()
+            .iter()
+            .map(|t| {
+                (
+                    t.editor.read(cx).file_path().map(PathBuf::from),
+                    t.is_pinned,
+                )
+            })
+            .collect();
+        assert_eq!(
+            state,
+            vec![
+                (Some(f_notes), false),
+                (Some(f_intro), false),
+                (Some(f_main), false),
+                (Some(f_readme), false),
+            ]
+        );
+        assert_eq!(ws.active_tab_idx(), 3);
+    });
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_workspace_drop_project_file_on_tab_bar_and_editor() {
+    let mut tcx = TestAppContext::single();
+    init_test_globals(&mut tcx);
+
+    let temp_dir = create_temp_workspace_dir("drop_project_file_tab_bar");
+    let f_readme = temp_dir.join("README.md");
+    let f_notes = temp_dir.join("z_notes.md");
+    let f_intro = temp_dir.join("docs/intro.md");
+    let f_arch = temp_dir.join("docs/architecture.md");
+
+    let (app, cx) = tcx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let ws_entity = cx.update(|_window, cx| app.read(cx).workspace().clone());
+    cx.update(|_window, cx| {
+        ws_entity.update(cx, |ws, cx| {
+            ws.open_folder(temp_dir.clone(), cx);
+            ws.open_file(f_notes.clone(), cx);
+            // Pin README.md at index 0
+            ws.toggle_tab_pin(0, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    // 1. Drop an unopened file onto the pinned tab at index 0 -> inserts at index 0 and pins it
+    cx.update(|_window, cx| {
+        ws_entity.update(cx, |ws, cx| {
+            ws.handle_dropped_project_file(f_intro.clone(), Some(0), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        let state: Vec<(Option<PathBuf>, bool)> = ws
+            .tabs()
+            .iter()
+            .map(|t| {
+                (
+                    t.editor.read(cx).file_path().map(PathBuf::from),
+                    t.is_pinned,
+                )
+            })
+            .collect();
+        assert_eq!(
+            state,
+            vec![
+                (Some(f_intro.clone()), true),
+                (Some(f_readme.clone()), true),
+                (Some(f_notes.clone()), false),
+            ]
+        );
+        assert_eq!(ws.active_tab_idx(), 0);
+    });
+
+    // 2. Drop an already-open file (f_notes at index 2) onto index 1 (pinned) -> moves & pins
+    cx.update(|_window, cx| {
+        ws_entity.update(cx, |ws, cx| {
+            ws.handle_dropped_project_file(f_notes.clone(), Some(1), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        let state: Vec<(Option<PathBuf>, bool)> = ws
+            .tabs()
+            .iter()
+            .map(|t| {
+                (
+                    t.editor.read(cx).file_path().map(PathBuf::from),
+                    t.is_pinned,
+                )
+            })
+            .collect();
+        assert_eq!(
+            state,
+            vec![
+                (Some(f_intro.clone()), true),
+                (Some(f_notes.clone()), true),
+                (Some(f_readme.clone()), true),
+            ]
+        );
+        assert_eq!(ws.active_tab_idx(), 1);
+    });
+
+    // 3. Drag `architecture.md` from ProjectPanel onto the TabBar empty space (target_idx: None)
+    //    via real mouse drag-and-drop -> opens at the end as unpinned
+    let panel = cx.update(|_window, cx| ws_entity.read(cx).project_panel().clone());
+    let docs_dir = temp_dir.join("docs");
+    cx.run_until_parked();
+
+    let (arch_pos, tab_bar_end_pos) = cx.update(|_window, cx| {
+        let p = panel.read(cx);
+        assert!(p.is_expanded(&docs_dir));
+        let arch_row = p
+            .entries()
+            .iter()
+            .position(|e| e.path == f_arch)
+            .expect("architecture.md should be visible under expanded docs/");
+        let list_bounds = p.scroll_handle().bounds();
+        let arch_pos = gpui::point(
+            list_bounds.origin.x + px(40.0),
+            list_bounds.origin.y + px(4.0 + arch_row as f32 * 26.0 + 13.0),
+        );
+        let tab_scroll_bounds = ws_entity
+            .read(cx)
+            .tab_bar()
+            .read(cx)
+            .scroll_handle()
+            .bounds();
+        let tab_bar_end_pos = gpui::point(
+            tab_scroll_bounds.right() - px(20.0),
+            tab_scroll_bounds.center().y,
+        );
+        (arch_pos, tab_bar_end_pos)
+    });
+
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: arch_pos,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: arch_pos + gpui::point(px(6.0), px(0.0)),
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: gpui::Modifiers::default(),
+    });
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: tab_bar_end_pos,
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: gpui::Modifiers::default(),
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: tab_bar_end_pos,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        let state: Vec<(Option<PathBuf>, bool)> = ws
+            .tabs()
+            .iter()
+            .map(|t| {
+                (
+                    t.editor.read(cx).file_path().map(PathBuf::from),
+                    t.is_pinned,
+                )
+            })
+            .collect();
+        assert_eq!(
+            state,
+            vec![
+                (Some(f_intro.clone()), true),
+                (Some(f_notes.clone()), true),
+                (Some(f_readme.clone()), true),
+                (Some(f_arch.clone()), false),
+            ]
+        );
+        assert_eq!(ws.active_tab_idx(), 3);
+    });
+
+    // 4. Drag `src/main.rs` from ProjectPanel onto the editor canvas -> opens & activates it
+    let src_dir = temp_dir.join("src");
+    let f_main = src_dir.join("main.rs");
+    cx.update(|_window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.toggle_expand(&src_dir, cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.run_until_parked();
+
+    let (main_pos, editor_pos) = cx.update(|_window, cx| {
+        let p = panel.read(cx);
+        let main_row = p
+            .entries()
+            .iter()
+            .position(|e| e.path == f_main)
+            .expect("main.rs should be visible under expanded src/");
+        let list_bounds = p.scroll_handle().bounds();
+        let main_pos = gpui::point(
+            list_bounds.origin.x + px(40.0),
+            list_bounds.origin.y + px(4.0 + main_row as f32 * 26.0 + 13.0),
+        );
+        let tab_scroll_bounds = ws_entity
+            .read(cx)
+            .tab_bar()
+            .read(cx)
+            .scroll_handle()
+            .bounds();
+        let editor_pos = gpui::point(
+            tab_scroll_bounds.center().x,
+            tab_scroll_bounds.bottom() + px(80.0),
+        );
+        (main_pos, editor_pos)
+    });
+
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: main_pos,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: main_pos + gpui::point(px(6.0), px(0.0)),
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: gpui::Modifiers::default(),
+    });
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: editor_pos,
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: gpui::Modifiers::default(),
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: editor_pos,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        assert_eq!(ws.tab_count(), 5);
+        assert_eq!(ws.active_tab_idx(), 4);
+        assert_eq!(ws.active_file_path(cx), Some(f_main.as_path()));
+    });
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}

@@ -62,6 +62,12 @@ pub fn perform_paste(src: &Path, is_cut: bool, dest_dir: &Path) -> std::io::Resu
             "Destination must be a directory",
         ));
     }
+    if src == dest_dir || dest_dir.starts_with(src) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Cannot copy or move a directory into itself",
+        ));
+    }
     let file_name = src.file_name().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source filename")
     })?;
@@ -79,6 +85,9 @@ pub fn perform_paste(src: &Path, is_cut: bool, dest_dir: &Path) -> std::io::Resu
     };
 
     if is_cut {
+        if target == src {
+            return Ok(target);
+        }
         // `std::fs::rename` refuses to overwrite on Windows, so a name clash (or a cross-device
         // move) falls through to copy-then-delete and replaces the destination.
         if std::fs::rename(src, &target).is_err() {
@@ -89,6 +98,59 @@ pub fn perform_paste(src: &Path, is_cut: bool, dest_dir: &Path) -> std::io::Resu
         copy_entry(src, &target)?;
     }
 
+    Ok(target)
+}
+
+/// Returns whether `src` can safely be moved into `dest_dir` without self-containment,
+/// no-op moves into its existing parent, or overwriting an existing entry.
+pub fn can_move_entry(src: &Path, dest_dir: &Path) -> bool {
+    if !dest_dir.is_dir()
+        || src == dest_dir
+        || src.parent() == Some(dest_dir)
+        || dest_dir.starts_with(src)
+    {
+        return false;
+    }
+    let Some(file_name) = src.file_name() else {
+        return false;
+    };
+    !dest_dir.join(file_name).exists()
+}
+
+/// Moves a file or directory into `dest_dir`, refusing name collisions and invalid ancestors.
+pub fn move_entry(src: &Path, dest_dir: &Path) -> std::io::Result<PathBuf> {
+    if !dest_dir.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Destination must be a directory",
+        ));
+    }
+    if src == dest_dir || dest_dir.starts_with(src) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Cannot move a directory into itself",
+        ));
+    }
+    if src.parent() == Some(dest_dir) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Source is already in destination directory",
+        ));
+    }
+    let file_name = src.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source filename")
+    })?;
+    let target = dest_dir.join(file_name);
+    if target.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "Destination already contains an entry with the same name",
+        ));
+    }
+    if std::fs::rename(src, &target).is_err() {
+        copy_entry(src, &target)?;
+        remove_entry(src)?;
+    }
     Ok(target)
 }
 
@@ -318,5 +380,87 @@ mod tests {
 
         assert_eq!(duplicated, scratch.0.join("docs copy"));
         assert_eq!(scratch.read("docs copy/intro.md"), "INTRO");
+    }
+
+    #[test]
+    fn move_entry_moves_file_and_directory_when_target_is_free() {
+        let scratch = Scratch::new("move_entry_ok");
+        let file = scratch.file("a/note.md", "NOTE");
+        let sub_dir = scratch.dir("a/nested");
+        scratch.file("a/nested/inner.md", "INNER");
+        let dest = scratch.dir("b");
+
+        assert!(can_move_entry(&file, &dest));
+        let moved_file = move_entry(&file, &dest).unwrap();
+        assert_eq!(moved_file, dest.join("note.md"));
+        assert!(!file.exists());
+        assert_eq!(scratch.read("b/note.md"), "NOTE");
+
+        assert!(can_move_entry(&sub_dir, &dest));
+        let moved_dir = move_entry(&sub_dir, &dest).unwrap();
+        assert_eq!(moved_dir, dest.join("nested"));
+        assert!(!sub_dir.exists());
+        assert_eq!(scratch.read("b/nested/inner.md"), "INNER");
+    }
+
+    #[test]
+    fn move_entry_refuses_when_target_name_already_exists() {
+        let scratch = Scratch::new("move_entry_clash");
+        let src = scratch.file("a/note.md", "FROM_A");
+        let dest = scratch.dir("b");
+        scratch.file("b/note.md", "ORIGINAL_IN_B");
+
+        assert!(!can_move_entry(&src, &dest));
+        let err = move_entry(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(scratch.read("a/note.md"), "FROM_A");
+        assert_eq!(scratch.read("b/note.md"), "ORIGINAL_IN_B");
+    }
+
+    #[test]
+    fn move_entry_refuses_same_parent_or_subdirectory_of_self() {
+        let scratch = Scratch::new("move_entry_invalid");
+        let parent = scratch.dir("folder");
+        let nested = scratch.dir("folder/sub");
+        let file = scratch.file("folder/doc.md", "DOC");
+
+        assert!(!can_move_entry(&file, &parent));
+        assert_eq!(
+            move_entry(&file, &parent).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+
+        assert!(!can_move_entry(&parent, &parent));
+        assert!(!can_move_entry(&parent, &nested));
+        assert_eq!(
+            move_entry(&parent, &nested).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn perform_paste_refuses_copying_or_cutting_directory_into_itself() {
+        let scratch = Scratch::new("paste_into_self");
+        let folder = scratch.dir("folder");
+        let nested = scratch.dir("folder/sub");
+        scratch.file("folder/doc.md", "DOC");
+
+        let copy_err = perform_paste(&folder, false, &folder).unwrap_err();
+        assert_eq!(copy_err.kind(), std::io::ErrorKind::InvalidInput);
+
+        let nested_err = perform_paste(&folder, true, &nested).unwrap_err();
+        assert_eq!(nested_err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(folder.exists());
+    }
+
+    #[test]
+    fn perform_paste_cut_into_same_directory_is_safe_noop() {
+        let scratch = Scratch::new("paste_cut_same_dir");
+        let folder = scratch.dir("folder");
+        let file = scratch.file("folder/doc.md", "DOC");
+
+        let result = perform_paste(&file, true, &folder).unwrap();
+        assert_eq!(result, file);
+        assert_eq!(scratch.read("folder/doc.md"), "DOC");
     }
 }

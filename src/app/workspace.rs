@@ -163,6 +163,15 @@ impl Workspace {
             tab_bar::TabBarEvent::RevealInProjectPanel(idx) => {
                 this.reveal_tab_in_project_panel(*idx, cx);
             }
+            tab_bar::TabBarEvent::MoveTab { from_idx, to_idx } => {
+                this.move_tab(*from_idx, *to_idx, cx);
+            }
+            tab_bar::TabBarEvent::MoveTabToEnd(from_idx) => {
+                this.move_tab_to_end(*from_idx, cx);
+            }
+            tab_bar::TabBarEvent::DropProjectEntry { path, target_idx } => {
+                this.handle_dropped_project_file(path.clone(), *target_idx, cx);
+            }
             tab_bar::TabBarEvent::EdgeFlushChanged => {
                 cx.notify();
             }
@@ -832,6 +841,107 @@ impl Workspace {
             .position(|t| t.editor == target_editor)
             .unwrap_or(0);
         self.sync_active_editor_state(cx);
+    }
+
+    fn reorder_tab_with(
+        &mut self,
+        from_idx: usize,
+        reorder: impl FnOnce(&mut Vec<TabItem>) -> Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        if from_idx >= self.tabs.len() {
+            return;
+        }
+        let find_bar = if self.active_tab_idx != from_idx
+            && self.active_tab_kind() == Some(TabKind::Editor)
+            && self.tabs[from_idx].kind == TabKind::Editor
+        {
+            self.transfer_find_bar(cx)
+        } else {
+            None
+        };
+        if let Some(new_idx) = reorder(&mut self.tabs) {
+            self.active_tab_idx = new_idx;
+            self.restore_find_bar(find_bar, cx);
+            self.sync_active_editor_state(cx);
+            cx.emit(WorkspaceEvent::LayoutChanged);
+        } else if self.active_tab_idx != from_idx {
+            self.restore_find_bar(find_bar, cx);
+            self.switch_tab(from_idx, cx);
+        } else {
+            self.restore_find_bar(find_bar, cx);
+        }
+    }
+
+    /// Reorders the tab at `from_idx` to `to_idx`, adopting `to_idx`'s pinned state when
+    /// crossing the pinned/unpinned boundary (matching Zed) and keeping it active.
+    pub fn move_tab(&mut self, from_idx: usize, to_idx: usize, cx: &mut Context<Self>) {
+        if to_idx >= self.tabs.len() {
+            return;
+        }
+        self.reorder_tab_with(from_idx, |tabs| tabs::move_tab(tabs, from_idx, to_idx), cx);
+    }
+
+    /// Moves the tab at `from_idx` to the end of the tab strip and unpins it.
+    pub fn move_tab_to_end(&mut self, from_idx: usize, cx: &mut Context<Self>) {
+        self.reorder_tab_with(from_idx, |tabs| tabs::move_tab_to_end(tabs, from_idx), cx);
+    }
+
+    /// Opens (or moves if already open) a file dropped onto the tab bar at `target_idx`.
+    pub fn handle_dropped_project_file(
+        &mut self,
+        path: PathBuf,
+        target_idx: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        if !path.is_file() {
+            return;
+        }
+        if let Some(existing_idx) = self.tabs.iter().position(|t| {
+            t.kind == TabKind::Editor && t.editor.read(cx).file_path() == Some(path.as_path())
+        }) {
+            match target_idx {
+                Some(to_idx) => self.move_tab(existing_idx, to_idx, cx),
+                None => self.move_tab_to_end(existing_idx, cx),
+            }
+            self.defer_reveal_path(path, cx);
+            return;
+        }
+
+        match target_idx {
+            None => self.open_file(path, cx),
+            Some(to_idx) => {
+                let is_single_untitled = self.tabs.len() == 1
+                    && self.active_editor().is_some_and(|ed| {
+                        let ed = ed.read(cx);
+                        ed.file_path().is_none() && !ed.is_dirty() && ed.is_empty()
+                    });
+                if is_single_untitled {
+                    self.open_file(path, cx);
+                    return;
+                }
+
+                let is_pinned = self.tabs.get(to_idx).is_some_and(|t| t.is_pinned);
+                let insert_idx = to_idx.min(self.tabs.len());
+                let find_bar = self.transfer_find_bar(cx);
+                let (editor, subscription, load_task) = Self::init_editor(Some(path.clone()), cx);
+                self.tabs.insert(
+                    insert_idx,
+                    TabItem {
+                        _load_task: load_task,
+                        editor,
+                        kind: TabKind::Editor,
+                        is_pinned,
+                        _subscription: subscription,
+                    },
+                );
+                self.active_tab_idx = insert_idx;
+                self.restore_find_bar(find_bar, cx);
+                self.sync_active_editor_state(cx);
+                self.defer_reveal_path(path, cx);
+                cx.emit(WorkspaceEvent::LayoutChanged);
+            }
+        }
     }
 
     pub fn reveal_tab_in_project_panel(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
@@ -1555,6 +1665,16 @@ impl Render for Workspace {
                                     .rounded_bl(crate::ui::Radius::CANVAS)
                                     .rounded_br(crate::ui::Radius::CANVAS)
                                     .overflow_hidden()
+                                    .on_drop(cx.listener(
+                                        |this,
+                                         entry: &crate::app::project_panel::DraggedProjectEntry,
+                                         _window,
+                                         cx| {
+                                            if !entry.is_dir {
+                                                this.open_file(entry.path.clone(), cx);
+                                            }
+                                        },
+                                    ))
                                     .child(if active_is_search {
                                         self.search_panel.clone().into_any_element()
                                     } else if let Some(editor) = active_editor {
