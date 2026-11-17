@@ -25,7 +25,7 @@ pub(crate) fn is_custom_grammar_url(url: &str) -> bool {
 }
 
 impl SettingsWindow {
-    pub(crate) fn render_general_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_general_panel(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex_1()
             .min_w_0()

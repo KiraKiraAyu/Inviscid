@@ -594,7 +594,8 @@ impl SmoothScrollController {
     pub fn sync_from_handle(&mut self, handle: &ScrollHandle) {
         let max_scroll = self.max_scroll_for(handle);
         let actual = self.actual_offset_for(handle, max_scroll);
-        if !self.physics.is_animating() && (self.physics.current_scroll_top - actual).abs() > px(1.0)
+        if !self.physics.is_animating()
+            && (self.physics.current_scroll_top - actual).abs() > px(1.0)
         {
             self.physics.current_scroll_top = actual;
             self.physics.target_scroll_top = actual;

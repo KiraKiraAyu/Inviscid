@@ -147,7 +147,9 @@ impl SearchPanel {
     }
 
     #[inline]
-    pub(super) fn scroll_access(&mut self) -> (&mut crate::ui::SmoothScrollController, ScrollHandle) {
+    pub(super) fn scroll_access(
+        &mut self,
+    ) -> (&mut crate::ui::SmoothScrollController, ScrollHandle) {
         let handle = self.scroll_handle.0.borrow().base_handle.clone();
         (&mut self.results_scroll, handle)
     }

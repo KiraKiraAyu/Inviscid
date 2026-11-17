@@ -189,11 +189,29 @@ impl Render for SettingsWindow {
         window.set_rem_size(px(config.ui_font_size));
 
         let panel = match self.active_category {
-            SettingsCategory::General => self.render_general_panel(cx).into_any_element(),
-            SettingsCategory::Appearance => self.render_appearance_panel(cx).into_any_element(),
-            SettingsCategory::Editor => self.render_editor_panel(cx).into_any_element(),
-            SettingsCategory::Keybindings => self.render_keybindings_panel(cx).into_any_element(),
+            SettingsCategory::General => self.render_general_panel(cx),
+            SettingsCategory::Appearance => self.render_appearance_panel(cx),
+            SettingsCategory::Editor => self.render_editor_panel(cx),
+            SettingsCategory::Keybindings => self.render_keybindings_panel(cx),
         };
+
+        let content_panel = crate::ui::SmoothScrollController::wrap(
+            div()
+                .id("settings_content_panel")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .mr(Spacing::SM)
+                .mb(Spacing::SM)
+                .bg(theme.bg_editor)
+                .rounded(Radius::CANVAS)
+                .track_scroll(&self.scroll_handle)
+                .overflow_y_scroll()
+                .p(Spacing::XL)
+                .child(panel),
+            cx,
+            Self::scroll_access,
+        );
 
         div()
             .key_context(crate::ui::key_context::SETTINGS_WINDOW)
@@ -247,23 +265,7 @@ impl Render for SettingsWindow {
                     .flex()
                     .flex_row()
                     .child(self.render_sidebar(cx))
-                    .child(crate::ui::SmoothScrollController::wrap(
-                        div()
-                            .id("settings_content_panel")
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .mr(Spacing::SM)
-                            .mb(Spacing::SM)
-                            .bg(theme.bg_editor)
-                            .rounded(Radius::CANVAS)
-                            .track_scroll(&self.scroll_handle)
-                            .overflow_y_scroll()
-                            .p(Spacing::XL)
-                            .child(panel),
-                        cx,
-                        Self::scroll_access,
-                    )),
+                    .child(content_panel),
             )
     }
 }
@@ -316,6 +318,43 @@ mod tests {
                 assert!(!s.is_editing_grammar_url());
                 assert_eq!(s.recording_action_id(), None);
             });
+        });
+    }
+
+    #[gpui::test]
+    fn test_settings_keybindings_smooth_scroll(cx: &mut gpui::TestAppContext) {
+        init_test_globals(cx);
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            let mut s = SettingsWindow::new(cx);
+            s.active_category = SettingsCategory::Keybindings;
+            s
+        });
+        cx.run_until_parked();
+
+        settings.read_with(cx, |s, _| {
+            let max_h = s.scroll_handle.max_offset().height;
+            assert!(
+                max_h > px(0.0),
+                "keybindings list should overflow vertically"
+            );
+        });
+
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(400.0), px(300.0)),
+            delta: ScrollDelta::Lines(point(0.0, -3.0)),
+            ..Default::default()
+        });
+
+        settings.read_with(cx, |s, _| {
+            let offset_y = s.scroll_handle.offset().y;
+            assert_eq!(
+                offset_y,
+                px(0.0),
+                "native scroll listener must not teleport offset before smooth animation"
+            );
+            assert_eq!(s.content_scroll.target_scroll_top, px(100.0));
+            assert!(s.content_scroll.is_animating());
         });
     }
 }

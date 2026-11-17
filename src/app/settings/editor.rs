@@ -16,7 +16,7 @@ use crate::config::AppConfig;
 use crate::ui::{OptionPill, SettingRow, Spacing, Stepper, Switch};
 
 impl SettingsWindow {
-    pub(crate) fn render_editor_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_editor_panel(&self, cx: &mut Context<Self>) -> Div {
         let cursor_blink = cx.global::<AppConfig>().cursor_blink;
 
         div().flex_1().flex().flex_col().gap(Spacing::LG).child(

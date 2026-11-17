@@ -221,10 +221,9 @@ define_keybindings!(
     (SelectToEndOfDocument, "Select to Document End", EDITOR_CATEGORY, &["ctrl-shift-end"], EDITOR, NonMacos),
 );
 
-/// Metadata for the settings UI: everything the user is allowed to rebind.
+/// Metadata for the settings UI: everything the user is allowed to rebind on this platform.
 pub fn keybindings() -> impl Iterator<Item = &'static KeybindingMeta> {
-    KEYBINDINGS
-        .iter()
+    specs_for_platform()
         .filter(|spec| spec.meta.category != EDITOR_CATEGORY)
         .map(|spec| &spec.meta)
 }
@@ -411,6 +410,18 @@ mod tests {
             assert!(
                 platforms.contains(&Platform::Macos) && platforms.contains(&Platform::NonMacos),
                 "{id} is missing a platform-specific entry"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_keybindings_has_no_duplicate_ids_for_current_platform() {
+        let mut seen = HashSet::new();
+        for meta in keybindings() {
+            assert!(
+                seen.insert(meta.id),
+                "duplicate keybinding entry for current platform: {}",
+                meta.id
             );
         }
     }

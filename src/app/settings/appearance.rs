@@ -14,7 +14,7 @@ use crate::theme::ThemeManager;
 use crate::ui::{FontSize, Icon, IconName, IconSize, SelectableRow, SettingRow, Spacing, Stepper};
 
 impl SettingsWindow {
-    pub(crate) fn render_appearance_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_appearance_panel(&self, cx: &mut Context<Self>) -> Div {
         let theme_manager = cx.global::<ThemeManager>();
         let theme = theme_manager.theme().clone();
         let themes = theme_manager.list_themes().to_vec();
