@@ -82,27 +82,22 @@ fn attach_menu_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
 }
 
 fn attach_view_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
-    let div = div
-        .on_action(
-            cx.listener(|this, _: &ToggleRenderMode, _, cx| commands::toggle_render_mode(this, cx)),
-        )
-        .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
-            commands::toggle_sidebar(this, window, cx);
-        }))
-        .on_action(cx.listener(|this, _: &ToggleSearchSidebar, window, cx| {
-            commands::toggle_search_view(this, window, cx);
-        }))
-        .on_action(cx.listener(|this, _: &ToggleOutlineSidebar, window, cx| {
-            commands::toggle_outline_view(this, window, cx);
-        }))
-        .on_action(cx.listener(|this, action: &SetRenderMode, _, cx| {
-            commands::set_render_mode(this, action.0, cx);
-        }));
-
-    #[cfg(debug_assertions)]
-    let div = div.on_action(cx.listener(|this, _: &ToggleFpsDisplay, _, cx| {
+    div.on_action(
+        cx.listener(|this, _: &ToggleRenderMode, _, cx| commands::toggle_render_mode(this, cx)),
+    )
+    .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
+        commands::toggle_sidebar(this, window, cx);
+    }))
+    .on_action(cx.listener(|this, _: &ToggleSearchSidebar, window, cx| {
+        commands::toggle_search_view(this, window, cx);
+    }))
+    .on_action(cx.listener(|this, _: &ToggleOutlineSidebar, window, cx| {
+        commands::toggle_outline_view(this, window, cx);
+    }))
+    .on_action(cx.listener(|this, action: &SetRenderMode, _, cx| {
+        commands::set_render_mode(this, action.0, cx);
+    }))
+    .on_action(cx.listener(|this, _: &ToggleFpsDisplay, _, cx| {
         commands::toggle_fps_display(this, cx);
-    }));
-
-    div
+    }))
 }

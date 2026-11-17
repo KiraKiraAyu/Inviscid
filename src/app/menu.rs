@@ -70,7 +70,6 @@ impl ActiveMenu {
 pub struct ViewMenuState {
     pub cur_render_mode: RenderMode,
     pub is_sidebar_visible: bool,
-    #[cfg(debug_assertions)]
     pub is_fps_visible: bool,
 }
 
@@ -402,9 +401,9 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
         .map(|s| s.cur_render_mode)
         .unwrap_or(RenderMode::LivePreview);
     let is_sidebar_visible = view_state.map(|s| s.is_sidebar_visible).unwrap_or(true);
+    let is_fps_visible = view_state.map(|s| s.is_fps_visible).unwrap_or(false);
 
-    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
-    let mut items = vec![
+    let items = vec![
         render_menu_selectable_item(
             "Sidebar",
             display_keystroke_for("ToggleSidebar", cx),
@@ -456,24 +455,17 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
             },
         )
         .into_any_element(),
+        render_menu_separator(cx).into_any_element(),
+        render_menu_selectable_item(
+            "FPS Counter",
+            display_keystroke_for("ToggleFpsDisplay", cx),
+            is_fps_visible,
+            |_, window, cx| {
+                window.dispatch_action(crate::app::actions::ToggleFpsDisplay.boxed_clone(), cx);
+            },
+        )
+        .into_any_element(),
     ];
-
-    #[cfg(debug_assertions)]
-    {
-        let is_fps_visible = view_state.map(|s| s.is_fps_visible).unwrap_or(false);
-        items.push(render_menu_separator(cx).into_any_element());
-        items.push(
-            render_menu_selectable_item(
-                "FPS Counter",
-                display_keystroke_for("ToggleFpsDisplay", cx),
-                is_fps_visible,
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::ToggleFpsDisplay.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
-        );
-    }
 
     render_menu_dropdown(200.0, items, cx)
 }

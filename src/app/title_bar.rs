@@ -1,6 +1,7 @@
 use crate::app::actions::{OpenMenu, ToggleMenu};
 use crate::app::menu::{ActiveMenu, MenuTrigger, TextMenu, ViewMenuState};
 use crate::app::workspace::Workspace;
+use crate::config::AppConfig;
 use crate::theme::ThemeManager;
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
 use crate::ui::{Icon, IconName, IconSize, WindowTitleBar};
@@ -65,8 +66,7 @@ impl Render for TitleBar {
                 .map(|ed| ed.read(cx).render_mode())
                 .unwrap_or(crate::editor::RenderMode::LivePreview),
             is_sidebar_visible: self.workspace.read(cx).sidebar_visible(),
-            #[cfg(debug_assertions)]
-            is_fps_visible: self.workspace.read(cx).fps_visible(cx),
+            is_fps_visible: cx.try_global::<AppConfig>().is_some_and(|cfg| cfg.show_fps),
         };
 
         // Edit menu actions are dispatched at the editor itself; nothing to target without a document.

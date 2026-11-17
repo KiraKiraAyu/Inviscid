@@ -47,11 +47,9 @@ actions!(
         ToggleCaseSensitive,
         ToggleWholeWord,
         ToggleRegex,
+        ToggleFpsDisplay,
     ]
 );
-
-#[cfg(debug_assertions)]
-actions!(inviscid, [ToggleFpsDisplay]);
 
 /// Toggles the given menu: closes it when it is already open, otherwise opens it.
 #[derive(Clone, PartialEq, Eq, Debug, Action)]

@@ -114,7 +114,6 @@ define_keybindings!(
     (PrevTab, "Previous Tab", "View", &["secondary-shift-tab"], APP, All),
     (ToggleSidebar, "Toggle Sidebar", "View", &["secondary-b"], APP, All),
     (ToggleRenderMode, "Toggle Render Mode", "View", &["secondary-e"], APP, All),
-    #[cfg(debug_assertions)]
     (ToggleFpsDisplay, "Toggle FPS Counter", "View", &["f8"], APP, All),
     (OpenSettings, "Settings", "General", &["secondary-,"], APP, All),
     (Quit, "Exit", "General", &["secondary-q"], APP, All),

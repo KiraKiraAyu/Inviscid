@@ -113,6 +113,7 @@ pub struct UserPreferences {
     pub cursor_blink: bool,
     pub cursor_breathing: bool,
     pub default_render_mode: RenderMode,
+    pub show_fps: bool,
     pub grammar_base_url: String,
     pub custom_keybindings: std::collections::HashMap<String, String>,
 }
@@ -138,6 +139,7 @@ impl Default for UserPreferences {
             cursor_blink: true,
             cursor_breathing: true,
             default_render_mode: RenderMode::default(),
+            show_fps: false,
             grammar_base_url: crate::syntax::GrammarCdnPreset::DEFAULT_URL.to_string(),
             custom_keybindings: std::collections::HashMap::new(),
         }

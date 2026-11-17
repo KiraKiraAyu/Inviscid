@@ -1,5 +1,6 @@
 use crate::app::SidebarView;
 use crate::app::actions::{ToggleOutlineSidebar, ToggleSearchSidebar, ToggleSidebar};
+use crate::config::AppConfig;
 use crate::editor::{EditorStatusMeta, ExternalChangeState};
 use crate::theme::{DEFAULT_THEME, Theme, ThemeManager};
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
@@ -12,39 +13,13 @@ pub struct StatusBar {
     /// The sidebar panel on screen; `None` while the sidebar is hidden.
     active_sidebar: Option<SidebarView>,
     outline_visible: bool,
-    #[cfg(debug_assertions)]
-    fps_visible: bool,
-    #[cfg(debug_assertions)]
     fps_frame_scheduled: bool,
-    #[cfg(debug_assertions)]
     fps_meter: FpsMeter,
 }
 
-#[cfg(debug_assertions)]
-const FPS_ENV_VAR: &str = "INVISCID_FPS";
-#[cfg(debug_assertions)]
 const FPS_SAMPLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
-#[cfg(debug_assertions)]
 const FPS_DISPLAY_REFRESH: std::time::Duration = std::time::Duration::from_millis(200);
 
-#[cfg(debug_assertions)]
-fn parse_fps_env_flag(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "on" | "yes" => Some(true),
-        "0" | "false" | "off" | "no" => Some(false),
-        _ => None,
-    }
-}
-
-#[cfg(debug_assertions)]
-fn default_fps_visible() -> bool {
-    std::env::var(FPS_ENV_VAR)
-        .ok()
-        .and_then(|val| parse_fps_env_flag(&val))
-        .unwrap_or(true)
-}
-
-#[cfg(debug_assertions)]
 #[derive(Default)]
 struct FpsMeter {
     timestamps: std::collections::VecDeque<std::time::Instant>,
@@ -53,7 +28,6 @@ struct FpsMeter {
     displayed_frame_ms: Option<f32>,
 }
 
-#[cfg(debug_assertions)]
 impl FpsMeter {
     fn reset(&mut self) {
         self.timestamps.clear();
@@ -105,33 +79,9 @@ impl StatusBar {
             meta,
             active_sidebar,
             outline_visible: false,
-            #[cfg(debug_assertions)]
-            fps_visible: default_fps_visible(),
-            #[cfg(debug_assertions)]
             fps_frame_scheduled: false,
-            #[cfg(debug_assertions)]
             fps_meter: FpsMeter::default(),
         }
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn fps_visible(&self) -> bool {
-        self.fps_visible
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn set_fps_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if self.fps_visible != visible {
-            self.fps_visible = visible;
-            self.fps_frame_scheduled = false;
-            self.fps_meter.reset();
-            cx.notify();
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn toggle_fps_visible(&mut self, cx: &mut Context<Self>) {
-        self.set_fps_visible(!self.fps_visible, cx);
     }
 
     pub fn active_sidebar(&self) -> Option<SidebarView> {
@@ -187,13 +137,9 @@ impl StatusBar {
 }
 
 impl Render for StatusBar {
-    fn render(
-        &mut self,
-        #[cfg_attr(not(debug_assertions), allow(unused_variables))] window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        #[cfg(debug_assertions)]
-        let fps_label = if self.fps_visible {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let show_fps = cx.try_global::<AppConfig>().is_some_and(|cfg| cfg.show_fps);
+        let fps_label = if show_fps {
             self.fps_meter.record_frame(std::time::Instant::now());
             if !self.fps_frame_scheduled {
                 self.fps_frame_scheduled = true;
@@ -201,7 +147,7 @@ impl Render for StatusBar {
                 window.on_next_frame(move |_, cx| {
                     let _ = status_bar.update(cx, |sb, cx| {
                         sb.fps_frame_scheduled = false;
-                        if sb.fps_visible {
+                        if cx.try_global::<AppConfig>().is_some_and(|cfg| cfg.show_fps) {
                             cx.notify();
                         }
                     });
@@ -209,6 +155,8 @@ impl Render for StatusBar {
             }
             Some(self.fps_meter.format_label())
         } else {
+            self.fps_frame_scheduled = false;
+            self.fps_meter.reset();
             None
         };
 
@@ -283,10 +231,10 @@ impl Render for StatusBar {
                 })
             });
 
-        #[cfg(debug_assertions)]
         let right_group = right_group.when_some(fps_label, |this, label| {
             this.child(
                 div()
+                    .debug_selector(|| "status_bar_fps".to_string())
                     .id("status_bar_fps")
                     .font_family(crate::platform::platform_monospace_font())
                     .text_color(theme.text_muted)
@@ -485,19 +433,6 @@ mod tests {
         });
     }
 
-    #[cfg(debug_assertions)]
-    #[test]
-    fn test_parse_fps_env_flag() {
-        assert_eq!(parse_fps_env_flag("1"), Some(true));
-        assert_eq!(parse_fps_env_flag(" true "), Some(true));
-        assert_eq!(parse_fps_env_flag("ON"), Some(true));
-        assert_eq!(parse_fps_env_flag("0"), Some(false));
-        assert_eq!(parse_fps_env_flag("false"), Some(false));
-        assert_eq!(parse_fps_env_flag("off"), Some(false));
-        assert_eq!(parse_fps_env_flag("invalid"), None);
-    }
-
-    #[cfg(debug_assertions)]
     #[test]
     fn test_fps_meter_rolling_window_and_reset() {
         use std::time::{Duration, Instant};
@@ -520,18 +455,32 @@ mod tests {
         assert_eq!(meter.format_label(), " -- FPS");
     }
 
-    #[cfg(debug_assertions)]
     #[gpui::test]
-    fn test_status_bar_toggle_fps_visible(cx: &mut gpui::TestAppContext) {
-        let status_bar = cx.new(|_cx| StatusBar::new(None, None));
-        status_bar.update(cx, |sb, cx| {
-            let initial = sb.fps_visible();
-            sb.toggle_fps_visible(cx);
-            assert_eq!(sb.fps_visible(), !initial);
-            sb.set_fps_visible(true, cx);
-            assert!(sb.fps_visible());
-            sb.set_fps_visible(false, cx);
-            assert!(!sb.fps_visible());
+    fn test_status_bar_follows_app_config_show_fps(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(AppConfig::default());
         });
+        let (status_bar, cx) = cx.add_window_view(|_, _| StatusBar::new(None, None));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("status_bar_fps").is_none());
+
+        cx.update(|_window, cx| {
+            let mut cfg = cx.global::<AppConfig>().clone();
+            cfg.show_fps = true;
+            cx.set_global(cfg);
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("status_bar_fps").is_some());
+
+        cx.update(|_window, cx| {
+            let mut cfg = cx.global::<AppConfig>().clone();
+            cfg.show_fps = false;
+            cx.set_global(cfg);
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("status_bar_fps").is_none());
+        let _ = status_bar;
     }
 }

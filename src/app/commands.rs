@@ -473,12 +473,13 @@ pub fn toggle_outline_view(
     cx.notify();
 }
 
-#[cfg(debug_assertions)]
 pub fn toggle_fps_display(app: &mut InviscidWindow, cx: &mut Context<InviscidWindow>) {
     app.close_menu(cx);
-    app.workspace().update(cx, |ws, cx| {
-        ws.toggle_fps_display(cx);
-    });
+    let mut cfg = cx.try_global::<AppConfig>().cloned().unwrap_or_default();
+    cfg.show_fps = !cfg.show_fps;
+    cfg.persist_preferences_async(cx.background_executor());
+    cx.set_global(cfg);
+    cx.refresh_windows();
     cx.notify();
 }
 

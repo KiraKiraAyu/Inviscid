@@ -277,7 +277,6 @@ mod tests {
         });
     }
 
-    #[cfg(debug_assertions)]
     #[gpui::test]
     fn fps_counter_toggles_via_view_menu_and_shortcut(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -289,7 +288,11 @@ mod tests {
         let (app, cx) = cx.add_window_view(|_, cx| InviscidWindow::new(cx));
         cx.run_until_parked();
 
-        let initial = cx.update(|_, cx| app.read(cx).workspace().read(cx).fps_visible(cx));
+        assert!(
+            !cx.read(|cx| cx.global::<AppConfig>().show_fps)
+                && cx.debug_bounds("status_bar_fps").is_none(),
+            "FPS counter must default to disabled"
+        );
 
         cx.update(|_, cx| {
             app.update(cx, |app, cx| {
@@ -301,16 +304,16 @@ mod tests {
         let position = cx.debug_bounds("menu_item_FPS Counter").unwrap().center();
         cx.simulate_click(position, Modifiers::default());
         cx.run_until_parked();
-        assert_eq!(
-            cx.update(|_, cx| app.read(cx).workspace().read(cx).fps_visible(cx)),
-            !initial
+        assert!(
+            cx.read(|cx| cx.global::<AppConfig>().show_fps)
+                && cx.debug_bounds("status_bar_fps").is_some()
         );
 
         cx.simulate_keystrokes("f8");
         cx.run_until_parked();
-        assert_eq!(
-            cx.update(|_, cx| app.read(cx).workspace().read(cx).fps_visible(cx)),
-            initial
+        assert!(
+            !cx.read(|cx| cx.global::<AppConfig>().show_fps)
+                && cx.debug_bounds("status_bar_fps").is_none()
         );
     }
 }

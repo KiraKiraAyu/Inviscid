@@ -11,7 +11,9 @@ use super::bounds::UI_FONT_SIZE_BOUNDS;
 use super::persistence::update_config_all_windows;
 use crate::config::AppConfig;
 use crate::theme::ThemeManager;
-use crate::ui::{FontSize, Icon, IconName, IconSize, SelectableRow, SettingRow, Spacing, Stepper};
+use crate::ui::{
+    FontSize, Icon, IconName, IconSize, SelectableRow, SettingRow, Spacing, Stepper, Switch,
+};
 
 impl SettingsWindow {
     pub(crate) fn render_appearance_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -31,7 +33,8 @@ impl SettingsWindow {
                     .flex()
                     .flex_col()
                     .gap(Spacing::MDS)
-                    .child(self.ui_font_size_row(cx)),
+                    .child(self.ui_font_size_row(cx))
+                    .child(self.fps_counter_row(cx)),
             )
             .child(
                 div()
@@ -116,5 +119,60 @@ impl SettingsWindow {
             "Scale application interface text and controls ({}).",
             UI_FONT_SIZE_BOUNDS.describe_px()
         ))
+    }
+
+    fn fps_counter_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let show_fps = cx.global::<AppConfig>().show_fps;
+
+        SettingRow::new(
+            "FPS Counter",
+            div()
+                .debug_selector(|| "toggle_show_fps".to_string())
+                .child(
+                    Switch::new("toggle_show_fps", show_fps).on_click(cx.listener(
+                        |_, _, _, cx| {
+                            update_config_all_windows(cx, |cfg| cfg.show_fps = !cfg.show_fps)
+                        },
+                    )),
+                ),
+        )
+        .description("Display real-time frame rate and frame time in the status bar.")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::settings::SettingsCategory;
+    use core::prelude::v1::test;
+
+    #[gpui::test]
+    fn test_settings_fps_counter_defaults_off_and_toggles_via_switch(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let cfg = AppConfig::default();
+            assert!(!cfg.show_fps, "FPS counter must default to disabled");
+            cx.set_global(ThemeManager::from_config(&cfg));
+            cx.set_global(cfg);
+        });
+
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            let mut s = SettingsWindow::new(cx);
+            s.set_category(SettingsCategory::Appearance, cx);
+            s
+        });
+        cx.run_until_parked();
+
+        let switch_pos = cx.debug_bounds("toggle_show_fps").unwrap().center();
+        cx.simulate_click(switch_pos, Modifiers::default());
+        cx.run_until_parked();
+        assert!(cx.read(|cx| cx.global::<AppConfig>().show_fps));
+
+        cx.simulate_click(switch_pos, Modifiers::default());
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| cx.global::<AppConfig>().show_fps));
+        let _ = settings;
     }
 }
