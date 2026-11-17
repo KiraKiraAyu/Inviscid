@@ -65,6 +65,8 @@ impl Render for TitleBar {
                 .map(|ed| ed.read(cx).render_mode())
                 .unwrap_or(crate::editor::RenderMode::LivePreview),
             is_sidebar_visible: self.workspace.read(cx).sidebar_visible(),
+            #[cfg(debug_assertions)]
+            is_fps_visible: self.workspace.read(cx).fps_visible(cx),
         };
 
         // Edit menu actions are dispatched at the editor itself; nothing to target without a document.

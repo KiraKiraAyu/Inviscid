@@ -12,6 +12,89 @@ pub struct StatusBar {
     /// The sidebar panel on screen; `None` while the sidebar is hidden.
     active_sidebar: Option<SidebarView>,
     outline_visible: bool,
+    #[cfg(debug_assertions)]
+    fps_visible: bool,
+    #[cfg(debug_assertions)]
+    fps_frame_scheduled: bool,
+    #[cfg(debug_assertions)]
+    fps_meter: FpsMeter,
+}
+
+#[cfg(debug_assertions)]
+const FPS_ENV_VAR: &str = "INVISCID_FPS";
+#[cfg(debug_assertions)]
+const FPS_SAMPLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+#[cfg(debug_assertions)]
+const FPS_DISPLAY_REFRESH: std::time::Duration = std::time::Duration::from_millis(200);
+
+#[cfg(debug_assertions)]
+fn parse_fps_env_flag(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" => Some(true),
+        "0" | "false" | "off" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(debug_assertions)]
+fn default_fps_visible() -> bool {
+    std::env::var(FPS_ENV_VAR)
+        .ok()
+        .and_then(|val| parse_fps_env_flag(&val))
+        .unwrap_or(true)
+}
+
+#[cfg(debug_assertions)]
+#[derive(Default)]
+struct FpsMeter {
+    timestamps: std::collections::VecDeque<std::time::Instant>,
+    last_display_refresh: Option<std::time::Instant>,
+    displayed_fps: Option<u32>,
+    displayed_frame_ms: Option<f32>,
+}
+
+#[cfg(debug_assertions)]
+impl FpsMeter {
+    fn reset(&mut self) {
+        self.timestamps.clear();
+        self.last_display_refresh = None;
+        self.displayed_fps = None;
+        self.displayed_frame_ms = None;
+    }
+
+    fn record_frame(&mut self, now: std::time::Instant) {
+        while let Some(&front) = self.timestamps.front() {
+            if now.saturating_duration_since(front) > FPS_SAMPLE_WINDOW {
+                self.timestamps.pop_front();
+            } else {
+                break;
+            }
+        }
+        self.timestamps.push_back(now);
+
+        let should_refresh = self
+            .last_display_refresh
+            .is_none_or(|last| now.saturating_duration_since(last) >= FPS_DISPLAY_REFRESH)
+            || self.displayed_fps.is_none();
+
+        if should_refresh && self.timestamps.len() >= 2 {
+            let span = now.saturating_duration_since(*self.timestamps.front().unwrap());
+            if !span.is_zero() {
+                let intervals = (self.timestamps.len() - 1) as f64;
+                let secs = span.as_secs_f64();
+                self.displayed_fps = Some((intervals / secs).round() as u32);
+                self.displayed_frame_ms = Some((secs * 1000.0 / intervals) as f32);
+                self.last_display_refresh = Some(now);
+            }
+        }
+    }
+
+    fn format_label(&self) -> String {
+        match (self.displayed_fps, self.displayed_frame_ms) {
+            (Some(fps), Some(ms)) => format!("{fps:>3} FPS {ms:>4.1}ms"),
+            _ => " -- FPS".to_string(),
+        }
+    }
 }
 
 impl StatusBar {
@@ -22,7 +105,33 @@ impl StatusBar {
             meta,
             active_sidebar,
             outline_visible: false,
+            #[cfg(debug_assertions)]
+            fps_visible: default_fps_visible(),
+            #[cfg(debug_assertions)]
+            fps_frame_scheduled: false,
+            #[cfg(debug_assertions)]
+            fps_meter: FpsMeter::default(),
         }
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn fps_visible(&self) -> bool {
+        self.fps_visible
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn set_fps_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.fps_visible != visible {
+            self.fps_visible = visible;
+            self.fps_frame_scheduled = false;
+            self.fps_meter.reset();
+            cx.notify();
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn toggle_fps_visible(&mut self, cx: &mut Context<Self>) {
+        self.set_fps_visible(!self.fps_visible, cx);
     }
 
     pub fn active_sidebar(&self) -> Option<SidebarView> {
@@ -78,13 +187,130 @@ impl StatusBar {
 }
 
 impl Render for StatusBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        #[cfg_attr(not(debug_assertions), allow(unused_variables))] window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        #[cfg(debug_assertions)]
+        let fps_label = if self.fps_visible {
+            self.fps_meter.record_frame(std::time::Instant::now());
+            if !self.fps_frame_scheduled {
+                self.fps_frame_scheduled = true;
+                let status_bar = cx.entity().downgrade();
+                window.on_next_frame(move |_, cx| {
+                    let _ = status_bar.update(cx, |sb, cx| {
+                        sb.fps_frame_scheduled = false;
+                        if sb.fps_visible {
+                            cx.notify();
+                        }
+                    });
+                });
+            }
+            Some(self.fps_meter.format_label())
+        } else {
+            None
+        };
+
         let theme = cx
             .try_global::<ThemeManager>()
             .map(|m| m.theme())
             .unwrap_or(&DEFAULT_THEME);
         let active_sidebar = self.active_sidebar;
         let outline_visible = self.outline_visible;
+
+        let right_group = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(Spacing::LG)
+            .when_some(self.meta.as_ref(), |this, meta| {
+                let is_dirty = meta.is_dirty;
+                this.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(Spacing::XS)
+                        .child(if is_dirty {
+                            div()
+                                .w(Spacing::SMD)
+                                .h(Spacing::SMD)
+                                .rounded_full()
+                                .bg(theme.inline_code_fg)
+                                .into_any_element()
+                        } else {
+                            Icon::new(IconName::Check)
+                                .size(IconSize::Indicator)
+                                .color(theme.text_accent)
+                                .into_any_element()
+                        })
+                        .child(if meta.is_loading {
+                            "Loading..."
+                        } else if is_dirty {
+                            "Unsaved"
+                        } else {
+                            "Saved"
+                        }),
+                )
+                .when_some(meta.load_error.as_ref(), |this, error| {
+                    this.child(div().child(error.clone()))
+                })
+                .when(meta.external_change != ExternalChangeState::None, |this| {
+                    let message = match meta.external_change {
+                        ExternalChangeState::Deleted => "File deleted",
+                        ExternalChangeState::Pending => "Changed on disk",
+                        ExternalChangeState::None => "",
+                    };
+                    this.child(div().child(message))
+                        .when(
+                            meta.external_change == ExternalChangeState::Pending,
+                            |this| {
+                                this.child(external_change_button(
+                                    "reload_external_file",
+                                    "Reload",
+                                    crate::app::actions::ReloadFile.boxed_clone(),
+                                    theme,
+                                ))
+                            },
+                        )
+                        .child(external_change_button(
+                            "keep_local_external_file",
+                            "Keep Local",
+                            crate::app::actions::KeepLocalChanges.boxed_clone(),
+                            theme,
+                        ))
+                })
+            });
+
+        #[cfg(debug_assertions)]
+        let right_group = right_group.when_some(fps_label, |this, label| {
+            this.child(
+                div()
+                    .id("status_bar_fps")
+                    .font_family(crate::platform::platform_monospace_font())
+                    .text_color(theme.text_muted)
+                    .child(label),
+            )
+        });
+
+        let right_group = right_group
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(Spacing::XS)
+                    .child(Icon::new(IconName::Palette).size(IconSize::XSmall))
+                    .child(theme.name.clone()),
+            )
+            .child(render_sidebar_switch(
+                "outline_panel_btn",
+                IconName::PanelRight,
+                outline_visible,
+                Box::new(ToggleOutlineSidebar),
+                theme,
+            ));
 
         div()
             .w_full()
@@ -135,90 +361,7 @@ impl Render for StatusBar {
                         .child(format!("{} chars", meta.char_count))
                     }),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(Spacing::LG)
-                    .when_some(self.meta.as_ref(), |this, meta| {
-                        let is_dirty = meta.is_dirty;
-                        this.child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(Spacing::XS)
-                                .child(if is_dirty {
-                                    div()
-                                        .w(Spacing::SMD)
-                                        .h(Spacing::SMD)
-                                        .rounded_full()
-                                        .bg(theme.inline_code_fg)
-                                        .into_any_element()
-                                } else {
-                                    Icon::new(IconName::Check)
-                                        .size(IconSize::Indicator)
-                                        .color(theme.text_accent)
-                                        .into_any_element()
-                                })
-                                .child(if meta.is_loading {
-                                    "Loading..."
-                                } else if is_dirty {
-                                    "Unsaved"
-                                } else {
-                                    "Saved"
-                                }),
-                        )
-                        .when_some(meta.load_error.as_ref(), |this, error| {
-                            this.child(div().child(error.clone()))
-                        })
-                        .when(
-                            meta.external_change != ExternalChangeState::None,
-                            |this| {
-                                let message = match meta.external_change {
-                                    ExternalChangeState::Deleted => "File deleted",
-                                    ExternalChangeState::Pending => "Changed on disk",
-                                    ExternalChangeState::None => "",
-                                };
-                                this.child(div().child(message))
-                                    .when(
-                                        meta.external_change == ExternalChangeState::Pending,
-                                        |this| {
-                                            this.child(external_change_button(
-                                                "reload_external_file",
-                                                "Reload",
-                                                crate::app::actions::ReloadFile.boxed_clone(),
-                                                theme,
-                                            ))
-                                        },
-                                    )
-                                    .child(external_change_button(
-                                        "keep_local_external_file",
-                                        "Keep Local",
-                                        crate::app::actions::KeepLocalChanges.boxed_clone(),
-                                        theme,
-                                    ))
-                            },
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(Spacing::XS)
-                            .child(Icon::new(IconName::Palette).size(IconSize::XSmall))
-                            .child(theme.name.clone()),
-                    )
-                    .child(render_sidebar_switch(
-                        "outline_panel_btn",
-                        IconName::PanelRight,
-                        outline_visible,
-                        Box::new(ToggleOutlineSidebar),
-                        theme,
-                    )),
-            )
+            .child(right_group)
     }
 }
 
@@ -339,6 +482,56 @@ mod tests {
                 sb.meta().map(|m| m.cursor_pos.line),
                 Some(crate::buffer::SourceLine::new(20))
             );
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_parse_fps_env_flag() {
+        assert_eq!(parse_fps_env_flag("1"), Some(true));
+        assert_eq!(parse_fps_env_flag(" true "), Some(true));
+        assert_eq!(parse_fps_env_flag("ON"), Some(true));
+        assert_eq!(parse_fps_env_flag("0"), Some(false));
+        assert_eq!(parse_fps_env_flag("false"), Some(false));
+        assert_eq!(parse_fps_env_flag("off"), Some(false));
+        assert_eq!(parse_fps_env_flag("invalid"), None);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_fps_meter_rolling_window_and_reset() {
+        use std::time::{Duration, Instant};
+
+        let mut meter = FpsMeter::default();
+        assert_eq!(meter.format_label(), " -- FPS");
+
+        let t0 = Instant::now();
+        // Simulate 60Hz frames over 1.2s (16.6667ms per frame).
+        for i in 0..=72 {
+            let now = t0 + Duration::from_secs_f64(i as f64 / 60.0);
+            meter.record_frame(now);
+        }
+        assert_eq!(meter.displayed_fps, Some(60));
+        let ms = meter.displayed_frame_ms.unwrap();
+        assert!((ms - 16.6667).abs() < 0.2, "unexpected frame ms: {ms}");
+        assert_eq!(meter.format_label(), " 60 FPS · 16.7ms");
+
+        meter.reset();
+        assert_eq!(meter.format_label(), " -- FPS");
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    fn test_status_bar_toggle_fps_visible(cx: &mut gpui::TestAppContext) {
+        let status_bar = cx.new(|_cx| StatusBar::new(None, None));
+        status_bar.update(cx, |sb, cx| {
+            let initial = sb.fps_visible();
+            sb.toggle_fps_visible(cx);
+            assert_eq!(sb.fps_visible(), !initial);
+            sb.set_fps_visible(true, cx);
+            assert!(sb.fps_visible());
+            sb.set_fps_visible(false, cx);
+            assert!(!sb.fps_visible());
         });
     }
 }

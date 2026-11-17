@@ -62,9 +62,10 @@ pub struct KeybindingSpec {
 }
 
 macro_rules! define_keybindings {
-    ($( ($id:ident, $name:expr, $cat:expr, $strokes:expr, $ctx:expr, $platform:expr) ),* $(,)?) => {
+    ($( $(#[$attr:meta])* ($id:ident, $name:expr, $cat:expr, $strokes:expr, $ctx:expr, $platform:expr) ),* $(,)?) => {
         pub static KEYBINDINGS: &[KeybindingSpec] = &[
             $(
+                $(#[$attr])*
                 KeybindingSpec {
                     meta: KeybindingMeta {
                         id: stringify!($id),
@@ -113,6 +114,8 @@ define_keybindings!(
     (PrevTab, "Previous Tab", "View", &["secondary-shift-tab"], APP, All),
     (ToggleSidebar, "Toggle Sidebar", "View", &["secondary-b"], APP, All),
     (ToggleRenderMode, "Toggle Render Mode", "View", &["secondary-e"], APP, All),
+    #[cfg(debug_assertions)]
+    (ToggleFpsDisplay, "Toggle FPS Counter", "View", &["f8"], APP, All),
     (OpenSettings, "Settings", "General", &["secondary-,"], APP, All),
     (Quit, "Exit", "General", &["secondary-q"], APP, All),
     (DismissOverlay, "Dismiss Overlay", "General", &["escape"], MENU_OPEN, All),

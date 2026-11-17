@@ -1272,6 +1272,17 @@ impl Workspace {
         &self.status_bar
     }
 
+    #[cfg(debug_assertions)]
+    pub fn fps_visible(&self, cx: &App) -> bool {
+        self.status_bar.read(cx).fps_visible()
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn toggle_fps_display(&mut self, cx: &mut Context<Self>) {
+        self.status_bar
+            .update(cx, |sb, cx| sb.toggle_fps_visible(cx));
+    }
+
     pub fn search_panel(&self) -> &Entity<SearchPanel> {
         &self.search_panel
     }

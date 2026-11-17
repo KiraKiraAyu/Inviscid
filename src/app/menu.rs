@@ -70,6 +70,8 @@ impl ActiveMenu {
 pub struct ViewMenuState {
     pub cur_render_mode: RenderMode,
     pub is_sidebar_visible: bool,
+    #[cfg(debug_assertions)]
+    pub is_fps_visible: bool,
 }
 
 #[derive(IntoElement)]
@@ -401,63 +403,79 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
         .unwrap_or(RenderMode::LivePreview);
     let is_sidebar_visible = view_state.map(|s| s.is_sidebar_visible).unwrap_or(true);
 
-    render_menu_dropdown(
-        200.0,
-        vec![
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+    let mut items = vec![
+        render_menu_selectable_item(
+            "Sidebar",
+            display_keystroke_for("ToggleSidebar", cx),
+            is_sidebar_visible,
+            |_, window, cx| {
+                window.dispatch_action(crate::app::actions::ToggleSidebar.boxed_clone(), cx);
+            },
+        )
+        .into_any_element(),
+        render_menu_separator(cx).into_any_element(),
+        render_menu_selectable_item(
+            "Live Preview",
+            "",
+            cur_render_mode == RenderMode::LivePreview,
+            |_, window, cx| {
+                window.dispatch_action(
+                    crate::app::actions::SetRenderMode(RenderMode::LivePreview).boxed_clone(),
+                    cx,
+                );
+            },
+        )
+        .into_any_element(),
+        render_menu_selectable_item(
+            "Source Mode",
+            "",
+            cur_render_mode == RenderMode::Source,
+            |_, window, cx| {
+                window.dispatch_action(
+                    crate::app::actions::SetRenderMode(RenderMode::Source).boxed_clone(),
+                    cx,
+                );
+            },
+        )
+        .into_any_element(),
+        render_menu_separator(cx).into_any_element(),
+        render_menu_item(
+            "Next Tab",
+            display_keystroke_for("NextTab", cx),
+            |_, window, cx| {
+                window.dispatch_action(crate::app::actions::NextTab.boxed_clone(), cx);
+            },
+        )
+        .into_any_element(),
+        render_menu_item(
+            "Previous Tab",
+            display_keystroke_for("PrevTab", cx),
+            |_, window, cx| {
+                window.dispatch_action(crate::app::actions::PrevTab.boxed_clone(), cx);
+            },
+        )
+        .into_any_element(),
+    ];
+
+    #[cfg(debug_assertions)]
+    {
+        let is_fps_visible = view_state.map(|s| s.is_fps_visible).unwrap_or(false);
+        items.push(render_menu_separator(cx).into_any_element());
+        items.push(
             render_menu_selectable_item(
-                "Sidebar",
-                display_keystroke_for("ToggleSidebar", cx),
-                is_sidebar_visible,
+                "FPS Counter",
+                display_keystroke_for("ToggleFpsDisplay", cx),
+                is_fps_visible,
                 |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::ToggleSidebar.boxed_clone(), cx);
+                    window.dispatch_action(crate::app::actions::ToggleFpsDisplay.boxed_clone(), cx);
                 },
             )
             .into_any_element(),
-            render_menu_separator(cx).into_any_element(),
-            render_menu_selectable_item(
-                "Live Preview",
-                "",
-                cur_render_mode == RenderMode::LivePreview,
-                |_, window, cx| {
-                    window.dispatch_action(
-                        crate::app::actions::SetRenderMode(RenderMode::LivePreview).boxed_clone(),
-                        cx,
-                    );
-                },
-            )
-            .into_any_element(),
-            render_menu_selectable_item(
-                "Source Mode",
-                "",
-                cur_render_mode == RenderMode::Source,
-                |_, window, cx| {
-                    window.dispatch_action(
-                        crate::app::actions::SetRenderMode(RenderMode::Source).boxed_clone(),
-                        cx,
-                    );
-                },
-            )
-            .into_any_element(),
-            render_menu_separator(cx).into_any_element(),
-            render_menu_item(
-                "Next Tab",
-                display_keystroke_for("NextTab", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::NextTab.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
-            render_menu_item(
-                "Previous Tab",
-                display_keystroke_for("PrevTab", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::PrevTab.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
-        ],
-        cx,
-    )
+        );
+    }
+
+    render_menu_dropdown(200.0, items, cx)
 }
 
 fn render_theme_dropdown(cx: &mut App) -> impl IntoElement {
