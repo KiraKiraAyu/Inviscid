@@ -1,8 +1,9 @@
 use std::rc::Rc;
 
 use crate::app::actions::{
-    FindInDocument, FindInWorkspace, FindNext, FindPrevious, OpenMenu, ReplaceInDocument,
-    display_keystroke_for,
+    CloseTab, CloseWorkspace, ExportHtml, ExportPdf, FindInDocument, FindInWorkspace, FindNext,
+    FindPrevious, NewTab, NewWindow, OpenFile, OpenFolder, OpenMenu, Quit, ReplaceInDocument,
+    SaveFile, SaveFileAs, display_keystroke_for,
 };
 use crate::config::{AppConfig, WorkspaceState};
 use crate::editor::RenderMode;
@@ -106,7 +107,7 @@ impl MenuTrigger {
 }
 
 impl RenderOnce for MenuTrigger {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.global::<ThemeManager>().theme();
         let target_menu: ActiveMenu = self.category.into();
         let is_active = self.active_menu == Some(target_menu);
@@ -114,6 +115,16 @@ impl RenderOnce for MenuTrigger {
         let active_menu = self.active_menu;
         let view_state = self.view_state;
         let edit_target = self.edit_target;
+        let can_export = if matches!(category, TextMenu::File) && is_active {
+            window
+                .root::<crate::app::InviscidWindow>()
+                .flatten()
+                .is_some_and(|app| {
+                    crate::app::commands::can_export_active_document(app.read(cx), cx)
+                })
+        } else {
+            false
+        };
 
         div()
             .relative()
@@ -162,7 +173,7 @@ impl RenderOnce for MenuTrigger {
             .when(is_active, |this| {
                 let dropdown_element = match category {
                     TextMenu::Inviscid => render_inviscid_dropdown(cx).into_any_element(),
-                    TextMenu::File => render_file_dropdown(cx).into_any_element(),
+                    TextMenu::File => render_file_dropdown(can_export, cx).into_any_element(),
                     TextMenu::Edit => render_edit_dropdown(edit_target, cx).into_any_element(),
                     TextMenu::View => render_view_dropdown(view_state, cx).into_any_element(),
                     TextMenu::Theme => render_theme_dropdown(cx).into_any_element(),
@@ -258,84 +269,74 @@ fn render_inviscid_dropdown(cx: &mut App) -> impl IntoElement {
     )
 }
 
-fn render_file_dropdown(cx: &mut App) -> impl IntoElement {
+fn render_file_dropdown(can_export: bool, cx: &mut App) -> impl IntoElement {
+    let item = |label: &'static str,
+                action_id: &'static str,
+                action: Box<dyn Action>,
+                disabled: bool,
+                cx: &mut App| {
+        MenuItem::from_name(label)
+            .shortcut(display_keystroke_for(action_id, cx))
+            .disabled(disabled)
+            .on_click(move |_, window, cx| {
+                window.dispatch_action(action.boxed_clone(), cx);
+            })
+            .into_any_element()
+    };
+
     render_menu_dropdown(
-        220.0,
+        250.0,
         vec![
-            render_menu_item(
-                "New Tab",
-                display_keystroke_for("NewTab", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::NewTab.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
-            render_menu_item(
+            item("New Tab", "NewTab", NewTab.boxed_clone(), false, cx),
+            item(
                 "New Window",
-                display_keystroke_for("NewWindow", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::NewWindow.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
-            render_menu_item(
-                "Open File...",
-                display_keystroke_for("OpenFile", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::OpenFile.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
-            render_menu_item(
+                "NewWindow",
+                NewWindow.boxed_clone(),
+                false,
+                cx,
+            ),
+            item("Open File...", "OpenFile", OpenFile.boxed_clone(), false, cx),
+            item(
                 "Open Folder...",
-                display_keystroke_for("OpenFolder", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::OpenFolder.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
-            render_menu_item(
-                "Save",
-                display_keystroke_for("SaveFile", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::SaveFile.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
-            render_menu_item(
+                "OpenFolder",
+                OpenFolder.boxed_clone(),
+                false,
+                cx,
+            ),
+            item("Save", "SaveFile", SaveFile.boxed_clone(), false, cx),
+            item(
                 "Save As...",
-                display_keystroke_for("SaveFileAs", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::SaveFileAs.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
+                "SaveFileAs",
+                SaveFileAs.boxed_clone(),
+                false,
+                cx,
+            ),
             render_menu_separator(cx).into_any_element(),
-            render_menu_item(
-                "Close Tab",
-                display_keystroke_for("CloseTab", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::CloseTab.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
-            render_menu_item(
+            item(
+                "Export as HTML...",
+                "ExportHtml",
+                ExportHtml.boxed_clone(),
+                !can_export,
+                cx,
+            ),
+            item(
+                "Export as PDF...",
+                "ExportPdf",
+                ExportPdf.boxed_clone(),
+                !can_export,
+                cx,
+            ),
+            render_menu_separator(cx).into_any_element(),
+            item("Close Tab", "CloseTab", CloseTab.boxed_clone(), false, cx),
+            item(
                 "Close Workspace",
-                display_keystroke_for("CloseWorkspace", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::CloseWorkspace.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
+                "CloseWorkspace",
+                CloseWorkspace.boxed_clone(),
+                false,
+                cx,
+            ),
             render_menu_separator(cx).into_any_element(),
-            render_menu_item(
-                "Exit",
-                display_keystroke_for("Quit", cx),
-                |_, window, cx| {
-                    window.dispatch_action(crate::app::actions::Quit.boxed_clone(), cx);
-                },
-            )
-            .into_any_element(),
+            item("Exit", "Quit", Quit.boxed_clone(), false, cx),
         ],
         cx,
     )

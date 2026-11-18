@@ -7,6 +7,7 @@ pub mod assets;
 pub mod buffer;
 pub mod config;
 pub mod editor;
+pub mod export;
 pub mod fs;
 pub mod http;
 pub mod markdown;

@@ -108,6 +108,8 @@ define_keybindings!(
     (OpenFolder, "Open Folder...", "File", &["secondary-shift-o"], APP, All),
     (SaveFile, "Save", "File", &["secondary-s"], APP, All),
     (SaveFileAs, "Save As...", "File", &["secondary-shift-s"], APP, All),
+    (ExportHtml, "Export as HTML...", "File", &["secondary-shift-e"], APP, All),
+    (ExportPdf, "Export as PDF...", "File", &["secondary-shift-p"], APP, All),
     (CloseTab, "Close Tab", "File", &["secondary-w"], APP, All),
     (CloseWorkspace, "Close Workspace", "File", &["secondary-shift-w"], APP, All),
     (NextTab, "Next Tab", "View", &["secondary-tab"], APP, All),
@@ -511,6 +513,22 @@ mod tests {
                 assert_eq!(
                     name, spec.meta.name,
                     "{} is listed with two different names",
+                    spec.meta.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_macos_bindings_avoid_ctrl_alt_altgr_conflicts() {
+        for spec in KEYBINDINGS
+            .iter()
+            .filter(|spec| matches!(spec.platform, Platform::All | Platform::NonMacos))
+        {
+            for stroke in spec.meta.default_keystrokes {
+                assert!(
+                    !stroke.contains("secondary-alt-") && !stroke.contains("ctrl-alt-"),
+                    "{} uses `{stroke}` on non-macOS, which conflicts with AltGr on international Windows layouts",
                     spec.meta.id
                 );
             }

@@ -21,6 +21,20 @@ pub(crate) struct MathSvg {
     _data: Arc<[u8]>,
 }
 
+impl MathSvg {
+    pub(crate) fn svg_str(&self) -> &str {
+        std::str::from_utf8(&self._data).unwrap_or("")
+    }
+
+    /// Scaled display width and height in `em` units.
+    pub(crate) fn size_em(&self) -> (f32, f32) {
+        (
+            self.width_milli_em as f32 * MATH_SCALE / 1000.0,
+            self.height_milli_em as f32 * MATH_SCALE / 1000.0,
+        )
+    }
+}
+
 type FormulaKey = (String, bool);
 
 static MATH_FONT: OnceLock<Option<MathFont>> = OnceLock::new();
@@ -182,6 +196,9 @@ mod tests {
         assert!(rendered.asset_path.starts_with("math/"));
         assert!(rendered.width_milli_em > 0);
         assert!(rendered.height_milli_em > 0);
+        let (width_em, height_em) = rendered.size_em();
+        assert!((width_em - rendered.width_milli_em as f32 * MATH_SCALE / 1000.0).abs() < 1e-6);
+        assert!((height_em - rendered.height_milli_em as f32 * MATH_SCALE / 1000.0).abs() < 1e-6);
         assert!(
             String::from_utf8(svg.into_owned())
                 .unwrap()

@@ -24,6 +24,7 @@ pub struct InlineSpan {
     pub is_link: bool,
     pub link_url: Option<String>,
     pub is_image: bool,
+    pub image_url: Option<String>,
     pub is_marker: bool,
     pub is_always_hidden_in_live: bool,
     pub is_ime_preedit: bool,
@@ -502,6 +503,30 @@ mod math_placeholder_tests {
 
         assert_eq!(placeholder.chars().count(), expected);
     }
+
+    #[test]
+    fn inline_image_populates_structured_image_url() {
+        let spans = parse_inline_spans("Before ![alt text](images/pic.png) after", 0);
+        let image_spans: Vec<_> = spans.iter().filter(|span| span.is_image).collect();
+        assert_eq!(image_spans.len(), 3);
+        assert_eq!(image_spans[0].text, "![");
+        assert_eq!(image_spans[1].text, "alt text");
+        assert_eq!(image_spans[2].text, "](images/pic.png)");
+        for span in &image_spans {
+            assert_eq!(span.image_url.as_deref(), Some("images/pic.png"));
+        }
+        assert!(spans[0].image_url.is_none());
+        assert!(spans.last().unwrap().image_url.is_none());
+
+        let empty_alt = parse_inline_spans("![](empty.svg)", 0);
+        let empty_alt_images: Vec<_> = empty_alt.iter().filter(|span| span.is_image).collect();
+        assert_eq!(empty_alt_images.len(), 2);
+        assert_eq!(empty_alt_images[0].text, "![");
+        assert_eq!(empty_alt_images[1].text, "](empty.svg)");
+        for span in &empty_alt_images {
+            assert_eq!(span.image_url.as_deref(), Some("empty.svg"));
+        }
+    }
 }
 
 fn parse_inline_spans_internal(
@@ -619,6 +644,7 @@ fn parse_inline_spans_internal(
             flush_normal(&mut normal_buffer, normal_start, i, &mut spans);
 
             let alt_text: String = chars[(i + 2)..close_bracket].iter().collect();
+            let url: String = chars[(close_bracket + 2)..close_paren].iter().collect();
             let close_str: String = chars[close_bracket..=close_paren].iter().collect();
             let group_start = base_offset + i;
             let group_end = base_offset + close_paren + 1;
@@ -626,6 +652,7 @@ fn parse_inline_spans_internal(
             spans.push(InlineSpan {
                 text: "![".to_string(),
                 is_image: true,
+                image_url: Some(url.clone()),
                 is_marker: true,
                 group_range: (group_start, group_end),
                 span_range: (group_start, base_offset + i + 2),
@@ -636,6 +663,7 @@ fn parse_inline_spans_internal(
                 spans.push(InlineSpan {
                     text: alt_text,
                     is_image: true,
+                    image_url: Some(url.clone()),
                     group_range: (group_start, group_end),
                     span_range: (base_offset + i + 2, base_offset + close_bracket),
                     ..Default::default()
@@ -645,6 +673,7 @@ fn parse_inline_spans_internal(
             spans.push(InlineSpan {
                 text: close_str,
                 is_image: true,
+                image_url: Some(url),
                 is_marker: true,
                 group_range: (group_start, group_end),
                 span_range: (base_offset + close_bracket, group_end),

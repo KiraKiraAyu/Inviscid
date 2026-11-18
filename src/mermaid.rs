@@ -23,24 +23,34 @@ pub struct MermaidSvg {
     _data: Arc<[u8]>,
 }
 
+impl MermaidSvg {
+    pub(crate) fn svg_str(&self) -> &str {
+        std::str::from_utf8(&self._data).unwrap_or("")
+    }
+}
+
+type MermaidCacheKey = (String, bool);
+
 #[derive(Default)]
 struct MermaidCache {
-    entries: HashMap<String, Option<MermaidSvg>>,
-    least_recently_used: VecDeque<String>,
+    entries: HashMap<MermaidCacheKey, Option<MermaidSvg>>,
+    least_recently_used: VecDeque<MermaidCacheKey>,
     cached_svg_bytes: usize,
 }
 
 impl MermaidCache {
-    fn get(&mut self, source: &str) -> Option<Option<MermaidSvg>> {
-        let value = self.entries.get(source)?.clone();
-        self.least_recently_used.retain(|entry| entry != source);
-        self.least_recently_used.push_back(source.to_owned());
+    fn get(&mut self, source: &str, is_dark: bool) -> Option<Option<MermaidSvg>> {
+        let key = (source.to_owned(), is_dark);
+        let value = self.entries.get(&key)?.clone();
+        self.least_recently_used.retain(|entry| entry != &key);
+        self.least_recently_used.push_back(key);
         Some(value)
     }
 
-    fn insert(&mut self, source: String, value: Option<MermaidSvg>) {
-        self.least_recently_used.retain(|entry| entry != &source);
-        if let Some(previous) = self.entries.remove(&source) {
+    fn insert(&mut self, source: String, is_dark: bool, value: Option<MermaidSvg>) {
+        let key = (source, is_dark);
+        self.least_recently_used.retain(|entry| entry != &key);
+        if let Some(previous) = self.entries.remove(&key) {
             self.cached_svg_bytes = self
                 .cached_svg_bytes
                 .saturating_sub(previous.as_ref().map_or(0, |diagram| diagram._data.len()));
@@ -48,8 +58,8 @@ impl MermaidCache {
         self.cached_svg_bytes = self
             .cached_svg_bytes
             .saturating_add(value.as_ref().map_or(0, |diagram| diagram._data.len()));
-        self.entries.insert(source.clone(), value);
-        self.least_recently_used.push_back(source);
+        self.entries.insert(key.clone(), value);
+        self.least_recently_used.push_back(key);
 
         while self.entries.len() > MAX_CACHED_DIAGRAMS
             || self.cached_svg_bytes > MAX_CACHED_SVG_BYTES
@@ -111,13 +121,17 @@ fn register_svg(svg: &str) -> (String, Arc<[u8]>) {
     unreachable!("SVG hash collision suffix space exhausted")
 }
 
-fn render_uncached(source: &str) -> Option<MermaidSvg> {
+fn render_uncached(source: &str, is_dark: bool) -> Option<MermaidSvg> {
     if source.trim().is_empty() {
         return None;
     }
 
     let parsed = parse_mermaid_strict(source).ok()?;
-    let theme = Theme::modern();
+    let theme = if is_dark {
+        Theme::dark()
+    } else {
+        Theme::modern()
+    };
     let config = LayoutConfig::default();
     let layout = compute_layout(&parsed.graph, &theme, &config);
     let dimensions = measure_svg_dimensions(&layout, &config, None);
@@ -160,22 +174,29 @@ fn source_from_lines(lines: &[String]) -> Option<String> {
 pub(crate) fn get_cached_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
     let source = source_from_lines(lines)?;
     let cache = RENDER_CACHE.get()?;
-    cache.lock().get(&source).flatten()
+    cache.lock().get(&source, false).flatten()
 }
 
 pub(crate) fn prepare_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
-    let source = source_from_lines(lines)?;
-    prepare_bounded_mermaid(&source)
+    prepare_mermaid_lines_for_theme(lines, false)
 }
 
-fn prepare_bounded_mermaid(source: &str) -> Option<MermaidSvg> {
+pub(crate) fn prepare_mermaid_lines_for_theme(
+    lines: &[String],
+    is_dark: bool,
+) -> Option<MermaidSvg> {
+    let source = source_from_lines(lines)?;
+    prepare_bounded_mermaid(&source, is_dark)
+}
+
+fn prepare_bounded_mermaid(source: &str, is_dark: bool) -> Option<MermaidSvg> {
     let cache = RENDER_CACHE.get_or_init(Default::default);
-    if let Some(cached) = cache.lock().get(source) {
+    if let Some(cached) = cache.lock().get(source, is_dark) {
         return cached;
     }
 
-    let rendered = render_uncached(source);
-    cache.lock().insert(source.to_owned(), rendered.clone());
+    let rendered = render_uncached(source, is_dark);
+    cache.lock().insert(source.to_owned(), is_dark, rendered.clone());
     rendered
 }
 
@@ -210,7 +231,7 @@ mod tests {
     fn render_cache_contains(source: &str) -> bool {
         RENDER_CACHE
             .get()
-            .map(|cache| cache.lock().entries.contains_key(source))
+            .map(|cache| cache.lock().entries.contains_key(&(source.to_owned(), false)))
             .unwrap_or(false)
     }
 
@@ -222,6 +243,7 @@ mod tests {
         for index in 0..9 {
             cache.insert(
                 index.to_string(),
+                false,
                 Some(MermaidSvg {
                     asset_path: format!("test-{index}.svg"),
                     width: 1,
@@ -238,8 +260,8 @@ mod tests {
             .map(|diagram| diagram._data.len())
             .sum();
         assert!(cached_bytes <= 8 * 1024 * 1024);
-        assert!(cache.entries.contains_key("8"));
-        assert!(!cache.entries.contains_key("0"));
+        assert!(cache.entries.contains_key(&("8".to_string(), false)));
+        assert!(!cache.entries.contains_key(&("0".to_string(), false)));
     }
 
     #[test]
@@ -260,6 +282,21 @@ mod tests {
         assert!(svg.contains("<svg"));
         assert!(svg.contains("Start"));
         assert!(svg.contains("Done"));
+    }
+
+    #[test]
+    fn renders_dark_and_light_mermaid_themes_distinctly() {
+        let lines = vec![
+            "flowchart LR".to_string(),
+            "    A[Start] --> B[Done]".to_string(),
+        ];
+        let light = prepare_mermaid_lines_for_theme(&lines, false).unwrap();
+        let dark = prepare_mermaid_lines_for_theme(&lines, true).unwrap();
+
+        assert_ne!(light.asset_path, dark.asset_path);
+        assert!(dark.svg_str().contains("<svg"));
+        assert!(dark.svg_str().contains("#1f2020"));
+        assert!(light.svg_str().contains("#F8FAFC"));
     }
 
     #[test]

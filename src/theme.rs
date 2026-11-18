@@ -66,6 +66,30 @@ macro_rules! define_theme {
             }
         }
 
+        impl Theme {
+            /// Total number of color tokens defined on [`Theme`].
+            pub(crate) const COLOR_TOKEN_COUNT: usize = [$(stringify!($field)),*].len();
+
+            /// Returns every `(field_name, color)` token pair defined on [`Theme`].
+            pub(crate) fn color_tokens(&self) -> [(&'static str, Hsla); Self::COLOR_TOKEN_COUNT] {
+                [$( (stringify!($field), self.$field), )*]
+            }
+
+            /// Creates a theme with every color token initialized to `color`.
+            pub(crate) fn uniform(name: impl Into<String>, color: Hsla) -> Self {
+                Self {
+                    name: name.into(),
+                    $( $field: color, )*
+                }
+            }
+
+            /// Returns `true` when `bg_editor` has dark perceived luminance.
+            pub(crate) fn is_dark(&self) -> bool {
+                let rgb = self.bg_editor.to_rgb();
+                0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b < 0.5
+            }
+        }
+
         impl ThemeDef {
             /// Completes this definition without inheriting anything.
             ///
@@ -230,5 +254,15 @@ bg_editor = "#ff0000"
         assert!(missing.contains(&"bg_app"));
         assert!(missing.contains(&"text_primary"));
         assert!(!missing.contains(&"bg_editor"));
+    }
+
+    #[test]
+    fn test_color_tokens_cover_all_fields_and_luminance() {
+        let tokens = DEFAULT_THEME.color_tokens();
+        assert_eq!(tokens.len(), Theme::COLOR_TOKEN_COUNT);
+        assert!(tokens.iter().any(|(name, color)| *name == "bg_editor" && *color == DEFAULT_THEME.bg_editor));
+        assert!(tokens.iter().any(|(name, color)| *name == "text_warning" && *color == DEFAULT_THEME.text_warning));
+        assert!(DEFAULT_THEME.is_dark());
+        assert!(!registry::load_light_print_theme().is_dark());
     }
 }

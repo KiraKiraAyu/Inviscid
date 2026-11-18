@@ -665,15 +665,15 @@ fn test_inviscid_window_open_initial_and_lib_reexport() {
     assert_eq!(active_path, Some(sample_file));
 
     // 3. When initial_path is None, restore_workspace is true, and last_workspace is present
-    let temp_dir = std::env::temp_dir().join(format!("inviscid_open_init_{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&temp_dir);
-    let doc1 = temp_dir.join("doc1.md");
-    let doc2 = temp_dir.join("doc2.md");
-    let _ = std::fs::write(&doc1, "# Doc 1\n");
-    let _ = std::fs::write(&doc2, "# Doc 2\n");
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let temp_path = temp_dir.path().to_path_buf();
+    let doc1 = temp_path.join("doc1.md");
+    let doc2 = temp_path.join("doc2.md");
+    std::fs::write(&doc1, "# Doc 1\n").expect("write doc1");
+    std::fs::write(&doc2, "# Doc 2\n").expect("write doc2");
 
     let mock_ws = WorkspaceState {
-        root_dir: Some(temp_dir.clone()),
+        root_dir: Some(temp_path.clone()),
         active_file: Some(doc1.clone()),
         open_files: vec![doc1.clone(), doc2.clone()],
         sidebar_visible: true,
@@ -700,9 +700,7 @@ fn test_inviscid_window_open_initial_and_lib_reexport() {
             .root_dir()
             .map(std::path::Path::to_path_buf)
     });
-    assert_eq!(ws_root, Some(temp_dir.clone()));
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
+    assert_eq!(ws_root, Some(temp_path));
 }
 
 #[test]
@@ -802,4 +800,191 @@ fn test_zed_style_layout_persistence_across_restart_and_drag_resize() {
         assert_eq!(ws.outline_width(), px(320.0));
         assert!(ws.status_bar().read(cx).outline_visible());
     });
+}
+
+#[test]
+fn file_menu_export_actions_respect_document_exportability_and_shortcuts() {
+    use gpui::Modifiers;
+    use inviscid::app::ActiveMenu;
+    use inviscid::app::commands::{
+        ExportTargetKind, can_export_active_document, prepare_active_export,
+    };
+
+    let export_html_meta = keybindings()
+        .find(|meta| meta.id == "ExportHtml")
+        .expect("ExportHtml keybinding missing");
+    assert_eq!(export_html_meta.primary_keystroke(), "secondary-shift-e");
+
+    let export_pdf_meta = keybindings()
+        .find(|meta| meta.id == "ExportPdf")
+        .expect("ExportPdf keybinding missing");
+    assert_eq!(export_pdf_meta.primary_keystroke(), "secondary-shift-p");
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let md_path = temp_dir.path().join("notes.md");
+    let rs_path = temp_dir.path().join("main.rs");
+    let invalid_md_path = temp_dir.path().join("broken.md");
+    std::fs::write(&md_path, "# Notes\n\nBody\n").expect("write markdown");
+    std::fs::write(&rs_path, "fn main() {}\n").expect("write rust file");
+    std::fs::write(&invalid_md_path, [0xff, 0xfe]).expect("write invalid utf8");
+
+    let mut tcx = TestAppContext::single();
+    init_test_globals(&mut tcx);
+    let (app, cx) = tcx.add_window_view(|_, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let assert_disabled_in_menu = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|_, cx| {
+            assert!(!can_export_active_document(app.read(cx), cx));
+            assert!(prepare_active_export(app.read(cx), ExportTargetKind::Html, cx).is_none());
+            assert!(prepare_active_export(app.read(cx), ExportTargetKind::Pdf, cx).is_none());
+            app.update(cx, |app, cx| {
+                app.set_active_menu(Some(ActiveMenu::File), cx);
+            });
+        });
+        cx.run_until_parked();
+
+        for selector in ["menu_item_Export as HTML...", "menu_item_Export as PDF..."] {
+            let pos = cx.debug_bounds(selector).expect(selector).center();
+            cx.simulate_click(pos, Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(
+                cx.update(|_, cx| app.read(cx).active_menu()),
+                Some(ActiveMenu::File),
+                "{selector} must stay disabled (no click handler) when unexportable"
+            );
+        }
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(cx.update(|_, cx| app.read(cx).active_menu().is_none()));
+    };
+
+    // 1. No active editor
+    assert_disabled_in_menu(cx);
+
+    // 2. Shortcut and direct action dispatch while unexportable close the menu safely
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.set_active_menu(Some(ActiveMenu::File), cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("secondary-shift-e");
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| app.read(cx).active_menu().is_none()));
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.set_active_menu(Some(ActiveMenu::File), cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("secondary-shift-p");
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| app.read(cx).active_menu().is_none()));
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.set_active_menu(Some(ActiveMenu::File), cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.dispatch_action(ExportHtml);
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| app.read(cx).active_menu().is_none()));
+
+    // 3. WorkspaceSearch active tab
+    cx.update(|window, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| ws.open_workspace_search(window, cx));
+    });
+    cx.run_until_parked();
+    assert_disabled_in_menu(cx);
+
+    // 4. Non-markdown file
+    cx.update(|_, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| ws.open_file(rs_path.clone(), cx));
+    });
+    cx.run_until_parked();
+    assert_disabled_in_menu(cx);
+
+    // 5. Loading editor (immediately after open_file, before background load completes)
+    cx.update(|_, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| ws.open_file(md_path.clone(), cx));
+        let win = app.read(cx);
+        let ed = win.workspace().read(cx).active_editor().unwrap().read(cx);
+        assert!(ed.is_loading());
+        assert!(!can_export_active_document(win, cx));
+        assert!(prepare_active_export(win, ExportTargetKind::Html, cx).is_none());
+        assert!(prepare_active_export(win, ExportTargetKind::Pdf, cx).is_none());
+    });
+    cx.run_until_parked();
+
+    // 6. Failed-to-load markdown file (load_error)
+    cx.update(|_, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| ws.open_file(invalid_md_path.clone(), cx));
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let ed = app
+            .read(cx)
+            .workspace()
+            .read(cx)
+            .active_editor()
+            .unwrap()
+            .read(cx);
+        assert!(ed.status_meta().unwrap().load_error.is_some());
+    });
+    assert_disabled_in_menu(cx);
+
+    // 7. Editable untitled buffer: exportable with aligned Untitled title & stem
+    cx.update(|_, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| ws.new_tab(cx));
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let win = app.read(cx);
+        assert!(can_export_active_document(win, cx));
+        let html = prepare_active_export(win, ExportTargetKind::Html, cx).unwrap();
+        assert_eq!(html.title, "Untitled");
+        assert_eq!(html.default_file_name, "Untitled.html");
+        assert_eq!(html.doc_path, None);
+
+        let pdf = prepare_active_export(win, ExportTargetKind::Pdf, cx).unwrap();
+        assert_eq!(pdf.title, "Untitled");
+        assert_eq!(pdf.default_file_name, "Untitled.pdf");
+    });
+
+    // 8. Editable markdown file: exportable with aligned stem/title and parent initial_dir
+    cx.update(|_, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| ws.open_file(md_path.clone(), cx));
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let win = app.read(cx);
+        assert!(can_export_active_document(win, cx));
+        let html = prepare_active_export(win, ExportTargetKind::Html, cx).unwrap();
+        assert_eq!(html.title, "notes");
+        assert_eq!(html.default_file_name, "notes.html");
+        assert_eq!(html.doc_path.as_deref(), Some(md_path.as_path()));
+        assert_eq!(html.initial_dir.as_deref(), Some(temp_dir.path()));
+
+        let pdf = prepare_active_export(win, ExportTargetKind::Pdf, cx).unwrap();
+        assert_eq!(pdf.title, "notes");
+        assert_eq!(pdf.default_file_name, "notes.pdf");
+
+        app.update(cx, |app, cx| {
+            app.set_active_menu(Some(ActiveMenu::File), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    assert!(cx.debug_bounds("menu_item_Export as HTML...").is_some());
+    assert!(cx.debug_bounds("menu_item_Export as PDF...").is_some());
 }

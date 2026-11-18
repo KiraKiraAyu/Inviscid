@@ -49,6 +49,8 @@ fn attach_workspace_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
     .on_action(cx.listener(|this, _: &OpenFolder, _, cx| commands::open_folder_prompt(this, cx)))
     .on_action(cx.listener(|this, _: &SaveFile, _, cx| commands::save_file(this, cx)))
     .on_action(cx.listener(|this, _: &SaveFileAs, _, cx| commands::save_file_as_prompt(this, cx)))
+    .on_action(cx.listener(|this, _: &ExportHtml, _, cx| commands::export_html_prompt(this, cx)))
+    .on_action(cx.listener(|this, _: &ExportPdf, _, cx| commands::export_pdf_prompt(this, cx)))
     .on_action(cx.listener(|this, _: &ReloadFile, _, cx| commands::reload_file(this, cx)))
     .on_action(cx.listener(|this, _: &KeepLocalChanges, _, cx| {
         commands::keep_local_changes(this, cx);

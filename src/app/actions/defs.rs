@@ -19,6 +19,8 @@ actions!(
         OpenFolder,
         SaveFile,
         SaveFileAs,
+        ExportHtml,
+        ExportPdf,
         ReloadFile,
         KeepLocalChanges,
         NewWindow,

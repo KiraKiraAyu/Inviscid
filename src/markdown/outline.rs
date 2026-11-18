@@ -44,7 +44,7 @@ pub(crate) fn collect_outline_from_source(
     collect_indexed_headings(headings.iter().map(|(row, parsed)| (*row, parsed)))
 }
 
-fn collect_indexed_headings<'a>(
+pub(crate) fn collect_indexed_headings<'a>(
     rows: impl Iterator<Item = (usize, &'a super::types::ParsedLine)>,
 ) -> Vec<OutlineItem> {
     let mut anchor_counts = HashMap::<String, usize>::new();

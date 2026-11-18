@@ -491,6 +491,13 @@ mod window_tests {
 }
 
 impl MarkdownScanner {
+    pub(crate) fn scan_source(source: &(impl LineSource + ?Sized)) -> Vec<ParsedLine> {
+        let snapshot = source.source_snapshot();
+        let index = snapshot.structure_index();
+        let len = snapshot.line_count();
+        window::scan(&snapshot, &index, 0..len, ScanResourcePolicy::Full).1
+    }
+
     pub fn scan_window(
         buffer: &crate::buffer::TextBuffer,
         range: std::ops::Range<usize>,
