@@ -196,7 +196,9 @@ fn prepare_bounded_mermaid(source: &str, is_dark: bool) -> Option<MermaidSvg> {
     }
 
     let rendered = render_uncached(source, is_dark);
-    cache.lock().insert(source.to_owned(), is_dark, rendered.clone());
+    cache
+        .lock()
+        .insert(source.to_owned(), is_dark, rendered.clone());
     rendered
 }
 
@@ -231,7 +233,12 @@ mod tests {
     fn render_cache_contains(source: &str) -> bool {
         RENDER_CACHE
             .get()
-            .map(|cache| cache.lock().entries.contains_key(&(source.to_owned(), false)))
+            .map(|cache| {
+                cache
+                    .lock()
+                    .entries
+                    .contains_key(&(source.to_owned(), false))
+            })
             .unwrap_or(false)
     }
 

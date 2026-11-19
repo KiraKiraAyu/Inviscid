@@ -172,6 +172,13 @@ impl InlineInput {
         this
     }
 
+    /// Selects all characters in the input (used when renaming a collocated document whose
+    /// directory name may contain dots that are not file extensions).
+    pub fn with_full_selection(mut self) -> Self {
+        self.input.select_all();
+        self
+    }
+
     #[inline]
     pub fn kind(&self) -> &InlineInputKind {
         &self.kind

@@ -295,7 +295,13 @@ fn render_file_dropdown(can_export: bool, cx: &mut App) -> impl IntoElement {
                 false,
                 cx,
             ),
-            item("Open File...", "OpenFile", OpenFile.boxed_clone(), false, cx),
+            item(
+                "Open File...",
+                "OpenFile",
+                OpenFile.boxed_clone(),
+                false,
+                cx,
+            ),
             item(
                 "Open Folder...",
                 "OpenFolder",
@@ -509,6 +515,7 @@ pub fn render_workspace_dropdown(
     let on_select = Rc::new(on_select);
     let theme = cx.global::<ThemeManager>().theme();
     let config = cx.global::<AppConfig>();
+    let collocated_mode = config.collocated_mode;
     let recent_workspaces = config.session.recent_workspaces.clone();
 
     let mut items = Vec::new();
@@ -557,10 +564,13 @@ pub fn render_workspace_dropdown(
             {
                 name.to_string()
             } else {
-                let name = crate::app::workspace::extract_workspace_name_from_paths([
-                    ws_state.active_file.as_deref(),
-                    ws_state.open_files.first().map(|p| p.as_path()),
-                ]);
+                let name = crate::app::workspace::extract_workspace_name_from_paths(
+                    [
+                        ws_state.active_file.as_deref(),
+                        ws_state.open_files.first().map(|p| p.as_path()),
+                    ],
+                    collocated_mode,
+                );
                 if name == "Open Workspace" {
                     format!("Workspace #{}", i + 1)
                 } else {

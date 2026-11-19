@@ -160,6 +160,236 @@ pub fn atomic_write(target_path: &Path, content: impl AsRef<[u8]>) -> std::io::R
     }
 }
 
+/// Entry file name representing a collocated document bundle inside a directory.
+pub const COLLOCATED_INDEX_FILE: &str = "index.md";
+
+/// Returns `true` when `path` points to a collocated bundle entry file (`index.md`, ASCII case-insensitive).
+pub fn is_collocated_index_path(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case(COLLOCATED_INDEX_FILE))
+}
+
+/// Locates the collocated entry file (`index.md`, ASCII case-insensitive) inside `dir`,
+/// if it exists as a regular file.
+pub fn find_collocated_index_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let candidate = dir.join(COLLOCATED_INDEX_FILE);
+    if candidate.is_file() {
+        return Some(candidate);
+    }
+
+    // Fallback for case-sensitive filesystems where `INDEX.MD` / `Index.md` differs in case.
+    let mut matches: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_collocated_index_path(path))
+        .collect();
+    matches.sort();
+    matches.into_iter().next()
+}
+
+/// Returns `true` when `dir` is a collocated document bundle containing `index.md`.
+pub fn has_collocated_index(dir: &std::path::Path) -> bool {
+    find_collocated_index_file(dir).is_some()
+}
+
+/// Returns the collocated bundle directory for `file_path` if `file_path` is an `index.md` file.
+pub fn collocated_bundle_dir(file_path: &std::path::Path) -> Option<&std::path::Path> {
+    if is_collocated_index_path(file_path) {
+        file_path.parent().filter(|p| !p.as_os_str().is_empty())
+    } else {
+        None
+    }
+}
+
+/// Returns the collocated bundle directory for `file_path` unless that directory IS `root_dir`
+/// itself (preventing `<workspace_root>/index.md` from masquerading as a document bundle).
+pub fn collocated_bundle_dir_within<'a>(
+    file_path: &'a std::path::Path,
+    root_dir: Option<&std::path::Path>,
+) -> Option<&'a std::path::Path> {
+    let bundle = collocated_bundle_dir(file_path)?;
+    if root_dir.is_some_and(|root| bundle == root) {
+        return None;
+    }
+    Some(bundle)
+}
+
+/// Resolves a clicked/dropped entry path to an openable markdown file path.
+///
+/// In collocated mode, clicking or dropping a bundle directory resolves to its `index.md`;
+/// a directory without `index.md` (or any directory in standard mode) yields `None`.
+pub fn resolve_openable_document_path(
+    path: &std::path::Path,
+    collocated_mode: bool,
+) -> Option<std::path::PathBuf> {
+    if path.is_dir() {
+        collocated_mode
+            .then(|| find_collocated_index_file(path))
+            .flatten()
+    } else {
+        path.is_file().then(|| path.to_path_buf())
+    }
+}
+
+/// Maps an internal document file path (`<bundle>/index.md`) to its external user-facing path
+/// (`<bundle>`) in collocated mode, leaving paths outside bundles (or `<root>/index.md`) unchanged.
+pub fn resolve_document_external_path<'a>(
+    path: &'a std::path::Path,
+    collocated_mode: bool,
+    root_dir: Option<&std::path::Path>,
+) -> &'a std::path::Path {
+    if collocated_mode && let Some(bundle_dir) = collocated_bundle_dir_within(path, root_dir) {
+        bundle_dir
+    } else {
+        path
+    }
+}
+
+/// Resolves the logical parent directory of a document: the parent of `<bundle>` in collocated
+/// mode (avoiding placing exports inside `<bundle>/`), or the parent of `file_path` otherwise.
+pub fn resolve_document_parent_dir<'a>(
+    file_path: &'a std::path::Path,
+    collocated_mode: bool,
+    root_dir: Option<&std::path::Path>,
+) -> Option<&'a std::path::Path> {
+    resolve_document_external_path(file_path, collocated_mode, root_dir)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
+/// Resolves the display title for a document path in standard or collocated mode.
+pub fn resolve_document_title(
+    file_path: Option<&std::path::Path>,
+    collocated_mode: bool,
+) -> String {
+    if collocated_mode
+        && let Some(bundle_dir) = file_path.and_then(collocated_bundle_dir)
+        && let Some(name) = bundle_dir.file_name().and_then(|n| n.to_str())
+        && !name.is_empty()
+    {
+        return name.to_string();
+    }
+
+    file_path
+        .and_then(|p| p.file_name())
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Untitled.md".to_string())
+}
+
+#[cfg(test)]
+mod collocated_tests {
+    use super::*;
+
+    #[test]
+    fn test_find_collocated_index_case_insensitive_and_non_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("MyNote");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let upper_index = bundle.join("INDEX.MD");
+        std::fs::write(&upper_index, "# Hello\n").unwrap();
+
+        let found = find_collocated_index_file(&bundle).expect("should find INDEX.MD");
+        assert!(is_collocated_index_path(&found));
+        assert!(has_collocated_index(&bundle));
+        assert_eq!(find_collocated_index_file(&upper_index), None);
+    }
+
+    #[test]
+    fn test_collocated_bundle_dir_within_guards_workspace_root() {
+        let root = std::path::Path::new("d:/workspace");
+        let root_index = root.join("index.md");
+        assert_eq!(collocated_bundle_dir(&root_index), Some(root));
+        assert_eq!(collocated_bundle_dir_within(&root_index, Some(root)), None);
+
+        let nested_index = root.join("guide").join("index.md");
+        assert_eq!(
+            collocated_bundle_dir_within(&nested_index, Some(root)),
+            Some(root.join("guide").as_path())
+        );
+    }
+
+    #[test]
+    fn test_resolve_openable_document_path_and_external_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let bundle = root.join("notes").join("chapter_one");
+        let folder = root.join("empty_folder");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+
+        let index = bundle.join("index.md");
+        let loose = root.join("loose.md");
+        std::fs::write(&index, "# Chapter 1\n").unwrap();
+        std::fs::write(&loose, "# Loose\n").unwrap();
+
+        // Standard vs collocated opening of directories and files
+        assert_eq!(
+            resolve_openable_document_path(&bundle, true),
+            Some(index.clone())
+        );
+        assert_eq!(resolve_openable_document_path(&bundle, false), None);
+        assert_eq!(resolve_openable_document_path(&folder, true), None);
+        assert_eq!(
+            resolve_openable_document_path(&loose, false),
+            Some(loose.clone())
+        );
+        assert_eq!(
+            resolve_openable_document_path(&root.join("missing"), true),
+            None
+        );
+
+        // External path & parent dir avoid leaking `<bundle>/index.md` and guard `root/index.md`
+        assert_eq!(
+            resolve_document_external_path(&index, true, Some(root)),
+            bundle.as_path()
+        );
+        assert_eq!(
+            resolve_document_external_path(&index, false, Some(root)),
+            index.as_path()
+        );
+        assert_eq!(
+            resolve_document_parent_dir(&index, true, Some(root)),
+            Some(root.join("notes").as_path())
+        );
+        assert_eq!(
+            resolve_document_parent_dir(&index, false, Some(root)),
+            Some(bundle.as_path())
+        );
+
+        let root_index = root.join("index.md");
+        assert_eq!(
+            resolve_document_external_path(&root_index, true, Some(root)),
+            root_index.as_path()
+        );
+        assert_eq!(
+            resolve_document_parent_dir(&root_index, true, Some(root)),
+            Some(root)
+        );
+
+        assert!(is_collocated_index_path(&index));
+        assert!(is_collocated_index_path(std::path::Path::new(
+            "/a/b/INDEX.MD"
+        )));
+        assert!(!is_collocated_index_path(&loose));
+        assert_eq!(find_collocated_index_file(&bundle), Some(index.clone()));
+        assert_eq!(find_collocated_index_file(&folder), None);
+        assert!(has_collocated_index(&bundle));
+        assert!(!has_collocated_index(&folder));
+        assert_eq!(collocated_bundle_dir(&index), Some(bundle.as_path()));
+        assert_eq!(collocated_bundle_dir(&loose), None);
+
+        assert_eq!(resolve_document_title(Some(&index), false), "index.md");
+        assert_eq!(resolve_document_title(Some(&index), true), "chapter_one");
+        assert_eq!(resolve_document_title(Some(&loose), true), "loose.md");
+        assert_eq!(resolve_document_title(None, true), "Untitled.md");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

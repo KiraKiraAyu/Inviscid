@@ -28,14 +28,24 @@ impl SearchPanel {
                     };
                     let theme = cx.global::<ThemeManager>().theme();
                     let this = panel.read(cx);
+                    let collocated_mode = this.collocated_mode;
+                    let root_dir = this.root_dir.as_deref();
                     range
                         .filter_map(|row_idx| {
                             let element = match *this.rows.get(row_idx)? {
                                 ResultRow::FileHeader(file_idx) => {
                                     let file = this.results.files().get(file_idx)?;
                                     let is_collapsed = this.collapsed_files.contains(&file.path);
-                                    render_file_header(row_idx, file, is_collapsed, &panel, theme)
-                                        .into_any_element()
+                                    render_file_header(
+                                        row_idx,
+                                        file,
+                                        is_collapsed,
+                                        collocated_mode,
+                                        root_dir,
+                                        &panel,
+                                        theme,
+                                    )
+                                    .into_any_element()
                                 }
                                 ResultRow::Match {
                                     file_idx,
@@ -90,19 +100,35 @@ fn render_file_header(
     row_idx: usize,
     file: &FileSearchResult,
     is_collapsed: bool,
+    collocated_mode: bool,
+    root_dir: Option<&Path>,
     panel: &Entity<SearchPanel>,
     theme: &Theme,
 ) -> impl IntoElement {
-    let file_name = file
-        .path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| file.relative_path.clone());
-    let dir_path = Path::new(&file.relative_path)
-        .parent()
-        .and_then(|p| p.to_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| format!("{s}/"));
+    let is_collocated_bundle =
+        collocated_mode && crate::fs::collocated_bundle_dir_within(&file.path, root_dir).is_some();
+    let file_name = if is_collocated_bundle {
+        crate::fs::resolve_document_title(Some(&file.path), true)
+    } else {
+        file.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.relative_path.clone())
+    };
+    let dir_path = if is_collocated_bundle {
+        Path::new(&file.relative_path)
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.to_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{s}/"))
+    } else {
+        Path::new(&file.relative_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{s}/"))
+    };
     let match_count = file.matches.len();
     let (hover, active) = (theme.btn_hover, theme.btn_active);
     let panel = panel.downgrade();
@@ -141,11 +167,13 @@ fn render_file_header(
                     .size(IconSize::XSmall)
                     .color(theme.text_secondary),
                 )
-                .child(
-                    Icon::new(IconName::FileText)
-                        .size(IconSize::XSmall)
-                        .color(theme.text_secondary),
-                )
+                .when(!collocated_mode, |this| {
+                    this.child(
+                        Icon::new(IconName::FileText)
+                            .size(IconSize::XSmall)
+                            .color(theme.text_secondary),
+                    )
+                })
                 .child(
                     div()
                         .text_size(FontSize::CAPTION)

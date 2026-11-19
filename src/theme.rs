@@ -260,8 +260,16 @@ bg_editor = "#ff0000"
     fn test_color_tokens_cover_all_fields_and_luminance() {
         let tokens = DEFAULT_THEME.color_tokens();
         assert_eq!(tokens.len(), Theme::COLOR_TOKEN_COUNT);
-        assert!(tokens.iter().any(|(name, color)| *name == "bg_editor" && *color == DEFAULT_THEME.bg_editor));
-        assert!(tokens.iter().any(|(name, color)| *name == "text_warning" && *color == DEFAULT_THEME.text_warning));
+        assert!(
+            tokens
+                .iter()
+                .any(|(name, color)| *name == "bg_editor" && *color == DEFAULT_THEME.bg_editor)
+        );
+        assert!(
+            tokens.iter().any(
+                |(name, color)| *name == "text_warning" && *color == DEFAULT_THEME.text_warning
+            )
+        );
         assert!(DEFAULT_THEME.is_dark());
         assert!(!registry::load_light_print_theme().is_dark());
     }

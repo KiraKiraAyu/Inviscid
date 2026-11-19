@@ -226,6 +226,7 @@ pub struct Editor {
     pub(crate) baseline_generation: u64,
 
     pub(crate) has_explicit_render_mode: bool,
+    pub(crate) collocated_mode: bool,
     pub(crate) font_size: f32,
     pub(crate) line_height: f32,
     pub(crate) soft_wrap: bool,
@@ -434,20 +435,23 @@ impl Editor {
         &mut self.buffer
     }
 
+    pub fn set_collocated_mode(&mut self, collocated_mode: bool) {
+        self.collocated_mode = collocated_mode;
+    }
+
     pub fn title(&self) -> String {
-        self.buffer
-            .file_path()
-            .and_then(|p| p.file_name())
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Untitled.md".to_string())
+        crate::fs::resolve_document_title(self.buffer.file_path(), self.collocated_mode)
     }
 
     pub fn dir_hint(&self) -> Option<String> {
-        self.buffer.file_path().and_then(|p| {
-            p.parent()
-                .and_then(|d| d.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-        })
+        let parent = self
+            .buffer
+            .file_path()
+            .and_then(|p| crate::fs::resolve_document_parent_dir(p, self.collocated_mode, None))?;
+        parent
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
     }
 
     pub fn update_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -509,11 +513,20 @@ impl Editor {
             }
         });
 
-        let (default_mode, font_size, line_height, soft_wrap, cursor_blink, cursor_breathing) = cx
+        let (
+            default_mode,
+            collocated_mode,
+            font_size,
+            line_height,
+            soft_wrap,
+            cursor_blink,
+            cursor_breathing,
+        ) = cx
             .try_global::<crate::config::AppConfig>()
             .map(|c| {
                 (
                     c.default_render_mode,
+                    c.collocated_mode,
                     c.editor_font_size,
                     c.line_height,
                     c.soft_wrap,
@@ -521,7 +534,7 @@ impl Editor {
                     c.cursor_breathing,
                 )
             })
-            .unwrap_or((RenderMode::LivePreview, 15.0, 1.6, true, true, true));
+            .unwrap_or((RenderMode::LivePreview, false, 15.0, 1.6, true, true, true));
 
         let doc_path = buffer.file_path_buf();
         let mut editor = Self {
@@ -534,6 +547,7 @@ impl Editor {
             focus_handle,
             render_mode: default_mode,
             has_explicit_render_mode: false,
+            collocated_mode,
             font_size,
             line_height,
             soft_wrap,

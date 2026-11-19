@@ -228,11 +228,33 @@ pub fn save_file_as_prompt(app: &mut InviscidWindow, cx: &mut Context<InviscidWi
                 .await;
 
             if let Some(file) = file {
-                let path = file.path().to_path_buf();
-                let active_editor = this.read_with(cx, |app, cx| {
-                    app.workspace().read(cx).active_editor().cloned()
+                let raw_path = file.path().to_path_buf();
+                let state = this.read_with(cx, |app, cx| {
+                    let editor = app.workspace().read(cx).active_editor().cloned();
+                    let collocated_mode = cx
+                        .try_global::<AppConfig>()
+                        .is_some_and(|cfg| cfg.collocated_mode);
+                    (editor, collocated_mode)
                 });
-                if let Ok(Some(editor)) = active_editor {
+                if let Ok((Some(editor), collocated_mode)) = state {
+                    let path = if collocated_mode && !crate::fs::is_collocated_index_path(&raw_path)
+                    {
+                        let bundle_dir = match (raw_path.parent(), raw_path.file_stem()) {
+                            (Some(parent), Some(stem)) if !stem.is_empty() => parent.join(stem),
+                            _ => raw_path.with_extension(""),
+                        };
+                        if let Err(e) = std::fs::create_dir_all(&bundle_dir) {
+                            eprintln!(
+                                "Failed to create bundle directory {}: {}",
+                                bundle_dir.display(),
+                                e
+                            );
+                            return;
+                        }
+                        bundle_dir.join(crate::fs::COLLOCATED_INDEX_FILE)
+                    } else {
+                        raw_path
+                    };
                     let task =
                         editor.update(cx, |editor, cx| editor.save_file_as_async(path.clone(), cx));
                     if let Ok(task) = task {
@@ -240,6 +262,7 @@ pub fn save_file_as_prompt(app: &mut InviscidWindow, cx: &mut Context<InviscidWi
                             eprintln!("Failed to save file as {:?}: {}", path, e);
                         } else {
                             let _ = this.update(cx, |app, cx| {
+                                app.workspace().update(cx, |ws, cx| ws.refresh_panels(cx));
                                 sync_workspace_to_global(app, cx);
                                 cx.notify();
                             });
@@ -313,18 +336,29 @@ pub fn prepare_active_export(
     }
 
     let doc_path = ed.file_path_buf();
+    let collocated_mode = cx
+        .try_global::<AppConfig>()
+        .is_some_and(|cfg| cfg.collocated_mode);
     let stem = doc_path
         .as_deref()
-        .and_then(|p| p.file_stem())
+        .and_then(|p| {
+            if collocated_mode
+                && let Some(bundle_dir) = crate::fs::collocated_bundle_dir_within(p, ws.root_dir())
+            {
+                bundle_dir.file_name()
+            } else {
+                p.file_stem()
+            }
+        })
         .and_then(|s| s.to_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or("Untitled");
-    let title = stem.to_string();
+        .map(str::to_string)
+        .unwrap_or_else(|| "Untitled".to_string());
+    let title = stem.clone();
     let default_file_name = format!("{stem}.{}", kind.extension());
     let initial_dir = doc_path
         .as_deref()
-        .and_then(Path::parent)
-        .filter(|p| !p.as_os_str().is_empty())
+        .and_then(|p| crate::fs::resolve_document_parent_dir(p, collocated_mode, ws.root_dir()))
         .map(Path::to_path_buf)
         .or_else(|| ws.root_dir().map(Path::to_path_buf));
 
@@ -455,11 +489,7 @@ pub fn new_window(cx: &mut App) {
     .ok();
 }
 
-fn centered_child_window_bounds(
-    width: Pixels,
-    height: Pixels,
-    cx: &mut App,
-) -> Bounds<Pixels> {
+fn centered_child_window_bounds(width: Pixels, height: Pixels, cx: &mut App) -> Bounds<Pixels> {
     if let Some(active_window) = cx.active_window()
         && let Ok(active_bounds) = active_window.update(cx, |_, window, _| window.bounds())
     {

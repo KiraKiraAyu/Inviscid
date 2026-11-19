@@ -41,6 +41,7 @@ impl SettingsWindow {
                     .gap(Spacing::MDS)
                     .child(self.render_mode_row(cx))
                     .child(self.restore_workspace_row(cx))
+                    .child(self.collocated_mode_row(cx))
                     .child(self.grammar_base_url_row(cx)),
             )
     }
@@ -93,6 +94,26 @@ impl SettingsWindow {
             })),
         )
         .description("Automatically restore previous open folder and documents on launch.")
+    }
+
+    fn collocated_mode_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let collocated = cx.global::<AppConfig>().collocated_mode;
+
+        SettingRow::new(
+            "Collocated Mode",
+            Switch::new("toggle_collocated_mode", collocated).on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.toggle_collocated_mode(cx);
+                },
+            )),
+        )
+        .description(
+            "Treat folders containing index.md as self-contained documents with co-located assets.",
+        )
+    }
+
+    pub(crate) fn toggle_collocated_mode(&mut self, cx: &mut Context<Self>) {
+        update_config_all_windows(cx, |cfg| cfg.collocated_mode = !cfg.collocated_mode);
     }
 
     fn grammar_base_url_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -468,5 +489,50 @@ mod tests {
                 assert_eq!(cx.global::<AppConfig>().grammar_base_url, "");
             });
         });
+    }
+
+    #[gpui::test]
+    fn test_settings_collocated_mode_toggle_and_toml_roundtrip(cx: &mut gpui::TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cfg_path = temp_dir.path().join("config.toml");
+        let state_path = temp_dir.path().join("state.toml");
+        cx.update(|cx| {
+            let cfg = AppConfig {
+                config_file_path: Some(cfg_path.clone()),
+                state_file_path: Some(state_path.clone()),
+                ..AppConfig::default()
+            };
+            cx.set_global(ThemeManager::from_config(&cfg));
+            cx.set_global(cfg);
+        });
+
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            SettingsWindow::new(cx)
+        });
+        cx.run_until_parked();
+
+        cx.update(|_window, cx| {
+            assert!(!cx.global::<AppConfig>().collocated_mode);
+            settings.update(cx, |s, cx| {
+                s.toggle_collocated_mode(cx);
+            });
+            assert!(cx.global::<AppConfig>().collocated_mode);
+        });
+        cx.run_until_parked();
+
+        let reloaded = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
+        assert!(reloaded.collocated_mode);
+
+        cx.update(|_window, cx| {
+            settings.update(cx, |s, cx| {
+                s.toggle_collocated_mode(cx);
+            });
+            assert!(!cx.global::<AppConfig>().collocated_mode);
+        });
+        cx.run_until_parked();
+
+        let reloaded_off = AppConfig::load_from_paths(cfg_path, state_path);
+        assert!(!reloaded_off.collocated_mode);
     }
 }

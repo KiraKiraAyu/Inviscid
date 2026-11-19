@@ -77,15 +77,65 @@ fn calculate_new_entry_insert_index_for_list(
     }
 }
 
+/// Renders the leading folder/document icon in standard mode (hidden in collocated mode).
+pub(super) fn render_entry_leading_icon(
+    is_dir: bool,
+    is_expanded: bool,
+    collocated_mode: bool,
+    color: Hsla,
+) -> Option<Icon> {
+    if collocated_mode {
+        return None;
+    }
+    let icon = if is_dir {
+        if is_expanded {
+            IconName::FolderOpen
+        } else {
+            IconName::Folder
+        }
+    } else {
+        IconName::FileText
+    };
+    Some(Icon::new(icon).size(IconSize::XSmall).color(color))
+}
+
+/// Renders the trailing collapse/expand chevron for directories in collocated mode.
+pub(super) fn render_entry_trailing_chevron(
+    is_dir: bool,
+    is_expanded: bool,
+    collocated_mode: bool,
+    color: Hsla,
+) -> Option<Icon> {
+    if !collocated_mode || !is_dir {
+        return None;
+    }
+    let chevron = if is_expanded {
+        IconName::ChevronDown
+    } else {
+        IconName::ChevronLeft
+    };
+    Some(Icon::new(chevron).size(IconSize::XSmall).color(color))
+}
+
 /// Renders an inline text input row for file/folder creation or renaming.
 pub fn render_inline_row(
     input_entity: &Entity<InlineInput>,
-    is_dir: bool,
     is_expanded: bool,
-    depth: usize,
+    collocated_mode: bool,
     theme: &Theme,
+    cx: &App,
 ) -> AnyElement {
-    let indent = px((depth * 14 + 10) as f32);
+    let input_ref = input_entity.read(cx);
+    let is_dir = matches!(
+        input_ref.kind(),
+        InlineInputKind::NewFolder { .. } | InlineInputKind::Rename { is_dir: true, .. }
+    );
+    let indent = px((input_ref.depth() * 14 + 10) as f32);
+    let icon_color = if is_dir {
+        theme.text_accent
+    } else {
+        theme.text_muted
+    };
     div()
         .id("inline_tree_input_row")
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -101,21 +151,26 @@ pub fn render_inline_row(
         .gap(px(5.0))
         .rounded(Radius::LG)
         .bg(theme.btn_active)
-        .child(if is_dir {
-            let folder_icon = if is_expanded {
-                IconName::FolderOpen
-            } else {
-                IconName::Folder
-            };
-            Icon::new(folder_icon)
-                .size(IconSize::XSmall)
-                .color(theme.text_accent)
-        } else {
-            Icon::new(IconName::FileText)
-                .size(IconSize::XSmall)
-                .color(theme.text_muted)
-        })
-        .child(input_entity.clone())
+        .children(render_entry_leading_icon(
+            is_dir,
+            is_expanded,
+            collocated_mode,
+            icon_color,
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .child(input_entity.clone()),
+        )
+        .children(render_entry_trailing_chevron(
+            is_dir,
+            is_expanded,
+            collocated_mode,
+            theme.text_muted,
+        ))
         .into_any_element()
 }
 
@@ -131,6 +186,7 @@ pub struct TreeItemList<'a> {
     pub selected_path: Option<&'a Path>,
     pub active_file: Option<&'a Path>,
     pub root_dir: Option<&'a Path>,
+    pub collocated_mode: bool,
     pub panel: &'a WeakEntity<ProjectPanel>,
 }
 
@@ -148,6 +204,7 @@ pub fn build_tree_items(
         selected_path,
         active_file,
         root_dir,
+        collocated_mode,
         panel: panel_weak,
     } = list;
 
@@ -172,15 +229,7 @@ pub fn build_tree_items(
         if new_entry_insert_index == Some(row_idx)
             && let Some(input) = inline_input
         {
-            let input_ref = input.read(cx);
-            let is_dir = matches!(input_ref.kind(), InlineInputKind::NewFolder { .. });
-            item_elements.push(render_inline_row(
-                input,
-                is_dir,
-                false,
-                input_ref.depth(),
-                theme,
-            ));
+            item_elements.push(render_inline_row(input, false, collocated_mode, theme, cx));
             continue;
         }
 
@@ -194,21 +243,21 @@ pub fn build_tree_items(
 
         if let Some(input) = inline_input {
             let input_ref = input.read(cx);
-            if let InlineInputKind::Rename { target, is_dir } = input_ref.kind()
+            if let InlineInputKind::Rename { target, .. } = input_ref.kind()
                 && target == &entry.path
             {
                 item_elements.push(render_inline_row(
                     input,
-                    *is_dir,
                     entry.is_expanded(),
-                    input_ref.depth(),
+                    collocated_mode,
                     theme,
+                    cx,
                 ));
                 continue;
             }
         }
 
-        let is_active = !entry.is_dir() && active_file == Some(&entry.path);
+        let is_active = entry.matches_active_file(active_file);
         let is_selected = selected_path == Some(&entry.path);
         let panel_click = panel_weak.clone();
         let panel_right_click = panel_weak.clone();
@@ -238,6 +287,7 @@ pub fn build_tree_items(
             path: row_path.clone(),
             name: entry.name.clone(),
             is_dir,
+            collocated_mode,
         };
         let row = dock_panel::row(indent, theme)
             .id(ElementId::NamedInteger(
@@ -317,42 +367,38 @@ pub fn build_tree_items(
                     }
                 }
             })
-            .when(is_dir, |this| {
-                let folder_icon = if entry.is_expanded() {
-                    IconName::FolderOpen
+            .children(render_entry_leading_icon(
+                is_dir,
+                entry.is_expanded(),
+                collocated_mode,
+                if is_selected {
+                    theme.text_primary
+                } else if is_dir || is_active {
+                    theme.text_accent
                 } else {
-                    IconName::Folder
-                };
-                this.child(
-                    Icon::new(folder_icon)
-                        .size(IconSize::XSmall)
-                        .color(if is_selected {
-                            theme.text_primary
-                        } else {
-                            theme.text_accent
-                        }),
-                )
-            })
-            .when(!is_dir, |this| {
-                this.child(Icon::new(IconName::FileText).size(IconSize::XSmall).color(
-                    if is_selected {
-                        theme.text_primary
-                    } else if is_active {
-                        theme.text_accent
-                    } else {
-                        theme.text_muted
-                    },
-                ))
-            })
+                    theme.text_muted
+                },
+            ))
             .child(
                 div()
                     .text_size(FontSize::SM)
                     .text_color(text_color)
                     .whitespace_nowrap()
                     .flex_1()
+                    .min_w_0()
                     .overflow_hidden()
                     .child(entry.name.clone()),
-            );
+            )
+            .children(render_entry_trailing_chevron(
+                is_dir,
+                entry.is_expanded(),
+                collocated_mode,
+                if is_selected {
+                    theme.text_primary
+                } else {
+                    theme.text_muted
+                },
+            ));
 
         item_elements.push(row.into_any_element());
     }
@@ -360,27 +406,30 @@ pub fn build_tree_items(
     item_elements
 }
 
-/// Renders empty state placeholders ("No folder opened", "Empty folder", or initial creation row).
+/// Renders empty state placeholders ("No folder opened", "Empty folder"/"No documents", or initial creation row).
 pub fn render_empty_state(
     has_root: bool,
     inline_input: Option<&Entity<InlineInput>>,
+    collocated_mode: bool,
     theme: &Theme,
     cx: &App,
 ) -> AnyElement {
     if !has_root {
         dock_panel::empty_state("No folder opened", theme).into_any_element()
     } else if let Some(input) = inline_input {
-        let input_ref = input.read(cx);
-        let is_dir = matches!(input_ref.kind(), InlineInputKind::NewFolder { .. });
-        let depth = input_ref.depth();
         div()
             .flex_1()
             .w_full()
             .py(Spacing::XS)
-            .child(render_inline_row(input, is_dir, false, depth, theme))
+            .child(render_inline_row(input, false, collocated_mode, theme, cx))
             .into_any_element()
     } else {
-        dock_panel::empty_state("Empty folder", theme).into_any_element()
+        let message = if collocated_mode {
+            "No documents"
+        } else {
+            "Empty folder"
+        };
+        dock_panel::empty_state(message, theme).into_any_element()
     }
 }
 

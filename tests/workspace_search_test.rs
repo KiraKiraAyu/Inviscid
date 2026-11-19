@@ -294,3 +294,107 @@ fn test_workspace_toggle_sidebar_actions() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn test_collocated_mode_workspace_search_and_live_mode_switch() {
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        let mut config = AppConfig::default().with_theme("Dracula");
+        config.collocated_mode = true;
+        cx.set_global(ThemeManager::from_config(&config));
+        inviscid::app::actions::bind_default_bindings(cx);
+        cx.set_global(config);
+    });
+
+    let dir = std::env::temp_dir().join(format!(
+        "inviscid_collocated_search_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    let doc_dir = dir.join("cat").join("doc");
+    fs::create_dir_all(doc_dir.join("assets")).unwrap();
+    let doc_index = doc_dir.join("index.md");
+    fs::write(&doc_index, "header\ncollocated needle here\n").unwrap();
+    fs::write(doc_dir.join("extra.md"), "needle in stray bundle file\n").unwrap();
+    fs::write(dir.join("index.md"), "needle in root index\n").unwrap();
+    let loose = dir.join("loose.md");
+    fs::write(&loose, "needle in loose file\n").unwrap();
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let ws = cx.update(|_window, cx| app.read(cx).workspace().clone());
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_folder(dir.clone(), cx);
+            ws.open_workspace_search(window, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    let search_panel = ws.read_with(cx, |ws, _| ws.search_panel().clone());
+    cx.update(|_window, cx| {
+        search_panel.update(cx, |sp, cx| {
+            sp.set_query_text("needle", cx);
+        });
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(200));
+    cx.background_executor.run_until_parked();
+    cx.run_until_parked();
+
+    // Only cat/doc/index.md is returned in collocated mode
+    let hit = search_panel.read_with(cx, |sp, _| {
+        let results = sp.results();
+        assert_eq!(results.total_matches(), 1);
+        assert_eq!(results.files().len(), 1);
+        assert_eq!(results.files()[0].path, doc_index);
+        results.files()[0].matches[0].clone()
+    });
+
+    cx.update(|window, cx| {
+        window.dispatch_action(
+            Box::new(OpenWorkspaceMatch {
+                path: doc_index.clone(),
+                position: Position::new(
+                    inviscid::buffer::SourceLine::new(hit.line_number - 1),
+                    hit.char_range.1,
+                ),
+            }),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    ws.read_with(cx, |ws, cx| {
+        assert_eq!(ws.active_file_path(cx), Some(doc_index.as_path()));
+        let tb = ws.tab_bar().read(cx);
+        assert_eq!(tb.tabs_meta().last().unwrap().title, "doc");
+    });
+
+    // Live-switching collocated_mode off triggers SearchPanel rescan including loose/stray files
+    cx.update(|_window, cx| {
+        let mut cfg = cx.global::<AppConfig>().clone();
+        cfg.collocated_mode = false;
+        cx.set_global(cfg);
+    });
+    cx.background_executor.run_until_parked();
+    cx.run_until_parked();
+
+    search_panel.read_with(cx, |sp, _| {
+        let paths: Vec<_> = sp
+            .results()
+            .files()
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        assert!(paths.contains(&doc_index));
+        assert!(paths.contains(&loose));
+        assert_eq!(paths.len(), 4);
+    });
+
+    let _ = fs::remove_dir_all(&dir);
+}

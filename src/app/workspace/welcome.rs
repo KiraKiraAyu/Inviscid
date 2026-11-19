@@ -62,6 +62,10 @@ pub fn render_welcome_view(
     let fh_new = focus_handle.clone();
     let fh_open_file = focus_handle.clone();
     let fh_open_folder = focus_handle.clone();
+    let collocated_mode = cx
+        .try_global::<crate::config::AppConfig>()
+        .is_some_and(|cfg| cfg.collocated_mode);
+
     div()
         .flex_1()
         .w_full()
@@ -79,7 +83,11 @@ pub fn render_welcome_view(
                 .child(render_welcome_button(
                     "welcome_new_file_btn",
                     IconName::FileText,
-                    "New File",
+                    if collocated_mode {
+                        "New Document"
+                    } else {
+                        "New File"
+                    },
                     display_keystroke_for("NewTab", cx),
                     theme,
                     move |_, window, cx| {
@@ -90,7 +98,11 @@ pub fn render_welcome_view(
                 .child(render_welcome_button(
                     "welcome_open_file_btn",
                     IconName::FileText,
-                    "Open File",
+                    if collocated_mode {
+                        "Open Document"
+                    } else {
+                        "Open File"
+                    },
                     display_keystroke_for("OpenFile", cx),
                     theme,
                     move |_, window, cx| {

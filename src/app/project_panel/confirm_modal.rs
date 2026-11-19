@@ -17,6 +17,7 @@ pub struct ConfirmModalState {
     pub kind: ConfirmModalKind,
     pub target_path: PathBuf,
     pub is_dir: bool,
+    pub is_collocated_doc: bool,
 }
 
 impl ConfirmModalState {
@@ -25,7 +26,13 @@ impl ConfirmModalState {
             kind,
             target_path,
             is_dir,
+            is_collocated_doc: false,
         }
+    }
+
+    pub fn with_collocated_doc(mut self, is_collocated_doc: bool) -> Self {
+        self.is_collocated_doc = is_collocated_doc;
+        self
     }
 
     pub fn item_name(&self) -> Option<String> {
@@ -36,29 +43,46 @@ impl ConfirmModalState {
     }
 
     pub fn message(&self) -> String {
-        match (self.kind, self.is_dir, self.item_name()) {
-            (ConfirmModalKind::Trash, false, Some(name)) => {
+        match (self.kind, self.is_collocated_doc, self.is_dir, self.item_name()) {
+            (ConfirmModalKind::Trash, true, _, Some(name)) => {
+                format!("Do you want to trash the document \"{name}\" and its co-located assets?")
+            }
+            (ConfirmModalKind::Trash, true, _, None) => {
+                "Do you want to trash this document and its co-located assets?".to_string()
+            }
+            (ConfirmModalKind::Delete, true, _, Some(name)) => {
+                format!(
+                    "Are you sure you want to permanently delete the document \"{name}\" and its co-located assets?"
+                )
+            }
+            (ConfirmModalKind::Delete, true, _, None) => {
+                "Are you sure you want to permanently delete this document and its co-located assets?"
+                    .to_string()
+            }
+            (ConfirmModalKind::Trash, false, false, Some(name)) => {
                 format!("Do you want to trash \"{name}\"?")
             }
-            (ConfirmModalKind::Trash, false, None) => "Do you want to trash this file?".to_string(),
-            (ConfirmModalKind::Trash, true, Some(name)) => {
+            (ConfirmModalKind::Trash, false, false, None) => {
+                "Do you want to trash this file?".to_string()
+            }
+            (ConfirmModalKind::Trash, false, true, Some(name)) => {
                 format!("Do you want to trash the folder \"{name}\" and its contents?")
             }
-            (ConfirmModalKind::Trash, true, None) => {
+            (ConfirmModalKind::Trash, false, true, None) => {
                 "Do you want to trash this folder and its contents?".to_string()
             }
-            (ConfirmModalKind::Delete, false, Some(name)) => {
+            (ConfirmModalKind::Delete, false, false, Some(name)) => {
                 format!("Are you sure you want to permanently delete \"{name}\"?")
             }
-            (ConfirmModalKind::Delete, false, None) => {
+            (ConfirmModalKind::Delete, false, false, None) => {
                 "Are you sure you want to permanently delete this file?".to_string()
             }
-            (ConfirmModalKind::Delete, true, Some(name)) => {
+            (ConfirmModalKind::Delete, false, true, Some(name)) => {
                 format!(
                     "Are you sure you want to permanently delete the folder \"{name}\" and its contents?"
                 )
             }
-            (ConfirmModalKind::Delete, true, None) => {
+            (ConfirmModalKind::Delete, false, true, None) => {
                 "Are you sure you want to permanently delete this folder and its contents?"
                     .to_string()
             }
@@ -301,6 +325,41 @@ mod tests {
         assert_eq!(
             delete_dir.message(),
             "Are you sure you want to permanently delete this folder and its contents?"
+        );
+    }
+
+    #[test]
+    fn test_confirm_modal_collocated_doc_messages() {
+        let trash_doc =
+            ConfirmModalState::new(ConfirmModalKind::Trash, PathBuf::from("my-article"), false)
+                .with_collocated_doc(true);
+        assert_eq!(
+            trash_doc.message(),
+            "Do you want to trash the document \"my-article\" and its co-located assets?"
+        );
+
+        let delete_doc =
+            ConfirmModalState::new(ConfirmModalKind::Delete, PathBuf::from("my-article"), false)
+                .with_collocated_doc(true);
+        assert_eq!(
+            delete_doc.message(),
+            "Are you sure you want to permanently delete the document \"my-article\" and its co-located assets?"
+        );
+
+        let fallback_trash =
+            ConfirmModalState::new(ConfirmModalKind::Trash, PathBuf::from(""), false)
+                .with_collocated_doc(true);
+        assert_eq!(
+            fallback_trash.message(),
+            "Do you want to trash this document and its co-located assets?"
+        );
+
+        let fallback_delete =
+            ConfirmModalState::new(ConfirmModalKind::Delete, PathBuf::from(""), false)
+                .with_collocated_doc(true);
+        assert_eq!(
+            fallback_delete.message(),
+            "Are you sure you want to permanently delete this document and its co-located assets?"
         );
     }
 }

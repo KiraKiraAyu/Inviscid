@@ -357,7 +357,12 @@ fn find_in_path(names: &[&str]) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    fn write_mock_browser_script(dir: &Path, name: &str, windows_body: &str, unix_body: &str) -> PathBuf {
+    fn write_mock_browser_script(
+        dir: &Path,
+        name: &str,
+        windows_body: &str,
+        unix_body: &str,
+    ) -> PathBuf {
         #[cfg(windows)]
         {
             let _ = unix_body;

@@ -4427,3 +4427,669 @@ fn test_workspace_drop_project_file_on_tab_bar_and_editor() {
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_collocated_mode_scanning_and_row_activation() {
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        let mut config = AppConfig::default().with_theme("Dracula");
+        config.collocated_mode = true;
+        cx.set_global(ThemeManager::from_config(&config));
+        inviscid::app::actions::bind_default_bindings(cx);
+        cx.set_global(config);
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path().to_path_buf();
+
+    // Loose files should be hidden in collocated mode
+    fs::write(root.join("loose_readme.md"), "# Loose").unwrap();
+    fs::create_dir_all(root.join("category/article-a")).unwrap();
+    fs::write(root.join("category/loose.txt"), "loose").unwrap();
+    fs::write(root.join("category/article-a/index.md"), "# Article A").unwrap();
+    fs::write(root.join("category/article-a/cover.png"), "png").unwrap();
+    fs::create_dir_all(root.join("category/sub-folder/deep-doc")).unwrap();
+    fs::write(root.join("category/sub-folder/deep-doc/index.md"), "# Deep").unwrap();
+    fs::create_dir_all(root.join("top-doc")).unwrap();
+    fs::write(root.join("top-doc/index.md"), "# Top Doc").unwrap();
+    fs::write(root.join("top-doc/diagram.svg"), "<svg/>").unwrap();
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let ws_entity = cx.update(|_window, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| {
+            ws.open_folder(root.clone(), cx);
+        });
+        ws
+    });
+    cx.run_until_parked();
+
+    let panel_entity = cx.update(|_window, cx| ws_entity.read(cx).project_panel().clone());
+
+    // open_folder in collocated mode must ignore loose_readme.md and open top-doc/index.md instead
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        assert_eq!(
+            ws.active_file_path(cx),
+            Some(root.join("top-doc/index.md").as_path())
+        );
+    });
+
+    cx.update(|_window, cx| {
+        ws_entity.update(cx, |ws, cx| {
+            ws.close_all_tabs(cx);
+        });
+    });
+    cx.run_until_parked();
+
+    // Initial root entries: expandable folder "category" first, then collocated doc "top-doc"
+    cx.update(|_window, cx| {
+        let panel = panel_entity.read(cx);
+        assert!(panel.collocated_mode());
+        let summary: Vec<(&str, bool, bool)> = panel
+            .entries()
+            .iter()
+            .map(|e| (e.name.as_str(), e.is_dir(), e.is_collocated_doc()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![("category", true, false), ("top-doc", false, true),]
+        );
+    });
+
+    // Click row 0 ("category") to expand it
+    let cat_pos = cx.update(|_window, cx| {
+        let bounds = panel_entity.read(cx).scroll_handle().bounds();
+        gpui::point(bounds.origin.x + px(40.0), bounds.origin.y + px(4.0 + 13.0))
+    });
+    cx.simulate_click(cat_pos, gpui::Modifiers::default());
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let panel = panel_entity.read(cx);
+        let summary: Vec<(&str, usize, bool, bool)> = panel
+            .entries()
+            .iter()
+            .map(|e| (e.name.as_str(), e.depth, e.is_dir(), e.is_collocated_doc()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("category", 0, true, false),
+                ("sub-folder", 1, true, false),
+                ("article-a", 1, false, true),
+                ("top-doc", 0, false, true),
+            ]
+        );
+    });
+
+    // Click row 3 ("top-doc") to open top-doc/index.md
+    let top_doc_pos = cx.update(|_window, cx| {
+        let bounds = panel_entity.read(cx).scroll_handle().bounds();
+        gpui::point(
+            bounds.origin.x + px(40.0),
+            bounds.origin.y + px(4.0 + 3.0 * 26.0 + 13.0),
+        )
+    });
+    cx.simulate_click(top_doc_pos, gpui::Modifiers::default());
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        assert_eq!(
+            ws.active_file_path(cx),
+            Some(root.join("top-doc/index.md").as_path())
+        );
+        let tabs = ws.tab_bar().read(cx).tabs_meta();
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].title, "top-doc");
+        // Collocated document must not be expanded into the tree
+        assert!(!panel_entity.read(cx).is_expanded(&root.join("top-doc")));
+    });
+}
+
+#[test]
+fn test_collocated_mode_tab_titles_duplicate_hints_and_live_mode_switch() {
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        let mut config = AppConfig::default().with_theme("Dracula");
+        config.collocated_mode = true;
+        cx.set_global(ThemeManager::from_config(&config));
+        inviscid::app::actions::bind_default_bindings(cx);
+        cx.set_global(config);
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path().to_path_buf();
+    fs::create_dir_all(root.join("cat_a/guide")).unwrap();
+    fs::create_dir_all(root.join("cat_b/guide")).unwrap();
+    fs::write(root.join("cat_a/guide/index.md"), "# Guide A").unwrap();
+    fs::write(root.join("cat_b/guide/index.md"), "# Guide B").unwrap();
+    fs::write(root.join("loose.md"), "# Loose").unwrap();
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let ws_entity = cx.update(|_window, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| {
+            ws.open_folder(root.clone(), cx);
+            assert_eq!(ws.active_file_path(cx), None);
+            assert_eq!(ws.tab_count(), 0);
+            ws.open_file(root.join("cat_a/guide/index.md"), cx);
+            ws.open_file(root.join("cat_b/guide/index.md"), cx);
+        });
+        ws
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        let tb = ws.tab_bar().read(cx);
+        assert_eq!(tb.tabs_meta().len(), 2);
+        assert_eq!(tb.tabs_meta()[0].title, "guide");
+        assert_eq!(tb.tabs_meta()[1].title, "guide");
+        assert_eq!(tb.effective_dir_hint(0), Some("cat_a"));
+        assert_eq!(tb.effective_dir_hint(1), Some("cat_b"));
+    });
+
+    // Live-switch collocated_mode off -> tab titles & project panel sync automatically
+    cx.update(|_window, cx| {
+        let mut cfg = cx.global::<AppConfig>().clone();
+        cfg.collocated_mode = false;
+        cx.set_global(cfg);
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        let tb = ws.tab_bar().read(cx);
+        assert_eq!(tb.tabs_meta()[0].title, "index.md");
+        assert_eq!(tb.tabs_meta()[1].title, "index.md");
+        assert_eq!(tb.effective_dir_hint(0), Some("guide"));
+        assert_eq!(tb.effective_dir_hint(1), Some("guide"));
+
+        let panel = ws.project_panel().read(cx);
+        assert!(!panel.collocated_mode());
+        let names: Vec<&str> = panel.entries().iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"loose.md"));
+    });
+}
+
+#[test]
+fn test_collocated_mode_create_rename_and_delete_document() {
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        let mut config = AppConfig::default().with_theme("Dracula");
+        config.collocated_mode = true;
+        cx.set_global(ThemeManager::from_config(&config));
+        inviscid::app::actions::bind_default_bindings(cx);
+        cx.set_global(config);
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path().to_path_buf();
+    let cat_dir = root.join("cat");
+    fs::create_dir_all(&cat_dir).unwrap();
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let (ws_entity, panel_entity) = cx.update(|_window, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| {
+            ws.open_folder(root.clone(), cx);
+        });
+        let panel = ws.read(cx).project_panel().clone();
+        (ws, panel)
+    });
+    cx.run_until_parked();
+
+    // 1. Create a new document inside cat/ -> creates cat/new-post.v1/index.md and opens it
+    cx.update(|window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            panel.open_context_menu(
+                gpui::point(gpui::px(0.0), gpui::px(0.0)),
+                cat_dir.clone(),
+                true,
+                false,
+                cx,
+            );
+            panel.execute_context_menu_action(
+                inviscid::app::project_panel::context_menu::ContextMenuAction::NewFile,
+                window,
+                cx,
+            );
+        });
+    });
+    cx.update(|_window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            let input = panel.inline_input().cloned().expect("inline input open");
+            input.update(cx, |inp, cx| {
+                inp.buffer_mut().insert_text("new-post.v1");
+                inp.commit(cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+
+    let created_bundle = cat_dir.join("new-post.v1");
+    let created_index = created_bundle.join("index.md");
+    assert!(created_bundle.is_dir());
+    assert!(created_index.is_file());
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        assert_eq!(ws.active_file_path(cx), Some(created_index.as_path()));
+        assert_eq!(ws.tab_bar().read(cx).tabs_meta()[0].title, "new-post.v1");
+        assert_eq!(
+            panel_entity.read(cx).selected_path(),
+            Some(created_bundle.as_path())
+        );
+    });
+
+    // 2. Rename cat/new-post.v1 -> renamed-post (full directory name including dot is selected)
+    cx.update(|window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            panel.open_context_menu(
+                gpui::point(gpui::px(0.0), gpui::px(0.0)),
+                created_bundle.clone(),
+                false,
+                false,
+                cx,
+            );
+            panel.execute_context_menu_action(
+                inviscid::app::project_panel::context_menu::ContextMenuAction::Rename,
+                window,
+                cx,
+            );
+        });
+    });
+    cx.update(|_window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            let input = panel.inline_input().cloned().expect("rename input open");
+            input.update(cx, |inp, cx| {
+                let sel = inp.buffer().selection();
+                assert_eq!(sel.start().col, 0);
+                assert_eq!(sel.end().col, "new-post.v1".len());
+                inp.buffer_mut().insert_text("renamed-post");
+                inp.commit(cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+
+    let renamed_bundle = cat_dir.join("renamed-post");
+    let renamed_index = renamed_bundle.join("index.md");
+    assert!(!created_bundle.exists());
+    assert!(renamed_index.is_file());
+    cx.update(|_window, cx| {
+        let ws = ws_entity.read(cx);
+        assert_eq!(ws.active_file_path(cx), Some(renamed_index.as_path()));
+        assert_eq!(ws.tab_bar().read(cx).tabs_meta()[0].title, "renamed-post");
+    });
+
+    // 3. Delete cat/renamed-post -> deletes bundle directory and closes the open tab
+    cx.update(|window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            panel.open_context_menu(
+                gpui::point(gpui::px(0.0), gpui::px(0.0)),
+                renamed_bundle.clone(),
+                false,
+                false,
+                cx,
+            );
+            panel.execute_context_menu_action(
+                inviscid::app::project_panel::context_menu::ContextMenuAction::Delete,
+                window,
+                cx,
+            );
+            let modal = panel
+                .active_confirm_modal()
+                .expect("confirm modal must open for collocated doc delete");
+            assert!(modal.is_collocated_doc);
+            assert_eq!(
+                modal.message(),
+                "Are you sure you want to permanently delete the document \"renamed-post\" and its co-located assets?"
+            );
+            panel.confirm_delete_modal(cx);
+        });
+    });
+    cx.run_until_parked();
+
+    assert!(!renamed_bundle.exists());
+    cx.update(|_window, cx| {
+        assert_eq!(ws_entity.read(cx).tab_count(), 0);
+    });
+}
+
+#[test]
+fn test_collocated_mode_move_cut_paste_reveal_and_external_paths() {
+    use inviscid::app::project_panel::context_menu::{
+        ContextMenuAction, FileClipboard, contextual_action_labels,
+    };
+
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        let mut config = AppConfig::default().with_theme("Dracula");
+        config.collocated_mode = true;
+        cx.set_global(ThemeManager::from_config(&config));
+        inviscid::app::actions::bind_default_bindings(cx);
+        cx.set_global(config);
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path().to_path_buf();
+    let cat_a = root.join("cat_a");
+    let sub_dir = cat_a.join("sub");
+    let alpha_bundle = sub_dir.join("alpha");
+    let alpha_index = alpha_bundle.join("index.md");
+    let alpha_asset = alpha_bundle.join("diagram.png");
+    let cat_b = root.join("cat_b");
+    fs::create_dir_all(&alpha_bundle).unwrap();
+    fs::create_dir_all(&cat_b).unwrap();
+    fs::write(&alpha_index, "# Alpha Doc").unwrap();
+    fs::write(&alpha_asset, "png").unwrap();
+    fs::write(root.join("loose.md"), "# Loose").unwrap();
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let (ws_entity, panel_entity) = cx.update(|_window, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| {
+            ws.open_folder(root.clone(), cx);
+            // Opening a collocated bundle directory directly resolves to `<bundle>/index.md`
+            ws.open_file(alpha_bundle.clone(), cx);
+        });
+        let panel = ws.read(cx).project_panel().clone();
+        (ws, panel)
+    });
+    cx.run_until_parked();
+
+    // 1. reveal_path expands ancestor category folders while keeping the bundle itself collapsed
+    cx.update(|_window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            panel.reveal_path(&alpha_index, cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        let panel = panel_entity.read(cx);
+        assert!(panel.is_expanded(&cat_a));
+        assert!(panel.is_expanded(&sub_dir));
+        assert!(!panel.is_expanded(&alpha_bundle));
+        assert_eq!(
+            ws_entity.read(cx).active_file_path(cx),
+            Some(alpha_index.as_path())
+        );
+    });
+
+    // 2. Context menu state & rendered menu item labels reflect "New Document" / "New Document in Folder"
+    cx.update(|_window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            panel.open_context_menu(
+                gpui::point(gpui::px(24.0), gpui::px(40.0)),
+                cat_b.clone(),
+                true,
+                false,
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("menu_item_New Document").is_some(),
+        "rendered project panel context menu should display 'New Document' on folder"
+    );
+    assert!(
+        cx.debug_bounds("menu_item_New File").is_none(),
+        "rendered project panel context menu must not display 'New File' in collocated mode"
+    );
+    cx.update(|_window, cx| {
+        let panel = panel_entity.read(cx);
+        let state = panel.active_context_menu().expect("context menu open");
+        assert!(state.collocated_mode);
+        assert_eq!(
+            contextual_action_labels(state.is_dir, state.collocated_mode),
+            ("New Document", "New Folder", "Paste")
+        );
+    });
+    cx.update(|_window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            panel.open_context_menu(
+                gpui::point(gpui::px(24.0), gpui::px(40.0)),
+                alpha_bundle.clone(),
+                false,
+                false,
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("menu_item_New Document in Folder")
+            .is_some(),
+        "rendered project panel context menu should display 'New Document in Folder' on document"
+    );
+    assert!(
+        cx.debug_bounds("menu_item_New File in Folder").is_none(),
+        "rendered project panel context menu must not display 'New File in Folder' in collocated mode"
+    );
+    cx.update(|_window, cx| {
+        let panel = panel_entity.read(cx);
+        let state = panel.active_context_menu().expect("doc context menu open");
+        assert!(state.collocated_mode);
+        assert_eq!(
+            contextual_action_labels(state.is_dir, state.collocated_mode),
+            (
+                "New Document in Folder",
+                "New Folder in Folder",
+                "Paste into Folder"
+            )
+        );
+    });
+
+    // 3. Copy Path / Copy Relative Path parity between TabBar and ProjectPanel (both return bundle dir)
+    cx.update(|window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            panel.execute_context_menu_action(ContextMenuAction::CopyPath, window, cx);
+        });
+    });
+    let panel_copied_abs = cx
+        .update(|_window, cx| cx.read_from_clipboard().and_then(|item| item.text()))
+        .unwrap();
+    assert_eq!(PathBuf::from(&panel_copied_abs), alpha_bundle);
+
+    cx.update(|_window, cx| {
+        ws_entity.update(cx, |ws, cx| {
+            ws.copy_tab_path(0, cx);
+        });
+    });
+    let tab_copied_abs = cx
+        .update(|_window, cx| cx.read_from_clipboard().and_then(|item| item.text()))
+        .unwrap();
+    assert_eq!(PathBuf::from(&tab_copied_abs), alpha_bundle);
+
+    cx.update(|_window, cx| {
+        ws_entity.update(cx, |ws, cx| {
+            ws.copy_tab_relative_path(0, cx);
+        });
+    });
+    let tab_copied_rel = cx
+        .update(|_window, cx| cx.read_from_clipboard().and_then(|item| item.text()))
+        .unwrap();
+    assert_eq!(tab_copied_rel.replace('\\', "/"), "cat_a/sub/alpha");
+
+    // 4. Drag/drop move_entry_to moves bundle + asset and updates open tab path & selection
+    let moved_ok = cx.update(|_window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            panel.move_entry_to(&alpha_bundle, &cat_b, cx)
+        })
+    });
+    assert!(moved_ok);
+    cx.run_until_parked();
+
+    let moved_bundle = cat_b.join("alpha");
+    let moved_index = moved_bundle.join("index.md");
+    assert!(!alpha_bundle.exists());
+    assert!(moved_index.is_file());
+    assert!(moved_bundle.join("diagram.png").is_file());
+    cx.update(|_window, cx| {
+        assert_eq!(
+            ws_entity.read(cx).active_file_path(cx),
+            Some(moved_index.as_path())
+        );
+        assert_eq!(
+            panel_entity.read(cx).selected_path(),
+            Some(moved_bundle.as_path())
+        );
+    });
+
+    // 5. Cut + Paste moves bundle back to cat_a and remaps tab path, selection, and clears clipboard
+    cx.update(|window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            panel.open_context_menu(
+                gpui::point(gpui::px(0.0), gpui::px(0.0)),
+                moved_bundle.clone(),
+                false,
+                false,
+                cx,
+            );
+            panel.execute_context_menu_action(ContextMenuAction::Cut, window, cx);
+            assert_eq!(panel.clipboard(), &FileClipboard::Cut(moved_bundle.clone()));
+
+            panel.open_context_menu(
+                gpui::point(gpui::px(0.0), gpui::px(0.0)),
+                cat_a.clone(),
+                true,
+                false,
+                cx,
+            );
+            panel.execute_context_menu_action(ContextMenuAction::Paste, window, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    let pasted_bundle = cat_a.join("alpha");
+    let pasted_index = pasted_bundle.join("index.md");
+    assert!(!moved_bundle.exists());
+    assert!(pasted_index.is_file());
+    assert!(pasted_bundle.join("diagram.png").is_file());
+    cx.update(|_window, cx| {
+        assert_eq!(
+            ws_entity.read(cx).active_file_path(cx),
+            Some(pasted_index.as_path())
+        );
+        let panel = panel_entity.read(cx);
+        assert_eq!(panel.selected_path(), Some(pasted_bundle.as_path()));
+        assert_eq!(panel.clipboard(), &FileClipboard::None);
+    });
+}
+
+#[test]
+fn test_collocated_mode_keyboard_shortcuts_and_external_index_prunes_expansion() {
+    use inviscid::app::project_panel::ConfirmModalKind;
+    use inviscid::app::project_panel::context_menu::FileClipboard;
+
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        let mut config = AppConfig::default().with_theme("Dracula");
+        config.collocated_mode = true;
+        cx.set_global(ThemeManager::from_config(&config));
+        inviscid::app::actions::bind_default_bindings(cx);
+        cx.set_global(config);
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path().to_path_buf();
+    let folder = root.join("topics");
+    let sub = folder.join("nested");
+    let bundle = folder.join("note.v2");
+    fs::create_dir_all(&sub).unwrap();
+    fs::create_dir_all(&bundle).unwrap();
+    fs::write(bundle.join("index.md"), "# Note").unwrap();
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let panel_entity = cx.update(|window, cx| {
+        let ws = app.read(cx).workspace().clone();
+        ws.update(cx, |ws, cx| {
+            ws.open_folder(root.clone(), cx);
+        });
+        let panel = ws.read(cx).project_panel().clone();
+        panel.update(cx, |panel, cx| {
+            panel.toggle_expand(&folder, cx);
+            panel.toggle_expand(&sub, cx);
+            panel.set_selected_path(Some(bundle.clone()), cx);
+        });
+        let fh = panel.read(cx).focus_handle(cx);
+        window.focus(&fh);
+        panel
+    });
+    cx.run_until_parked();
+
+    // 1. F2 opens inline rename with full collocated directory name ("note.v2") selected
+    cx.simulate_keystrokes("f2");
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        panel_entity.update(cx, |panel, cx| {
+            let input = panel.inline_input().cloned().expect("F2 rename input");
+            input.update(cx, |inp, cx| {
+                let sel = inp.buffer().selection();
+                assert_eq!((sel.start().col, sel.end().col), (0, "note.v2".len()));
+                inp.cancel(cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+
+    // Refocus panel then Ctrl+X fills Cut clipboard, Ctrl+Delete opens collocated delete modal
+    cx.update(|window, cx| {
+        let fh = panel_entity.read(cx).focus_handle(cx);
+        window.focus(&fh);
+    });
+    cx.simulate_keystrokes("secondary-x");
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        assert_eq!(
+            panel_entity.read(cx).clipboard(),
+            &FileClipboard::Cut(bundle.clone())
+        );
+    });
+
+    cx.simulate_keystrokes("secondary-delete");
+    cx.run_until_parked();
+    cx.update(|_window, cx| {
+        let panel = panel_entity.read(cx);
+        let modal = panel.active_confirm_modal().expect("delete confirm modal");
+        assert_eq!(modal.kind, ConfirmModalKind::Delete);
+        assert!(modal.is_collocated_doc);
+        assert_eq!(
+            modal.message(),
+            "Are you sure you want to permanently delete the document \"note.v2\" and its co-located assets?"
+        );
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // 2. External creation of index.md inside expanded folder prunes its & descendants' expansion state
+    assert!(cx.update(|_window, cx| {
+        let p = panel_entity.read(cx);
+        p.is_expanded(&folder) && p.is_expanded(&sub)
+    }));
+    fs::write(folder.join("index.md"), "# Topics became a bundle").unwrap();
+    cx.update(|_window, cx| {
+        panel_entity.update(cx, |panel, cx| panel.refresh_tree(cx));
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let p = panel_entity.read(cx);
+        assert!(!p.is_expanded(&folder));
+        assert!(!p.is_expanded(&sub));
+    });
+}

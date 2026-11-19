@@ -64,6 +64,7 @@ pub struct SearchPanel {
     replacing: bool,
     replace_count: Option<usize>,
     replace_error: Option<String>,
+    collocated_mode: bool,
     _input_sub: Subscription,
     _replace_sub: Subscription,
 }
@@ -71,6 +72,7 @@ pub struct SearchPanel {
 /// Everything a background search needs, detached from the panel.
 struct SearchJob {
     root: PathBuf,
+    collocated_mode: bool,
     query: SearchQuery,
     cancel: Arc<AtomicBool>,
     cache: WorkspaceFileCache,
@@ -78,6 +80,9 @@ struct SearchJob {
 
 impl SearchPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let collocated_mode = cx
+            .try_global::<crate::config::AppConfig>()
+            .is_some_and(|cfg| cfg.collocated_mode);
         let input = cx.new(|cx| {
             TextInput::new("", cx)
                 .id("workspace_search_input")
@@ -133,8 +138,23 @@ impl SearchPanel {
             replacing: false,
             replace_count: None,
             replace_error: None,
+            collocated_mode,
             _input_sub,
             _replace_sub,
+        }
+    }
+
+    pub fn set_collocated_mode(&mut self, collocated_mode: bool, cx: &mut Context<Self>) {
+        if self.collocated_mode == collocated_mode {
+            return;
+        }
+        self.collocated_mode = collocated_mode;
+        self.file_cache.invalidate();
+        if self.root_dir.is_some() {
+            self.prewarm_file_cache(cx);
+            self.search_now(cx);
+        } else {
+            cx.notify();
         }
     }
 
@@ -241,11 +261,12 @@ impl SearchPanel {
             return;
         };
         let replacement = self.replace_text(cx);
+        let collocated_mode = self.collocated_mode;
         let cache = self.file_cache.clone();
         self.start_replacement(cx, move || {
             let cancel = AtomicBool::new(false);
             let files = cache
-                .get_or_discover(&root, &cancel)
+                .get_or_discover(&root, collocated_mode, &cancel)
                 .ok_or_else(|| std::io::Error::other("workspace search was cancelled"))?;
             let mut count = 0;
             for path in files.iter() {
@@ -309,10 +330,11 @@ impl SearchPanel {
         };
         let cancel = Arc::new(AtomicBool::new(false));
         self.prewarm_cancel = cancel.clone();
+        let collocated_mode = self.collocated_mode;
         let cache = self.file_cache.clone();
         cx.background_executor()
             .spawn(async move {
-                cache.get_or_discover(&root, &cancel);
+                cache.get_or_discover(&root, collocated_mode, &cancel);
             })
             .detach();
     }
@@ -440,6 +462,7 @@ impl SearchPanel {
         self.search_cancel = cancel.clone();
         Some(SearchJob {
             root,
+            collocated_mode: self.collocated_mode,
             query,
             cancel,
             cache: self.file_cache.clone(),
@@ -510,7 +533,10 @@ async fn scan_workspace(
     executor: BackgroundExecutor,
     tx: UnboundedSender<FileSearchResult>,
 ) -> bool {
-    let Some(files) = job.cache.get_or_discover(&job.root, &job.cancel) else {
+    let Some(files) = job
+        .cache
+        .get_or_discover(&job.root, job.collocated_mode, &job.cancel)
+    else {
         return false;
     };
     let scan = WorkspaceScan::new(

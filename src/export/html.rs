@@ -319,7 +319,9 @@ fn render_body_html(
                     state.in_table_body = false;
                 } else {
                     if !state.in_table {
-                        state.out.push_str("<div class=\"table-wrapper\">\n<table>\n");
+                        state
+                            .out
+                            .push_str("<div class=\"table-wrapper\">\n<table>\n");
                         state.in_table = true;
                     }
                     if !state.in_table_body {
@@ -645,11 +647,7 @@ fn visible_plain_line_text(parsed: &ParsedLine) -> String {
     out
 }
 
-fn write_code_block_shell(
-    out: &mut String,
-    lang: &str,
-    write_body: impl FnOnce(&mut String),
-) {
+fn write_code_block_shell(out: &mut String, lang: &str, write_body: impl FnOnce(&mut String)) {
     out.push_str("<div class=\"code-block\">\n");
     let header_label = if lang.is_empty() { "plaintext" } else { lang };
     let _ = writeln!(
@@ -929,9 +927,9 @@ mod tests {
         assert!(html.contains("<a href=\"https://example.com\">safe</a>"));
         assert!(!html.contains("javascript:alert(1)"));
         assert!(html.contains("bad"));
-        assert!(html.contains(
-            "<blockquote>\n<p>Outer quote</p>\n<blockquote>\n<p>Nested quote</p>"
-        ));
+        assert!(
+            html.contains("<blockquote>\n<p>Outer quote</p>\n<blockquote>\n<p>Nested quote</p>")
+        );
         assert!(html.contains(
             "<ul>\n<li>Bullet A<ul>\n<li>Nested Bullet<ol>\n<li>Deep Ordered</li>\n</ol>\n</li>\n</ul>"
         ));

@@ -24,6 +24,7 @@ struct CacheState {
 
 struct CacheEntry {
     root: PathBuf,
+    collocated_mode: bool,
     files: Arc<[PathBuf]>,
 }
 
@@ -33,16 +34,21 @@ struct Ticket {
 }
 
 impl WorkspaceFileCache {
-    /// Returns the cached listing for `root`, walking the tree on a miss.
+    /// Returns the cached listing for `(root, collocated_mode)`, walking the tree on a miss.
     ///
     /// Returns `None` only when the walk was cancelled.
-    pub fn get_or_discover(&self, root: &Path, cancel: &AtomicBool) -> Option<Arc<[PathBuf]>> {
-        let ticket = match self.lookup(root) {
+    pub fn get_or_discover(
+        &self,
+        root: &Path,
+        collocated_mode: bool,
+        cancel: &AtomicBool,
+    ) -> Option<Arc<[PathBuf]>> {
+        let ticket = match self.lookup(root, collocated_mode) {
             Ok(files) => return Some(files),
             Err(ticket) => ticket,
         };
-        let files: Arc<[PathBuf]> = discover_files(root, cancel)?.into();
-        self.store(ticket, root, files.clone());
+        let files: Arc<[PathBuf]> = discover_files(root, collocated_mode, cancel)?.into();
+        self.store(ticket, root, collocated_mode, files.clone());
         Some(files)
     }
 
@@ -53,21 +59,24 @@ impl WorkspaceFileCache {
         state.entry = None;
     }
 
-    fn lookup(&self, root: &Path) -> Result<Arc<[PathBuf]>, Ticket> {
+    fn lookup(&self, root: &Path, collocated_mode: bool) -> Result<Arc<[PathBuf]>, Ticket> {
         let state = self.state.lock();
         match &state.entry {
-            Some(entry) if entry.root == root => Ok(entry.files.clone()),
+            Some(entry) if entry.root == root && entry.collocated_mode == collocated_mode => {
+                Ok(entry.files.clone())
+            }
             _ => Err(Ticket {
                 generation: state.generation,
             }),
         }
     }
 
-    fn store(&self, ticket: Ticket, root: &Path, files: Arc<[PathBuf]>) {
+    fn store(&self, ticket: Ticket, root: &Path, collocated_mode: bool, files: Arc<[PathBuf]>) {
         let mut state = self.state.lock();
         if state.generation == ticket.generation {
             state.entry = Some(CacheEntry {
                 root: root.to_path_buf(),
+                collocated_mode,
                 files,
             });
         }
@@ -91,19 +100,28 @@ mod tests {
         let cache = WorkspaceFileCache::default();
 
         assert_eq!(
-            cache.get_or_discover(root, &not_cancelled()).unwrap().len(),
+            cache
+                .get_or_discover(root, false, &not_cancelled())
+                .unwrap()
+                .len(),
             1
         );
 
         fs::write(root.join("b.txt"), "x").unwrap();
         assert_eq!(
-            cache.get_or_discover(root, &not_cancelled()).unwrap().len(),
+            cache
+                .get_or_discover(root, false, &not_cancelled())
+                .unwrap()
+                .len(),
             1
         );
 
         cache.invalidate();
         assert_eq!(
-            cache.get_or_discover(root, &not_cancelled()).unwrap().len(),
+            cache
+                .get_or_discover(root, false, &not_cancelled())
+                .unwrap()
+                .len(),
             2
         );
     }
@@ -113,25 +131,26 @@ mod tests {
         let root = Path::new("/workspace");
         let cache = WorkspaceFileCache::default();
 
-        let ticket = cache.lookup(root).unwrap_err();
+        let ticket = cache.lookup(root, false).unwrap_err();
         cache.invalidate();
         cache.store(
             ticket,
             root,
+            false,
             Arc::from(vec![PathBuf::from("/workspace/stale.txt")]),
         );
 
-        assert!(cache.lookup(root).is_err());
+        assert!(cache.lookup(root, false).is_err());
     }
 
     #[test]
     fn listing_of_another_root_is_a_miss() {
         let cache = WorkspaceFileCache::default();
-        let ticket = cache.lookup(Path::new("/old")).unwrap_err();
-        cache.store(ticket, Path::new("/old"), Arc::from(Vec::new()));
+        let ticket = cache.lookup(Path::new("/old"), false).unwrap_err();
+        cache.store(ticket, Path::new("/old"), false, Arc::from(Vec::new()));
 
-        assert!(cache.lookup(Path::new("/old")).is_ok());
-        assert!(cache.lookup(Path::new("/new")).is_err());
+        assert!(cache.lookup(Path::new("/old"), false).is_ok());
+        assert!(cache.lookup(Path::new("/new"), false).is_err());
     }
 
     #[test]
@@ -143,9 +162,34 @@ mod tests {
 
         assert!(
             cache
-                .get_or_discover(root, &AtomicBool::new(true))
+                .get_or_discover(root, false, &AtomicBool::new(true))
                 .is_none()
         );
-        assert!(cache.lookup(root).is_err());
+        assert!(cache.lookup(root, false).is_err());
+    }
+
+    #[test]
+    fn switching_mode_does_not_reuse_other_mode_cache_entry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::write(root.join("loose.md"), "loose").unwrap();
+        fs::create_dir_all(root.join("doc")).unwrap();
+        fs::write(root.join("doc").join("index.md"), "bundle").unwrap();
+
+        let cache = WorkspaceFileCache::default();
+        assert_eq!(
+            cache
+                .get_or_discover(root, false, &not_cancelled())
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            cache
+                .get_or_discover(root, true, &not_cancelled())
+                .unwrap()
+                .as_ref(),
+            &[root.join("doc").join("index.md")]
+        );
     }
 }

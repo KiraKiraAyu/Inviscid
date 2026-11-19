@@ -107,6 +107,8 @@ pub struct Workspace {
     resize_target: Option<PanelResizeTarget>,
     panel_drag_start_x: Option<Pixels>,
     panel_drag_start_width: Option<Pixels>,
+    collocated_mode: bool,
+    _config_subscription: Subscription,
 }
 
 #[cfg(test)]
@@ -251,10 +253,22 @@ impl Workspace {
                 cx,
             );
         });
+        let collocated_mode = cx
+            .try_global::<AppConfig>()
+            .is_some_and(|cfg| cfg.collocated_mode);
+        let _config_subscription = cx.observe_global::<AppConfig>(|this, cx| {
+            let mode = cx
+                .try_global::<AppConfig>()
+                .is_some_and(|cfg| cfg.collocated_mode);
+            this.set_collocated_mode(mode, cx);
+        });
         let tab_bar_sub = Self::subscribe_tab_bar(&tab_bar, cx);
         let project_panel =
             cx.new(|cx| crate::app::project_panel::ProjectPanel::new(root_dir.clone(), cx));
         project_panel.update(cx, |p, cx| {
+            if let Some(ref active_path) = active_file {
+                p.reveal_path(active_path, cx);
+            }
             p.set_active_file(active_file, cx);
             p.set_filter_visible(layout.sidebar_view == SidebarView::Search, cx);
             p.prewarm_filter_index(cx);
@@ -287,19 +301,33 @@ impl Workspace {
             resize_target: None,
             panel_drag_start_x: None,
             panel_drag_start_width: None,
+            collocated_mode,
+            _config_subscription,
         };
         workspace.sync_outline_panel(cx);
         workspace
     }
 
     pub fn new(initial_path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+        let collocated_mode = cx
+            .try_global::<AppConfig>()
+            .is_some_and(|cfg| cfg.collocated_mode);
         let (root_dir, file_path) = match initial_path {
             Some(p) if p.is_dir() => {
-                let target = Self::find_folder_target_file(&p);
-                (Some(p), target)
+                if collocated_mode
+                    && let Some(index_file) = crate::fs::find_collocated_index_file(&p)
+                {
+                    let parent = p.parent().map(|d| d.to_path_buf());
+                    (parent, Some(index_file))
+                } else {
+                    let target = fs::find_folder_target_file(&p, collocated_mode);
+                    (Some(p), target)
+                }
             }
             Some(p) => {
-                let parent = p.parent().map(|d| d.to_path_buf());
+                let parent = crate::fs::resolve_document_parent_dir(&p, collocated_mode, None)
+                    .map(|d| d.to_path_buf())
+                    .or_else(|| p.parent().map(|d| d.to_path_buf()));
                 (parent, Some(p))
             }
             None => (None, None),
@@ -393,6 +421,9 @@ impl Workspace {
 
         self.project_panel.update(cx, |p, cx| {
             p.set_root_dir(ws.root_dir.clone(), cx);
+            if let Some(ref active_path) = ws.active_file {
+                p.reveal_path(active_path, cx);
+            }
             p.set_active_file(ws.active_file.clone(), cx);
             p.set_filter_visible(layout.sidebar_view == SidebarView::Search, cx);
         });
@@ -569,6 +600,57 @@ impl Workspace {
         self.tabs.get(self.active_tab_idx).map(|tab| tab.kind)
     }
 
+    fn sync_tab_bar(&mut self, cx: &mut Context<Self>) {
+        let tabs_meta = self.get_tabs_meta(cx);
+        let sidebar_offset = if self.sidebar_visible {
+            self.sidebar_width
+        } else {
+            px(0.0)
+        };
+        let has_workspace_root = self.root_dir.is_some();
+        let active_tab_idx = self.active_tab_idx;
+        self.tab_bar.update(cx, |tb, cx| {
+            tb.sync(
+                tabs_meta,
+                active_tab_idx,
+                has_workspace_root,
+                sidebar_offset,
+                cx,
+            )
+        });
+    }
+
+    fn set_collocated_mode(&mut self, collocated_mode: bool, cx: &mut Context<Self>) {
+        if self.collocated_mode == collocated_mode {
+            return;
+        }
+        self.collocated_mode = collocated_mode;
+        for tab in &self.tabs {
+            if tab.kind == TabKind::Editor {
+                tab.editor
+                    .update(cx, |ed, _| ed.set_collocated_mode(collocated_mode));
+            }
+        }
+        self.project_panel.update(cx, |panel, cx| {
+            panel.set_collocated_mode(collocated_mode, cx);
+        });
+        self.search_panel.update(cx, |sp, cx| {
+            sp.set_collocated_mode(collocated_mode, cx);
+        });
+        self.sync_tab_bar(cx);
+        cx.emit(WorkspaceEvent::TitleChanged);
+        cx.notify();
+    }
+
+    pub fn refresh_panels(&mut self, cx: &mut Context<Self>) {
+        self.project_panel.update(cx, |panel, cx| {
+            panel.refresh_tree(cx);
+        });
+        self.search_panel.update(cx, |sp, cx| {
+            sp.refresh_files(cx);
+        });
+    }
+
     fn sync_active_editor_state(&mut self, cx: &mut Context<Self>) {
         for (i, tab) in self.tabs.iter().enumerate() {
             if i != self.active_tab_idx {
@@ -582,22 +664,7 @@ impl Workspace {
         } else {
             self.status_bar.update(cx, |sb, cx| sb.set_meta(None, cx));
         }
-        let tabs_meta = self.get_tabs_meta(cx);
-        let sidebar_offset = if self.sidebar_visible {
-            self.sidebar_width
-        } else {
-            px(0.0)
-        };
-        let has_workspace_root = self.root_dir.is_some();
-        self.tab_bar.update(cx, |tb, cx| {
-            tb.sync(
-                tabs_meta,
-                self.active_tab_idx,
-                has_workspace_root,
-                sidebar_offset,
-                cx,
-            )
-        });
+        self.sync_tab_bar(cx);
         let active_file = self.active_file_path(cx).map(|p| p.to_path_buf());
         self.project_panel
             .update(cx, |p, cx| p.set_active_file(active_file, cx));
@@ -800,7 +867,14 @@ impl Workspace {
 
     pub fn copy_tab_path(&self, tab_idx: usize, cx: &mut App) {
         if let Some(tab) = self.tabs.get(tab_idx) {
-            let path = tab.editor.read(cx).file_path().map(|p| p.to_path_buf());
+            let path = tab.editor.read(cx).file_path().map(|p| {
+                crate::fs::resolve_document_external_path(
+                    p,
+                    self.collocated_mode,
+                    self.root_dir.as_deref(),
+                )
+                .to_path_buf()
+            });
             if let Some(path) = path {
                 crate::app::project_panel::fs_ops::copy_path_to_clipboard(&path, cx);
             }
@@ -809,7 +883,14 @@ impl Workspace {
 
     pub fn copy_tab_relative_path(&self, tab_idx: usize, cx: &mut App) {
         if let Some(tab) = self.tabs.get(tab_idx) {
-            let path = tab.editor.read(cx).file_path().map(|p| p.to_path_buf());
+            let path = tab.editor.read(cx).file_path().map(|p| {
+                crate::fs::resolve_document_external_path(
+                    p,
+                    self.collocated_mode,
+                    self.root_dir.as_deref(),
+                )
+                .to_path_buf()
+            });
             if let Some(path) = path {
                 crate::app::project_panel::fs_ops::copy_relative_path_to_clipboard(
                     &path,
@@ -824,7 +905,12 @@ impl Workspace {
         if let Some(tab) = self.tabs.get(tab_idx)
             && let Some(path) = tab.editor.read(cx).file_path()
         {
-            crate::platform::reveal_in_file_manager(path);
+            let external = crate::fs::resolve_document_external_path(
+                path,
+                self.collocated_mode,
+                self.root_dir.as_deref(),
+            );
+            crate::platform::reveal_in_file_manager(external);
         }
     }
 
@@ -894,9 +980,10 @@ impl Workspace {
         target_idx: Option<usize>,
         cx: &mut Context<Self>,
     ) {
-        if !path.is_file() {
+        let Some(path) = crate::fs::resolve_openable_document_path(&path, self.collocated_mode)
+        else {
             return;
-        }
+        };
         if let Some(existing_idx) = self.tabs.iter().position(|t| {
             t.kind == TabKind::Editor && t.editor.read(cx).file_path() == Some(path.as_path())
         }) {
@@ -983,6 +1070,19 @@ impl Workspace {
     }
 
     pub fn open_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let path = if path.is_dir() {
+            if self.collocated_mode {
+                let Some(index_path) = crate::fs::find_collocated_index_file(&path) else {
+                    return;
+                };
+                index_path
+            } else {
+                return;
+            }
+        } else {
+            path
+        };
+
         for (i, tab) in self.tabs.iter().enumerate() {
             if tab.editor.read(cx).file_path() == Some(&path) {
                 self.switch_tab(i, cx);
@@ -1095,17 +1195,14 @@ impl Workspace {
         let active_path = self.active_editor().and_then(|ed| ed.read(cx).file_path());
         let other_paths = self.tabs.iter().map(|t| t.editor.read(cx).file_path());
 
-        fs::extract_workspace_name_from_paths(std::iter::once(active_path).chain(other_paths))
+        fs::extract_workspace_name_from_paths(
+            std::iter::once(active_path).chain(other_paths),
+            self.collocated_mode,
+        )
     }
 
     pub fn has_workspace(&self, cx: &App) -> bool {
         self.workspace_name(cx) != "Open Workspace"
-    }
-
-    /// Locates an initial markdown entry file (preferring README.md, then index.md) in a directory
-    #[inline]
-    pub fn find_folder_target_file(folder: &std::path::Path) -> Option<PathBuf> {
-        fs::find_folder_target_file(folder)
     }
 
     pub fn open_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
@@ -1118,7 +1215,7 @@ impl Workspace {
             sp.set_root_dir(Some(folder.clone()), cx);
         });
 
-        if let Some(file) = Self::find_folder_target_file(&folder) {
+        if let Some(file) = fs::find_folder_target_file(&folder, self.collocated_mode) {
             self.open_file(file, cx);
         }
         cx.emit(WorkspaceEvent::TitleChanged);
@@ -1670,8 +1767,14 @@ impl Render for Workspace {
                                          entry: &crate::app::project_panel::DraggedProjectEntry,
                                          _window,
                                          cx| {
-                                            if !entry.is_dir {
-                                                this.open_file(entry.path.clone(), cx);
+                                            if !entry.is_dir
+                                                && let Some(open_path) =
+                                                    crate::fs::resolve_openable_document_path(
+                                                        &entry.path,
+                                                        this.collocated_mode,
+                                                    )
+                                            {
+                                                this.open_file(open_path, cx);
                                             }
                                         },
                                     ))

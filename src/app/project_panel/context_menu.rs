@@ -12,6 +12,7 @@ pub struct ContextMenuState {
     pub target_path: PathBuf,
     pub is_dir: bool,
     pub is_root: bool,
+    pub collocated_mode: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -57,7 +58,8 @@ pub fn render_context_menu(
     let on_action: Rc<dyn Fn(ContextMenuAction, &mut Window, &mut App)> = Rc::new(on_action);
 
     let is_root = state.is_root;
-    let (new_file_label, new_folder_label, paste_label) = contextual_action_labels(state.is_dir);
+    let (new_file_label, new_folder_label, paste_label) =
+        contextual_action_labels(state.is_dir, state.collocated_mode);
     let border_subtle = theme.border_subtle;
     let shortcut = |action_id: &str| display_keystroke_for(action_id, cx);
 
@@ -178,16 +180,25 @@ pub fn render_context_menu(
         )
 }
 
-/// Returns contextual labels for (New File, New Folder, Paste) based on target type (`is_dir`).
-pub fn contextual_action_labels(is_dir: bool) -> (&'static str, &'static str, &'static str) {
-    if is_dir {
-        ("New File", "New Folder", "Paste")
-    } else {
-        (
+/// Returns contextual labels for (New File/Document, New Folder, Paste) based on target type
+/// (`is_dir`) and whether collocated mode is active.
+pub fn contextual_action_labels(
+    is_dir: bool,
+    collocated_mode: bool,
+) -> (&'static str, &'static str, &'static str) {
+    match (is_dir, collocated_mode) {
+        (true, false) => ("New File", "New Folder", "Paste"),
+        (false, false) => (
             "New File in Folder",
             "New Folder in Folder",
             "Paste into Folder",
-        )
+        ),
+        (true, true) => ("New Document", "New Folder", "Paste"),
+        (false, true) => (
+            "New Document in Folder",
+            "New Folder in Folder",
+            "Paste into Folder",
+        ),
     }
 }
 
@@ -198,14 +209,26 @@ mod tests {
 
     #[test]
     fn test_contextual_action_labels_distinguish_file_and_folder() {
-        let (file_nf, file_nfolder, file_paste) = contextual_action_labels(false);
+        let (file_nf, file_nfolder, file_paste) = contextual_action_labels(false, false);
         assert_eq!(file_nf, "New File in Folder");
         assert_eq!(file_nfolder, "New Folder in Folder");
         assert_eq!(file_paste, "Paste into Folder");
 
-        let (dir_nf, dir_nfolder, dir_paste) = contextual_action_labels(true);
+        let (dir_nf, dir_nfolder, dir_paste) = contextual_action_labels(true, false);
         assert_eq!(dir_nf, "New File");
         assert_eq!(dir_nfolder, "New Folder");
         assert_eq!(dir_paste, "Paste");
+
+        let (colloc_doc_nf, colloc_doc_nfolder, colloc_doc_paste) =
+            contextual_action_labels(false, true);
+        assert_eq!(colloc_doc_nf, "New Document in Folder");
+        assert_eq!(colloc_doc_nfolder, "New Folder in Folder");
+        assert_eq!(colloc_doc_paste, "Paste into Folder");
+
+        let (colloc_dir_nf, colloc_dir_nfolder, colloc_dir_paste) =
+            contextual_action_labels(true, true);
+        assert_eq!(colloc_dir_nf, "New Document");
+        assert_eq!(colloc_dir_nfolder, "New Folder");
+        assert_eq!(colloc_dir_paste, "Paste");
     }
 }

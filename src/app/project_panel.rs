@@ -9,7 +9,6 @@ use crate::app::actions::{CopyEntry, CutEntry, DeleteEntry, PasteEntry, RenameEn
 use crate::theme::{DEFAULT_THEME, ThemeManager};
 use crate::ui::text_input::{TextInput, TextInputBg, TextInputEvent};
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
-use crate::ui::{Icon, IconName, IconSize};
 
 pub mod confirm_modal;
 pub mod context_menu;
@@ -25,6 +24,7 @@ pub use inline_input::{InlineInput, InlineInputEvent, InlineInputKind};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileTreeEntryKind {
     File,
+    CollocatedDocument,
     Directory { is_expanded: bool },
 }
 
@@ -48,6 +48,16 @@ impl FileTreeEntry {
         }
     }
 
+    /// Creates a file tree entry for a collocated document bundle (`<dir>/index.md`).
+    pub fn new_collocated_doc(path: PathBuf, name: String, depth: usize) -> Self {
+        Self {
+            path,
+            name,
+            depth,
+            kind: FileTreeEntryKind::CollocatedDocument,
+        }
+    }
+
     /// Creates a file tree entry for a directory.
     pub fn new_dir(path: PathBuf, name: String, depth: usize, is_expanded: bool) -> Self {
         Self {
@@ -58,10 +68,16 @@ impl FileTreeEntry {
         }
     }
 
-    /// Returns `true` if this entry represents a directory.
+    /// Returns `true` if this entry represents an expandable directory.
     #[inline]
     pub fn is_dir(&self) -> bool {
         matches!(self.kind, FileTreeEntryKind::Directory { .. })
+    }
+
+    /// Returns `true` if this entry represents a collocated document bundle.
+    #[inline]
+    pub fn is_collocated_doc(&self) -> bool {
+        matches!(self.kind, FileTreeEntryKind::CollocatedDocument)
     }
 
     /// Returns `true` if this entry is an expanded directory. Files always return `false`.
@@ -72,12 +88,28 @@ impl FileTreeEntry {
             FileTreeEntryKind::Directory { is_expanded: true }
         )
     }
+
+    /// Returns `true` when `active_file` corresponds to this entry.
+    pub fn matches_active_file(&self, active_file: Option<&Path>) -> bool {
+        let Some(active) = active_file else {
+            return false;
+        };
+        match self.kind {
+            FileTreeEntryKind::File => active == self.path.as_path(),
+            FileTreeEntryKind::CollocatedDocument => {
+                active == self.path.as_path()
+                    || crate::fs::collocated_bundle_dir(active) == Some(self.path.as_path())
+            }
+            FileTreeEntryKind::Directory { .. } => false,
+        }
+    }
 }
 
 struct ScannedTreeEntry {
     path: PathBuf,
     name: String,
     is_dir: bool,
+    is_collocated_doc: bool,
     can_recurse: bool,
 }
 
@@ -89,6 +121,7 @@ pub struct DraggedProjectEntry {
     pub path: PathBuf,
     pub name: String,
     pub is_dir: bool,
+    pub collocated_mode: bool,
 }
 
 impl Render for DraggedProjectEntry {
@@ -97,10 +130,10 @@ impl Render for DraggedProjectEntry {
             .try_global::<ThemeManager>()
             .map(|m| m.theme())
             .unwrap_or(&DEFAULT_THEME);
-        let (icon_name, icon_color) = if self.is_dir {
-            (IconName::Folder, theme.text_accent)
+        let icon_color = if self.is_dir {
+            theme.text_accent
         } else {
-            (IconName::FileText, theme.text_muted)
+            theme.text_muted
         };
         div()
             .font_family(crate::platform::platform_ui_font())
@@ -115,11 +148,12 @@ impl Render for DraggedProjectEntry {
             .flex_row()
             .items_center()
             .gap(px(5.0))
-            .child(
-                Icon::new(icon_name)
-                    .size(IconSize::XSmall)
-                    .color(icon_color),
-            )
+            .children(tree_view::render_entry_leading_icon(
+                self.is_dir,
+                false,
+                self.collocated_mode,
+                icon_color,
+            ))
             .child(
                 div()
                     .text_size(FontSize::SM)
@@ -127,6 +161,12 @@ impl Render for DraggedProjectEntry {
                     .whitespace_nowrap()
                     .child(self.name.clone()),
             )
+            .children(tree_view::render_entry_trailing_chevron(
+                self.is_dir,
+                false,
+                self.collocated_mode,
+                theme.text_muted,
+            ))
     }
 }
 
@@ -171,6 +211,7 @@ pub struct ProjectPanel {
     filter_subscription: Option<Subscription>,
     drag_hover_dir: Option<PathBuf>,
     drag_hover_task: Option<Task<()>>,
+    collocated_mode: bool,
 }
 
 impl Focusable for ProjectPanel {
@@ -187,6 +228,9 @@ impl ProjectPanel {
         if let Some(ref root) = root_dir {
             expanded_dirs.insert(root.clone());
         }
+        let collocated_mode = cx
+            .try_global::<crate::config::AppConfig>()
+            .is_some_and(|cfg| cfg.collocated_mode);
 
         let mut panel = Self {
             root_dir,
@@ -217,9 +261,64 @@ impl ProjectPanel {
             filter_subscription: None,
             drag_hover_dir: None,
             drag_hover_task: None,
+            collocated_mode,
         };
         panel.refresh_entries(cx);
         panel
+    }
+
+    #[inline]
+    pub fn collocated_mode(&self) -> bool {
+        self.collocated_mode
+    }
+
+    pub fn set_collocated_mode(&mut self, collocated_mode: bool, cx: &mut Context<Self>) {
+        if self.collocated_mode != collocated_mode {
+            self.collocated_mode = collocated_mode;
+            self.active_context_menu = None;
+            self.active_confirm_modal = None;
+            self.inline_input = None;
+            let root = self.root_dir.as_deref();
+            self.expanded_dirs.retain(|p| {
+                root == Some(p.as_path())
+                    || (p.is_dir() && (!collocated_mode || !crate::fs::has_collocated_index(p)))
+            });
+            if collocated_mode && self.selected_path.as_deref().is_some_and(|p| !p.is_dir()) {
+                self.selected_path = None;
+            }
+            self.refresh_tree(cx);
+            cx.notify();
+        }
+    }
+
+    pub fn refresh_tree(&mut self, cx: &mut Context<Self>) {
+        if self.all_entries_loaded
+            || self.filter_scan_pending
+            || !self.filter_query.trim().is_empty()
+        {
+            self.refresh_all_entries(cx);
+        }
+        self.refresh_entries(cx);
+    }
+
+    fn is_collocated_doc_entry(&self, path: &Path) -> bool {
+        self.collocated_mode
+            && self.root_dir.as_deref() != Some(path)
+            && crate::fs::has_collocated_index(path)
+    }
+
+    fn is_expandable_folder(&self, path: &Path) -> bool {
+        if self.root_dir.as_deref() == Some(path) {
+            return true;
+        }
+        if !path.is_dir() {
+            return false;
+        }
+        if self.collocated_mode {
+            !crate::fs::has_collocated_index(path)
+        } else {
+            true
+        }
     }
 
     /// Accessor for the panel's scroll handle.
@@ -608,14 +707,24 @@ impl ProjectPanel {
     /// Expands all ancestor directories leading to `path` so the file is visible in the tree.
     pub fn reveal_path(&mut self, path: &Path, cx: &mut Context<Self>) {
         let mut changed = false;
-        if let Some(parent) = path.parent() {
+        let start_dir = if self.collocated_mode
+            && let Some(bundle_dir) =
+                crate::fs::collocated_bundle_dir_within(path, self.root_dir.as_deref())
+        {
+            bundle_dir.parent()
+        } else {
+            path.parent()
+        };
+        if let Some(parent) = start_dir {
             for ancestor in parent.ancestors() {
                 if let Some(root) = &self.root_dir
                     && !ancestor.starts_with(root)
                 {
                     break;
                 }
-                if self.expanded_dirs.insert(ancestor.to_path_buf()) {
+                if self.is_expandable_folder(ancestor)
+                    && self.expanded_dirs.insert(ancestor.to_path_buf())
+                {
                     changed = true;
                 }
             }
@@ -676,6 +785,7 @@ impl ProjectPanel {
             target_path,
             is_dir,
             is_root,
+            collocated_mode: self.collocated_mode,
         });
         cx.notify();
     }
@@ -687,7 +797,8 @@ impl ProjectPanel {
         {
             return;
         }
-        let is_dir = target.is_dir();
+        let is_dir = self.is_expandable_folder(target);
+        let is_collocated_doc = self.is_collocated_doc_entry(target);
         let name = target
             .file_name()
             .and_then(|n| n.to_str())
@@ -698,7 +809,14 @@ impl ProjectPanel {
             target: target.to_path_buf(),
             is_dir,
         };
-        let input = cx.new(|cx| InlineInput::new(kind, &name, depth, cx));
+        let input = cx.new(|cx| {
+            let inline = InlineInput::new(kind, &name, depth, cx);
+            if is_collocated_doc {
+                inline.with_full_selection()
+            } else {
+                inline
+            }
+        });
         self.attach_inline_input(input, window, cx);
     }
 
@@ -755,24 +873,35 @@ impl ProjectPanel {
         }
 
         match kind {
-            InlineInputKind::NewFile { parent } => match fs_ops::create_file(&parent, trimmed) {
-                Ok(new_path) => {
-                    self.expanded_dirs.insert(parent);
-                    self.refresh_all_entries(cx);
-                    self.refresh_entries(cx);
-                    self.selected_path = Some(new_path.clone());
-                    cx.emit(ProjectPanelEvent::PathCreated(new_path.clone()));
-                    cx.emit(ProjectPanelEvent::OpenFile(new_path));
+            InlineInputKind::NewFile { parent } => {
+                let create_result = if self.collocated_mode {
+                    fs_ops::create_collocated_doc(&parent, trimmed).map(|bundle_dir| {
+                        let index_file = bundle_dir.join(crate::fs::COLLOCATED_INDEX_FILE);
+                        (bundle_dir, index_file)
+                    })
+                } else {
+                    fs_ops::create_file(&parent, trimmed)
+                        .map(|file_path| (file_path.clone(), file_path))
+                };
+                match create_result {
+                    Ok((selected_path, open_path)) => {
+                        self.expanded_dirs.insert(parent);
+                        self.refresh_all_entries(cx);
+                        self.refresh_entries(cx);
+                        self.selected_path = Some(selected_path);
+                        cx.emit(ProjectPanelEvent::PathCreated(open_path.clone()));
+                        cx.emit(ProjectPanelEvent::OpenFile(open_path));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Failed to create file \"{}\" in {}: {}",
+                            trimmed,
+                            parent.display(),
+                            e
+                        );
+                    }
                 }
-                Err(e) => {
-                    eprintln!(
-                        "Failed to create file \"{}\" in {}: {}",
-                        trimmed,
-                        parent.display(),
-                        e
-                    );
-                }
-            },
+            }
             InlineInputKind::NewFolder { parent } => {
                 match fs_ops::create_folder(&parent, trimmed) {
                     Ok(new_path) => {
@@ -792,11 +921,23 @@ impl ProjectPanel {
                     }
                 }
             }
-            InlineInputKind::Rename { target, is_dir } => {
+            InlineInputKind::Rename { target, .. } => {
                 match fs_ops::rename_entry(&target, trimmed) {
                     Ok(new_path) => {
-                        if is_dir && self.expanded_dirs.remove(&target) {
-                            self.expanded_dirs.insert(new_path.clone());
+                        remap_path_set(&mut self.expanded_dirs, &target, &new_path);
+                        remap_path_set(&mut self.filter_collapsed_dirs, &target, &new_path);
+                        if let Some(active) = self.active_file.as_deref()
+                            && let Some(remapped) = remap_moved_path(active, &target, &new_path)
+                        {
+                            self.active_file = Some(remapped);
+                        }
+                        match &mut self.clipboard {
+                            FileClipboard::Cut(p) | FileClipboard::Copy(p) => {
+                                if let Some(remapped) = remap_moved_path(p, &target, &new_path) {
+                                    *p = remapped;
+                                }
+                            }
+                            FileClipboard::None => {}
                         }
                         cx.emit(ProjectPanelEvent::PathRenamed {
                             old: target,
@@ -856,7 +997,12 @@ impl ProjectPanel {
                 self.attach_inline_input(input, window, cx);
             }
             ContextMenuAction::RevealInFileManager => {
-                crate::platform::reveal_in_file_manager(&target);
+                let external = crate::fs::resolve_document_external_path(
+                    &target,
+                    self.collocated_mode,
+                    self.root_dir.as_deref(),
+                );
+                crate::platform::reveal_in_file_manager(external);
             }
             ContextMenuAction::Cut => self.cut_entry(target, cx),
             ContextMenuAction::Copy => self.copy_entry(target, cx),
@@ -873,10 +1019,20 @@ impl ProjectPanel {
             },
             ContextMenuAction::Paste => self.paste_into(directory_of(&target, is_dir), cx),
             ContextMenuAction::CopyPath => {
-                fs_ops::copy_path_to_clipboard(&target, cx);
+                let external = crate::fs::resolve_document_external_path(
+                    &target,
+                    self.collocated_mode,
+                    self.root_dir.as_deref(),
+                );
+                fs_ops::copy_path_to_clipboard(external, cx);
             }
             ContextMenuAction::CopyRelativePath => {
-                fs_ops::copy_relative_path_to_clipboard(&target, self.root_dir.as_deref(), cx);
+                let external = crate::fs::resolve_document_external_path(
+                    &target,
+                    self.collocated_mode,
+                    self.root_dir.as_deref(),
+                );
+                fs_ops::copy_relative_path_to_clipboard(external, self.root_dir.as_deref(), cx);
             }
             ContextMenuAction::Rename => self.start_rename(&target, window, cx),
             ContextMenuAction::Trash => {
@@ -906,7 +1062,7 @@ impl ProjectPanel {
         let Some(target) = self.keyboard_target() else {
             return;
         };
-        let is_dir = target.is_dir();
+        let is_dir = self.is_expandable_folder(&target);
         // The root itself can be pasted into but not renamed, trashed or deleted.
         let is_root = self.root_dir.as_deref() == Some(target.as_path());
 
@@ -979,6 +1135,18 @@ impl ProjectPanel {
                     }
                     remap_path_set(&mut self.expanded_dirs, &src, &target);
                     remap_path_set(&mut self.filter_collapsed_dirs, &src, &target);
+                    if let Some(selected) = self.selected_path.as_deref()
+                        && let Some(remapped) = remap_moved_path(selected, &src, &target)
+                    {
+                        self.selected_path = Some(remapped);
+                    } else {
+                        self.selected_path = Some(target.clone());
+                    }
+                    if let Some(active) = self.active_file.as_deref()
+                        && let Some(remapped) = remap_moved_path(active, &src, &target)
+                    {
+                        self.active_file = Some(remapped);
+                    }
                     cx.emit(ProjectPanelEvent::PathRenamed {
                         old: src,
                         new: target,
@@ -1003,7 +1171,10 @@ impl ProjectPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.active_confirm_modal = Some(ConfirmModalState::new(kind, target, is_dir));
+        let is_collocated_doc = self.is_collocated_doc_entry(&target);
+        self.active_confirm_modal = Some(
+            ConfirmModalState::new(kind, target, is_dir).with_collocated_doc(is_collocated_doc),
+        );
         self.focus_handle.focus(window);
         cx.notify();
     }
@@ -1057,12 +1228,20 @@ impl ProjectPanel {
 
         let generation = self.tree_scan_generation;
         let expanded = self.expanded_dirs.clone();
+        let collocated_mode = self.collocated_mode;
         let bg_cancel = cancel.clone();
         let bg_root = root.clone();
         let task = cx.background_executor().spawn(async move {
             let mut entries = Vec::new();
             if bg_root.is_dir() {
-                scan_dir_recursive(&bg_root, 0, &expanded, &mut entries, &bg_cancel);
+                scan_dir_recursive(
+                    &bg_root,
+                    0,
+                    &expanded,
+                    collocated_mode,
+                    &mut entries,
+                    &bg_cancel,
+                );
             }
             (!bg_cancel.load(Ordering::Relaxed)).then_some(entries)
         });
@@ -1078,6 +1257,23 @@ impl ProjectPanel {
                     return;
                 }
                 this.entries = entries;
+                if this.collocated_mode {
+                    let bundle_paths: Vec<&Path> = this
+                        .entries
+                        .iter()
+                        .filter(|entry| entry.is_collocated_doc())
+                        .map(|entry| entry.path.as_path())
+                        .collect();
+                    if !bundle_paths.is_empty() {
+                        let root_dir = this.root_dir.as_deref();
+                        this.expanded_dirs.retain(|expanded| {
+                            root_dir == Some(expanded.as_path())
+                                || !bundle_paths
+                                    .iter()
+                                    .any(|bundle| expanded.starts_with(bundle))
+                        });
+                    }
+                }
                 cx.notify();
             });
         })
@@ -1103,9 +1299,10 @@ impl ProjectPanel {
         self.filter_scan_cancel = cancel.clone();
         self.filter_scan_pending = true;
         let scan_cancel = cancel.clone();
+        let collocated_mode = self.collocated_mode;
         let task = cx.background_executor().spawn(async move {
             let mut entries = Vec::new();
-            scan_dir_recursive_all(&root, 0, &mut entries, &scan_cancel);
+            scan_dir_recursive_all(&root, 0, collocated_mode, &mut entries, &scan_cancel);
             (!scan_cancel.load(Ordering::Relaxed)).then_some(entries)
         });
         cx.spawn(async move |this, cx| {
@@ -1191,8 +1388,10 @@ impl ProjectPanel {
         if is_dir {
             self.toggle_expand(&path, cx);
             window.focus(&self.focus_handle);
-        } else {
-            cx.emit(ProjectPanelEvent::OpenFile(path));
+        } else if let Some(open_path) =
+            crate::fs::resolve_openable_document_path(&path, self.collocated_mode)
+        {
+            cx.emit(ProjectPanelEvent::OpenFile(open_path));
         }
     }
 
@@ -1211,6 +1410,7 @@ impl ProjectPanel {
             target_path: path,
             is_dir,
             is_root: false,
+            collocated_mode: self.collocated_mode,
         });
         window.focus(&self.focus_handle);
         cx.notify();
@@ -1260,13 +1460,14 @@ fn scan_dir_recursive(
     dir: &Path,
     depth: usize,
     expanded: &HashSet<PathBuf>,
+    collocated_mode: bool,
     out: &mut Vec<FileTreeEntry>,
     cancel: &AtomicBool,
 ) {
     if cancel.load(Ordering::Relaxed) {
         return;
     }
-    for entry in read_tree_entries(dir) {
+    for entry in read_tree_entries(dir, collocated_mode) {
         if cancel.load(Ordering::Relaxed) {
             return;
         }
@@ -1279,15 +1480,26 @@ fn scan_dir_recursive(
                 is_expanded,
             ));
             if is_expanded {
-                scan_dir_recursive(&entry.path, depth + 1, expanded, out, cancel);
+                scan_dir_recursive(
+                    &entry.path,
+                    depth + 1,
+                    expanded,
+                    collocated_mode,
+                    out,
+                    cancel,
+                );
             }
+        } else if entry.is_collocated_doc {
+            out.push(FileTreeEntry::new_collocated_doc(
+                entry.path, entry.name, depth,
+            ));
         } else {
             out.push(FileTreeEntry::new_file(entry.path, entry.name, depth));
         }
     }
 }
 
-fn read_tree_entries(dir: &Path) -> Vec<ScannedTreeEntry> {
+fn read_tree_entries(dir: &Path, collocated_mode: bool) -> Vec<ScannedTreeEntry> {
     let mut items = Vec::new();
     if let Ok(read_dir) = std::fs::read_dir(dir) {
         for entry in read_dir.flatten() {
@@ -1296,14 +1508,31 @@ fn read_tree_entries(dir: &Path) -> Vec<ScannedTreeEntry> {
             if name.starts_with('.') || name == "target" || name == "node_modules" {
                 continue;
             }
-            let is_dir = path.is_dir();
-            let can_recurse = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
-            items.push(ScannedTreeEntry {
-                path,
-                name,
-                is_dir,
-                can_recurse,
-            });
+            let raw_is_dir = path.is_dir();
+            if collocated_mode {
+                if !raw_is_dir {
+                    continue;
+                }
+                let is_collocated_doc = crate::fs::has_collocated_index(&path);
+                let can_recurse = !is_collocated_doc
+                    && entry.file_type().is_ok_and(|file_type| file_type.is_dir());
+                items.push(ScannedTreeEntry {
+                    path,
+                    name,
+                    is_dir: !is_collocated_doc,
+                    is_collocated_doc,
+                    can_recurse,
+                });
+            } else {
+                let can_recurse = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
+                items.push(ScannedTreeEntry {
+                    path,
+                    name,
+                    is_dir: raw_is_dir,
+                    is_collocated_doc: false,
+                    can_recurse,
+                });
+            }
         }
     }
     items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
@@ -1317,13 +1546,14 @@ fn read_tree_entries(dir: &Path) -> Vec<ScannedTreeEntry> {
 fn scan_dir_recursive_all(
     dir: &Path,
     depth: usize,
+    collocated_mode: bool,
     out: &mut Vec<FileTreeEntry>,
     cancel: &AtomicBool,
 ) {
     if cancel.load(Ordering::Relaxed) {
         return;
     }
-    for entry in read_tree_entries(dir) {
+    for entry in read_tree_entries(dir, collocated_mode) {
         if cancel.load(Ordering::Relaxed) {
             return;
         }
@@ -1335,8 +1565,12 @@ fn scan_dir_recursive_all(
                 entry.can_recurse,
             ));
             if entry.can_recurse {
-                scan_dir_recursive_all(&entry.path, depth + 1, out, cancel);
+                scan_dir_recursive_all(&entry.path, depth + 1, collocated_mode, out, cancel);
             }
+        } else if entry.is_collocated_doc {
+            out.push(FileTreeEntry::new_collocated_doc(
+                entry.path, entry.name, depth,
+            ));
         } else {
             out.push(FileTreeEntry::new_file(entry.path, entry.name, depth));
         }
@@ -1447,6 +1681,7 @@ impl Render for ProjectPanel {
                             selected_path: panel.selected_path.as_deref(),
                             active_file: panel.active_file.as_deref(),
                             root_dir: panel.root_dir.as_deref(),
+                            collocated_mode: panel.collocated_mode,
                             panel: &panel_weak,
                         },
                         range,
@@ -1520,6 +1755,7 @@ impl Render for ProjectPanel {
                 target_path: root,
                 is_dir: true,
                 is_root: true,
+                collocated_mode: this.collocated_mode,
             });
             window.focus(&this.focus_handle);
             cx.notify();
@@ -1630,6 +1866,7 @@ impl Render for ProjectPanel {
                     this.child(tree_view::render_empty_state(
                         has_root,
                         self.inline_input.as_ref(),
+                        self.collocated_mode,
                         &theme,
                         cx,
                     ))
@@ -1840,7 +2077,7 @@ mod tests {
         }
 
         let mut entries = Vec::new();
-        scan_dir_recursive_all(root, 0, &mut entries, &AtomicBool::new(false));
+        scan_dir_recursive_all(root, 0, false, &mut entries, &AtomicBool::new(false));
 
         assert_eq!(
             entries
@@ -1961,5 +2198,93 @@ mod tests {
         );
         assert!(expanded_dir.is_dir());
         assert!(expanded_dir.is_expanded());
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let guide_dir = temp_dir.path().join("guide");
+        std::fs::create_dir_all(&guide_dir).unwrap();
+        let guide_index = guide_dir.join("index.md");
+        std::fs::write(&guide_index, "# Guide\n").unwrap();
+
+        let collocated =
+            FileTreeEntry::new_collocated_doc(guide_dir.clone(), "guide".to_string(), 0);
+        assert_eq!(collocated.kind, FileTreeEntryKind::CollocatedDocument);
+        assert!(!collocated.is_dir());
+        assert!(collocated.is_collocated_doc());
+        assert!(!collocated.is_expanded());
+        assert!(collocated.matches_active_file(Some(&guide_dir.join("index.md"))));
+        assert!(collocated.matches_active_file(Some(&guide_dir)));
+        assert!(!collocated.matches_active_file(Some(Path::new("/ws/other/index.md"))));
+    }
+
+    #[gpui::test]
+    fn test_collocated_filter_and_mode_switch_clears_stale_state(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        std::fs::write(root.join("loose.md"), "# Loose").unwrap();
+        std::fs::create_dir_all(root.join("cat/guide")).unwrap();
+        std::fs::write(root.join("cat/guide/index.md"), "# Guide").unwrap();
+
+        cx.update(|cx| {
+            let cfg = crate::config::AppConfig {
+                preferences: crate::config::UserPreferences {
+                    collocated_mode: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            cx.set_global(cfg);
+        });
+
+        let panel = cx.new(|cx| ProjectPanel::new(Some(root.to_path_buf()), cx));
+        panel.update(cx, |panel, cx| panel.prewarm_filter_index(cx));
+        cx.run_until_parked();
+
+        // Filtering in collocated mode matches bundle "guide" and excludes "loose.md"
+        panel.update(cx, |panel, cx| panel.set_filter_query("guide".into(), cx));
+        panel.read_with(cx, |panel, _| {
+            let matching_names: Vec<&str> = panel
+                .filtered_indices
+                .iter()
+                .map(|idx| panel.all_entries[*idx].name.as_str())
+                .collect();
+            assert_eq!(matching_names, vec!["cat", "guide"]);
+            assert!(
+                !panel
+                    .all_entries
+                    .iter()
+                    .any(|entry| entry.name == "loose.md")
+            );
+        });
+
+        // Switch off collocated mode -> loose file appears and active modal / bundle expansion cleanup runs
+        panel.update(cx, |panel, cx| {
+            panel.active_confirm_modal = Some(
+                ConfirmModalState::new(ConfirmModalKind::Trash, root.join("cat/guide"), false)
+                    .with_collocated_doc(true),
+            );
+            panel.set_collocated_mode(false, cx);
+        });
+        cx.run_until_parked();
+
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.collocated_mode());
+            assert!(panel.active_confirm_modal().is_none());
+            assert!(panel.entries().iter().any(|entry| entry.name == "loose.md"));
+        });
+
+        // Select loose.md then switch back on -> non-dir selected_path & stale bundle expansion cleared
+        let loose_path = root.join("loose.md");
+        let guide_path = root.join("cat/guide");
+        panel.update(cx, |panel, cx| {
+            panel.set_selected_path(Some(loose_path.clone()), cx);
+            panel.expanded_dirs.insert(guide_path.clone());
+            panel.set_collocated_mode(true, cx);
+        });
+        cx.run_until_parked();
+
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.selected_path().is_none());
+            assert!(!panel.is_expanded(&guide_path));
+        });
     }
 }

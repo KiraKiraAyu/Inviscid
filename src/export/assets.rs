@@ -282,12 +282,17 @@ mod tests {
     #[test]
     fn strip_svg_xml_prolog_strips_prolog_and_requires_svg_tag() {
         assert_eq!(
-            strip_svg_xml_prolog("  <?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg viewBox=\"0 0 10 10\"><rect/></svg>\n"),
+            strip_svg_xml_prolog(
+                "  <?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg viewBox=\"0 0 10 10\"><rect/></svg>\n"
+            ),
             "<svg viewBox=\"0 0 10 10\"><rect/></svg>"
         );
         assert_eq!(strip_svg_xml_prolog("<svg><g/></svg>"), "<svg><g/></svg>");
         assert_eq!(strip_svg_xml_prolog("<svg/>"), "<svg/>");
-        assert_eq!(strip_svg_xml_prolog("<SVG width=\"1\"></SVG>"), "<SVG width=\"1\"></SVG>");
+        assert_eq!(
+            strip_svg_xml_prolog("<SVG width=\"1\"></SVG>"),
+            "<SVG width=\"1\"></SVG>"
+        );
         assert_eq!(strip_svg_xml_prolog("<svgx></svgx>"), "");
         assert_eq!(strip_svg_xml_prolog("no svg here"), "");
     }
@@ -295,7 +300,10 @@ mod tests {
     #[test]
     fn resolve_image_src_blocks_unsafe_schemes_embeds_svg_and_respects_total_budget() {
         let mut embedder = ImageEmbedder::default();
-        assert_eq!(embedder.resolve_image_src("javascript:alert(1)", None), None);
+        assert_eq!(
+            embedder.resolve_image_src("javascript:alert(1)", None),
+            None
+        );
         assert_eq!(embedder.resolve_image_src("vbscript:msgbox(1)", None), None);
         assert_eq!(
             embedder.resolve_image_src("data:text/html,<script>alert(1)</script>", None),
@@ -308,7 +316,9 @@ mod tests {
         assert!(is_safe_href("#heading"));
 
         assert_eq!(
-            embedder.resolve_image_src("data:image/png;base64,AAAA", None).as_deref(),
+            embedder
+                .resolve_image_src("data:image/png;base64,AAAA", None)
+                .as_deref(),
             Some("data:image/png;base64,AAAA")
         );
         assert_eq!(
@@ -318,7 +328,9 @@ mod tests {
             Some("data:image/svg+xml;base64,PHN2Zy8+")
         );
         assert_eq!(
-            embedder.resolve_image_src("images/diagram.png", None).as_deref(),
+            embedder
+                .resolve_image_src("images/diagram.png", None)
+                .as_deref(),
             Some("images/diagram.png")
         );
 
@@ -328,7 +340,9 @@ mod tests {
         let svg_bytes = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"4\"/></svg>";
         std::fs::write(&svg_path, svg_bytes).unwrap();
         assert_eq!(
-            embedder.resolve_image_src("icon.svg", Some(&doc_path)).as_deref(),
+            embedder
+                .resolve_image_src("icon.svg", Some(&doc_path))
+                .as_deref(),
             Some(format!("data:image/svg+xml;base64,{}", encode_base64(svg_bytes)).as_str())
         );
 
@@ -358,7 +372,9 @@ mod tests {
         );
         // Third 25 MiB image exceeds the 64 MiB total document budget and is not embedded.
         assert_eq!(
-            embedder.resolve_image_src("c.png", Some(&doc_path)).as_deref(),
+            embedder
+                .resolve_image_src("c.png", Some(&doc_path))
+                .as_deref(),
             Some("c.png")
         );
     }

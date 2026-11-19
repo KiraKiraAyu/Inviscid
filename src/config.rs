@@ -350,6 +350,7 @@ pub struct UserPreferences {
     pub theme: String,
     pub ui_font_size: f32,
     pub restore_workspace: bool,
+    pub collocated_mode: bool,
     pub auto_save: bool,
     pub editor_font_size: f32,
     pub line_height: f32,
@@ -376,6 +377,7 @@ impl Default for UserPreferences {
             theme: Self::DEFAULT_THEME.to_string(),
             ui_font_size: Self::DEFAULT_UI_FONT_SIZE,
             restore_workspace: true,
+            collocated_mode: false,
             auto_save: false,
             editor_font_size: Self::DEFAULT_EDITOR_FONT_SIZE,
             line_height: Self::DEFAULT_LINE_HEIGHT,
@@ -915,6 +917,7 @@ mod tests {
         assert_eq!(parsed.theme, "Nord");
         assert_eq!(parsed.ui_font_size, 13.0);
         assert!(parsed.restore_workspace);
+        assert!(!parsed.collocated_mode);
         assert!(!parsed.auto_save);
         assert_eq!(parsed.editor_font_size, 15.0);
         assert_eq!(parsed.line_height, 1.6);
@@ -928,6 +931,7 @@ mod tests {
         full_config.ui_font_size = 14.0;
         full_config.editor_font_size = 18.0;
         full_config.line_height = 1.8;
+        full_config.collocated_mode = true;
         full_config.auto_save = true;
         full_config.soft_wrap = false;
         full_config.set_keybinding("NewTab", "ctrl-t");
@@ -939,6 +943,7 @@ mod tests {
         assert_eq!(deserialized.ui_font_size, 14.0);
         assert_eq!(deserialized.editor_font_size, 18.0);
         assert_eq!(deserialized.line_height, 1.8);
+        assert!(deserialized.collocated_mode);
         assert!(deserialized.auto_save);
         assert!(!deserialized.soft_wrap);
         assert!(deserialized.cursor_blink);

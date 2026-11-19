@@ -9,6 +9,21 @@ pub fn create_file(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
     Ok(target)
 }
 
+/// Creates a new collocated document bundle (`<parent>/<name>/index.md`) and returns the bundle directory.
+pub fn create_collocated_doc(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
+    let bundle_dir = parent.join(name);
+    if bundle_dir.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "Document directory already exists",
+        ));
+    }
+    std::fs::create_dir_all(&bundle_dir)?;
+    let index_path = bundle_dir.join(crate::fs::COLLOCATED_INDEX_FILE);
+    std::fs::File::create(&index_path)?;
+    Ok(bundle_dir)
+}
+
 /// Creates a new folder in the target parent directory.
 pub fn create_folder(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
     let target = parent.join(name);
@@ -462,5 +477,17 @@ mod tests {
         let result = perform_paste(&file, true, &folder).unwrap();
         assert_eq!(result, file);
         assert_eq!(scratch.read("folder/doc.md"), "DOC");
+    }
+
+    #[test]
+    fn create_collocated_doc_creates_bundle_and_refuses_overwrite() {
+        let scratch = Scratch::new("collocated_doc");
+        let bundle = create_collocated_doc(&scratch.0, "v1.0-release").unwrap();
+        assert_eq!(bundle, scratch.0.join("v1.0-release"));
+        assert!(bundle.is_dir());
+        assert!(bundle.join("index.md").is_file());
+
+        let err = create_collocated_doc(&scratch.0, "v1.0-release").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     }
 }
