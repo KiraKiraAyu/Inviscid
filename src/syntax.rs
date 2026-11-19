@@ -1,15 +1,27 @@
 pub mod builtins;
+pub mod loader;
 pub mod queries;
 pub mod registry;
 pub mod token;
 
 pub use builtins::*;
+pub use loader::{GrammarCdnPreset, normalize_grammar_base_url};
 pub use queries::*;
-pub use registry::*;
+pub use registry::{
+    LoadedGrammar, highlight_code_block, register_global_wasm_grammar, set_global_grammar_base_url,
+    subscribe_syntax_updates, syntax_cache_version,
+};
+pub(crate) use registry::{peek_global_loaded, syntax_retry_epoch};
 pub use token::*;
 
 #[cfg(test)]
 mod tests {
+    use super::loader::{
+        DebouncedGrammarLoader, build_grammar_download_url, find_grammar_in_dirs_by_id,
+    };
+    use super::registry::{
+        GrammarState, LoadedGrammar, SyntaxRegistry, highlight_lines_with_grammar,
+    };
     use super::*;
 
     const JSON_GRAMMAR_WASM: &[u8] = include_bytes!("../tests/fixtures/tree-sitter-json.wasm");
@@ -196,7 +208,7 @@ mod tests {
         std::fs::write(json_dir.join("grammar.wasm"), JSON_GRAMMAR_WASM).unwrap();
 
         let spec = resolve_grammar_spec("json").unwrap();
-        let found = find_grammar_in_dirs(spec, &[temp_dir.as_path()]);
+        let found = find_grammar_in_dirs_by_id(spec.canonical_id, &[temp_dir.as_path()]);
         assert!(found.is_some());
         let (bytes, custom_scm) = found.unwrap();
         assert_eq!(bytes.len(), JSON_GRAMMAR_WASM.len());
@@ -288,7 +300,7 @@ mod tests {
 
         let loader = DebouncedGrammarLoader::new();
         loader.schedule_remote_fetch("has");
-        // Intermediate typing simulation
+        // Interactive typing simulation (>= 10ms between keystrokes)
         std::thread::sleep(std::time::Duration::from_millis(20));
         loader.schedule_remote_fetch("hask");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -309,6 +321,22 @@ mod tests {
                 .cancel_token
                 .load(Ordering::Relaxed)
         );
+    }
+
+    #[test]
+    fn test_debounced_grammar_loader_preserves_polyglot_and_prefix_languages() {
+        let loader = DebouncedGrammarLoader::new();
+        // Same-frame document scan (< 10ms) and unrelated languages (> 10ms) must not cancel each other.
+        loader.schedule_remote_fetch("c");
+        loader.schedule_remote_fetch("cpp");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        loader.schedule_remote_fetch("rust");
+
+        let (lock, _) = &*loader.inner;
+        let inner = lock.lock();
+        assert!(inner.scheduled.contains_key("c"));
+        assert!(inner.scheduled.contains_key("cpp"));
+        assert!(inner.scheduled.contains_key("rust"));
     }
 
     #[test]
@@ -337,5 +365,36 @@ mod tests {
             registry.get_state("missing_lang"),
             Some(GrammarState::Failed(_))
         ));
+    }
+
+    #[test]
+    fn test_syntax_registry_evicts_lru_over_limit() {
+        use std::sync::Arc;
+        let mut registry = SyntaxRegistry::with_limit(2);
+        let lang_a = Arc::new(
+            LoadedGrammar::from_wasm_bytes_with_id("json", JSON_GRAMMAR_WASM, None).unwrap(),
+        );
+        let mut lang_b_grammar =
+            LoadedGrammar::from_wasm_bytes_with_id("json", JSON_GRAMMAR_WASM, None).unwrap();
+        lang_b_grammar.canonical_id = "rust".to_string();
+        let lang_b = Arc::new(lang_b_grammar);
+
+        let mut lang_c_grammar =
+            LoadedGrammar::from_wasm_bytes_with_id("json", JSON_GRAMMAR_WASM, None).unwrap();
+        lang_c_grammar.canonical_id = "python".to_string();
+        let lang_c = Arc::new(lang_c_grammar);
+
+        assert!(!registry.mark_loaded(lang_a));
+        assert!(!registry.mark_loaded(lang_b));
+        assert_eq!(registry.loaded_count(), 2);
+
+        // Touch `json` so `rust` becomes least-recently-used.
+        assert!(registry.get_loaded("json").is_some());
+
+        assert!(registry.mark_loaded(lang_c));
+        assert_eq!(registry.loaded_count(), 2);
+        assert!(registry.get_state("json").is_some());
+        assert!(registry.get_state("python").is_some());
+        assert!(registry.get_state("rust").is_none());
     }
 }

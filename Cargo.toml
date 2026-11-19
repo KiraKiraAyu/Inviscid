@@ -32,6 +32,7 @@ trash = { version = "5.2.9", default-features = false, features = [
     "coinit_apartmentthreaded",
 ] }
 tree-sitter = { version = "0.27", features = ["wasm"] }
+wasmtime = { version = "48.0", default-features = false, features = ["cache"] }
 tempfile = "3.27"
 
 # Search functionality

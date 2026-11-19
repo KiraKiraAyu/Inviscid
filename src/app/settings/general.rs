@@ -398,7 +398,7 @@ mod tests {
                 assert!(!s.is_custom_grammar_mode(cx));
                 assert_eq!(
                     cx.global::<AppConfig>().grammar_base_url,
-                    GrammarCdnPreset::DEFAULT.url()
+                    GrammarCdnPreset::default().url()
                 );
 
                 // Switch to unpkg preset

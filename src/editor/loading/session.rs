@@ -306,13 +306,19 @@ impl DocumentSession {
             (target, range)
         };
         let (target, range) = target;
+        let pre_syntax_version = crate::syntax::syntax_cache_version();
         let (scanned_range, rows) =
             MarkdownScanner::scan_snapshot_window(&target.source, &target.index, range);
         prepare_resources(&rows, path);
         if self.cancelled.load(Ordering::Acquire) {
             return;
         }
-        let resources = Resource::collect(scanned_range.start, &rows);
+        let mut resources = Resource::collect(scanned_range.start, &rows);
+        if crate::syntax::syntax_cache_version() != pre_syntax_version {
+            for res in &mut resources {
+                res.clear_raced_unhighlighted(scanned_range.start, &rows);
+            }
+        }
         let rows = Arc::new(rows);
         let mut state = self.state.lock();
         let Some(current) = state.target.clone() else {
