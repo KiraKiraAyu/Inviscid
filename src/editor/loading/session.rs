@@ -141,6 +141,8 @@ impl DocumentSession {
                 .target
                 .as_ref()
                 .is_some_and(|target| target.revision.checked_add(1) == Some(buffer.revision()));
+        let source = buffer.source_snapshot();
+        let index = buffer.line_index().structure_snapshot();
         if sequential && let Some((patch, patched_windows)) = incremental {
             let mut windows: VecDeque<WindowEntry> = state
                 .windows
@@ -153,7 +155,8 @@ impl DocumentSession {
                 if !patched_windows.iter().any(|patched| {
                     window.range.start < patched.range.end && patched.range.start < window.range.end
                 }) {
-                    let resources = Resource::collect(window.range.start, &window.rows);
+                    let resources =
+                        Resource::collect(window.range.start, &window.rows, Some((&source, &index)));
                     next_windows.push_back(CachedWindow {
                         window,
                         revision: buffer.revision(),
@@ -162,7 +165,8 @@ impl DocumentSession {
                 }
             }
             for window in patched_windows {
-                let resources = Resource::collect(window.range.start, &window.rows);
+                let resources =
+                    Resource::collect(window.range.start, &window.rows, Some((&source, &index)));
                 next_windows.push_back(CachedWindow {
                     window,
                     revision: buffer.revision(),
@@ -178,8 +182,8 @@ impl DocumentSession {
         }
         let disk_hash = state.target.as_ref().map_or(0, |t| t.disk_hash);
         state.target = Some(WorkTarget {
-            source: buffer.source_snapshot(),
-            index: buffer.line_index().structure_snapshot(),
+            source,
+            index,
             revision: buffer.revision(),
             from_disk: false,
             complete: true,
@@ -313,7 +317,8 @@ impl DocumentSession {
         if self.cancelled.load(Ordering::Acquire) {
             return;
         }
-        let mut resources = Resource::collect(scanned_range.start, &rows);
+        let mut resources =
+            Resource::collect(scanned_range.start, &rows, Some((&target.source, &target.index)));
         if crate::syntax::syntax_cache_version() != pre_syntax_version {
             for res in &mut resources {
                 res.clear_raced_unhighlighted(scanned_range.start, &rows);
