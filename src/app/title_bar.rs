@@ -194,20 +194,12 @@ impl Render for TitleBar {
                                     &ws_name,
                                     move |ws_state, window, cx| {
                                         titlebar.update(cx, |tb, cx| tb.close_menu(cx));
-                                        if cx.has_global::<AppConfig>()
-                                            && workspace.read(cx).persists_session()
-                                        {
-                                            let wb = crate::config::WindowLayoutState::from_window(
-                                                window, cx,
-                                            );
-                                            let mut config = cx.global::<AppConfig>().clone();
-                                            workspace.read(cx).sync_workspace_state_with_window(
-                                                &mut config,
-                                                wb,
-                                                cx,
-                                            );
-                                            cx.set_global(config);
-                                        }
+                                        let wb = crate::config::WindowLayoutState::from_window(
+                                            window, cx,
+                                        );
+                                        crate::app::commands::sync_workspace_state_to_config(
+                                            &workspace, wb, cx,
+                                        );
                                         workspace.update(cx, |ws, cx| {
                                             ws.restore_from_state(ws_state, cx);
                                             ws.focus_active_editor(window, cx);

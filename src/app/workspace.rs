@@ -221,6 +221,7 @@ impl Workspace {
         tabs: Vec<TabItem>,
         active_tab_idx: usize,
         layout: PanelLayoutValues,
+        persists_session: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -271,10 +272,7 @@ impl Workspace {
                 p.reveal_path(active_path, cx);
             }
             p.set_active_file(active_file, cx);
-            p.set_filter_visible(
-                layout.sidebar_visible && layout.sidebar_view == SidebarView::Search,
-                cx,
-            );
+            p.set_filter_visible(layout.sidebar_view == SidebarView::Search, cx);
         });
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
         let outline_panel = cx.new(|cx| OutlinePanel::new(cx.focus_handle()));
@@ -305,7 +303,7 @@ impl Workspace {
             panel_drag_start_x: None,
             panel_drag_start_width: None,
             collocated_mode,
-            persists_session: true,
+            persists_session,
             _config_subscription,
         };
         workspace.sync_outline_panel(cx);
@@ -316,25 +314,25 @@ impl Workspace {
         let collocated_mode = cx
             .try_global::<AppConfig>()
             .is_some_and(|cfg| cfg.collocated_mode);
-        let (root_dir, file_path) = match initial_path {
+        let (root_dir, file_path, persists_session) = match initial_path {
             Some(p) if p.is_dir() => {
                 if collocated_mode
                     && let Some(index_file) = crate::fs::find_collocated_index_file(&p)
                 {
                     let parent = p.parent().map(|d| d.to_path_buf());
-                    (parent, Some(index_file))
+                    (parent, Some(index_file), false)
                 } else {
                     let target = fs::find_folder_target_file(&p, collocated_mode);
-                    (Some(p), target)
+                    (Some(p), target, true)
                 }
             }
             Some(p) => {
                 let parent = crate::fs::resolve_document_parent_dir(&p, collocated_mode, None)
                     .map(|d| d.to_path_buf())
                     .or_else(|| p.parent().map(|d| d.to_path_buf()));
-                (parent, Some(p))
+                (parent, Some(p), false)
             }
-            None => (None, None),
+            None => (None, None, true),
         };
 
         let (tabs, active_tab_idx) = if let Some(path) = file_path.clone() {
@@ -354,7 +352,15 @@ impl Workspace {
         };
 
         let layout = PanelLayoutValues::from_app_config(cx);
-        Self::build_with_layout(root_dir, file_path, tabs, active_tab_idx, layout, cx)
+        Self::build_with_layout(
+            root_dir,
+            file_path,
+            tabs,
+            active_tab_idx,
+            layout,
+            persists_session,
+            cx,
+        )
     }
 
     fn load_tabs_from_state(ws: &WorkspaceState, cx: &mut Context<Self>) -> (Vec<TabItem>, usize) {
@@ -400,6 +406,7 @@ impl Workspace {
             tabs,
             active_tab_idx,
             layout,
+            true,
             cx,
         )
     }
@@ -430,10 +437,7 @@ impl Workspace {
                 p.reveal_path(active_path, cx);
             }
             p.set_active_file(ws.active_file.clone(), cx);
-            p.set_filter_visible(
-                layout.sidebar_visible && layout.sidebar_view == SidebarView::Search,
-                cx,
-            );
+            p.set_filter_visible(layout.sidebar_view == SidebarView::Search, cx);
         });
 
         self.sync_sidebar_state(cx);
@@ -662,12 +666,14 @@ impl Workspace {
     }
 
     fn sync_active_editor_state(&mut self, cx: &mut Context<Self>) {
-        let has_search_tab = self
+        if !self
             .tabs
             .iter()
-            .any(|tab| tab.kind == TabKind::WorkspaceSearch);
-        self.search_panel
-            .update(cx, |sp, cx| sp.set_active(has_search_tab, cx));
+            .any(|tab| tab.kind == TabKind::WorkspaceSearch)
+        {
+            self.search_panel
+                .update(cx, |sp, cx| sp.release_idle_cache(cx));
+        }
         for (i, tab) in self.tabs.iter().enumerate() {
             if i != self.active_tab_idx {
                 tab.editor.update(cx, |ed, cx| ed.on_blur(cx));
@@ -1303,11 +1309,6 @@ impl Workspace {
         self.persists_session
     }
 
-    #[inline]
-    pub fn set_persists_session(&mut self, persists: bool) {
-        self.persists_session = persists;
-    }
-
     pub fn root_dir(&self) -> Option<&std::path::Path> {
         self.root_dir.as_deref()
     }
@@ -1473,11 +1474,6 @@ impl Workspace {
     pub fn set_sidebar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if self.sidebar_visible != visible {
             self.sidebar_visible = visible;
-            if visible && self.sidebar_view == SidebarView::Search {
-                self.project_panel.update(cx, |panel, cx| {
-                    panel.set_filter_visible(true, cx);
-                });
-            }
             self.sync_sidebar_state(cx);
             cx.emit(WorkspaceEvent::LayoutChanged);
             cx.notify();
@@ -2176,13 +2172,26 @@ mod tests {
         cx.run_until_parked();
 
         ws.read_with(cx, |ws, cx| {
-            assert!(ws.project_panel.read(cx).has_filter_index_activity());
+            assert!(!ws.project_panel.read(cx).has_filter_index_activity());
             assert!(ws.search_panel.read(cx).has_cached_files());
         });
 
         ws.update(cx, |ws, cx| ws.close_active_tab(cx));
         ws.read_with(cx, |ws, cx| {
             assert!(!ws.search_panel.read(cx).has_cached_files());
+        });
+
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.show_sidebar(SidebarView::Files, cx);
+                ws.toggle_sidebar_view(SidebarView::Search, window, cx);
+            });
+        });
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.project_panel.read(cx).has_filter_index_activity());
         });
     }
 }

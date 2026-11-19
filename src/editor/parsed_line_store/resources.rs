@@ -55,6 +55,11 @@ fn syntax_block_end(window_start: usize, rows: &[ParsedLine], search_from: usize
         })
 }
 
+fn fence_language(raw_text: &str) -> Option<String> {
+    let content = crate::markdown::strip_quote_prefix(raw_text);
+    crate::markdown::fence_info(content).map(str::to_string)
+}
+
 fn syntax_resource(range: Range<usize>, language: String, retry_epoch: u64) -> Resource {
     Resource {
         range,
@@ -89,17 +94,10 @@ impl Resource {
             )
             && let Some((open_line, _)) = index.fence_range(SourceLine::new(start))
             && open_line.index() < start
+            && let Some(language) = fence_language(&source.source_line(open_line))
         {
-            let open_text = source.source_line(open_line);
-            let content = crate::markdown::strip_quote_prefix(&open_text);
-            if let Some(language) = crate::markdown::fence_info(content) {
-                let end = syntax_block_end(start, rows, 0);
-                resources.push(syntax_resource(
-                    start..end,
-                    language.to_string(),
-                    retry_epoch,
-                ));
-            }
+            let end = syntax_block_end(start, rows, 0);
+            resources.push(syntax_resource(start..end, language, retry_epoch));
         }
 
         for (offset, row) in rows.iter().enumerate() {
@@ -115,14 +113,9 @@ impl Resource {
                 BlockKind::CodeBlock {
                     is_fence_start: true,
                 } => {
-                    let content = crate::markdown::strip_quote_prefix(&row.raw_text);
-                    if let Some(language) = crate::markdown::fence_info(content) {
+                    if let Some(language) = fence_language(&row.raw_text) {
                         let end = syntax_block_end(start, rows, offset + 1);
-                        resources.push(syntax_resource(
-                            line..end,
-                            language.to_string(),
-                            retry_epoch,
-                        ));
+                        resources.push(syntax_resource(line..end, language, retry_epoch));
                     }
                 }
                 _ => {}

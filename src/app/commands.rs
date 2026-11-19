@@ -30,38 +30,36 @@ pub fn main_window_options(
     }
 }
 
-pub fn sync_workspace_in_memory(app: &InviscidWindow, cx: &mut App) {
-    if !app.workspace().read(cx).persists_session() {
-        return;
+pub fn sync_workspace_state_to_config(
+    workspace: &Entity<crate::app::workspace::Workspace>,
+    window_bounds: Option<WindowLayoutState>,
+    cx: &mut App,
+) -> bool {
+    if !cx.has_global::<AppConfig>() || !workspace.read(cx).persists_session() {
+        return false;
     }
-    if cx.has_global::<AppConfig>() {
-        let mut config = cx.global::<AppConfig>().clone();
-        app.workspace().read(cx).sync_workspace_state_with_window(
-            &mut config,
-            app.cached_window_bounds().cloned(),
-            cx,
-        );
-        cx.set_global(config);
-    }
+    let mut config = cx.global::<AppConfig>().clone();
+    workspace
+        .read(cx)
+        .sync_workspace_state_with_window(&mut config, window_bounds, cx);
+    cx.set_global(config);
+    true
+}
+
+pub fn sync_workspace_in_memory(app: &InviscidWindow, cx: &mut App) -> bool {
+    sync_workspace_state_to_config(app.workspace(), app.cached_window_bounds().cloned(), cx)
 }
 
 pub fn sync_workspace_to_global(app: &InviscidWindow, cx: &mut Context<InviscidWindow>) {
-    if !app.workspace().read(cx).persists_session() {
-        return;
-    }
-    sync_workspace_in_memory(app, cx);
-    if let Some(config) = cx.try_global::<AppConfig>() {
-        config.persist_session_async(cx.background_executor());
+    if sync_workspace_in_memory(app, cx) {
+        cx.global::<AppConfig>()
+            .persist_session_async(cx.background_executor());
     }
 }
 
 pub fn sync_workspace_to_global_sync(app: &InviscidWindow, cx: &mut Context<InviscidWindow>) {
-    if !app.workspace().read(cx).persists_session() {
-        return;
-    }
-    sync_workspace_in_memory(app, cx);
-    if let Some(config) = cx.try_global::<AppConfig>() {
-        config.save_session();
+    if sync_workspace_in_memory(app, cx) {
+        cx.global::<AppConfig>().save_session();
     }
 }
 

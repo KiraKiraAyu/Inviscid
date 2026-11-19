@@ -292,7 +292,10 @@ impl ProjectPanel {
     }
 
     pub fn refresh_tree(&mut self, cx: &mut Context<Self>) {
-        if self.all_entries_loaded || self.filter_scan_pending || self.wants_filter_index() {
+        if self.all_entries_loaded
+            || self.filter_scan_pending
+            || !self.filter_query.trim().is_empty()
+        {
             self.refresh_all_entries(cx);
         }
         self.refresh_entries(cx);
@@ -437,15 +440,10 @@ impl ProjectPanel {
 
     pub(crate) fn set_filter_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if self.show_filter == visible {
-            if visible {
-                self.prewarm_filter_index(cx);
-            }
             return;
         }
         self.show_filter = visible;
-        if visible {
-            self.prewarm_filter_index(cx);
-        } else {
+        if !visible {
             self.set_filter_query(String::new(), cx);
             if let Some(input) = &self.filter_input {
                 input.update(cx, |input, cx| input.set_text("", cx));
@@ -457,7 +455,7 @@ impl ProjectPanel {
 
     pub(crate) fn focus_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_filter = true;
-        self.prewarm_filter_index(cx);
+        self.start_filter_scan(cx);
         let input = self.ensure_filter_input(cx);
         input.update(cx, |input, cx| {
             input.select_all();
@@ -465,10 +463,6 @@ impl ProjectPanel {
         });
         window.focus(&input.read(cx).focus_handle(cx));
         cx.notify();
-    }
-
-    pub(crate) fn prewarm_filter_index(&mut self, cx: &mut Context<Self>) {
-        self.start_filter_scan(cx);
     }
 
     #[cfg(test)]
@@ -1349,10 +1343,6 @@ impl ProjectPanel {
         .detach();
     }
 
-    fn wants_filter_index(&self) -> bool {
-        self.show_filter || !self.filter_query.trim().is_empty()
-    }
-
     fn reset_filter_index(&mut self) {
         self.cancel_filter_scan();
         self.all_entries.clear();
@@ -1363,7 +1353,7 @@ impl ProjectPanel {
 
     fn refresh_all_entries(&mut self, cx: &mut Context<Self>) {
         self.reset_filter_index();
-        if self.wants_filter_index() {
+        if !self.filter_query.trim().is_empty() {
             self.start_filter_scan(cx);
         }
     }
@@ -2031,7 +2021,7 @@ mod tests {
         let root = temp_dir.path().to_path_buf();
         let panel = cx.update(|cx| cx.new(|cx| ProjectPanel::new(Some(root), cx)));
 
-        panel.update(cx, |panel, cx| panel.prewarm_filter_index(cx));
+        panel.update(cx, |panel, cx| panel.start_filter_scan(cx));
         cx.run_until_parked();
         panel.read_with(cx, |panel, _| {
             assert!(panel.all_entries_loaded);
@@ -2255,7 +2245,7 @@ mod tests {
         });
 
         let panel = cx.new(|cx| ProjectPanel::new(Some(root.to_path_buf()), cx));
-        panel.update(cx, |panel, cx| panel.prewarm_filter_index(cx));
+        panel.update(cx, |panel, cx| panel.start_filter_scan(cx));
         cx.run_until_parked();
 
         // Filtering in collocated mode matches bundle "guide" and excludes "loose.md"
@@ -2308,7 +2298,8 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_filter_index_defers_scans_until_filter_visible(cx: &mut TestAppContext) {
+    fn test_filter_index_defers_scans_until_focused_or_queried(cx: &mut TestAppContext) {
+        init_test_globals(cx);
         let temp_dir = tempfile::tempdir().unwrap();
         let root_a = temp_dir.path().join("a");
         let root_b = temp_dir.path().join("b");
@@ -2317,7 +2308,7 @@ mod tests {
         std::fs::write(root_a.join("nested/note.md"), "a").unwrap();
         std::fs::write(root_b.join("nested/other.md"), "b").unwrap();
 
-        let panel = cx.new(|cx| ProjectPanel::new(Some(root_a), cx));
+        let (panel, cx) = cx.add_window_view(|_window, cx| ProjectPanel::new(Some(root_a), cx));
         cx.run_until_parked();
         panel.read_with(cx, |panel, _| {
             assert!(!panel.has_filter_index_activity());
@@ -2326,13 +2317,16 @@ mod tests {
         panel.update(cx, |panel, cx| {
             panel.set_root_dir(Some(root_b), cx);
             panel.refresh_tree(cx);
+            panel.set_filter_visible(true, cx);
         });
         cx.run_until_parked();
         panel.read_with(cx, |panel, _| {
             assert!(!panel.has_filter_index_activity());
         });
 
-        panel.update(cx, |panel, cx| panel.set_filter_visible(true, cx));
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.focus_filter(window, cx));
+        });
         cx.run_until_parked();
         panel.read_with(cx, |panel, _| {
             assert!(panel.all_entries_loaded);

@@ -116,14 +116,7 @@ impl InviscidWindow {
     /// If no workspace is restored, a clean default workspace is created.
     pub fn open_initial(initial_path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         if let Some(file) = initial_path {
-            let is_single_file = !file.is_dir();
-            let window = Self::new_with_file(file, cx);
-            if is_single_file {
-                window
-                    .workspace
-                    .update(cx, |ws, _| ws.set_persists_session(false));
-            }
-            window
+            Self::new_with_file(file, cx)
         } else {
             let last_ws = cx.try_global::<AppConfig>().and_then(|config| {
                 if config.restore_workspace {
@@ -185,15 +178,16 @@ impl InviscidWindow {
         };
         if self.cached_window_bounds.as_ref() != Some(&bounds) {
             self.cached_window_bounds = Some(bounds);
-            commands::sync_workspace_in_memory(self, cx);
-            self._bounds_persist_task = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(250))
-                    .await;
-                let _ = this.update(cx, |this, cx| {
-                    commands::sync_workspace_to_global(this, cx);
-                });
-            }));
+            if commands::sync_workspace_in_memory(self, cx) {
+                self._bounds_persist_task = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(250))
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        commands::sync_workspace_to_global(this, cx);
+                    });
+                }));
+            }
         }
     }
 

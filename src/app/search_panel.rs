@@ -51,7 +51,6 @@ pub struct SearchPanel {
     results_scroll: crate::ui::SmoothScrollController,
     root_dir: Option<PathBuf>,
     file_cache: WorkspaceFileCache,
-    active: bool,
     prewarm_cancel: Arc<AtomicBool>,
     search_cancel: Arc<AtomicBool>,
     options: SearchOptions,
@@ -127,7 +126,6 @@ impl SearchPanel {
             results_scroll: crate::ui::SmoothScrollController::vertical(),
             root_dir: None,
             file_cache: WorkspaceFileCache::default(),
-            active: false,
             prewarm_cancel: Arc::new(AtomicBool::new(false)),
             search_cancel: Arc::new(AtomicBool::new(false)),
             options: SearchOptions::default(),
@@ -151,16 +149,10 @@ impl SearchPanel {
         self.file_cache.is_populated()
     }
 
-    pub fn set_active(&mut self, active: bool, cx: &App) {
-        if self.active == active {
-            return;
-        }
-        self.active = active;
-        if !active {
-            self.prewarm_cancel.store(true, Ordering::Relaxed);
-            if self.query_text(cx).is_empty() {
-                self.file_cache.invalidate();
-            }
+    pub fn release_idle_cache(&mut self, cx: &App) {
+        self.prewarm_cancel.store(true, Ordering::Relaxed);
+        if self.query_text(cx).is_empty() {
+            self.file_cache.invalidate();
         }
     }
 
@@ -173,16 +165,12 @@ impl SearchPanel {
         if !self.query_text(cx).is_empty() && self.root_dir.is_some() {
             self.search_now(cx);
         } else {
-            if self.wants_file_index(cx) {
-                self.prewarm_file_cache(cx);
-            }
             cx.notify();
         }
     }
 
     pub fn focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let was_active = std::mem::replace(&mut self.active, true);
-        if !was_active && self.root_dir.is_some() && self.query_text(cx).is_empty() {
+        if self.root_dir.is_some() && self.query_text(cx).is_empty() {
             self.prewarm_file_cache(cx);
         }
         self.input.update(cx, |input, cx| {
@@ -206,30 +194,19 @@ impl SearchPanel {
         }
         self.root_dir = root_dir;
         self.invalidate_file_cache();
-        self.refresh_file_index(cx);
+        self.schedule_search(cx);
     }
 
     /// Drops the file listing and re-runs the current query; call after files were created,
     /// renamed, or deleted.
     pub fn refresh_files(&mut self, cx: &mut Context<Self>) {
         self.invalidate_file_cache();
-        self.refresh_file_index(cx);
-    }
-
-    fn wants_file_index(&self, cx: &App) -> bool {
-        self.root_dir.is_some() && (self.active || !self.query_text(cx).is_empty())
+        self.schedule_search(cx);
     }
 
     fn invalidate_file_cache(&mut self) {
         self.prewarm_cancel.store(true, Ordering::Relaxed);
         self.file_cache.invalidate();
-    }
-
-    fn refresh_file_index(&mut self, cx: &mut Context<Self>) {
-        if self.wants_file_index(cx) && self.query_text(cx).is_empty() {
-            self.prewarm_file_cache(cx);
-        }
-        self.schedule_search(cx);
     }
 
     pub fn results(&self) -> &WorkspaceSearchResults {
@@ -864,7 +841,7 @@ mod tests {
         settle(cx);
         panel.read_with(cx, |p, _| assert!(p.has_cached_files()));
 
-        panel.update(cx, |p, cx| p.set_active(false, cx));
+        panel.update(cx, |p, cx| p.release_idle_cache(cx));
         panel.read_with(cx, |p, _| assert!(!p.has_cached_files()));
     }
 }
