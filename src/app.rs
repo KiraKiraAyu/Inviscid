@@ -116,7 +116,14 @@ impl InviscidWindow {
     /// If no workspace is restored, a clean default workspace is created.
     pub fn open_initial(initial_path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         if let Some(file) = initial_path {
-            Self::new_with_file(file, cx)
+            let is_single_file = !file.is_dir();
+            let window = Self::new_with_file(file, cx);
+            if is_single_file {
+                window
+                    .workspace
+                    .update(cx, |ws, _| ws.set_persists_session(false));
+            }
+            window
         } else {
             let last_ws = cx.try_global::<AppConfig>().and_then(|config| {
                 if config.restore_workspace {

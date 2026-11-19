@@ -194,7 +194,9 @@ impl Render for TitleBar {
                                     &ws_name,
                                     move |ws_state, window, cx| {
                                         titlebar.update(cx, |tb, cx| tb.close_menu(cx));
-                                        if cx.has_global::<AppConfig>() {
+                                        if cx.has_global::<AppConfig>()
+                                            && workspace.read(cx).persists_session()
+                                        {
                                             let wb = crate::config::WindowLayoutState::from_window(
                                                 window, cx,
                                             );

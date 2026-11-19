@@ -31,6 +31,9 @@ pub fn main_window_options(
 }
 
 pub fn sync_workspace_in_memory(app: &InviscidWindow, cx: &mut App) {
+    if !app.workspace().read(cx).persists_session() {
+        return;
+    }
     if cx.has_global::<AppConfig>() {
         let mut config = cx.global::<AppConfig>().clone();
         app.workspace().read(cx).sync_workspace_state_with_window(
@@ -43,6 +46,9 @@ pub fn sync_workspace_in_memory(app: &InviscidWindow, cx: &mut App) {
 }
 
 pub fn sync_workspace_to_global(app: &InviscidWindow, cx: &mut Context<InviscidWindow>) {
+    if !app.workspace().read(cx).persists_session() {
+        return;
+    }
     sync_workspace_in_memory(app, cx);
     if let Some(config) = cx.try_global::<AppConfig>() {
         config.persist_session_async(cx.background_executor());
@@ -50,6 +56,9 @@ pub fn sync_workspace_to_global(app: &InviscidWindow, cx: &mut Context<InviscidW
 }
 
 pub fn sync_workspace_to_global_sync(app: &InviscidWindow, cx: &mut Context<InviscidWindow>) {
+    if !app.workspace().read(cx).persists_session() {
+        return;
+    }
     sync_workspace_in_memory(app, cx);
     if let Some(config) = cx.try_global::<AppConfig>() {
         config.save_session();

@@ -988,3 +988,69 @@ fn file_menu_export_actions_respect_document_exportability_and_shortcuts() {
     assert!(cx.debug_bounds("menu_item_Export as HTML...").is_some());
     assert!(cx.debug_bounds("menu_item_Export as PDF...").is_some());
 }
+
+#[test]
+fn test_cli_single_file_open_does_not_overwrite_saved_workspace() {
+    use inviscid::InviscidWindow;
+    use inviscid::config::WorkspaceState;
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let saved_root = temp_dir.path().join("saved_ws");
+    let saved_doc = saved_root.join("index.md");
+    let temp_single_dir = temp_dir.path().join("scratch");
+    let single_file = temp_single_dir.join("note.md");
+    std::fs::create_dir_all(&saved_root).unwrap();
+    std::fs::create_dir_all(&temp_single_dir).unwrap();
+    std::fs::write(&saved_doc, "# Saved\n").unwrap();
+    std::fs::write(&single_file, "# Temp\n").unwrap();
+
+    let cfg_path = temp_dir.path().join("config.toml");
+    let state_path = temp_dir.path().join("state.toml");
+    let saved_ws = WorkspaceState {
+        root_dir: Some(saved_root.clone()),
+        active_file: Some(saved_doc.clone()),
+        open_files: vec![saved_doc.clone()],
+        sidebar_visible: true,
+        sidebar_width: None,
+        outline_width: None,
+        ..WorkspaceState::default()
+    };
+
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        let mut config = AppConfig::load_from_paths(cfg_path, state_path.clone());
+        config.update_last_workspace(saved_ws.clone());
+        config.save_session();
+        cx.set_global(ThemeManager::from_config(&config));
+        cx.set_global(config);
+        inviscid::app::actions::bind_default_bindings(cx);
+    });
+
+    // Opening a single CLI file creates an ephemeral session that leaves `last_workspace` intact.
+    let (app, cx) =
+        cx.add_window_view(|_window, cx| InviscidWindow::open_initial(Some(single_file), cx));
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            assert!(!app.workspace().read(cx).persists_session());
+            app.persist_window_state_sync(window, cx);
+        });
+        let config = cx.global::<AppConfig>();
+        assert_eq!(config.last_workspace(), Some(&saved_ws));
+    });
+
+    // Explicitly opening a folder promotes the window back to session persistence.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            inviscid::app::commands::open_folder(app, temp_single_dir.clone(), cx);
+            assert!(app.workspace().read(cx).persists_session());
+            app.persist_window_state_sync(window, cx);
+        });
+        let config = cx.global::<AppConfig>();
+        assert_eq!(
+            config.last_workspace().and_then(|ws| ws.root_dir.as_ref()),
+            Some(&temp_single_dir)
+        );
+    });
+}

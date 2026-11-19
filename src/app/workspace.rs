@@ -108,6 +108,7 @@ pub struct Workspace {
     panel_drag_start_x: Option<Pixels>,
     panel_drag_start_width: Option<Pixels>,
     collocated_mode: bool,
+    persists_session: bool,
     _config_subscription: Subscription,
 }
 
@@ -302,6 +303,7 @@ impl Workspace {
             panel_drag_start_x: None,
             panel_drag_start_width: None,
             collocated_mode,
+            persists_session: true,
             _config_subscription,
         };
         workspace.sync_outline_panel(cx);
@@ -401,6 +403,7 @@ impl Workspace {
     }
 
     pub fn restore_from_state(&mut self, ws: &WorkspaceState, cx: &mut Context<Self>) {
+        self.persists_session = true;
         let layout = PanelLayoutValues::from_workspace_state(ws);
         self.root_dir = ws.root_dir.clone();
         self.sidebar_visible = layout.sidebar_visible;
@@ -1206,6 +1209,7 @@ impl Workspace {
     }
 
     pub fn open_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        self.persists_session = true;
         self.root_dir = Some(folder.clone());
         let folder_clone = folder.clone();
         self.project_panel.update(cx, |panel, cx| {
@@ -1223,6 +1227,7 @@ impl Workspace {
     }
 
     pub fn close_workspace(&mut self, cx: &mut Context<Self>) {
+        self.persists_session = true;
         self.root_dir = None;
         self.project_panel.update(cx, |panel, cx| {
             panel.set_root_dir(None, cx);
@@ -1278,6 +1283,16 @@ impl Workspace {
         }
 
         config.update_last_workspace(state);
+    }
+
+    #[inline]
+    pub fn persists_session(&self) -> bool {
+        self.persists_session
+    }
+
+    #[inline]
+    pub fn set_persists_session(&mut self, persists: bool) {
+        self.persists_session = persists;
     }
 
     pub fn root_dir(&self) -> Option<&std::path::Path> {
