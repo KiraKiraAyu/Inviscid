@@ -191,14 +191,14 @@ impl Workspace {
             }
             crate::app::project_panel::ProjectPanelEvent::PathRenamed { old, new } => {
                 this.handle_path_renamed(old, new, cx);
-                this.search_panel.update(cx, |sp, cx| sp.refresh_files(cx));
+                this.invalidate_search_files(cx);
             }
             crate::app::project_panel::ProjectPanelEvent::PathDeleted(path) => {
                 this.handle_path_deleted(path, cx);
-                this.search_panel.update(cx, |sp, cx| sp.refresh_files(cx));
+                this.invalidate_search_files(cx);
             }
             crate::app::project_panel::ProjectPanelEvent::PathCreated(_) => {
-                this.search_panel.update(cx, |sp, cx| sp.refresh_files(cx));
+                this.invalidate_search_files(cx);
             }
         })
     }
@@ -271,8 +271,10 @@ impl Workspace {
                 p.reveal_path(active_path, cx);
             }
             p.set_active_file(active_file, cx);
-            p.set_filter_visible(layout.sidebar_view == SidebarView::Search, cx);
-            p.prewarm_filter_index(cx);
+            p.set_filter_visible(
+                layout.sidebar_visible && layout.sidebar_view == SidebarView::Search,
+                cx,
+            );
         });
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
         let outline_panel = cx.new(|cx| OutlinePanel::new(cx.focus_handle()));
@@ -428,7 +430,10 @@ impl Workspace {
                 p.reveal_path(active_path, cx);
             }
             p.set_active_file(ws.active_file.clone(), cx);
-            p.set_filter_visible(layout.sidebar_view == SidebarView::Search, cx);
+            p.set_filter_visible(
+                layout.sidebar_visible && layout.sidebar_view == SidebarView::Search,
+                cx,
+            );
         });
 
         self.sync_sidebar_state(cx);
@@ -645,16 +650,24 @@ impl Workspace {
         cx.notify();
     }
 
+    fn invalidate_search_files(&mut self, cx: &mut Context<Self>) {
+        self.search_panel.update(cx, |sp, cx| sp.refresh_files(cx));
+    }
+
     pub fn refresh_panels(&mut self, cx: &mut Context<Self>) {
         self.project_panel.update(cx, |panel, cx| {
             panel.refresh_tree(cx);
         });
-        self.search_panel.update(cx, |sp, cx| {
-            sp.refresh_files(cx);
-        });
+        self.invalidate_search_files(cx);
     }
 
     fn sync_active_editor_state(&mut self, cx: &mut Context<Self>) {
+        let has_search_tab = self
+            .tabs
+            .iter()
+            .any(|tab| tab.kind == TabKind::WorkspaceSearch);
+        self.search_panel
+            .update(cx, |sp, cx| sp.set_active(has_search_tab, cx));
         for (i, tab) in self.tabs.iter().enumerate() {
             if i != self.active_tab_idx {
                 tab.editor.update(cx, |ed, cx| ed.on_blur(cx));
@@ -1460,6 +1473,11 @@ impl Workspace {
     pub fn set_sidebar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if self.sidebar_visible != visible {
             self.sidebar_visible = visible;
+            if visible && self.sidebar_view == SidebarView::Search {
+                self.project_panel.update(cx, |panel, cx| {
+                    panel.set_filter_visible(true, cx);
+                });
+            }
             self.sync_sidebar_state(cx);
             cx.emit(WorkspaceEvent::LayoutChanged);
             cx.notify();
@@ -2121,5 +2139,50 @@ mod tests {
             ws.read_with(cx, |ws, _| ws.active_sidebar()),
             Some(SidebarView::Files)
         );
+    }
+
+    #[gpui::test]
+    fn test_workspace_startup_defers_recursive_search_and_filter_scans(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/doc.md"), "needle\n").unwrap();
+
+        let state = crate::config::WorkspaceState {
+            root_dir: Some(root),
+            active_file: None,
+            open_files: vec![],
+            sidebar_visible: true,
+            sidebar_width: None,
+            sidebar_view: SidebarView::Files,
+            outline_visible: false,
+            outline_width: None,
+            window_bounds: None,
+        };
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::from_state(&state, cx));
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert!(!ws.project_panel.read(cx).has_filter_index_activity());
+            assert!(!ws.search_panel.read(cx).has_cached_files());
+        });
+
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.open_workspace_search(window, cx));
+        });
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.project_panel.read(cx).has_filter_index_activity());
+            assert!(ws.search_panel.read(cx).has_cached_files());
+        });
+
+        ws.update(cx, |ws, cx| ws.close_active_tab(cx));
+        ws.read_with(cx, |ws, cx| {
+            assert!(!ws.search_panel.read(cx).has_cached_files());
+        });
     }
 }

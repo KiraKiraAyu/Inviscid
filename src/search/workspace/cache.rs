@@ -59,6 +59,11 @@ impl WorkspaceFileCache {
         state.entry = None;
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_populated(&self) -> bool {
+        self.state.lock().entry.is_some()
+    }
+
     fn lookup(&self, root: &Path, collocated_mode: bool) -> Result<Arc<[PathBuf]>, Ticket> {
         let state = self.state.lock();
         match &state.entry {
