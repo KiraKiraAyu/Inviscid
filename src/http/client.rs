@@ -11,9 +11,6 @@ use std::sync::{Arc, OnceLock};
 
 use crate::sync::{Condvar, Mutex};
 
-use super::cache::{mark_url_failed, mark_url_loaded_with_size};
-use super::dimensions::extract_image_dimensions;
-
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 struct WorkerPoolInner {
@@ -271,7 +268,6 @@ impl HttpClient for UreqClient {
     fn send(&self, req: Request<AsyncBody>) -> BoxFuture<'static, Result<Response<AsyncBody>>> {
         let agent = self.agent.clone();
         let (parts, mut body) = req.into_parts();
-        let req_uri = parts.uri.to_string();
         let pool = self.pool.clone();
 
         Box::pin(async move {
@@ -281,7 +277,7 @@ impl HttpClient for UreqClient {
             let (tx, rx) = futures::channel::oneshot::channel();
 
             pool.spawn(move || {
-                let res = do_sync_request(&agent, parts, body_bytes, &req_uri);
+                let res = do_sync_request(&agent, parts, body_bytes);
                 let _ = tx.send(res);
             });
 
@@ -295,7 +291,6 @@ fn do_sync_request(
     agent: &ureq::Agent,
     parts: http::request::Parts,
     body_bytes: Vec<u8>,
-    req_uri: &str,
 ) -> Result<Response<AsyncBody>> {
     let resp = if body_bytes.is_empty() {
         let ureq_req = http::Request::from_parts(parts, ());
@@ -305,34 +300,21 @@ fn do_sync_request(
         agent.run(ureq_req)
     };
 
-    let resp = match resp {
-        Ok(resp) => resp,
-        Err(e) => {
-            mark_url_failed(req_uri);
-            return Err(anyhow::anyhow!("HTTP error: {}", e));
-        }
-    };
+    let resp = resp.map_err(|e| anyhow::anyhow!("HTTP error: {}", e))?;
 
     let (resp_parts, body) = resp.into_parts();
     let status_code = resp_parts.status.as_u16();
     if status_code >= 400 {
-        mark_url_failed(req_uri);
         return Err(anyhow::anyhow!("HTTP status: {}", status_code));
     }
 
     const MAX_HTTP_BODY_SIZE: u64 = 50 * 1024 * 1024; // 50MB
-    let mut reader = body.into_reader().take(MAX_HTTP_BODY_SIZE);
-    let mut bytes = Vec::new();
-    if let Err(e) = reader.read_to_end(&mut bytes) {
-        mark_url_failed(req_uri);
-        return Err(anyhow::anyhow!("Failed reading response: {}", e));
-    }
+    let bytes = read_limited_bytes(body.into_reader(), MAX_HTTP_BODY_SIZE)?;
 
-    let dims = extract_image_dimensions(&bytes);
-    mark_url_loaded_with_size(req_uri, dims);
-
-    let response = Response::from_parts(resp_parts, AsyncBody::from_bytes(bytes.into()));
-    Ok(response)
+    Ok(Response::from_parts(
+        resp_parts,
+        AsyncBody::from_bytes(bytes.into()),
+    ))
 }
 
 #[cfg(test)]

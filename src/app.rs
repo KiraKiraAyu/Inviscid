@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub mod about;
 pub mod actions;
 pub mod commands;
+pub mod image_cache;
 pub(crate) mod menu;
 pub mod outline_panel;
 pub mod project_panel;
@@ -16,6 +17,7 @@ pub mod title_bar;
 pub mod workspace;
 
 pub use about::AboutWindow;
+pub use image_cache::BoundedImageCache;
 pub use menu::ActiveMenu;
 pub use outline_panel::{OutlinePanel, OutlinePanelEvent};
 pub use project_panel::{DraggedProjectEntry, FileTreeEntry, FileTreeEntryKind, ProjectPanel};

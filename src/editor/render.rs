@@ -68,7 +68,15 @@ pub fn render_live_line_content(
                             .py(px(10.0))
                             .flex()
                             .justify_center()
-                            .child(img(preview.asset_path.clone()).w(width).h(height))
+                            .child(
+                                img(preview.asset_path.clone())
+                                    .id(ElementId::NamedInteger(
+                                        "mermaid_img".into(),
+                                        line_idx as u64,
+                                    ))
+                                    .w(width)
+                                    .h(height),
+                            )
                             .into_any_element();
                     }
                 } else {
@@ -327,7 +335,6 @@ pub fn render_live_line_content(
 
             let mut img_lrc = *lrc;
             img_lrc.is_active_line = should_show_source;
-            img_lrc.is_disclosure_line = should_show_source;
             img_lrc.is_disclosure_line = should_show_source;
 
             let typo = crate::editor::layout::get_block_typography_with_metrics(
@@ -673,13 +680,10 @@ fn render_table_cell(
 
 pub fn resolve_image_source(url: &str, doc_path: Option<&std::path::Path>) -> ImageSource {
     let clean = url.trim();
-    if clean.starts_with("http://") || clean.starts_with("https://") {
-        ImageSource::Resource(Resource::Uri(clean.to_string().into()))
-    } else if let Some(path) = crate::http::parse_file_url_path(clean, doc_path) {
+    if let Some(path) = crate::http::parse_file_url_path(clean, doc_path) {
         ImageSource::Resource(Resource::Path(path.into()))
     } else {
-        let path = std::path::PathBuf::from(clean);
-        ImageSource::Resource(Resource::Path(path.into()))
+        ImageSource::Resource(Resource::Uri(clean.to_string().into()))
     }
 }
 
@@ -700,8 +704,6 @@ fn render_image_preview_card(
     let image_source = resolve_image_source(url, doc_path);
     let accent_color = theme.text_accent;
     let muted_color = theme.text_muted;
-    let is_loaded = crate::http::is_url_loaded(url);
-    let is_failed = crate::http::is_url_failed(url);
 
     let img_element = img(image_source)
         .id(ElementId::NamedInteger(
@@ -711,6 +713,20 @@ fn render_image_preview_card(
         .w(content_width)
         .max_w_full()
         .rounded(px(6.0))
+        .with_loading(move || {
+            div()
+                .w_full()
+                .h(px(140.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(render_loading_metaball_animation(
+                    ElementId::NamedInteger("loading_metaball".into(), line_idx as u64),
+                    accent_color,
+                    px(48.0),
+                ))
+                .into_any_element()
+        })
         .with_fallback(move || {
             div()
                 .w_full()
@@ -730,38 +746,13 @@ fn render_image_preview_card(
                 .into_any_element()
         });
 
-    if is_loaded || is_failed {
-        div()
-            .w_full()
-            .my(px(6.0))
-            .flex()
-            .flex_col()
-            .items_center()
-            .child(img_element)
-    } else {
-        // While downloading over network, immediately show the animated gooey loading SVG
-        // and mount the img element in the background to drive GPUI's network loader
-        div()
-            .w_full()
-            .my(px(6.0))
-            .flex()
-            .flex_col()
-            .items_center()
-            .child(
-                div()
-                    .w_full()
-                    .h(px(140.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(render_loading_metaball_animation(
-                        ElementId::NamedInteger("loading_metaball".into(), line_idx as u64),
-                        accent_color,
-                        px(48.0),
-                    )),
-            )
-            .child(div().h(px(0.0)).overflow_hidden().child(img_element))
-    }
+    div()
+        .w_full()
+        .my(px(6.0))
+        .flex()
+        .flex_col()
+        .items_center()
+        .child(img_element)
 }
 
 /// Renders an animated loading indicator.

@@ -109,6 +109,7 @@ pub struct Workspace {
     panel_drag_start_width: Option<Pixels>,
     collocated_mode: bool,
     persists_session: bool,
+    image_cache: Entity<crate::app::BoundedImageCache>,
     _config_subscription: Subscription,
 }
 
@@ -279,6 +280,7 @@ impl Workspace {
         let outline_panel_sub = Self::subscribe_outline_panel(&outline_panel, cx);
         let search_panel = cx.new(SearchPanel::new);
         search_panel.update(cx, |sp, cx| sp.set_root_dir(root_dir.clone(), cx));
+        let image_cache = crate::app::BoundedImageCache::new(cx);
         let mut workspace = Self {
             focus_handle,
             tabs,
@@ -304,6 +306,7 @@ impl Workspace {
             panel_drag_start_width: None,
             collocated_mode,
             persists_session,
+            image_cache,
             _config_subscription,
         };
         workspace.sync_outline_panel(cx);
@@ -445,6 +448,7 @@ impl Workspace {
         self.search_panel.update(cx, |sp, cx| {
             sp.set_root_dir(ws.root_dir.clone(), cx);
         });
+        self.image_cache.update(cx, |cache, cx| cache.clear(cx));
 
         self.sync_active_editor_state(cx);
     }
@@ -1229,6 +1233,7 @@ impl Workspace {
 
     pub fn open_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         self.persists_session = true;
+        self.image_cache.update(cx, |cache, cx| cache.clear(cx));
         self.root_dir = Some(folder.clone());
         let folder_clone = folder.clone();
         self.project_panel.update(cx, |panel, cx| {
@@ -1247,6 +1252,7 @@ impl Workspace {
 
     pub fn close_workspace(&mut self, cx: &mut Context<Self>) {
         self.persists_session = true;
+        self.image_cache.update(cx, |cache, cx| cache.clear(cx));
         self.root_dir = None;
         self.project_panel.update(cx, |panel, cx| {
             panel.set_root_dir(None, cx);
@@ -1702,7 +1708,9 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.image_cache
+            .update(cx, |cache, cx| cache.begin_frame(window, cx));
         let active_editor = self.active_editor().cloned();
         let active_is_search = self.active_tab_kind() == Some(TabKind::WorkspaceSearch);
         let sidebar_visible = self.sidebar_visible;
@@ -1730,12 +1738,13 @@ impl Render for Workspace {
             .clone();
 
         div()
+            .image_cache(self.image_cache.clone())
             .key_context(crate::ui::key_context::WORKSPACE)
             .track_focus(&self.focus_handle)
             .font_family(crate::platform::platform_ui_font())
             .flex_1()
             .min_h_0()
-            .w_full()
+            .size_full()
             .flex()
             .flex_col()
             .when(self.is_resizing_panel(), |this| {
@@ -2192,6 +2201,152 @@ mod tests {
 
         ws.read_with(cx, |ws, cx| {
             assert!(ws.project_panel.read(cx).has_filter_index_activity());
+        });
+    }
+
+    #[gpui::test]
+    fn test_workspace_editor_prepaint_routes_markdown_images_through_bounded_cache(
+        cx: &mut TestAppContext,
+    ) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let img_path = temp_dir.path().join("shot.png");
+        let doc_path = temp_dir.path().join("note.md");
+        // Valid 1x1 RGBA PNG.
+        #[rustfmt::skip]
+        let png_bytes: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D, b'I', b'H', b'D', b'R',
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
+            0x00, 0x00, 0x00, 0x0D, b'I', b'D', b'A', b'T',
+            0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF,
+            0x89, 0x99, 0x3D, 0x1D,
+            0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D',
+            0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(&img_path, png_bytes).unwrap();
+        std::fs::write(&doc_path, "![shot](shot.png)\n").unwrap();
+
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(Some(doc_path.clone()), cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            let ed = ws.active_editor().expect("active editor").read(cx);
+            assert!(!ed.is_loading(), "editor still loading");
+            assert!(
+                ed.viewport_bounds.size.height > gpui::px(0.0),
+                "viewport bounds empty: {:?}",
+                ed.viewport_bounds
+            );
+            assert_eq!(ws.image_cache.read(cx).entry_count(), 1);
+        });
+
+        let resource: gpui::Resource = img_path.into();
+        cx.update(|window, cx| {
+            assert!(
+                window
+                    .get_asset::<gpui::ImgResourceLoader>(&resource, cx)
+                    .is_none(),
+                "image must be cached in Workspace's BoundedImageCache, not global App assets"
+            );
+            cx.remove_asset::<gpui::ImgResourceLoader>(&resource);
+        });
+    }
+
+    #[gpui::test]
+    fn test_workspace_lifecycle_clears_image_cache(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let img_path = temp_dir.path().join("shot.png");
+        let doc_path = temp_dir.path().join("note.md");
+        #[rustfmt::skip]
+        let png_bytes: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D, b'I', b'H', b'D', b'R',
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
+            0x00, 0x00, 0x00, 0x0D, b'I', b'D', b'A', b'T',
+            0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF,
+            0x89, 0x99, 0x3D, 0x1D,
+            0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D',
+            0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(&img_path, png_bytes).unwrap();
+        std::fs::write(&doc_path, "![shot](shot.png)\n").unwrap();
+
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(Some(doc_path.clone()), cx));
+        let draw_once = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            cx.run_until_parked();
+        };
+        draw_once(cx);
+        draw_once(cx);
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.image_cache.read(cx).entry_count(), 1);
+        });
+
+        let folder_b = temp_dir.path().join("folder_b");
+        std::fs::create_dir_all(&folder_b).unwrap();
+        // Switch to a blank tab first so `note.md` does not re-populate the cache on redraw;
+        // `shot.png` remains cached across the tab switch until `open_folder` clears it.
+        ws.update(cx, |ws, cx| ws.new_tab(cx));
+        draw_once(cx);
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.image_cache.read(cx).entry_count(), 1);
+        });
+        ws.update(cx, |ws, cx| ws.open_folder(folder_b.clone(), cx));
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.image_cache.read(cx).entry_count(), 0);
+        });
+
+        ws.update(cx, |ws, cx| ws.open_file(doc_path.clone(), cx));
+        draw_once(cx);
+        draw_once(cx);
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.image_cache.read(cx).entry_count(), 1);
+        });
+
+        ws.update(cx, |ws, cx| ws.close_workspace(cx));
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.image_cache.read(cx).entry_count(), 0);
+        });
+
+        ws.update(cx, |ws, cx| ws.open_file(doc_path.clone(), cx));
+        draw_once(cx);
+        draw_once(cx);
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.image_cache.read(cx).entry_count(), 1);
+        });
+
+        let restored_state = crate::config::WorkspaceState {
+            root_dir: Some(folder_b),
+            active_file: None,
+            open_files: Vec::new(),
+            sidebar_visible: true,
+            sidebar_width: None,
+            sidebar_view: crate::app::SidebarView::Files,
+            outline_visible: false,
+            outline_width: None,
+            window_bounds: None,
+        };
+        ws.update(cx, |ws, cx| ws.restore_from_state(&restored_state, cx));
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.image_cache.read(cx).entry_count(), 0);
         });
     }
 }
