@@ -155,8 +155,11 @@ impl DocumentSession {
                 if !patched_windows.iter().any(|patched| {
                     window.range.start < patched.range.end && patched.range.start < window.range.end
                 }) {
-                    let resources =
-                        Resource::collect(window.range.start, &window.rows, Some((&source, &index)));
+                    let resources = Resource::collect(
+                        window.range.start,
+                        &window.rows,
+                        Some((&source, &index)),
+                    );
                     next_windows.push_back(CachedWindow {
                         window,
                         revision: buffer.revision(),
@@ -317,8 +320,11 @@ impl DocumentSession {
         if self.cancelled.load(Ordering::Acquire) {
             return;
         }
-        let mut resources =
-            Resource::collect(scanned_range.start, &rows, Some((&target.source, &target.index)));
+        let mut resources = Resource::collect(
+            scanned_range.start,
+            &rows,
+            Some((&target.source, &target.index)),
+        );
         if crate::syntax::syntax_cache_version() != pre_syntax_version {
             for res in &mut resources {
                 res.clear_raced_unhighlighted(scanned_range.start, &rows);

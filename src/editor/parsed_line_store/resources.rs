@@ -90,7 +90,10 @@ impl Resource {
             && let Some(first) = rows.first()
             && matches!(
                 first.kind,
-                BlockKind::CodeBlockContent | BlockKind::CodeBlock { is_fence_start: false }
+                BlockKind::CodeBlockContent
+                    | BlockKind::CodeBlock {
+                        is_fence_start: false
+                    }
             )
             && let Some((open_line, _)) = index.fence_range(SourceLine::new(start))
             && open_line.index() < start
@@ -206,7 +209,8 @@ mod tests {
     use crate::buffer::TextBuffer;
     use crate::markdown::MarkdownScanner;
 
-    const JSON_GRAMMAR_WASM: &[u8] = include_bytes!("../../../tests/fixtures/tree-sitter-json.wasm");
+    const JSON_GRAMMAR_WASM: &[u8] =
+        include_bytes!("../../../tests/fixtures/tree-sitter-json.wasm");
 
     #[test]
     fn split_code_block_window_collects_syntax_resource_and_detects_grammar_load() {

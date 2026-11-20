@@ -194,9 +194,11 @@ impl ParsedLineStore {
             {
                 let start = range.start - window.range.start;
                 let end = range.end - window.range.start;
-                for resource in
-                    Resource::collect(range.start, &window.rows[start..end], Some((&source, &index)))
-                {
+                for resource in Resource::collect(
+                    range.start,
+                    &window.rows[start..end],
+                    Some((&source, &index)),
+                ) {
                     if !resources.iter().any(|old| old.range == resource.range) {
                         resources.push(resource);
                     }
@@ -290,7 +292,8 @@ impl ParsedLineStore {
             apply_preedit(&mut rows, range.start, store.preedit.as_ref());
             store.scanned.set(store.scanned.get() + rows.len());
             let mut resources = self.resources.borrow_mut();
-            for resource in Resource::collect(range.start, &rows, Some((&store.source, &store.index)))
+            for resource in
+                Resource::collect(range.start, &rows, Some((&store.source, &store.index)))
             {
                 if !resources.iter().any(|old| old.range == resource.range) {
                     resources.push(resource);
