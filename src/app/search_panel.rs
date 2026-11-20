@@ -15,10 +15,10 @@ use futures::channel::mpsc::UnboundedSender;
 use gpui::prelude::*;
 use gpui::*;
 
+use crate::fs::WorkspaceFileIndex;
 use crate::search::{
-    FileSearchResult, ScanLimits, SearchOptions, SearchQuery, SearchToggle, WorkspaceFileCache,
-    WorkspaceMatch, WorkspaceScan, WorkspaceSearchResults, replace_all_in_file,
-    replace_match_in_file,
+    FileSearchResult, ScanLimits, SearchOptions, SearchQuery, SearchToggle, WorkspaceMatch,
+    WorkspaceScan, WorkspaceSearchResults, replace_all_in_file, replace_match_in_file,
 };
 use crate::theme::ThemeManager;
 use crate::ui::text_input::{TextInput, TextInputBg, TextInputEvent};
@@ -50,7 +50,8 @@ pub struct SearchPanel {
     scroll_handle: UniformListScrollHandle,
     results_scroll: crate::ui::SmoothScrollController,
     root_dir: Option<PathBuf>,
-    file_cache: WorkspaceFileCache,
+    file_index: WorkspaceFileIndex,
+    is_active: bool,
     prewarm_cancel: Arc<AtomicBool>,
     search_cancel: Arc<AtomicBool>,
     options: SearchOptions,
@@ -75,11 +76,18 @@ struct SearchJob {
     collocated_mode: bool,
     query: SearchQuery,
     cancel: Arc<AtomicBool>,
-    cache: WorkspaceFileCache,
+    index: WorkspaceFileIndex,
 }
 
 impl SearchPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        Self::with_file_index(WorkspaceFileIndex::default(), cx)
+    }
+
+    pub(crate) fn with_file_index(
+        file_index: WorkspaceFileIndex,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let collocated_mode = cx
             .try_global::<crate::config::AppConfig>()
             .is_some_and(|cfg| cfg.collocated_mode);
@@ -125,7 +133,8 @@ impl SearchPanel {
             scroll_handle: UniformListScrollHandle::default(),
             results_scroll: crate::ui::SmoothScrollController::vertical(),
             root_dir: None,
-            file_cache: WorkspaceFileCache::default(),
+            file_index,
+            is_active: false,
             prewarm_cancel: Arc::new(AtomicBool::new(false)),
             search_cancel: Arc::new(AtomicBool::new(false)),
             options: SearchOptions::default(),
@@ -146,14 +155,27 @@ impl SearchPanel {
 
     #[cfg(test)]
     pub(crate) fn has_cached_files(&self) -> bool {
-        self.file_cache.is_populated()
+        self.file_index.is_populated()
     }
 
-    pub fn release_idle_cache(&mut self, cx: &App) {
-        self.prewarm_cancel.store(true, Ordering::Relaxed);
-        if self.query_text(cx).is_empty() {
-            self.file_cache.invalidate();
+    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.is_active == active {
+            return;
         }
+        self.is_active = active;
+        if active && !self.query_text(cx).is_empty() && self.root_dir.is_some() {
+            self.schedule_search(cx);
+        }
+    }
+
+    pub(crate) fn cancel_prewarm(&mut self) {
+        self.prewarm_cancel.store(true, Ordering::Relaxed);
+    }
+
+    fn invalidate_on_config_change(&mut self) {
+        self.cancel_prewarm();
+        self.file_index
+            .invalidate_unless(self.root_dir.as_deref(), self.collocated_mode);
     }
 
     pub fn set_collocated_mode(&mut self, collocated_mode: bool, cx: &mut Context<Self>) {
@@ -161,7 +183,7 @@ impl SearchPanel {
             return;
         }
         self.collocated_mode = collocated_mode;
-        self.invalidate_file_cache();
+        self.invalidate_on_config_change();
         if !self.query_text(cx).is_empty() && self.root_dir.is_some() {
             self.search_now(cx);
         } else {
@@ -193,20 +215,22 @@ impl SearchPanel {
             return;
         }
         self.root_dir = root_dir;
-        self.invalidate_file_cache();
+        self.invalidate_on_config_change();
         self.schedule_search(cx);
     }
 
-    /// Drops the file listing and re-runs the current query; call after files were created,
-    /// renamed, or deleted.
+    /// Drops the file listing and re-runs the current query when the panel is active;
+    /// call after files were created, renamed, or deleted.
     pub fn refresh_files(&mut self, cx: &mut Context<Self>) {
         self.invalidate_file_cache();
-        self.schedule_search(cx);
+        if self.is_active {
+            self.schedule_search(cx);
+        }
     }
 
     fn invalidate_file_cache(&mut self) {
-        self.prewarm_cancel.store(true, Ordering::Relaxed);
-        self.file_cache.invalidate();
+        self.cancel_prewarm();
+        self.file_index.invalidate();
     }
 
     pub fn results(&self) -> &WorkspaceSearchResults {
@@ -280,15 +304,15 @@ impl SearchPanel {
         };
         let replacement = self.replace_text(cx);
         let collocated_mode = self.collocated_mode;
-        let cache = self.file_cache.clone();
+        let index = self.file_index.clone();
         self.start_replacement(cx, move || {
             let cancel = AtomicBool::new(false);
-            let files = cache
-                .get_or_discover(&root, collocated_mode, &cancel)
+            let snapshot = index
+                .get_or_scan(&root, collocated_mode, &cancel)
                 .ok_or_else(|| std::io::Error::other("workspace search was cancelled"))?;
             let mut count = 0;
-            for path in files.iter() {
-                count += replace_all_in_file(&path, &query, &replacement)?;
+            for path in snapshot.searchable_files() {
+                count += replace_all_in_file(path, &query, &replacement)?;
             }
             Ok(count)
         });
@@ -341,17 +365,24 @@ impl SearchPanel {
 
     /// Walks the tree in the background so the first search does not have to.
     fn prewarm_file_cache(&mut self, cx: &mut Context<Self>) {
-        self.prewarm_cancel.store(true, Ordering::Relaxed);
+        self.cancel_prewarm();
         let Some(root) = self.root_dir.clone() else {
             return;
         };
+        if self
+            .file_index
+            .get_cached(&root, self.collocated_mode)
+            .is_some()
+        {
+            return;
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         self.prewarm_cancel = cancel.clone();
         let collocated_mode = self.collocated_mode;
-        let cache = self.file_cache.clone();
+        let index = self.file_index.clone();
         cx.background_executor()
             .spawn(async move {
-                cache.get_or_discover(&root, collocated_mode, &cancel);
+                index.get_or_scan(&root, collocated_mode, &cancel);
             })
             .detach();
     }
@@ -482,7 +513,7 @@ impl SearchPanel {
             collocated_mode: self.collocated_mode,
             query,
             cancel,
-            cache: self.file_cache.clone(),
+            index: self.file_index.clone(),
         })
     }
 
@@ -550,14 +581,15 @@ async fn scan_workspace(
     executor: BackgroundExecutor,
     tx: UnboundedSender<FileSearchResult>,
 ) -> bool {
-    let Some(files) = job
-        .cache
-        .get_or_discover(&job.root, job.collocated_mode, &job.cancel)
+    let Some(snapshot) = job
+        .index
+        .get_or_scan(&job.root, job.collocated_mode, &job.cancel)
     else {
         return false;
     };
+    let files = snapshot.searchable_files();
     let scan = WorkspaceScan::new(
-        &files,
+        files,
         &job.root,
         &job.query,
         &job.cancel,
@@ -728,6 +760,7 @@ mod tests {
         let (panel, cx) = cx.add_window_view(|_window, cx| SearchPanel::new(cx));
 
         panel.update(cx, |p, cx| {
+            p.set_active(true, cx);
             p.set_root_dir(Some(root.to_path_buf()), cx);
             p.set_query_text("needle", cx);
         });
@@ -841,7 +874,67 @@ mod tests {
         settle(cx);
         panel.read_with(cx, |p, _| assert!(p.has_cached_files()));
 
-        panel.update(cx, |p, cx| p.release_idle_cache(cx));
+        panel.update(cx, |p, _| p.invalidate_file_cache());
         panel.read_with(cx, |p, _| assert!(!p.has_cached_files()));
+    }
+
+    #[gpui::test]
+    fn test_search_panel_cancel_prewarm_stops_background_population(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::write(root.join("note.md"), "hello world").unwrap();
+        let (panel, cx) = cx.add_window_view(|_window, cx| SearchPanel::new(cx));
+
+        cx.update(|window, cx| {
+            panel.update(cx, |p, cx| {
+                p.set_root_dir(Some(root.to_path_buf()), cx);
+                p.focus_input(window, cx);
+                p.cancel_prewarm();
+            });
+        });
+        settle(cx);
+
+        panel.read_with(cx, |p, _| assert!(!p.has_cached_files()));
+    }
+
+    #[gpui::test]
+    fn test_search_panel_refresh_files_while_inactive_does_not_search(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::write(root.join("a.txt"), "needle").unwrap();
+        let (panel, cx) = cx.add_window_view(|_window, cx| SearchPanel::new(cx));
+
+        panel.update(cx, |p, cx| {
+            p.set_active(true, cx);
+            p.set_root_dir(Some(root.to_path_buf()), cx);
+            p.set_query_text("needle", cx);
+        });
+        settle(cx);
+        panel.read_with(cx, |p, _| {
+            assert_eq!(p.status(), SearchStatus::Done);
+            assert_eq!(relative_paths(p), ["a.txt"]);
+        });
+
+        fs::write(root.join("b.txt"), "needle").unwrap();
+        panel.update(cx, |p, cx| {
+            p.set_active(false, cx);
+            p.refresh_files(cx);
+        });
+        settle(cx);
+
+        panel.read_with(cx, |p, _| {
+            assert!(!p.has_cached_files());
+            assert_ne!(p.status(), SearchStatus::Searching);
+            assert_eq!(relative_paths(p), ["a.txt"]);
+        });
+
+        panel.update(cx, |p, cx| p.set_active(true, cx));
+        settle(cx);
+        panel.read_with(cx, |p, _| {
+            assert_eq!(p.status(), SearchStatus::Done);
+            assert_eq!(relative_paths(p), ["a.txt", "b.txt"]);
+        });
     }
 }

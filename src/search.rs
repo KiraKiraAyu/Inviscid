@@ -14,6 +14,6 @@ pub use engine::{
 pub use find_state::FindState;
 pub use match_result::{SearchMatch, SearchOptions, SearchQuery, SearchToggle};
 pub use workspace::{
-    FileSearchResult, ScanLimits, WorkspaceFileCache, WorkspaceMatch, WorkspaceScan,
-    WorkspaceSearchResults, replace_all_in_file, replace_match_in_file,
+    FileSearchResult, ScanLimits, WorkspaceMatch, WorkspaceScan, WorkspaceSearchResults,
+    replace_all_in_file, replace_match_in_file,
 };

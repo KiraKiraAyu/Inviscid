@@ -109,6 +109,7 @@ pub struct Workspace {
     panel_drag_start_width: Option<Pixels>,
     collocated_mode: bool,
     persists_session: bool,
+    file_index: crate::fs::WorkspaceFileIndex,
     image_cache: Entity<crate::app::BoundedImageCache>,
     _config_subscription: Subscription,
 }
@@ -192,14 +193,17 @@ impl Workspace {
             }
             crate::app::project_panel::ProjectPanelEvent::PathRenamed { old, new } => {
                 this.handle_path_renamed(old, new, cx);
-                this.invalidate_search_files(cx);
+                this.invalidate_file_index_and_search(cx);
             }
             crate::app::project_panel::ProjectPanelEvent::PathDeleted(path) => {
                 this.handle_path_deleted(path, cx);
-                this.invalidate_search_files(cx);
+                this.invalidate_file_index_and_search(cx);
             }
             crate::app::project_panel::ProjectPanelEvent::PathCreated(_) => {
-                this.invalidate_search_files(cx);
+                this.invalidate_file_index_and_search(cx);
+            }
+            crate::app::project_panel::ProjectPanelEvent::FilterClosed => {
+                this.release_idle_file_index(cx);
             }
         })
     }
@@ -266,8 +270,14 @@ impl Workspace {
             this.set_collocated_mode(mode, cx);
         });
         let tab_bar_sub = Self::subscribe_tab_bar(&tab_bar, cx);
-        let project_panel =
-            cx.new(|cx| crate::app::project_panel::ProjectPanel::new(root_dir.clone(), cx));
+        let file_index = crate::fs::WorkspaceFileIndex::default();
+        let project_panel = cx.new(|cx| {
+            crate::app::project_panel::ProjectPanel::with_file_index(
+                root_dir.clone(),
+                file_index.clone(),
+                cx,
+            )
+        });
         project_panel.update(cx, |p, cx| {
             if let Some(ref active_path) = active_file {
                 p.reveal_path(active_path, cx);
@@ -278,7 +288,7 @@ impl Workspace {
         let project_panel_sub = Self::subscribe_project_panel(&project_panel, cx);
         let outline_panel = cx.new(|cx| OutlinePanel::new(cx.focus_handle()));
         let outline_panel_sub = Self::subscribe_outline_panel(&outline_panel, cx);
-        let search_panel = cx.new(SearchPanel::new);
+        let search_panel = cx.new(|cx| SearchPanel::with_file_index(file_index.clone(), cx));
         search_panel.update(cx, |sp, cx| sp.set_root_dir(root_dir.clone(), cx));
         let image_cache = crate::app::BoundedImageCache::new(cx);
         let mut workspace = Self {
@@ -306,6 +316,7 @@ impl Workspace {
             panel_drag_start_width: None,
             collocated_mode,
             persists_session,
+            file_index,
             image_cache,
             _config_subscription,
         };
@@ -440,7 +451,10 @@ impl Workspace {
                 p.reveal_path(active_path, cx);
             }
             p.set_active_file(ws.active_file.clone(), cx);
-            p.set_filter_visible(layout.sidebar_view == SidebarView::Search, cx);
+            p.set_filter_visible(
+                layout.sidebar_visible && layout.sidebar_view == SidebarView::Search,
+                cx,
+            );
         });
 
         self.sync_sidebar_state(cx);
@@ -658,26 +672,41 @@ impl Workspace {
         cx.notify();
     }
 
-    fn invalidate_search_files(&mut self, cx: &mut Context<Self>) {
+    fn invalidate_file_index_and_search(&mut self, cx: &mut Context<Self>) {
         self.search_panel.update(cx, |sp, cx| sp.refresh_files(cx));
     }
 
     pub fn refresh_panels(&mut self, cx: &mut Context<Self>) {
+        self.file_index.invalidate();
         self.project_panel.update(cx, |panel, cx| {
             panel.refresh_tree(cx);
         });
-        self.invalidate_search_files(cx);
+        self.invalidate_file_index_and_search(cx);
+    }
+
+    fn release_idle_file_index(&mut self, cx: &mut Context<Self>) {
+        let has_search_tab = self
+            .tabs
+            .iter()
+            .any(|tab| tab.kind == TabKind::WorkspaceSearch);
+        if !has_search_tab {
+            self.search_panel.update(cx, |sp, _| sp.cancel_prewarm());
+        }
+        let search_idle = !has_search_tab;
+        let filter_idle = !self.project_panel.read(cx).has_filter_index_activity();
+        if search_idle && filter_idle {
+            self.file_index.invalidate();
+        }
     }
 
     fn sync_active_editor_state(&mut self, cx: &mut Context<Self>) {
-        if !self
+        let has_search_tab = self
             .tabs
             .iter()
-            .any(|tab| tab.kind == TabKind::WorkspaceSearch)
-        {
-            self.search_panel
-                .update(cx, |sp, cx| sp.release_idle_cache(cx));
-        }
+            .any(|tab| tab.kind == TabKind::WorkspaceSearch);
+        self.search_panel
+            .update(cx, |sp, cx| sp.set_active(has_search_tab, cx));
+        self.release_idle_file_index(cx);
         for (i, tab) in self.tabs.iter().enumerate() {
             if i != self.active_tab_idx {
                 tab.editor.update(cx, |ed, cx| ed.on_blur(cx));
@@ -1480,6 +1509,14 @@ impl Workspace {
     pub fn set_sidebar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if self.sidebar_visible != visible {
             self.sidebar_visible = visible;
+            if self.sidebar_view == SidebarView::Search {
+                self.project_panel.update(cx, |panel, cx| {
+                    panel.set_filter_visible(visible, cx);
+                });
+                if !visible {
+                    self.release_idle_file_index(cx);
+                }
+            }
             self.sync_sidebar_state(cx);
             cx.emit(WorkspaceEvent::LayoutChanged);
             cx.notify();
@@ -1491,6 +1528,9 @@ impl Workspace {
         self.project_panel.update(cx, |panel, cx| {
             panel.set_filter_visible(view == SidebarView::Search, cx);
         });
+        if view != SidebarView::Search {
+            self.release_idle_file_index(cx);
+        }
         if !self.sidebar_visible || self.sidebar_view != view {
             self.sidebar_visible = true;
             self.sidebar_view = view;
@@ -1700,8 +1740,12 @@ impl Workspace {
             self.active_tab_idx = self.tabs.len() - 1;
             self.sync_active_editor_state(cx);
         }
+        let reuse_active_index = self.project_panel.read(cx).has_filter_index_activity();
         self.search_panel.update(cx, |sp, cx| {
-            sp.refresh_files(cx);
+            sp.set_active(true, cx);
+            if !reuse_active_index {
+                sp.refresh_files(cx);
+            }
             sp.focus_input(window, cx);
         });
     }
@@ -2347,6 +2391,166 @@ mod tests {
         ws.update(cx, |ws, cx| ws.restore_from_state(&restored_state, cx));
         ws.read_with(cx, |ws, cx| {
             assert_eq!(ws.image_cache.read(cx).entry_count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn test_workspace_shares_single_file_index_between_search_and_filter(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/doc.md"), "needle\n").unwrap();
+
+        let (ws, cx) =
+            cx.add_window_view(|_window, cx| Workspace::new(Some(root.clone()), cx));
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.file_index.walk_count(), 0);
+            assert!(!ws.file_index.is_populated());
+        });
+
+        // 1. Open Search -> single walk populates shared index
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.open_workspace_search(window, cx));
+        });
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.file_index.walk_count(), 1);
+            assert!(ws.search_panel.read(cx).has_cached_files());
+            assert!(!ws.project_panel.read(cx).has_filter_index_activity());
+        });
+
+        // 2. Focus sidebar filter -> reuses shared snapshot with zero extra walk
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.project_panel
+                    .update(cx, |panel, cx| panel.focus_filter(window, cx));
+            });
+        });
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.project_panel.read(cx).has_filter_index_activity());
+            assert_eq!(ws.file_index.walk_count(), 1);
+        });
+
+        // 3. Closing Search tab while filter remains active keeps shared snapshot alive
+        ws.update(cx, |ws, cx| ws.close_active_tab(cx));
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.file_index.is_populated());
+        });
+
+        // 4. Closing sidebar filter releases the idle shared snapshot once both are idle
+        ws.update(cx, |ws, cx| ws.show_sidebar(SidebarView::Files, cx));
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, _| {
+            assert!(!ws.file_index.is_populated());
+        });
+
+        // 5. Reverse order: focus sidebar filter first, then open Search -> still one walk total for both
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.show_sidebar(SidebarView::Files, cx);
+                ws.toggle_sidebar_view(SidebarView::Search, window, cx);
+            });
+        });
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.project_panel.read(cx).has_filter_index_activity());
+            assert_eq!(ws.file_index.walk_count(), 2);
+        });
+
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.open_workspace_search(window, cx));
+        });
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.search_panel.read(cx).has_cached_files());
+            assert_eq!(ws.file_index.walk_count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_workspace_releases_file_index_on_close_with_query_and_hidden_sidebar(
+        cx: &mut TestAppContext,
+    ) {
+        init_globals(cx);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        std::fs::write(root.join("doc.md"), "needle\n").unwrap();
+
+        let (ws, cx) =
+            cx.add_window_view(|_window, cx| Workspace::new(Some(root.clone()), cx));
+        cx.run_until_parked();
+
+        // 1. Open Search, type a query, let the debounced search finish, then close Search tab
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_workspace_search(window, cx);
+                ws.search_panel
+                    .update(cx, |sp, cx| sp.set_query_text("needle", cx));
+            });
+        });
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(300));
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.update(cx, |ws, cx| ws.close_active_tab(cx));
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, _| {
+            assert!(!ws.file_index.is_populated());
+        });
+
+        // 2. FS invalidation while Search tab is closed (with non-empty query) does not run a search
+        let walks_before = ws.read_with(cx, |ws, _| ws.file_index.walk_count());
+        ws.update(cx, |ws, cx| ws.invalidate_file_index_and_search(cx));
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert_ne!(
+                ws.search_panel.read(cx).status(),
+                crate::app::search_panel::SearchStatus::Searching
+            );
+            assert_eq!(ws.file_index.walk_count(), walks_before);
+            assert!(!ws.file_index.is_populated());
+        });
+
+        // 3. Hiding sidebar via toggle_sidebar_view(SidebarView::Search) clears filter & releases index
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.show_sidebar(SidebarView::Files, cx);
+                ws.toggle_sidebar_view(SidebarView::Search, window, cx);
+            });
+        });
+        cx.background_executor.run_until_parked();
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.project_panel.read(cx).has_filter_index_activity());
+            assert!(ws.file_index.is_populated());
+        });
+
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.toggle_sidebar_view(SidebarView::Search, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            assert!(!ws.project_panel.read(cx).has_filter_index_activity());
+            assert!(!ws.file_index.is_populated());
         });
     }
 }

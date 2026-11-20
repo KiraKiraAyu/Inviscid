@@ -20,98 +20,8 @@ pub use confirm_modal::{ConfirmModalKind, ConfirmModalState};
 use context_menu::{ContextMenuAction, ContextMenuState, FileClipboard};
 pub use inline_input::{InlineInput, InlineInputEvent, InlineInputKind};
 
-/// The type and expansion state of an entry in the file tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileTreeEntryKind {
-    File,
-    CollocatedDocument,
-    Directory { is_expanded: bool },
-}
-
-/// A single entry (file or folder) in the flattened visible file tree.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileTreeEntry {
-    pub path: PathBuf,
-    pub name: String,
-    pub depth: usize,
-    pub kind: FileTreeEntryKind,
-}
-
-impl FileTreeEntry {
-    /// Creates a file tree entry for a regular file.
-    pub fn new_file(path: PathBuf, name: String, depth: usize) -> Self {
-        Self {
-            path,
-            name,
-            depth,
-            kind: FileTreeEntryKind::File,
-        }
-    }
-
-    /// Creates a file tree entry for a collocated document bundle (`<dir>/index.md`).
-    pub fn new_collocated_doc(path: PathBuf, name: String, depth: usize) -> Self {
-        Self {
-            path,
-            name,
-            depth,
-            kind: FileTreeEntryKind::CollocatedDocument,
-        }
-    }
-
-    /// Creates a file tree entry for a directory.
-    pub fn new_dir(path: PathBuf, name: String, depth: usize, is_expanded: bool) -> Self {
-        Self {
-            path,
-            name,
-            depth,
-            kind: FileTreeEntryKind::Directory { is_expanded },
-        }
-    }
-
-    /// Returns `true` if this entry represents an expandable directory.
-    #[inline]
-    pub fn is_dir(&self) -> bool {
-        matches!(self.kind, FileTreeEntryKind::Directory { .. })
-    }
-
-    /// Returns `true` if this entry represents a collocated document bundle.
-    #[inline]
-    pub fn is_collocated_doc(&self) -> bool {
-        matches!(self.kind, FileTreeEntryKind::CollocatedDocument)
-    }
-
-    /// Returns `true` if this entry is an expanded directory. Files always return `false`.
-    #[inline]
-    pub fn is_expanded(&self) -> bool {
-        matches!(
-            self.kind,
-            FileTreeEntryKind::Directory { is_expanded: true }
-        )
-    }
-
-    /// Returns `true` when `active_file` corresponds to this entry.
-    pub fn matches_active_file(&self, active_file: Option<&Path>) -> bool {
-        let Some(active) = active_file else {
-            return false;
-        };
-        match self.kind {
-            FileTreeEntryKind::File => active == self.path.as_path(),
-            FileTreeEntryKind::CollocatedDocument => {
-                active == self.path.as_path()
-                    || crate::fs::collocated_bundle_dir(active) == Some(self.path.as_path())
-            }
-            FileTreeEntryKind::Directory { .. } => false,
-        }
-    }
-}
-
-struct ScannedTreeEntry {
-    path: PathBuf,
-    name: String,
-    is_dir: bool,
-    is_collocated_doc: bool,
-    can_recurse: bool,
-}
+pub use crate::fs::{FileTreeEntry, FileTreeEntryKind};
+use crate::fs::{WorkspaceFileIndex, WorkspaceSnapshot, scan_expanded_tree};
 
 /// Smooth scroll physics state for the file tree (re-exports unified SmoothScrollPhysics)
 pub type TreeScrollState = crate::ui::SmoothScrollPhysics;
@@ -176,6 +86,7 @@ pub enum ProjectPanelEvent {
     PathRenamed { old: PathBuf, new: PathBuf },
     PathDeleted(PathBuf),
     PathCreated(PathBuf),
+    FilterClosed,
 }
 
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
@@ -187,8 +98,9 @@ pub struct ProjectPanel {
     entries: Vec<FileTreeEntry>,
     tree_scan_generation: u64,
     tree_scan_cancel: Arc<AtomicBool>,
-    all_entries: Vec<FileTreeEntry>,
-    all_entries_loaded: bool,
+    file_index: WorkspaceFileIndex,
+    owns_file_index: bool,
+    filter_snapshot: Option<Arc<WorkspaceSnapshot>>,
     filter_query: String,
     matching_indices: Vec<usize>,
     filtered_indices: Vec<usize>,
@@ -224,6 +136,16 @@ impl ProjectPanel {
     pub const DRAG_EXPAND_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
     pub fn new(root_dir: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+        let mut panel = Self::with_file_index(root_dir, WorkspaceFileIndex::default(), cx);
+        panel.owns_file_index = true;
+        panel
+    }
+
+    pub(crate) fn with_file_index(
+        root_dir: Option<PathBuf>,
+        file_index: WorkspaceFileIndex,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut expanded_dirs = HashSet::new();
         if let Some(ref root) = root_dir {
             expanded_dirs.insert(root.clone());
@@ -238,8 +160,9 @@ impl ProjectPanel {
             entries: Vec::new(),
             tree_scan_generation: 0,
             tree_scan_cancel: Arc::new(AtomicBool::new(false)),
-            all_entries: Vec::new(),
-            all_entries_loaded: false,
+            file_index,
+            owns_file_index: false,
+            filter_snapshot: None,
             filter_query: String::new(),
             matching_indices: Vec::new(),
             filtered_indices: Vec::new(),
@@ -286,17 +209,18 @@ impl ProjectPanel {
             if collocated_mode && self.selected_path.as_deref().is_some_and(|p| !p.is_dir()) {
                 self.selected_path = None;
             }
-            self.refresh_tree(cx);
+            self.reset_filter_with_invalidation(false, cx);
+            self.refresh_entries(cx);
             cx.notify();
         }
     }
 
     pub fn refresh_tree(&mut self, cx: &mut Context<Self>) {
-        if self.all_entries_loaded
+        if self.filter_snapshot.is_some()
             || self.filter_scan_pending
             || !self.filter_query.trim().is_empty()
         {
-            self.refresh_all_entries(cx);
+            self.reset_filter_with_invalidation(true, cx);
         }
         self.refresh_entries(cx);
     }
@@ -449,6 +373,10 @@ impl ProjectPanel {
                 input.update(cx, |input, cx| input.set_text("", cx));
             }
             self.reset_filter_index();
+            if self.owns_file_index {
+                self.file_index.invalidate();
+            }
+            cx.emit(ProjectPanelEvent::FilterClosed);
         }
         cx.notify();
     }
@@ -465,9 +393,15 @@ impl ProjectPanel {
         cx.notify();
     }
 
-    #[cfg(test)]
     pub(crate) fn has_filter_index_activity(&self) -> bool {
-        self.all_entries_loaded || self.filter_scan_pending || !self.all_entries.is_empty()
+        self.filter_snapshot.is_some() || self.filter_scan_pending
+    }
+
+    #[inline]
+    fn filter_entries(&self) -> &[FileTreeEntry] {
+        self.filter_snapshot
+            .as_deref()
+            .map_or(&[], WorkspaceSnapshot::tree_entries)
     }
 
     fn set_filter_query(&mut self, query: String, cx: &mut Context<Self>) {
@@ -478,9 +412,9 @@ impl ProjectPanel {
         if self.filter_query.trim().is_empty() {
             self.matching_indices.clear();
             self.filtered_indices.clear();
-        } else if self.all_entries_loaded {
+        } else if self.filter_snapshot.is_some() {
             self.matching_indices =
-                matching_file_tree_entry_indices(&self.all_entries, &self.filter_query);
+                matching_file_tree_entry_indices(self.filter_entries(), &self.filter_query);
             self.refresh_filtered_indices();
         } else {
             self.filtered_indices.clear();
@@ -527,8 +461,7 @@ impl ProjectPanel {
                 if self.selected_path.as_ref() == Some(&target) {
                     self.selected_path = None;
                 }
-                self.refresh_all_entries(cx);
-                self.refresh_entries(cx);
+                self.refresh_after_fs_mutation(cx);
                 cx.notify();
             }
             Err(e) => {
@@ -558,7 +491,7 @@ impl ProjectPanel {
             self.expanded_dirs.insert(r.clone());
         }
         self.filter_collapsed_dirs.clear();
-        self.refresh_all_entries(cx);
+        self.reset_filter_with_invalidation(false, cx);
         self.refresh_entries(cx);
         cx.notify();
     }
@@ -657,8 +590,7 @@ impl ProjectPanel {
                     old: src.to_path_buf(),
                     new: new_path,
                 });
-                self.refresh_all_entries(cx);
-                self.refresh_entries(cx);
+                self.refresh_after_fs_mutation(cx);
                 cx.notify();
                 true
             }
@@ -685,18 +617,15 @@ impl ProjectPanel {
                 self.filter_collapsed_dirs.insert(dir_path.to_path_buf());
                 false
             };
-            if let Some(entry) = self
-                .all_entries
-                .iter_mut()
-                .find(|entry| entry.path == dir_path && entry.is_dir())
-            {
-                entry.kind = FileTreeEntryKind::Directory { is_expanded };
-            }
             if is_expanded {
                 self.refresh_filtered_indices();
             } else {
+                let entries = self
+                    .filter_snapshot
+                    .as_deref()
+                    .map_or(&[][..], WorkspaceSnapshot::tree_entries);
                 self.filtered_indices.retain(|&index| {
-                    let path = &self.all_entries[index].path;
+                    let path = &entries[index].path;
                     path == dir_path || !path.starts_with(dir_path)
                 });
             }
@@ -889,8 +818,7 @@ impl ProjectPanel {
                 match create_result {
                     Ok((selected_path, open_path)) => {
                         self.expanded_dirs.insert(parent);
-                        self.refresh_all_entries(cx);
-                        self.refresh_entries(cx);
+                        self.refresh_after_fs_mutation(cx);
                         self.selected_path = Some(selected_path);
                         cx.emit(ProjectPanelEvent::PathCreated(open_path.clone()));
                         cx.emit(ProjectPanelEvent::OpenFile(open_path));
@@ -910,8 +838,7 @@ impl ProjectPanel {
                     Ok(new_path) => {
                         self.expanded_dirs.insert(parent);
                         self.expanded_dirs.insert(new_path.clone());
-                        self.refresh_all_entries(cx);
-                        self.refresh_entries(cx);
+                        self.refresh_after_fs_mutation(cx);
                         self.selected_path = Some(new_path);
                     }
                     Err(e) => {
@@ -946,8 +873,7 @@ impl ProjectPanel {
                             old: target,
                             new: new_path.clone(),
                         });
-                        self.refresh_all_entries(cx);
-                        self.refresh_entries(cx);
+                        self.refresh_after_fs_mutation(cx);
                         self.selected_path = Some(new_path);
                     }
                     Err(e) => {
@@ -1014,8 +940,7 @@ impl ProjectPanel {
                     if let Some(parent) = new_path.parent() {
                         self.expanded_dirs.insert(parent.to_path_buf());
                     }
-                    self.refresh_all_entries(cx);
-                    self.refresh_entries(cx);
+                    self.refresh_after_fs_mutation(cx);
                     cx.notify();
                 }
                 Err(e) => fs_ops::report_error("duplicate", &target, &e),
@@ -1158,8 +1083,7 @@ impl ProjectPanel {
                     cx.emit(ProjectPanelEvent::PathCreated(target));
                 }
                 self.expanded_dirs.insert(dest_dir);
-                self.refresh_all_entries(cx);
-                self.refresh_entries(cx);
+                self.refresh_after_fs_mutation(cx);
                 cx.notify();
             }
             Err(e) => fs_ops::report_error("paste", &src, &e),
@@ -1235,18 +1159,7 @@ impl ProjectPanel {
         let bg_cancel = cancel.clone();
         let bg_root = root.clone();
         let task = cx.background_executor().spawn(async move {
-            let mut entries = Vec::new();
-            if bg_root.is_dir() {
-                scan_dir_recursive(
-                    &bg_root,
-                    0,
-                    &expanded,
-                    collocated_mode,
-                    &mut entries,
-                    &bg_cancel,
-                );
-            }
-            (!bg_cancel.load(Ordering::Relaxed)).then_some(entries)
+            scan_expanded_tree(&bg_root, &expanded, collocated_mode, &bg_cancel)
         });
         cx.spawn(async move |this, cx| {
             let Some(entries) = task.await else {
@@ -1290,12 +1203,18 @@ impl ProjectPanel {
     }
 
     fn start_filter_scan(&mut self, cx: &mut Context<Self>) {
-        if self.filter_scan_pending || self.all_entries_loaded {
+        if self.filter_scan_pending || self.filter_snapshot.is_some() {
             return;
         }
         let Some(root) = self.root_dir.clone() else {
             return;
         };
+
+        if let Some(snapshot) = self.file_index.get_cached(&root, self.collocated_mode) {
+            self.apply_filter_snapshot(snapshot);
+            cx.notify();
+            return;
+        }
 
         self.cancel_filter_scan();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1303,39 +1222,19 @@ impl ProjectPanel {
         self.filter_scan_pending = true;
         let scan_cancel = cancel.clone();
         let collocated_mode = self.collocated_mode;
-        let task = cx.background_executor().spawn(async move {
-            let mut entries = Vec::new();
-            scan_dir_recursive_all(&root, 0, collocated_mode, &mut entries, &scan_cancel);
-            (!scan_cancel.load(Ordering::Relaxed)).then_some(entries)
-        });
+        let file_index = self.file_index.clone();
+        let task = cx
+            .background_executor()
+            .spawn(async move { file_index.get_or_scan(&root, collocated_mode, &scan_cancel) });
         cx.spawn(async move |this, cx| {
-            let entries = task.await;
+            let snapshot = task.await;
             let _ = this.update(cx, |this, cx| {
                 if !Arc::ptr_eq(&this.filter_scan_cancel, &cancel) {
                     return;
                 }
                 this.filter_scan_pending = false;
-                if let Some(mut entries) = entries {
-                    this.filter_collapsed_dirs.retain(|path| {
-                        entries
-                            .iter()
-                            .any(|entry| entry.path == *path && entry.is_dir())
-                    });
-                    for entry in &mut entries {
-                        if entry.is_dir() && this.filter_collapsed_dirs.contains(&entry.path) {
-                            entry.kind = FileTreeEntryKind::Directory { is_expanded: false };
-                        }
-                    }
-                    this.all_entries = entries;
-                    this.all_entries_loaded = true;
-                    if this.filter_query.trim().is_empty() {
-                        this.matching_indices.clear();
-                        this.filtered_indices.clear();
-                    } else {
-                        this.matching_indices =
-                            matching_file_tree_entry_indices(&this.all_entries, &this.filter_query);
-                        this.refresh_filtered_indices();
-                    }
+                if let Some(snapshot) = snapshot {
+                    this.apply_filter_snapshot(snapshot);
                     cx.notify();
                 }
             });
@@ -1343,24 +1242,52 @@ impl ProjectPanel {
         .detach();
     }
 
+    fn apply_filter_snapshot(&mut self, snapshot: Arc<WorkspaceSnapshot>) {
+        let entries = snapshot.tree_entries();
+        self.filter_collapsed_dirs.retain(|path| {
+            entries
+                .iter()
+                .any(|entry| entry.path == *path && entry.is_dir())
+        });
+        self.filter_snapshot = Some(snapshot);
+        if self.filter_query.trim().is_empty() {
+            self.matching_indices.clear();
+            self.filtered_indices.clear();
+        } else {
+            self.matching_indices =
+                matching_file_tree_entry_indices(self.filter_entries(), &self.filter_query);
+            self.refresh_filtered_indices();
+        }
+    }
+
     fn reset_filter_index(&mut self) {
         self.cancel_filter_scan();
-        self.all_entries.clear();
-        self.all_entries_loaded = false;
+        self.filter_snapshot = None;
         self.matching_indices.clear();
         self.filtered_indices.clear();
     }
 
-    fn refresh_all_entries(&mut self, cx: &mut Context<Self>) {
+    fn reset_filter_with_invalidation(&mut self, invalidate_all: bool, cx: &mut Context<Self>) {
+        if invalidate_all {
+            self.file_index.invalidate();
+        } else {
+            self.file_index
+                .invalidate_unless(self.root_dir.as_deref(), self.collocated_mode);
+        }
         self.reset_filter_index();
         if !self.filter_query.trim().is_empty() {
             self.start_filter_scan(cx);
         }
     }
 
+    fn refresh_after_fs_mutation(&mut self, cx: &mut Context<Self>) {
+        self.reset_filter_with_invalidation(true, cx);
+        self.refresh_entries(cx);
+    }
+
     fn refresh_filtered_indices(&mut self) {
         self.filtered_indices = visible_file_tree_entry_indices(
-            &self.all_entries,
+            self.filter_entries(),
             &self.matching_indices,
             &self.filter_collapsed_dirs,
         );
@@ -1464,128 +1391,6 @@ fn remap_path_set(set: &mut HashSet<PathBuf>, old_prefix: &Path, new_prefix: &Pa
     }
 }
 
-/// Recursively scans directory contents, ignoring hidden and transient files.
-fn scan_dir_recursive(
-    dir: &Path,
-    depth: usize,
-    expanded: &HashSet<PathBuf>,
-    collocated_mode: bool,
-    out: &mut Vec<FileTreeEntry>,
-    cancel: &AtomicBool,
-) {
-    if cancel.load(Ordering::Relaxed) {
-        return;
-    }
-    for entry in read_tree_entries(dir, collocated_mode) {
-        if cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        if entry.is_dir {
-            let is_expanded = expanded.contains(&entry.path) && entry.can_recurse;
-            out.push(FileTreeEntry::new_dir(
-                entry.path.clone(),
-                entry.name,
-                depth,
-                is_expanded,
-            ));
-            if is_expanded {
-                scan_dir_recursive(
-                    &entry.path,
-                    depth + 1,
-                    expanded,
-                    collocated_mode,
-                    out,
-                    cancel,
-                );
-            }
-        } else if entry.is_collocated_doc {
-            out.push(FileTreeEntry::new_collocated_doc(
-                entry.path, entry.name, depth,
-            ));
-        } else {
-            out.push(FileTreeEntry::new_file(entry.path, entry.name, depth));
-        }
-    }
-}
-
-fn read_tree_entries(dir: &Path, collocated_mode: bool) -> Vec<ScannedTreeEntry> {
-    let mut items = Vec::new();
-    if let Ok(read_dir) = std::fs::read_dir(dir) {
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') || name == "target" || name == "node_modules" {
-                continue;
-            }
-            let raw_is_dir = path.is_dir();
-            if collocated_mode {
-                if !raw_is_dir {
-                    continue;
-                }
-                let is_collocated_doc = crate::fs::has_collocated_index(&path);
-                let can_recurse = !is_collocated_doc
-                    && entry.file_type().is_ok_and(|file_type| file_type.is_dir());
-                items.push(ScannedTreeEntry {
-                    path,
-                    name,
-                    is_dir: !is_collocated_doc,
-                    is_collocated_doc,
-                    can_recurse,
-                });
-            } else {
-                let can_recurse = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
-                items.push(ScannedTreeEntry {
-                    path,
-                    name,
-                    is_dir: raw_is_dir,
-                    is_collocated_doc: false,
-                    can_recurse,
-                });
-            }
-        }
-    }
-    items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
-    items
-}
-
-fn scan_dir_recursive_all(
-    dir: &Path,
-    depth: usize,
-    collocated_mode: bool,
-    out: &mut Vec<FileTreeEntry>,
-    cancel: &AtomicBool,
-) {
-    if cancel.load(Ordering::Relaxed) {
-        return;
-    }
-    for entry in read_tree_entries(dir, collocated_mode) {
-        if cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        if entry.is_dir {
-            out.push(FileTreeEntry::new_dir(
-                entry.path.clone(),
-                entry.name,
-                depth,
-                entry.can_recurse,
-            ));
-            if entry.can_recurse {
-                scan_dir_recursive_all(&entry.path, depth + 1, collocated_mode, out, cancel);
-            }
-        } else if entry.is_collocated_doc {
-            out.push(FileTreeEntry::new_collocated_doc(
-                entry.path, entry.name, depth,
-            ));
-        } else {
-            out.push(FileTreeEntry::new_file(entry.path, entry.name, depth));
-        }
-    }
-}
-
 fn matching_file_tree_entry_indices(entries: &[FileTreeEntry], query: &str) -> Vec<usize> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
@@ -1680,12 +1485,13 @@ impl Render for ProjectPanel {
                     tree_view::build_tree_items(
                         tree_view::TreeItemList {
                             entries: if is_filtering {
-                                &panel.all_entries
+                                panel.filter_entries()
                             } else {
                                 &panel.entries
                             },
                             visible_indices: is_filtering
                                 .then_some(panel.filtered_indices.as_slice()),
+                            collapsed_dirs: is_filtering.then_some(&panel.filter_collapsed_dirs),
                             inline_input: panel.inline_input.as_ref(),
                             selected_path: panel.selected_path.as_deref(),
                             active_file: panel.active_file.as_deref(),
@@ -1995,18 +1801,19 @@ mod tests {
 
         panel.read_with(cx, |panel, _| {
             assert!(panel.entries.is_empty());
-            assert!(panel.all_entries.is_empty());
-            assert!(!panel.all_entries_loaded);
+            assert!(panel.filter_entries().is_empty());
+            assert!(panel.filter_snapshot.is_none());
         });
 
         panel.update(cx, |panel, cx| panel.set_filter_query("needle".into(), cx));
         cx.run_until_parked();
         panel.read_with(cx, |panel, _| {
-            assert!(panel.all_entries_loaded);
+            assert!(panel.filter_snapshot.is_some());
+            let entries = panel.filter_entries();
             let matching_names = panel
                 .filtered_indices
                 .iter()
-                .map(|index| panel.all_entries[*index].name.as_str())
+                .map(|index| entries[*index].name.as_str())
                 .collect::<Vec<_>>();
             assert_eq!(matching_names, vec!["nested", "needle.rs"]);
         });
@@ -2024,77 +1831,45 @@ mod tests {
         panel.update(cx, |panel, cx| panel.start_filter_scan(cx));
         cx.run_until_parked();
         panel.read_with(cx, |panel, _| {
-            assert!(panel.all_entries_loaded);
+            assert!(panel.filter_snapshot.is_some());
             assert!(panel.filtered_indices.is_empty());
         });
 
         panel.update(cx, |panel, cx| panel.set_filter_query("needle".into(), cx));
         panel.read_with(cx, |panel, _| {
+            let entries = panel.filter_entries();
             let matching_names = panel
                 .filtered_indices
                 .iter()
-                .map(|index| panel.all_entries[*index].name.clone())
+                .map(|index| entries[*index].name.clone())
                 .collect::<Vec<_>>();
             assert_eq!(matching_names, vec!["nested", "needle.rs"]);
-            assert!(panel.all_entries[0].is_expanded());
+            assert!(panel.is_dir_currently_expanded(&nested_dir));
         });
 
         panel.update(cx, |panel, cx| panel.toggle_expand(&nested_dir, cx));
         panel.read_with(cx, |panel, _| {
+            let entries = panel.filter_entries();
             let matching_names = panel
                 .filtered_indices
                 .iter()
-                .map(|index| panel.all_entries[*index].name.clone())
+                .map(|index| entries[*index].name.clone())
                 .collect::<Vec<_>>();
             assert_eq!(matching_names, vec!["nested"]);
-            assert!(!panel.all_entries[0].is_expanded());
+            assert!(!panel.is_dir_currently_expanded(&nested_dir));
         });
 
         panel.update(cx, |panel, cx| panel.toggle_expand(&nested_dir, cx));
         panel.read_with(cx, |panel, _| {
+            let entries = panel.filter_entries();
             let matching_names = panel
                 .filtered_indices
                 .iter()
-                .map(|index| panel.all_entries[*index].name.clone())
+                .map(|index| entries[*index].name.clone())
                 .collect::<Vec<_>>();
             assert_eq!(matching_names, vec!["nested", "needle.rs"]);
-            assert!(panel.all_entries[0].is_expanded());
+            assert!(panel.is_dir_currently_expanded(&nested_dir));
         });
-    }
-
-    #[test]
-    fn scan_dir_recursive_all_does_not_follow_directory_symlinks() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let root = temp_dir.path();
-        let target = root.join("target_dir");
-        std::fs::create_dir(&target).unwrap();
-        std::fs::write(target.join("needle.rs"), "").unwrap();
-        let link = root.join("linked_dir");
-
-        #[cfg(unix)]
-        let link_result = std::os::unix::fs::symlink(&target, &link);
-        #[cfg(windows)]
-        let link_result = std::os::windows::fs::symlink_dir(&target, &link);
-        #[cfg(not(any(unix, windows)))]
-        return;
-
-        if let Err(error) = link_result {
-            if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied {
-                return;
-            }
-            panic!("failed to create directory symlink for test: {error}");
-        }
-
-        let mut entries = Vec::new();
-        scan_dir_recursive_all(root, 0, false, &mut entries, &AtomicBool::new(false));
-
-        assert_eq!(
-            entries
-                .iter()
-                .filter(|entry| entry.name == "needle.rs")
-                .count(),
-            1
-        );
     }
 
     // Load-bearing: `use super::*` also brings in `gpui::test`, so this explicit import
@@ -2251,18 +2026,14 @@ mod tests {
         // Filtering in collocated mode matches bundle "guide" and excludes "loose.md"
         panel.update(cx, |panel, cx| panel.set_filter_query("guide".into(), cx));
         panel.read_with(cx, |panel, _| {
+            let entries = panel.filter_entries();
             let matching_names: Vec<&str> = panel
                 .filtered_indices
                 .iter()
-                .map(|idx| panel.all_entries[*idx].name.as_str())
+                .map(|idx| entries[*idx].name.as_str())
                 .collect();
             assert_eq!(matching_names, vec!["cat", "guide"]);
-            assert!(
-                !panel
-                    .all_entries
-                    .iter()
-                    .any(|entry| entry.name == "loose.md")
-            );
+            assert!(!entries.iter().any(|entry| entry.name == "loose.md"));
         });
 
         // Switch off collocated mode -> loose file appears and active modal / bundle expansion cleanup runs
@@ -2329,13 +2100,46 @@ mod tests {
         });
         cx.run_until_parked();
         panel.read_with(cx, |panel, _| {
-            assert!(panel.all_entries_loaded);
-            assert!(panel.all_entries.iter().any(|e| e.name == "other.md"));
+            assert!(panel.filter_snapshot.is_some());
+            assert!(panel.filter_entries().iter().any(|e| e.name == "other.md"));
         });
 
         panel.update(cx, |panel, cx| panel.set_filter_visible(false, cx));
         panel.read_with(cx, |panel, _| {
             assert!(!panel.has_filter_index_activity());
+            assert!(!panel.file_index.is_populated());
+        });
+    }
+
+    #[gpui::test]
+    fn test_project_panel_respects_gitignore_in_tree_and_filter(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "secret.md\nignored_dir/\n").unwrap();
+        std::fs::create_dir_all(root.join("ignored_dir")).unwrap();
+        std::fs::write(root.join("ignored_dir/hidden.md"), "hidden").unwrap();
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        std::fs::write(root.join("dist/bundle.md"), "dist").unwrap();
+        std::fs::write(root.join("secret.md"), "secret").unwrap();
+        std::fs::write(root.join("visible.md"), "visible").unwrap();
+
+        let panel = cx.update(|cx| cx.new(|cx| ProjectPanel::new(Some(root.to_path_buf()), cx)));
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, _| {
+            let names: Vec<&str> = panel.entries().iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(names, vec!["visible.md"]);
+        });
+
+        panel.update(cx, |panel, cx| panel.set_filter_query("md".into(), cx));
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, _| {
+            let names: Vec<&str> = panel
+                .filter_entries()
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect();
+            assert_eq!(names, vec!["visible.md"]);
         });
     }
 }

@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
-use std::{ops::Range, path::Path};
+use std::{collections::HashSet, ops::Range, path::{Path, PathBuf}};
 
 use crate::app::project_panel::inline_input::{InlineInput, InlineInputKind};
 use crate::app::project_panel::{DraggedProjectEntry, FileTreeEntry, ProjectPanel};
@@ -182,6 +182,7 @@ pub fn render_inline_row(
 pub struct TreeItemList<'a> {
     pub entries: &'a [FileTreeEntry],
     pub visible_indices: Option<&'a [usize]>,
+    pub collapsed_dirs: Option<&'a HashSet<PathBuf>>,
     pub inline_input: Option<&'a Entity<InlineInput>>,
     pub selected_path: Option<&'a Path>,
     pub active_file: Option<&'a Path>,
@@ -200,6 +201,7 @@ pub fn build_tree_items(
     let TreeItemList {
         entries,
         visible_indices,
+        collapsed_dirs,
         inline_input,
         selected_path,
         active_file,
@@ -240,6 +242,15 @@ pub fn build_tree_items(
         };
         let entry_idx = visible_indices.map_or(display_idx, |indices| indices[display_idx]);
         let entry = &entries[entry_idx];
+        let is_dir = entry.is_dir();
+        let is_expanded = if is_dir {
+            collapsed_dirs.map_or_else(
+                || entry.is_expanded(),
+                |collapsed| !collapsed.contains(&entry.path),
+            )
+        } else {
+            false
+        };
 
         if let Some(input) = inline_input {
             let input_ref = input.read(cx);
@@ -248,7 +259,7 @@ pub fn build_tree_items(
             {
                 item_elements.push(render_inline_row(
                     input,
-                    entry.is_expanded(),
+                    is_expanded,
                     collocated_mode,
                     theme,
                     cx,
@@ -262,7 +273,6 @@ pub fn build_tree_items(
         let panel_click = panel_weak.clone();
         let panel_right_click = panel_weak.clone();
         let entry_path = entry.path.clone();
-        let is_dir = entry.is_dir();
         let indent = px((entry.depth * 14 + 10) as f32);
 
         let bg_color = if is_selected {
@@ -369,7 +379,7 @@ pub fn build_tree_items(
             })
             .children(render_entry_leading_icon(
                 is_dir,
-                entry.is_expanded(),
+                is_expanded,
                 collocated_mode,
                 if is_selected {
                     theme.text_primary
@@ -391,7 +401,7 @@ pub fn build_tree_items(
             )
             .children(render_entry_trailing_chevron(
                 is_dir,
-                entry.is_expanded(),
+                is_expanded,
                 collocated_mode,
                 if is_selected {
                     theme.text_primary

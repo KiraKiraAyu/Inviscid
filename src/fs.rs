@@ -1,5 +1,10 @@
 //! File system utilities.
 
+pub mod workspace_index;
+pub use workspace_index::{
+    FileTreeEntry, FileTreeEntryKind, WorkspaceFileIndex, WorkspaceSnapshot, scan_expanded_tree,
+};
+
 use crate::buffer::LineEnding;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
