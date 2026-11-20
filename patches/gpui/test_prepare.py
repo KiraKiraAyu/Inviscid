@@ -253,7 +253,9 @@ class PreparationTests(unittest.TestCase):
             project / 'vendor/gpui',
             [Path(subject.__file__).with_name('windows-frame-upload.patch'),
              Path(subject.__file__).with_name('windows-ime-input.patch'),
-             Path(subject.__file__).with_name('windows-text-baseline.patch')], self.archive)
+             Path(subject.__file__).with_name('windows-text-baseline.patch'),
+             Path(subject.__file__).with_name('windows-atlas-deallocate.patch'),
+             Path(subject.__file__).with_name('image-cache-prepaint.patch')], self.archive)
 
     def test_explicit_archive_bypasses_cache_lookup_and_download(self):
         with patch.object(subject, 'urlopen') as network:

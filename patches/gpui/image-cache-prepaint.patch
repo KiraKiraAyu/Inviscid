@@ -1,0 +1,261 @@
+diff --git a/src/elements/div.rs b/src/elements/div.rs
+index 4d4e176..cf1084b 100644
+--- a/src/elements/div.rs
++++ b/src/elements/div.rs
+@@ -1397,32 +1397,39 @@ impl Element for Div {
+             scroll_handle.scroll_to_active_item();
+         }
+ 
+-        self.interactivity.prepaint(
+-            global_id,
+-            inspector_id,
+-            bounds,
+-            content_size,
+-            window,
+-            cx,
+-            |style, scroll_offset, hitbox, window, cx| {
+-                // skip children
+-                if style.display == Display::None {
+-                    return hitbox;
+-                }
++        let image_cache = self
++            .image_cache
++            .as_mut()
++            .map(|provider| provider.provide(window, cx));
+ 
+-                window.with_element_offset(scroll_offset, |window| {
+-                    for child in &mut self.children {
+-                        child.prepaint(window, cx);
++        window.with_image_cache(image_cache, |window| {
++            self.interactivity.prepaint(
++                global_id,
++                inspector_id,
++                bounds,
++                content_size,
++                window,
++                cx,
++                |style, scroll_offset, hitbox, window, cx| {
++                    // skip children
++                    if style.display == Display::None {
++                        return hitbox;
+                     }
+-                });
+ 
+-                if let Some(listener) = self.prepaint_listener.as_ref() {
+-                    listener(children_bounds, window, cx);
+-                }
++                    window.with_element_offset(scroll_offset, |window| {
++                        for child in &mut self.children {
++                            child.prepaint(window, cx);
++                        }
++                    });
+ 
+-                hitbox
+-            },
+-        )
++                    if let Some(listener) = self.prepaint_listener.as_ref() {
++                        listener(children_bounds, window, cx);
++                    }
++
++                    hitbox
++                },
++            )
++        })
+     }
+ 
+     #[stacksafe]
+diff --git a/src/elements/image_cache.rs b/src/elements/image_cache.rs
+index ee14361..3083919 100644
+--- a/src/elements/image_cache.rs
++++ b/src/elements/image_cache.rs
+@@ -137,9 +137,12 @@ impl Element for ImageCacheElement {
+         window: &mut Window,
+         cx: &mut App,
+     ) -> Self::PrepaintState {
+-        for child in &mut self.children {
+-            child.prepaint(window, cx);
+-        }
++        let image_cache = self.image_cache_provider.provide(window, cx);
++        window.with_image_cache(Some(image_cache), |window| {
++            for child in &mut self.children {
++                child.prepaint(window, cx);
++            }
++        })
+     }
+ 
+     fn paint(
+@@ -214,7 +217,7 @@ pub trait ImageCache: 'static {
+ /// An object that can create an ImageCache during the render phase.
+ /// See the ImageCache trait for more information.
+ pub trait ImageCacheProvider: 'static {
+-    /// Called during the request_layout phase to create an ImageCache.
++    /// Called during layout, prepaint, and paint to provide an ImageCache.
+     fn provide(&mut self, _window: &mut Window, _cx: &mut App) -> AnyImageCache;
+ }
+ 
+@@ -351,3 +354,165 @@ impl ImageCacheProvider for RetainAllImageCacheProvider {
+             .into()
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::{
++        self as gpui, AvailableSpace, Context, ImageSource, Render, TestAppContext, div, img,
++        point, px, size,
++    };
++    use image::{Frame, RgbaImage};
++    use std::path::PathBuf;
++
++    struct RecordingImageCache {
++        image: Arc<RenderImage>,
++        loaded: Vec<Resource>,
++    }
++
++    impl ImageCache for RecordingImageCache {
++        fn load(
++            &mut self,
++            resource: &Resource,
++            _window: &mut Window,
++            _cx: &mut App,
++        ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
++            self.loaded.push(resource.clone());
++            Some(Ok(self.image.clone()))
++        }
++    }
++
++    struct PrepaintAsRootImg(Resource);
++
++    impl IntoElement for PrepaintAsRootImg {
++        type Element = Self;
++
++        fn into_element(self) -> Self::Element {
++            self
++        }
++    }
++
++    impl Element for PrepaintAsRootImg {
++        type RequestLayoutState = ();
++        type PrepaintState = Option<AnyElement>;
++
++        fn id(&self) -> Option<ElementId> {
++            None
++        }
++
++        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
++            None
++        }
++
++        fn request_layout(
++            &mut self,
++            _id: Option<&GlobalElementId>,
++            _inspector_id: Option<&InspectorElementId>,
++            window: &mut Window,
++            cx: &mut App,
++        ) -> (LayoutId, Self::RequestLayoutState) {
++            (window.request_layout(Style::default(), None, cx), ())
++        }
++
++        fn prepaint(
++            &mut self,
++            _id: Option<&GlobalElementId>,
++            _inspector_id: Option<&InspectorElementId>,
++            bounds: Bounds<Pixels>,
++            _request_layout: &mut Self::RequestLayoutState,
++            window: &mut Window,
++            cx: &mut App,
++        ) -> Self::PrepaintState {
++            let mut child = img(ImageSource::Resource(self.0.clone()))
++                .w(px(16.))
++                .h(px(16.))
++                .into_any_element();
++            child.prepaint_as_root(bounds.origin, AvailableSpace::min_size(), window, cx);
++            Some(child)
++        }
++
++        fn paint(
++            &mut self,
++            _id: Option<&GlobalElementId>,
++            _inspector_id: Option<&InspectorElementId>,
++            _bounds: Bounds<Pixels>,
++            _request_layout: &mut Self::RequestLayoutState,
++            child: &mut Self::PrepaintState,
++            window: &mut Window,
++            cx: &mut App,
++        ) {
++            if let Some(child) = child {
++                child.paint(window, cx);
++            }
++        }
++    }
++
++    #[gpui::test]
++    fn prepaint_as_root_uses_scoped_image_cache_in_element_and_div(cx: &mut TestAppContext) {
++        let cx = cx.add_empty_window();
++        let pixel_image = Arc::new(RenderImage::new(SmallVec::from_elem(
++            Frame::new(RgbaImage::new(1, 1)),
++            1,
++        )));
++        let cache = cx.new(|_| RecordingImageCache {
++            image: pixel_image,
++            loaded: Vec::new(),
++        });
++        let element_resource = Resource::Path(PathBuf::from("prepaint_element.png").into());
++        let div_resource = Resource::Path(PathBuf::from("prepaint_div.png").into());
++
++        struct TestView {
++            cache: Entity<RecordingImageCache>,
++            element_resource: Resource,
++            div_resource: Resource,
++        }
++
++        impl Render for TestView {
++            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++                div()
++                    .size_full()
++                    .child(
++                        image_cache(self.cache.clone())
++                            .child(PrepaintAsRootImg(self.element_resource.clone())),
++                    )
++                    .child(
++                        div()
++                            .image_cache(self.cache.clone())
++                            .child(PrepaintAsRootImg(self.div_resource.clone())),
++                    )
++            }
++        }
++
++        let cache_handle = cache.clone();
++        let el_res = element_resource.clone();
++        let div_res = div_resource.clone();
++        cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, cx| {
++            cx.new(|_| TestView {
++                cache: cache_handle,
++                element_resource: el_res,
++                div_resource: div_res,
++            })
++        });
++
++        cache.read_with(cx, |cache, cx| {
++            assert_eq!(
++                cache
++                    .loaded
++                    .iter()
++                    .filter(|r| **r == element_resource)
++                    .count(),
++                2,
++                "expected ImageCacheElement prepaint + paint loads"
++            );
++            assert_eq!(
++                cache.loaded.iter().filter(|r| **r == div_resource).count(),
++                2,
++                "expected Div prepaint + paint loads"
++            );
++            assert!(
++                cx.loading_assets.is_empty(),
++                "prepaint_as_root must not fall back to global App::loading_assets"
++            );
++        });
++    }
++}

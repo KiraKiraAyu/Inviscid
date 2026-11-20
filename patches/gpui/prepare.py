@@ -181,7 +181,8 @@ def main():
         archive = find_archive(arguments.archive, arguments.offline)
         patches = [Path(__file__).with_name(name) for name in (
             'windows-frame-upload.patch', 'windows-ime-input.patch',
-            'windows-text-baseline.patch')]
+            'windows-text-baseline.patch', 'windows-atlas-deallocate.patch',
+            'image-cache-prepaint.patch')]
         changed = prepare(ROOT / 'vendor/gpui', patches, archive)
     except (PreparationError, OSError, tarfile.TarError, ValueError, KeyError) as error:
         parser.exit(1, f'GPUI preparation failed: {error}\n')
