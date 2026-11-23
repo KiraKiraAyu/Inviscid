@@ -6,6 +6,8 @@ use std::sync::{Arc, OnceLock, Weak};
 use latex_rust::{Dim, MathFont, MathStyle, SvgOptions};
 use parking_lot::{Mutex, RwLock};
 
+mod preprocess;
+
 const MAX_TEX_CHARS: usize = 4096;
 const MAX_TEX_BYTES: usize = 16 * 1024;
 const MAX_DIMENSION_MILLI_EM: u32 = 512_000;
@@ -119,7 +121,8 @@ fn render_uncached(tex: &str, is_display: bool) -> CachedFormula {
     }
 
     let font = font().ok_or_else(|| "math font unavailable".to_string())?;
-    let ast = latex_rust::parse(tex).map_err(|err| err.to_string())?;
+    let normalized = preprocess::normalize_latex(tex);
+    let ast = latex_rust::parse(&normalized).map_err(|err| err.to_string())?;
     let style = if is_display {
         MathStyle::Display
     } else {
@@ -303,5 +306,22 @@ mod tests {
     fn oversized_tex_is_rejected_before_it_enters_the_formula_cache() {
         let tex = "x".repeat(MAX_TEX_CHARS + 1);
         assert!(formula_key(&tex, false).is_err());
+    }
+
+    #[test]
+    fn preprocessor_supports_mod_macros_and_unicode_math() {
+        for tex in [
+            r"gcd(a,b)=gcd(b,a \pmod b)",
+            r"c = b^e \pmod m",
+            r"ax \equiv 1 \pmod n",
+            r"x \equiv a^{-1} \cdot b \pmod n",
+            r"a \equiv b \pmod{n + 1}",
+            r"a \bmod b",
+            r"a \pod{m}",
+            "234=1×126+108\u{a0} ⟹\u{a0} 108=234−1×126",
+        ] {
+            let rendered = prepare_latex_result(tex, true);
+            assert!(rendered.is_ok(), "failed on {tex}: {:?}", rendered.err());
+        }
     }
 }
