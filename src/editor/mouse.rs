@@ -235,11 +235,17 @@ impl Editor {
                     parsed.kind,
                     crate::markdown::BlockKind::MathBlock { is_start: true }
                 )
-                && let Some((start, end)) = self.math_block_range(target_line)
-                && start == target_line
-                && end > start
+                && let Some(block) = crate::markdown::block_at_buffer(&self.buffer, target_line)
+                && matches!(block.kind, crate::markdown::ProjectedBlockKind::MathBlock)
+                && block.source_range.start == target_line
+                && block.source_range.end > block.source_range.start + 1
             {
-                return Position::new(start + 1, 0);
+                return if block.editable_lines.start < block.editable_lines.end {
+                    let last_line = SourceLine::new(block.editable_lines.end.index() - 1);
+                    Position::new(last_line, self.buffer.line_len(last_line))
+                } else {
+                    Position::new(block.source_range.start + 1, 0)
+                };
             }
 
             if let crate::markdown::BlockKind::Table {

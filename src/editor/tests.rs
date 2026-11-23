@@ -2369,17 +2369,17 @@ fn test_clicking_display_math_enters_source_and_preview_editing(cx: &mut gpui::T
 
             assert_eq!(
                 editor.find_pos_for_mouse_point(click, window),
-                Position::new(crate::buffer::SourceLine::new(2), 0)
+                Position::new(crate::buffer::SourceLine::new(2), 5)
             );
             assert_eq!(editor.buffer.full_line_materializations(), before);
             assert_eq!(
                 editor.find_pos_for_mouse_point_mut(click, window),
-                Position::new(crate::buffer::SourceLine::new(2), 0)
+                Position::new(crate::buffer::SourceLine::new(2), 5)
             );
             assert_eq!(editor.buffer.full_line_materializations(), before);
             editor
                 .buffer_mut()
-                .set_cursor(Position::new(crate::buffer::SourceLine::new(2), 0));
+                .set_cursor(Position::new(crate::buffer::SourceLine::new(2), 5));
             editor.ensure_layout_cache();
             assert_eq!(editor.layout_snapshot().metrics.height(1).unwrap(), px(0.0));
             assert!(editor.layout_snapshot().metrics.height(2).unwrap() > px(0.0));
@@ -2488,8 +2488,11 @@ fn test_live_preview_vertical_navigation_skips_math_delimiters(cx: &mut gpui::Te
             editor.ensure_layout_cache();
             assert_eq!(
                 clicked_pos,
-                Position::new(crate::buffer::SourceLine::new(2), 0)
+                Position::new(crate::buffer::SourceLine::new(3), 1)
             );
+
+            editor.move_up(false, window);
+            assert_eq!(editor.buffer().cursor_pos().line, SourceLine::new(2));
 
             editor.move_up(false, window);
             assert_eq!(editor.buffer().cursor_pos().line, SourceLine::new(0));
