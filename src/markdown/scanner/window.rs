@@ -27,16 +27,15 @@ pub(super) fn scan(
             });
         (!is_small_mermaid).then_some((start.index(), end.map(|e| e.index())))
     };
-    let bounded_large_math = |row: usize| -> Option<(usize, usize)> {
-        let (start, Some(end)) = index.math_range(SourceLine::new(row))? else {
-            return None;
-        };
-        (end.index() - start.index() > MAX_PREVIEW_BLOCK_EXPANSION)
-            .then_some((start.index(), end.index()))
+    let bounded_math = |row: usize| -> Option<(usize, Option<usize>)> {
+        let (start, end) = index.math_range(SourceLine::new(row))?;
+        let is_unclosed_or_large = end.is_none()
+            || end.is_some_and(|close| close.index() - start.index() > MAX_PREVIEW_BLOCK_EXPANSION);
+        is_unclosed_or_large.then_some((start.index(), end.map(|e| e.index())))
     };
     if requested
         .clone()
-        .any(|row| bounded_code(row).is_some() || bounded_large_math(row).is_some())
+        .any(|row| bounded_code(row).is_some() || bounded_math(row).is_some())
     {
         let mut rows = Vec::new();
         let mut row = requested.start;
@@ -61,8 +60,10 @@ pub(super) fn scan(
                 apply_quote_edges(source, index, row, &mut parsed);
                 rows.extend(parsed);
                 row = stop;
-            } else if let Some((open, close)) = bounded_large_math(row) {
-                let stop = requested.end.min(close + 1);
+            } else if let Some((open, close)) = bounded_math(row) {
+                let stop = requested
+                    .end
+                    .min(close.map_or(requested.end, |end| end + 1));
                 let mut parsed =
                     scan_normalized(source, index, row..stop, row > open, true, policy);
                 apply_quote_edges(source, index, row, &mut parsed);
@@ -72,7 +73,7 @@ pub(super) fn scan(
                 let start = row;
                 while row < requested.end
                     && bounded_code(row).is_none()
-                    && bounded_large_math(row).is_none()
+                    && bounded_math(row).is_none()
                 {
                     row += 1;
                 }

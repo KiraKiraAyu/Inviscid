@@ -857,11 +857,13 @@ impl Editor {
         active_math_block: Option<(SourceLine, SourceLine)>,
     ) -> bool {
         active_math_block.is_some_and(|(start, end)| (start..=end).contains(&source_line))
-            || (matches!(parsed.kind, BlockKind::MathBlockContent)
+            || (self.is_loading
+                && matches!(parsed.kind, BlockKind::MathBlockContent)
                 && self
                     .buffer
                     .line_index()
                     .structure()
+                    .optimistic()
                     .math_range(source_line)
                     .is_some_and(|(_, end)| end.is_none()))
     }

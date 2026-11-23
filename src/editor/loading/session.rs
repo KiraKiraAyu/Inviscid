@@ -82,6 +82,7 @@ pub(crate) struct PreparedSnapshot {
     pub revision: u64,
     pub session: Arc<DocumentSession>,
     pub windows: VecDeque<PreparedWindow>,
+    pub optimistic: bool,
 }
 
 fn clamp_request(requested: &Range<usize>, line_count: usize) -> Range<usize> {
@@ -219,21 +220,35 @@ impl DocumentSession {
             return;
         }
         let source = buffer.source_snapshot();
-        let index = buffer.line_index().structure_snapshot();
+        let paired_index = buffer.line_index().structure_snapshot();
+        let reset_optimistic_cache = complete && paired_index.has_unclosed_blocks();
+        let index = if complete {
+            paired_index
+        } else {
+            paired_index.optimistic()
+        };
         let revision = buffer.revision();
         let line_count = buffer.line_count();
         let mut state = self.state.lock();
-        state
-            .windows
-            .retain(|cached| cached.window.range.end < previous_tail);
+        if reset_optimistic_cache {
+            state.windows.clear();
+        } else {
+            state
+                .windows
+                .retain(|cached| cached.window.range.end < previous_tail);
+        }
         state.target = Some(WorkTarget {
             source: source.clone(),
-            index,
+            index: index.clone(),
             revision,
             from_disk: true,
             complete,
             disk_hash,
-            immutable_before: previous_tail,
+            immutable_before: if reset_optimistic_cache {
+                0
+            } else {
+                previous_tail
+            },
         });
         let range = clamp_request(&state.requested, line_count);
         let mut windows: VecDeque<PreparedWindow> = state
@@ -245,7 +260,7 @@ impl DocumentSession {
             .iter()
             .any(|window| window.range.start <= range.start && window.range.end >= range.end)
         {
-            windows.push_back(source_window(&source, range));
+            windows.push_back(source_window(&source, &index, range));
         }
         state.latest = Some(Ok(Publication {
             buffer: Some(buffer),
@@ -533,10 +548,9 @@ mod tests {
             let mut stream = StreamingBuffer::new(Some("publication-order.md".into()));
             for scenario in 0..3 {
                 stream.push(b"# heading\nbody\n", false).unwrap();
-                let source = source_window(
-                    &stream.buffer.source_snapshot(),
-                    0..stream.buffer.line_count(),
-                );
+                let source_snapshot = stream.buffer.source_snapshot();
+                let index = source_snapshot.structure_index();
+                let source = source_window(&source_snapshot, &index, 0..stream.buffer.line_count());
                 editor.install_publication(
                     &session,
                     Ok(Publication {
@@ -597,10 +611,9 @@ mod tests {
         let session = DocumentSession::new();
         let mut stream = StreamingBuffer::new(Some(path.clone()));
         stream.push(b"```rust\n# code\n", false).unwrap();
-        let window = source_window(
-            &stream.buffer.source_snapshot(),
-            0..stream.buffer.line_count(),
-        );
+        let source_snapshot = stream.buffer.source_snapshot();
+        let index = source_snapshot.structure_index().optimistic();
+        let window = source_window(&source_snapshot, &index, 0..stream.buffer.line_count());
         let (editor, cx) = cx.add_window_view(|_, cx| crate::editor::Editor::new_loading(path, cx));
         editor.update(cx, |editor, cx| {
             editor.install_publication(
@@ -619,7 +632,7 @@ mod tests {
             assert!(editor.save_file_async(cx).is_err());
             assert_eq!(
                 editor.layout_snapshot().parsed_lines.row(1).unwrap().kind,
-                BlockKind::Paragraph
+                BlockKind::CodeBlockContent
             );
         });
         cx.run_until_parked();
@@ -746,10 +759,9 @@ mod tests {
         let publication = session.take().unwrap().unwrap();
         assert!(!publication.complete);
         assert_eq!(publication.buffer.as_ref().unwrap().line_count(), 3);
-        assert_eq!(publication.windows[0].rows[0].kind, BlockKind::Paragraph);
         assert!(matches!(
             publication.windows[0].rows[1].kind,
-            BlockKind::Paragraph | BlockKind::Heading { level: 1 }
+            BlockKind::CodeBlockContent
         ));
         session.cancel();
         resume.send(()).unwrap();
@@ -1032,11 +1044,9 @@ mod tests {
         editor.read_with(cx, |editor, _| {
             assert!(editor.is_loading());
             let layout = editor.layout_snapshot();
-            let row0 = layout.parsed_lines.row(0).unwrap();
             let row1 = layout.parsed_lines.row(1).unwrap();
-            assert_eq!(row0.kind, BlockKind::Paragraph);
-            assert_eq!(row1.kind, BlockKind::Paragraph);
-            assert!(!editor.is_math_block_expanded(SourceLine::new(1), &row1, None));
+            assert_eq!(row1.kind, BlockKind::MathBlockContent);
+            assert!(editor.is_math_block_expanded(SourceLine::new(1), &row1, None));
             assert_eq!(layout.parsed_lines.row(2).unwrap().raw_text, "still math");
         });
 
@@ -1059,10 +1069,8 @@ mod tests {
                         && editor
                             .layout_snapshot()
                             .parsed_lines
-                            .row(3)
-                            .is_some_and(|row| {
-                                matches!(row.kind, BlockKind::MathBlock { is_start: false })
-                            })
+                            .row(5)
+                            .is_some_and(|row| row.kind == BlockKind::CodeBlockContent)
                 });
                 if ready {
                     break;
@@ -1080,14 +1088,54 @@ mod tests {
             );
             assert_eq!(
                 layout.parsed_lines.row(4).unwrap().kind,
-                BlockKind::Paragraph
+                BlockKind::CodeBlock {
+                    is_fence_start: true
+                }
             );
             let row5 = layout.parsed_lines.row(5).unwrap();
-            assert_eq!(row5.kind, BlockKind::Paragraph);
+            assert_eq!(row5.kind, BlockKind::CodeBlockContent);
             assert_eq!(row5.raw_text, "let v = 1;");
         });
-        session.cancel();
+
         resume.send(()).unwrap();
+        let eof_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(pub_item) = session.take() {
+                let pub_item = pub_item.unwrap();
+                editor.update(cx, |editor, cx| {
+                    editor.install_publication(&session, Ok(pub_item), cx)
+                });
+            }
+            if !editor.read_with(cx, |editor, _| editor.is_loading()) {
+                break;
+            }
+            assert!(std::time::Instant::now() < eof_deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        cx.run_until_parked();
+        while let Some(pub_item) = session.take() {
+            let pub_item = pub_item.unwrap();
+            editor.update(cx, |editor, cx| {
+                editor.install_publication(&session, Ok(pub_item), cx)
+            });
+        }
+        editor.read_with(cx, |editor, _| {
+            assert!(!editor.is_loading());
+            let layout = editor.layout_snapshot();
+            assert_eq!(
+                layout.parsed_lines.row(1).unwrap().kind,
+                BlockKind::MathBlockContent
+            );
+            assert_eq!(
+                layout.parsed_lines.row(4).unwrap().kind,
+                BlockKind::Paragraph
+            );
+            assert_eq!(
+                layout.parsed_lines.row(5).unwrap().kind,
+                BlockKind::Paragraph
+            );
+        });
+        session.cancel();
         worker.join().unwrap().unwrap();
     }
 
@@ -1160,9 +1208,9 @@ mod tests {
 
 pub(crate) fn source_window(
     source: &crate::buffer::SourceSnapshot,
+    index: &StructureIndex,
     range: Range<usize>,
 ) -> PreparedWindow {
-    let index = source.structure_index();
     let rows = range
         .clone()
         .map(|line| {

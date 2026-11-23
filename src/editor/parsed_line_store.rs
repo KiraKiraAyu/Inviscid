@@ -262,7 +262,12 @@ impl ParsedLineStore {
             if let Some(window) = windows.iter().find(|window| window.range == requested) {
                 return window.clone();
             }
-            let window = super::loading::source_window(&store.source, requested);
+            let index = if prepared.optimistic {
+                store.index.optimistic()
+            } else {
+                store.index.clone()
+            };
+            let window = super::loading::source_window(&store.source, &index, requested);
             let window = WindowEntry {
                 range: window.range,
                 rows: window.rows,

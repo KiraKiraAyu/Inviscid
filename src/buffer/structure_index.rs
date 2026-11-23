@@ -250,6 +250,19 @@ impl StructureIndex {
         self.tree.summary().lines
     }
 
+    pub(crate) fn optimistic(&self) -> Self {
+        Self {
+            tree: self.tree.clone(),
+            effective_tree: None,
+            #[cfg(test)]
+            classified_lines: self.classified_lines,
+        }
+    }
+
+    pub(crate) fn has_unclosed_blocks(&self) -> bool {
+        self.effective_tree.is_some()
+    }
+
     fn active_tree(&self) -> &SumTree<StructureLine> {
         self.effective_tree.as_ref().unwrap_or(&self.tree)
     }

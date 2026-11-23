@@ -121,6 +121,7 @@ impl Editor {
                     revision: self.buffer.revision(),
                     session: session.clone(),
                     windows: file.windows,
+                    optimistic: self.is_loading && !file.complete,
                 }));
                 {
                     let mut cache = self.layout_cache.borrow_mut();
@@ -137,11 +138,15 @@ impl Editor {
                                 .with_session(Some(session.clone()))
                                 .with_prepared(self.prepared_document.clone());
                         let max_len = cache.metrics.len();
-                        for range in &changed_ranges {
-                            let start = range.start.min(max_len);
-                            let end = range.end.min(max_len);
-                            if start < end {
-                                cache.metrics.invalidate_measured(start..end);
+                        if finishing && self.buffer.line_index().structure().has_unclosed_blocks() {
+                            cache.metrics.invalidate_measured(0..max_len);
+                        } else {
+                            for range in &changed_ranges {
+                                let start = range.start.min(max_len);
+                                let end = range.end.min(max_len);
+                                if start < end {
+                                    cache.metrics.invalidate_measured(start..end);
+                                }
                             }
                         }
                     }
