@@ -2,6 +2,10 @@ use gpui::*;
 use std::sync::Arc;
 
 use crate::editor::RenderMode;
+use crate::editor::geometry::{
+    CODE_BLOCK_PADDING_X, MATH_EDITOR_PADDING_X, MATH_EDITOR_PADDING_Y, MIN_LINE_CONTENT_WIDTH,
+    TextShapingMode, resolve_inner_available_width,
+};
 use crate::markdown::{BlockKind, InlineSpan, MathSpan, ParsedLine};
 use crate::theme::{ActiveTheme, Theme};
 
@@ -9,7 +13,6 @@ use crate::theme::{ActiveTheme, Theme};
 pub const QUOTE_GUTTER: Pixels = px(18.0);
 /// Vertical space added at the first and last line of a quote group.
 pub const QUOTE_EDGE_PADDING: Pixels = px(4.0);
-const MIN_LINE_CONTENT_WIDTH: Pixels = px(100.0);
 
 #[inline]
 pub fn quote_content_indent_px(parsed: &ParsedLine, space_width: Pixels) -> Pixels {
@@ -37,19 +40,7 @@ pub fn compute_available_line_width_with_mode(
     kind: &BlockKind,
     mode: RenderMode,
 ) -> Pixels {
-    if mode == RenderMode::Source {
-        return (content_width - crate::editor::layout::SOURCE_GUTTER_WIDTH).max(px(100.0));
-    }
-    match kind {
-        BlockKind::TaskList { .. } | BlockKind::OrderedList { .. } => {
-            (content_width - px(24.0)).max(px(100.0))
-        }
-        BlockKind::BulletList => (content_width - px(22.0)).max(px(100.0)),
-        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => {
-            (content_width - px(28.0)).max(px(100.0))
-        }
-        _ => content_width.max(px(100.0)),
-    }
+    resolve_inner_available_width(content_width, kind, mode, px(0.0))
 }
 
 /// Computes the effective text content wrapping width for a specific block kind (defaults to Live Preview)
@@ -114,7 +105,7 @@ pub fn compute_available_line_width_with_indent(
     mode: RenderMode,
     indent_px: Pixels,
 ) -> Pixels {
-    (compute_available_line_width_with_mode(content_width, kind, mode) - indent_px).max(px(100.0))
+    resolve_inner_available_width(content_width, kind, mode, indent_px)
 }
 
 pub fn parsed_line_available_width(
@@ -146,13 +137,14 @@ pub fn get_block_left_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
         BlockKind::TaskList { .. } => px(24.0),
         BlockKind::BulletList => px(22.0),
         BlockKind::OrderedList { .. } => px(24.0),
-        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => px(15.0),
+        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => CODE_BLOCK_PADDING_X,
         BlockKind::CodeBlock {
             is_fence_start: true,
         }
         | BlockKind::MermaidBlock {
             is_fence_start: true,
-        } => px(15.0),
+        } => CODE_BLOCK_PADDING_X,
+        BlockKind::MathBlockContent => MATH_EDITOR_PADDING_X,
         _ => px(0.0),
     }
 }
@@ -174,6 +166,8 @@ pub fn get_block_top_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
         BlockKind::Table {
             is_header: true, ..
         } => px(8.0),
+        BlockKind::MathBlock { is_start: true } => px(8.0),
+        BlockKind::MathBlockContent => MATH_EDITOR_PADDING_Y,
         BlockKind::TaskList { .. }
         | BlockKind::BulletList
         | BlockKind::OrderedList { .. }
@@ -399,6 +393,7 @@ pub struct LineShapingContext<'a> {
     pub theme: &'a Theme,
     pub override_color: Option<Hsla>,
     pub is_source: bool,
+    pub is_monospace: bool,
     pub is_active_caret: bool,
     pub cursor_col: usize,
     pub is_selection_disclosure: bool,
@@ -417,11 +412,17 @@ impl<'a> LineShapingContext<'a> {
             theme,
             override_color,
             is_source,
+            is_monospace: is_source,
             is_active_caret,
             cursor_col,
             is_selection_disclosure: false,
             is_heading: false,
         }
+    }
+
+    pub fn with_monospace(mut self, is_monospace: bool) -> Self {
+        self.is_monospace = is_monospace;
+        self
     }
 
     pub fn with_selection_disclosure(mut self, is_selection_disclosure: bool) -> Self {
@@ -507,12 +508,7 @@ pub fn build_line_runs(
             color = color.opacity(0.0);
         }
 
-        if scx.is_source
-            || scx.override_color == Some(scx.theme.code_block_text)
-            || scx.override_color == Some(scx.theme.code_block_header_fg)
-            || span.is_code
-            || span.syntax_token.is_some()
-        {
+        if scx.is_source || scx.is_monospace || span.is_code || span.syntax_token.is_some() {
             font.family = crate::platform::platform_monospace_font().into();
         } else {
             font.family = crate::platform::platform_ui_font().into();
@@ -603,7 +599,9 @@ pub fn line_font_for(kind: &BlockKind, is_source: bool) -> Font {
     if is_source
         || matches!(
             kind,
-            BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent
+            BlockKind::CodeBlockContent
+                | BlockKind::MermaidBlockContent
+                | BlockKind::MathBlockContent
         )
     {
         font(crate::platform::platform_monospace_font())
@@ -1679,7 +1677,7 @@ pub fn render_shaped_line(
     font_size: Pixels,
     line_height: Pixels,
     override_color: Option<Hsla>,
-    is_source: bool,
+    shaping_mode: TextShapingMode,
 ) -> AnyElement {
     let spans = parsed.spans.clone();
     let raw_chars_count = parsed.raw_text.chars().count();
@@ -1703,6 +1701,8 @@ pub fn render_shaped_line(
     let highlights = lrc.highlights.to_vec();
 
     let is_active_caret = lrc.is_disclosure_line;
+    let is_source = shaping_mode.is_source();
+    let is_monospace = shaping_mode.is_monospace();
 
     let math_runs = collect_math_runs(
         &spans,
@@ -1712,24 +1712,17 @@ pub fn render_shaped_line(
         is_selection_disclosure,
     );
 
-    let available_width = compute_available_line_width_with_indent(
-        content_width,
-        &parsed.kind,
-        if is_source {
-            RenderMode::Source
-        } else {
-            RenderMode::LivePreview
-        },
-        lrc.indent_px,
-    );
+    let available_width =
+        resolve_inner_available_width(content_width, &parsed.kind, lrc.mode, lrc.indent_px);
 
-    let is_monospace = is_source
-        || matches!(
-            parsed.kind,
-            BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent
-        );
     let is_heading = matches!(parsed.kind, BlockKind::Heading { .. });
-    let font = line_font_for(&parsed.kind, is_source);
+    let font = if is_monospace {
+        font(crate::platform::platform_monospace_font())
+    } else if is_heading {
+        font(crate::platform::platform_ui_font()).bold()
+    } else {
+        font(crate::platform::platform_ui_font())
+    };
 
     let scx_measure = LineShapingContext::new(
         lrc.theme,
@@ -1738,6 +1731,7 @@ pub fn render_shaped_line(
         is_active_caret,
         disclosure_col,
     )
+    .with_monospace(is_monospace)
     .with_selection_disclosure(is_selection_disclosure)
     .with_heading(is_heading);
     let (line_str_for_measuring, runs_for_measuring) = build_line_runs(
@@ -1779,6 +1773,7 @@ pub fn render_shaped_line(
                     is_active_caret,
                     disclosure_col,
                 )
+                .with_monospace(is_monospace)
                 .with_selection_disclosure(is_selection_disclosure)
                 .with_heading(is_heading);
                 let (line_str, runs) =
@@ -1812,7 +1807,7 @@ pub fn render_shaped_line(
                 };
             }
 
-            let wrap_width = if soft_wrap && available_width > px(100.0) {
+            let wrap_width = if soft_wrap && available_width > px(0.0) {
                 Some(available_width)
             } else {
                 None

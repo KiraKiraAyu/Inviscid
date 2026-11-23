@@ -30,6 +30,7 @@ pub mod display_map;
 pub mod element;
 pub mod find;
 pub mod find_bar;
+pub mod geometry;
 pub mod input_handler;
 pub mod keymap;
 pub mod layout;

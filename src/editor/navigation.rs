@@ -2,9 +2,9 @@ use gpui::*;
 
 use super::{Editor, RenderMode};
 use crate::buffer::Position;
+use crate::editor::geometry::{LineTextSpec, resolve_line_text_spec};
 use crate::editor::shaping::{
     LineShapingContext, calculate_col_from_point, calculate_pos_from_col, compute_content_width,
-    get_block_style_for_line_with_metrics,
 };
 use crate::markdown::get_block_prefix_len;
 use crate::theme::Theme;
@@ -35,6 +35,52 @@ impl Editor {
         )
     }
 
+    pub(crate) fn line_text_spec(
+        &self,
+        parsed: &crate::markdown::ParsedLine,
+        theme: &Theme,
+    ) -> LineTextSpec {
+        let viewport = self.viewport_bounds_val();
+        let content_width = compute_content_width(viewport.size.width, self.render_mode);
+        let indent_px = self.parsed_line_indent_px(parsed);
+        let quote_content_indent =
+            crate::editor::shaping::quote_content_indent_px(parsed, self.space_width());
+        resolve_line_text_spec(
+            parsed,
+            self.render_mode,
+            content_width,
+            indent_px,
+            quote_content_indent,
+            self.font_size,
+            self.line_height,
+            theme,
+        )
+    }
+
+    pub(crate) fn line_shaping_from_spec<'a>(
+        &self,
+        spec: &LineTextSpec,
+        is_active_caret: bool,
+        theme: &'a Theme,
+    ) -> (Option<Pixels>, LineShapingContext<'a>) {
+        let wrap_width = if self.soft_wrap {
+            Some(spec.available_width)
+        } else {
+            None
+        };
+        let scx = LineShapingContext::new(
+            theme,
+            spec.override_color,
+            spec.shaping_mode.is_source(),
+            is_active_caret,
+            self.disclosure_col(),
+        )
+        .with_monospace(spec.shaping_mode.is_monospace())
+        .with_selection_disclosure(self.is_selection_disclosure())
+        .with_heading(spec.is_heading);
+        (wrap_width, scx)
+    }
+
     /// Bundles font metrics, available line width, and line shaping context for text layout.
     pub fn line_shaping_metrics<'a>(
         &self,
@@ -42,42 +88,9 @@ impl Editor {
         is_active_caret: bool,
         theme: &'a Theme,
     ) -> (Pixels, Pixels, Option<Pixels>, LineShapingContext<'a>) {
-        let is_source = self.render_mode == RenderMode::Source;
-        let (font_size, line_height, override_color) = get_block_style_for_line_with_metrics(
-            parsed,
-            theme,
-            is_source,
-            self.font_size,
-            self.line_height,
-        );
-
-        let viewport = self.viewport_bounds_val();
-        let content_width = compute_content_width(viewport.size.width, self.render_mode);
-        let indent_px = self.parsed_line_indent_px(parsed);
-        let quote_content_indent =
-            crate::editor::shaping::quote_content_indent_px(parsed, self.space_width());
-        let available_width = crate::editor::shaping::parsed_line_available_width(
-            content_width,
-            parsed,
-            self.render_mode,
-            indent_px,
-            quote_content_indent,
-        );
-        let wrap_width = if self.soft_wrap {
-            Some(available_width)
-        } else {
-            None
-        };
-
-        let scx = self
-            .line_shaping_context(
-                override_color,
-                is_active_caret,
-                self.disclosure_col(),
-                theme,
-            )
-            .with_selection_disclosure(self.is_selection_disclosure());
-        (font_size, line_height, wrap_width, scx)
+        let spec = self.line_text_spec(parsed, theme);
+        let (wrap_width, scx) = self.line_shaping_from_spec(&spec, is_active_caret, theme);
+        (spec.font_size, spec.line_height, wrap_width, scx)
     }
 
     /// Computes the horizontal pixel X position of a buffer column on its line.
@@ -89,27 +102,20 @@ impl Editor {
         if let Some(row) = layout.parsed_lines.row(pos.line.index()) {
             let parsed = &*row;
             let is_active_caret = self.is_active_disclosure_line(pos.line, window);
-            let (font_size, line_height, wrap_width, scx) =
-                self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
-            let quote_content_indent =
-                crate::editor::shaping::quote_content_indent_px(parsed, self.space_width());
+            let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
+            let (wrap_width, scx) =
+                self.line_shaping_from_spec(&spec, is_active_caret, &crate::theme::DEFAULT_THEME);
             let in_canvas_x = calculate_pos_from_col(
                 pos.col,
                 parsed,
-                font_size,
-                line_height,
+                spec.font_size,
+                spec.line_height,
                 wrap_width,
                 scx,
                 window,
             )
             .x;
-            let left_offset = crate::editor::shaping::get_parsed_line_left_offset(
-                parsed,
-                self.render_mode,
-                layout.indent_px(pos.line),
-                quote_content_indent,
-            );
-            left_offset + in_canvas_x
+            spec.left_offset + in_canvas_x
         } else {
             px(0.0)
         }
@@ -156,23 +162,16 @@ impl Editor {
         if let Some(row) = layout.parsed_lines.row(line_idx) {
             let parsed = &*row;
             let is_active_caret = self.is_active_disclosure_line(source_line, window);
-            let (font_size, line_height, wrap_width, scx) =
-                self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
-            let quote_content_indent =
-                crate::editor::shaping::quote_content_indent_px(parsed, self.space_width());
-            let target_left_offset = crate::editor::shaping::get_parsed_line_left_offset(
-                parsed,
-                self.render_mode,
-                layout.indent_px(crate::buffer::SourceLine::new(line_idx)),
-                quote_content_indent,
-            );
-            let in_canvas_x = (goal_x - target_left_offset).max(px(0.0));
-            let target_y = line_height * (visual_line_idx as f32) + line_height * 0.5;
+            let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
+            let (wrap_width, scx) =
+                self.line_shaping_from_spec(&spec, is_active_caret, &crate::theme::DEFAULT_THEME);
+            let in_canvas_x = (goal_x - spec.left_offset).max(px(0.0));
+            let target_y = spec.line_height * (visual_line_idx as f32) + spec.line_height * 0.5;
             let mut col = calculate_col_from_point(
                 point(in_canvas_x, target_y),
                 parsed,
-                font_size,
-                line_height,
+                spec.font_size,
+                spec.line_height,
                 wrap_width,
                 scx,
                 window,

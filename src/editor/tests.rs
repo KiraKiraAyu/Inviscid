@@ -2262,7 +2262,7 @@ fn test_mouse_hit_testing_live_preview_offsets() {
             );
             assert_eq!(
                 ed.get_pixel_x_for_col(Position::new(crate::buffer::SourceLine::new(6), 0), window),
-                px(15.0)
+                px(14.0)
             );
 
             // Line 8: Heading ("# Heading 1 title", prefix len 2)
@@ -5665,5 +5665,185 @@ fn update_file_path_refreshes_baseline_asynchronously(cx: &mut gpui::TestAppCont
     editor.read_with(cx, |ed, _| {
         assert_eq!(ed.file_path(), Some(file_b.as_path()));
         assert!(!ed.is_externally_modified());
+    });
+}
+
+#[test]
+fn math_block_content_spec_uses_raw_source_monospace_and_half_pane() {
+    use crate::editor::RenderMode;
+    use crate::editor::geometry::{
+        MATH_EDITOR_PADDING_X, MATH_EDITOR_PADDING_Y, TextShapingMode, resolve_line_text_spec,
+    };
+    use crate::markdown::MarkdownScanner;
+    use crate::theme::DEFAULT_THEME;
+
+    let lines = vec![
+        "$$".to_string(),
+        r"\frac{1}{i+l}".to_string(),
+        "$$".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    let spec = resolve_line_text_spec(
+        &parsed[1],
+        RenderMode::LivePreview,
+        px(800.0),
+        px(0.0),
+        px(0.0),
+        15.0,
+        1.6,
+        &DEFAULT_THEME,
+    );
+
+    assert_eq!(spec.shaping_mode, TextShapingMode::RawSource);
+    assert!(spec.shaping_mode.is_source());
+    assert!(spec.shaping_mode.is_monospace());
+    assert_eq!(spec.left_offset, MATH_EDITOR_PADDING_X);
+    assert_eq!(spec.top_offset, MATH_EDITOR_PADDING_Y);
+    assert_eq!(spec.padding_vertical, MATH_EDITOR_PADDING_Y * 2.0);
+    assert_eq!(spec.available_width, px(800.0 / 2.0) - px(24.0));
+}
+
+#[test]
+fn wide_math_preview_layout_height_matches_scaled_svg() {
+    use crate::editor::geometry::{MATH_EDITOR_PADDING_Y, math_preview_display_size};
+    use crate::editor::layout::{LineLayoutContext, get_line_layout_height};
+    use crate::editor::shaping::math_render_size;
+    use crate::markdown::MarkdownScanner;
+
+    let wide_tex = r"\frac{a_1+b_1+c_1+d_1+e_1+f_1+g_1+h_1+i_1+j_1+k_1+l_1+m_1+n_1+o_1+p_1}{q_1+r_1+s_1+t_1+u_1+v_1+w_1+x_1+y_1+z_1}";
+    let math = crate::math::prepare_latex(wide_tex, true).expect("valid latex");
+    let content_width = px(480.0);
+    let unscaled = math_render_size(&math, px(15.0));
+    let scaled = math_preview_display_size(&math, px(15.0), content_width);
+    assert!(
+        unscaled.width > content_width / 2.0 - px(24.0),
+        "test formula must exceed half-pane width to exercise scaling"
+    );
+    assert!(scaled.height < unscaled.height);
+
+    let lines = vec!["$$".to_string(), "x".to_string(), "$$".to_string()];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    let mut lcx = LineLayoutContext::live_preview(content_width).with_math_block_editing(true);
+    lcx.math_preview = Some(math);
+
+    let measured_h = get_line_layout_height(&lines, 1, &parsed[1], lcx);
+    let single_source_h = px(24.0) + MATH_EDITOR_PADDING_Y * 2.0;
+    let expected_h = single_source_h.max(scaled.height + MATH_EDITOR_PADDING_Y * 2.0);
+    assert_eq!(measured_h, expected_h);
+    assert!(measured_h < unscaled.height + MATH_EDITOR_PADDING_Y * 2.0);
+}
+
+#[gpui::test]
+fn test_expanded_math_block_hit_testing_and_ime_roundtrip(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::theme::ThemeManager;
+    use gpui::{Bounds, EntityInputHandler, point, px, size};
+
+    let config = AppConfig::default().with_theme("Dracula");
+    let theme_manager = ThemeManager::from_config(&config);
+    cx.update(|cx| {
+        cx.set_global(theme_manager);
+        cx.set_global(config);
+    });
+
+    let formula = r"\frac{1}{i+l} + \int_{0}^{1} \sum_{k=1}^{n} \frac{1}{i_k + l_k + 1} \, dx + \frac{a_1+b_1}{c_1+d_1} + \sqrt{i^2 + l^2}";
+    let doc = format!("Before\n$$\n{formula}\n$$\nAfter");
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        Editor::new_with_buffer(TextBuffer::from_str(&doc, None), cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.viewport_bounds = Bounds {
+                origin: point(px(0.0), px(70.0)),
+                size: size(px(1000.0), px(800.0)),
+            };
+            let target_line = SourceLine::new(2);
+            ed.buffer_mut().set_cursor(Position::new(target_line, 0));
+            ed.ensure_layout_cache();
+
+            let (_, visual_lines) = ed.get_visual_line_info(Position::new(target_line, 0), window);
+            assert!(
+                visual_lines >= 2,
+                "expected long formula to wrap onto >= 2 lines in half-pane width, got {visual_lines}"
+            );
+
+            let line_start_utf16 = ed
+                .buffer()
+                .pos_to_utf16_offset(crate::buffer::SourcePosition::new(target_line, 0));
+            let formula_len = formula.chars().count();
+
+            // Probe columns across both the first visual line and wrapped visual lines.
+            for col in [0usize, 5, 13, 30, 55, 80, formula_len] {
+                let col = col.min(formula_len);
+                let char_bounds = if col < formula_len {
+                    ed.bounds_for_range(
+                        (line_start_utf16 + col)..(line_start_utf16 + col + 1),
+                        ed.viewport_bounds,
+                        window,
+                        cx,
+                    )
+                    .expect("bounds for math column")
+                } else {
+                    ed.buffer_mut().set_cursor(Position::new(target_line, col));
+                    ed.bounds_for_range(0..0, ed.viewport_bounds, window, cx)
+                        .expect("bounds for math line end")
+                };
+                let click = point(
+                    char_bounds.origin.x + px(0.5),
+                    char_bounds.origin.y + char_bounds.size.height * 0.5,
+                );
+                let hit = ed.find_pos_for_mouse_point(click, window);
+                assert_eq!(
+                    hit,
+                    Position::new(target_line, col),
+                    "click round-trip failed at col={col}"
+                );
+            }
+
+            // Monospace check: 'i' and 'l' must advance identically to '+' or '1'.
+            let b_i = ed
+                .bounds_for_range(
+                    (line_start_utf16 + 9)..(line_start_utf16 + 10),
+                    ed.viewport_bounds,
+                    window,
+                    cx,
+                )
+                .unwrap();
+            let b_plus = ed
+                .bounds_for_range(
+                    (line_start_utf16 + 10)..(line_start_utf16 + 11),
+                    ed.viewport_bounds,
+                    window,
+                    cx,
+                )
+                .unwrap();
+            assert!((f32::from(b_i.size.width) - f32::from(b_plus.size.width)).abs() < 0.5);
+
+            // Visual line 1 (2nd wrapped line) navigation matches pixel click.
+            let mid_wrapped_col = ed.get_col_for_pixel_coords(target_line, px(120.0), 1, window);
+            assert!(mid_wrapped_col > 20);
+            let wrapped_bounds = ed
+                .bounds_for_range(
+                    (line_start_utf16 + mid_wrapped_col)..(line_start_utf16 + mid_wrapped_col + 1),
+                    ed.viewport_bounds,
+                    window,
+                    cx,
+                )
+                .unwrap();
+            assert_eq!(
+                ed.find_pos_for_mouse_point(
+                    point(
+                        wrapped_bounds.origin.x + px(0.5),
+                        wrapped_bounds.origin.y + wrapped_bounds.size.height * 0.5,
+                    ),
+                    window,
+                ),
+                Position::new(target_line, mid_wrapped_col)
+            );
+        });
     });
 }

@@ -126,13 +126,16 @@ pub fn get_block_typography_with_metrics(
             px((22.0 * scale * lh_ratio).round()),
             px(2.0),
         ),
-        BlockKind::MathBlock { is_start: true } | BlockKind::MathBlockContent => {
-            BlockTypography::new(
-                px(base_font_size),
-                px((base_font_size * line_height_factor).round()),
-                px((8.0 * scale).round()),
-            )
-        }
+        BlockKind::MathBlock { is_start: true } => BlockTypography::new(
+            px(base_font_size),
+            px((base_font_size * line_height_factor).round()),
+            px((8.0 * scale).round()),
+        ),
+        BlockKind::MathBlockContent => BlockTypography::new(
+            px(base_font_size),
+            px((base_font_size * line_height_factor).round()),
+            crate::editor::geometry::MATH_EDITOR_PADDING_Y * 2.0,
+        ),
         BlockKind::MathBlock { is_start: false } => BlockTypography::new(
             px(base_font_size),
             px((base_font_size * line_height_factor).round()),
@@ -464,51 +467,48 @@ pub fn get_line_layout_height(
         return px(0.0);
     }
 
+    use crate::editor::geometry::{math_preview_display_size, resolve_line_text_spec};
     use crate::editor::shaping::{
         LineShapingContext, build_line_runs, calculate_visual_lines_with_runs,
-        effective_content_width, parsed_line_available_width,
+        effective_content_width,
     };
 
-    let base_content_width =
-        if lcx.math_block_editing && matches!(parsed.kind, BlockKind::MathBlockContent) {
-            (lcx.content_width / 2.0 + px(40.0)).max(px(0.0))
-        } else {
-            lcx.content_width
-        };
-    let content_width =
-        effective_content_width(base_content_width, parsed, lcx.mode, lcx.indent_px);
-    let available_w = parsed_line_available_width(
-        base_content_width,
+    let spec = resolve_line_text_spec(
         parsed,
         lcx.mode,
+        lcx.content_width,
         lcx.indent_px,
         lcx.quote_content_indent_px,
+        lcx.font_size,
+        lcx.line_height,
+        &crate::theme::DEFAULT_THEME,
     );
+    let content_width = effective_content_width(lcx.content_width, parsed, lcx.mode, lcx.indent_px);
+    let available_w = spec.available_width;
 
     if lcx.mode == RenderMode::Source {
-        let font_size = px(lcx.font_size);
-        let line_height = px((lcx.font_size * lcx.line_height).round());
         let font = font(crate::platform::platform_monospace_font());
         let scx = LineShapingContext::new(
             &crate::theme::DEFAULT_THEME,
-            None,
-            true,
+            spec.override_color,
+            spec.shaping_mode.is_source(),
             lcx.is_active,
             lcx.cursor_col,
         )
+        .with_monospace(spec.shaping_mode.is_monospace())
         .with_selection_disclosure(lcx.is_selection_disclosure);
         let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
         let visual_lines = calculate_visual_lines_with_runs(
             &line_str,
             &runs,
             font,
-            font_size,
+            spec.font_size,
             available_w,
             lcx.soft_wrap,
             lcx.text_system.as_ref(),
-            true,
+            spec.shaping_mode.is_monospace(),
         );
-        return line_height * (visual_lines as f32);
+        return spec.line_height * (visual_lines as f32);
     }
 
     let typo = get_block_typography_with_metrics(&parsed.kind, lcx.font_size, lcx.line_height);
@@ -520,6 +520,7 @@ pub fn get_line_layout_height(
             lcx.is_active,
             lcx.cursor_col,
         )
+        .with_monospace(true)
         .with_selection_disclosure(lcx.is_selection_disclosure);
         let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
         let visual_lines = calculate_visual_lines_with_runs(
@@ -631,35 +632,34 @@ pub fn get_line_layout_height(
                 return px(0.0);
             }
 
-            let source_font_size = px(lcx.font_size);
-            let source_line_height = px((lcx.font_size * lcx.line_height).round());
             let source_scx = LineShapingContext::new(
                 &crate::theme::DEFAULT_THEME,
-                None,
-                true,
+                spec.override_color,
+                spec.shaping_mode.is_source(),
                 lcx.is_active,
                 lcx.cursor_col,
-            );
+            )
+            .with_monospace(spec.shaping_mode.is_monospace());
             let (source, source_runs) =
                 build_line_runs(&parsed.spans, source_scx, None, &TextStyle::default());
             let source_visual_lines = calculate_visual_lines_with_runs(
                 &source,
                 &source_runs,
                 font(crate::platform::platform_monospace_font()),
-                source_font_size,
-                (content_width - SOURCE_GUTTER_WIDTH).max(px(0.0)),
+                spec.font_size,
+                spec.available_width,
                 lcx.soft_wrap,
                 lcx.text_system.as_ref(),
-                true,
+                spec.shaping_mode.is_monospace(),
             );
             let source_height =
-                source_line_height * source_visual_lines as f32 + typo.padding_vertical;
+                spec.line_height * source_visual_lines as f32 + spec.padding_vertical;
             let preview_height = lcx
                 .math_preview
                 .as_ref()
                 .map(|math| {
-                    crate::editor::shaping::math_render_size(&math, px(lcx.font_size)).height
-                        + typo.padding_vertical
+                    math_preview_display_size(math, px(lcx.font_size), content_width).height
+                        + spec.padding_vertical
                 })
                 .unwrap_or(px(0.0));
             source_height.max(preview_height)

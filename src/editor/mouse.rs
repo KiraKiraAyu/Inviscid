@@ -96,12 +96,17 @@ impl Editor {
             crate::editor::layout::SOURCE_GUTTER_WIDTH
         } else if let Some(row) = layout.parsed_lines.row(source_line.index()) {
             let parsed = &*row;
-            crate::editor::shaping::get_parsed_line_left_offset(
+            crate::editor::geometry::resolve_line_text_spec(
                 parsed,
                 self.render_mode,
+                content_width,
                 layout.indent_px(source_line),
                 crate::editor::shaping::quote_content_indent_px(parsed, layout.space_width),
+                self.font_size,
+                self.line_height,
+                &crate::theme::DEFAULT_THEME,
             )
+            .left_offset
         } else {
             px(0.0)
         };
@@ -263,17 +268,18 @@ impl Editor {
             }
 
             let is_active_caret = self.is_active_disclosure_line(target_line, window);
-            let (font_size, line_height, wrap_width, scx) =
-                self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
+            let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
+            let (wrap_width, scx) =
+                self.line_shaping_from_spec(&spec, is_active_caret, &crate::theme::DEFAULT_THEME);
 
-            let top_offset = super::shaping::get_block_top_offset(&parsed.kind, self.render_mode);
-            let in_canvas_point = gpui::point(rel_point.x, (rel_point.y - top_offset).max(px(0.0)));
+            let in_canvas_point =
+                gpui::point(rel_point.x, (rel_point.y - spec.top_offset).max(px(0.0)));
 
             let mut col = super::shaping::calculate_col_from_point(
                 in_canvas_point,
                 parsed,
-                font_size,
-                line_height,
+                spec.font_size,
+                spec.line_height,
                 wrap_width,
                 scx,
                 window,
@@ -585,20 +591,21 @@ impl Editor {
             && self.buffer.selection().is_empty()
             && !self.is_dragging;
 
-        let (font_size, line_height, wrap_width, scx) =
-            self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
+        let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
+        let (wrap_width, scx) =
+            self.line_shaping_from_spec(&spec, is_active_caret, &crate::theme::DEFAULT_THEME);
 
         let lcx = super::shaping::SpanLayoutContext::new(
-            font_size,
-            line_height,
+            spec.font_size,
+            spec.line_height,
             wrap_width,
             px(0.0),
             parsed.raw_text.chars().count(),
             scx,
         );
 
-        let top_offset = super::shaping::get_block_top_offset(&parsed.kind, self.render_mode);
-        let in_canvas_point = gpui::point(rel_point.x, (rel_point.y - top_offset).max(px(0.0)));
+        let in_canvas_point =
+            gpui::point(rel_point.x, (rel_point.y - spec.top_offset).max(px(0.0)));
 
         super::shaping::find_link_at_pixel_point(line_idx, in_canvas_point, parsed, lcx, window)
     }

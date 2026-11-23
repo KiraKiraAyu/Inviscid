@@ -8,6 +8,10 @@ use crate::ui::{Icon, IconName, IconSize};
 
 use super::Editor;
 use super::LineRenderContext;
+use super::geometry::{
+    CODE_BLOCK_PADDING_X, MATH_EDITOR_PADDING_X, MATH_EDITOR_PADDING_Y, TextShapingMode,
+    math_preview_display_size,
+};
 use super::shaping::render_shaped_line;
 
 /// Renders a line in Live Preview mode.
@@ -41,7 +45,7 @@ pub fn render_live_line_content(
                 typo.font_size,
                 typo.line_height,
                 color,
-                false,
+                TextShapingMode::Prose,
             );
 
             div()
@@ -97,7 +101,7 @@ pub fn render_live_line_content(
                     typo.font_size,
                     typo.line_height,
                     Some(theme.code_block_header_fg),
-                    false,
+                    TextShapingMode::Code,
                 );
 
                 let fence_line = if parsed.quote.is_some() {
@@ -113,7 +117,7 @@ pub fn render_live_line_content(
                     .mt(px(6.0))
                     .bg(theme.code_block_header_bg)
                     .rounded_t(px(10.0))
-                    .px(px(14.0))
+                    .px(CODE_BLOCK_PADDING_X)
                     .py(px(4.0))
                     .flex()
                     .justify_between()
@@ -160,13 +164,13 @@ pub fn render_live_line_content(
                 typo.font_size,
                 typo.line_height,
                 Some(theme.code_block_text),
-                false,
+                TextShapingMode::Code,
             );
 
             let content = div()
                 .w_full()
                 .bg(theme.code_block_bg)
-                .px(px(14.0))
+                .px(CODE_BLOCK_PADDING_X)
                 .py(px(1.0))
                 .child(text_canvas);
             content.into_any_element()
@@ -209,7 +213,7 @@ pub fn render_live_line_content(
                 } else {
                     quote_text_color(parsed, theme)
                 },
-                false,
+                TextShapingMode::Prose,
             );
 
             let marker = div()
@@ -274,7 +278,7 @@ pub fn render_live_line_content(
                 typo.font_size,
                 typo.line_height,
                 quote_text_color(parsed, theme),
-                false,
+                TextShapingMode::Prose,
             );
 
             let marker = div()
@@ -306,7 +310,7 @@ pub fn render_live_line_content(
                 typo.font_size,
                 typo.line_height,
                 quote_text_color(parsed, theme),
-                false,
+                TextShapingMode::Prose,
             );
 
             let marker = div()
@@ -349,7 +353,7 @@ pub fn render_live_line_content(
                 typo.font_size,
                 typo.line_height,
                 Some(theme.text_secondary),
-                false,
+                TextShapingMode::Prose,
             );
 
             let preview_card = render_image_preview_card(
@@ -510,7 +514,7 @@ pub fn render_live_line_content(
                 typo.font_size,
                 typo.line_height,
                 quote_text_color(parsed, theme),
-                false,
+                TextShapingMode::Prose,
             );
 
             div()
@@ -533,7 +537,6 @@ pub fn render_live_line_content(
                 lrc.line_height,
             );
             let mut source_lrc = *lrc;
-            source_lrc.content_width = (lrc.content_width / 2.0 + px(40.0)).max(px(0.0));
             source_lrc.indent_px = px(0.0);
             let text_canvas = render_shaped_line(
                 source_line,
@@ -542,7 +545,7 @@ pub fn render_live_line_content(
                 typo.font_size,
                 typo.line_height,
                 None,
-                true,
+                TextShapingMode::RawSource,
             );
 
             div()
@@ -553,8 +556,8 @@ pub fn render_live_line_content(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .pl(px(12.0))
-                        .py(px(4.0))
+                        .px(MATH_EDITOR_PADDING_X)
+                        .py(MATH_EDITOR_PADDING_Y)
                         .child(text_canvas),
                 )
                 .child(
@@ -566,22 +569,19 @@ pub fn render_live_line_content(
                         .flex()
                         .items_center()
                         .justify_center()
-                        .px(px(12.0))
-                        .py(px(4.0))
+                        .px(MATH_EDITOR_PADDING_X)
+                        .py(MATH_EDITOR_PADDING_Y)
                         .when_some(lrc.math_preview, |preview, math| {
-                            let available_width = (lrc.content_width / 2.0 - px(24.0)).max(px(0.0));
-                            let rendered_size =
-                                crate::editor::shaping::math_render_size(math, px(lrc.font_size));
-                            let scale = if rendered_size.width > available_width {
-                                f32::from(available_width / rendered_size.width)
-                            } else {
-                                1.0
-                            };
+                            let preview_size = math_preview_display_size(
+                                math,
+                                px(lrc.font_size),
+                                lrc.content_width,
+                            );
                             preview.child(
                                 svg()
                                     .path(math.asset_path.clone())
-                                    .w(rendered_size.width * scale)
-                                    .h(rendered_size.height * scale)
+                                    .w(preview_size.width)
+                                    .h(preview_size.height)
                                     .text_color(theme.text_primary),
                             )
                         }),
@@ -607,7 +607,7 @@ pub fn render_live_line_content(
                 typo.font_size,
                 typo.line_height,
                 quote_text_color(parsed, theme),
-                false,
+                TextShapingMode::Prose,
             );
 
             div()
@@ -840,8 +840,15 @@ pub fn render_source_line(
     let font_size = px(lrc.font_size);
     let line_height = px((lrc.font_size * lrc.line_height).round());
     let line_num_str = format!("{:>4} ", line_idx + 1);
-    let content_element =
-        render_shaped_line(source_line, parsed, lrc, font_size, line_height, None, true);
+    let content_element = render_shaped_line(
+        source_line,
+        parsed,
+        lrc,
+        font_size,
+        line_height,
+        None,
+        TextShapingMode::RawSource,
+    );
 
     div()
         .id(ElementId::NamedInteger("src_line".into(), line_idx as u64))

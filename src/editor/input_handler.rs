@@ -176,8 +176,10 @@ impl EntityInputHandler for Editor {
                 .try_global::<crate::theme::ThemeManager>()
                 .map(|m| m.theme())
                 .unwrap_or(&crate::theme::DEFAULT_THEME);
-            let (font_size, line_height, wrap_width, scx) =
-                self.line_shaping_metrics(parsed, is_active_caret, theme);
+            let spec = self.line_text_spec(parsed, theme);
+            let (wrap_width, scx) = self.line_shaping_from_spec(&spec, is_active_caret, theme);
+            let font_size = spec.font_size;
+            let line_height = spec.line_height;
 
             let start_cursor_pos = crate::editor::shaping::calculate_pos_from_col(
                 start_pos.col,
@@ -225,12 +227,10 @@ impl EntityInputHandler for Editor {
                 window,
             );
 
-            let top_offset =
-                crate::editor::shaping::get_block_top_offset(&parsed.kind, self.render_mode);
             return Some(Bounds {
                 origin: point(
                     line_bounds.origin.x + anchor.x,
-                    line_bounds.origin.y + anchor.y + top_offset,
+                    line_bounds.origin.y + anchor.y + spec.top_offset,
                 ),
                 size: size(width, line_height),
             });
