@@ -5804,6 +5804,12 @@ fn test_expanded_math_block_hit_testing_and_ime_roundtrip(cx: &mut gpui::TestApp
                     Position::new(target_line, col),
                     "click round-trip failed at col={col}"
                 );
+                let hit_mut = ed.find_pos_for_mouse_point_mut(click, window);
+                assert_eq!(
+                    hit_mut,
+                    Position::new(target_line, col),
+                    "mut click round-trip failed at col={col}"
+                );
             }
 
             // Monospace check: 'i' and 'l' must advance identically to '+' or '1'.
@@ -5838,6 +5844,16 @@ fn test_expanded_math_block_hit_testing_and_ime_roundtrip(cx: &mut gpui::TestApp
                 .unwrap();
             assert_eq!(
                 ed.find_pos_for_mouse_point(
+                    point(
+                        wrapped_bounds.origin.x + px(0.5),
+                        wrapped_bounds.origin.y + wrapped_bounds.size.height * 0.5,
+                    ),
+                    window,
+                ),
+                Position::new(target_line, mid_wrapped_col)
+            );
+            assert_eq!(
+                ed.find_pos_for_mouse_point_mut(
                     point(
                         wrapped_bounds.origin.x + px(0.5),
                         wrapped_bounds.origin.y + wrapped_bounds.size.height * 0.5,
@@ -6194,4 +6210,102 @@ fn test_multiline_math_block_split_pane_layout_and_hit_testing(cx: &mut gpui::Te
             );
         });
     });
+}
+
+#[gpui::test]
+fn test_single_click_in_expanded_math_block_preserves_column_via_mouse_down(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::theme::ThemeManager;
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, point, px};
+
+    let config = AppConfig::default().with_theme("Dracula");
+    let theme_manager = ThemeManager::from_config(&config);
+    cx.update(|cx| {
+        cx.set_global(theme_manager);
+        cx.set_global(config);
+    });
+
+    let line1 = r"\frac{a}{b} + c_1 + d_2";
+    let line2 = r"\sum_{i=1}^{n} x_i";
+    let doc = format!("Before\n$$\n{line1}\n{line2}\n$$\nAfter");
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        let mut ed = Editor::new_with_buffer(TextBuffer::from_str(&doc, None), cx);
+        ed.buffer_mut()
+            .set_cursor(Position::new(SourceLine::new(2), 0));
+        window.focus(&ed.focus_handle);
+        ed
+    });
+    cx.run_until_parked();
+
+    let click_targets = cx.update(|_window, cx| {
+        editor.read_with(cx, |ed, _| {
+            let mut targets = Vec::new();
+            for (line_idx, col) in [
+                (2usize, 10usize),
+                (2usize, line1.chars().count()),
+                (3usize, 8usize),
+            ] {
+                let source_line = SourceLine::new(line_idx);
+                let painted = ed
+                    .painted_line_geometry(source_line, line_idx == 2)
+                    .expect("painted math content line");
+                let wrapped = painted.wrapped_line.as_ref().unwrap();
+                let line_text = ed.buffer().line(source_line).unwrap();
+                let byte_ix: usize = line_text.chars().take(col).map(char::len_utf8).sum();
+                let glyph_pos = wrapped
+                    .position_for_index(byte_ix, painted.line_height)
+                    .unwrap();
+                targets.push((
+                    source_line,
+                    col,
+                    point(
+                        painted.text_bounds.origin.x + glyph_pos.x + px(0.5),
+                        painted.text_bounds.origin.y + glyph_pos.y + painted.line_height * 0.5,
+                    ),
+                ));
+            }
+            let painted2 = ed
+                .painted_line_geometry(SourceLine::new(2), true)
+                .expect("painted first math line");
+            targets.push((
+                SourceLine::new(2),
+                line1.chars().count(),
+                point(
+                    ed.viewport_bounds.right() - px(40.0),
+                    painted2.text_bounds.origin.y + painted2.line_height * 0.5,
+                ),
+            ));
+            targets
+        })
+    });
+
+    for (expected_line, expected_col, click) in click_targets {
+        assert!(expected_col > 0);
+        cx.simulate_event(MouseDownEvent {
+            position: click,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: click,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        cx.run_until_parked();
+
+        cx.update(|_window, cx| {
+            assert_eq!(
+                editor.read(cx).buffer().cursor_pos(),
+                Position::new(expected_line, expected_col),
+                "real left-click at ({expected_line:?}, {expected_col}) jumped unexpectedly"
+            );
+        });
+    }
 }

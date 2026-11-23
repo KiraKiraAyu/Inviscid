@@ -412,7 +412,7 @@ impl<'a> LiveBuffer<'a> {
         if block.source_range.end.index()
             > start.index() + if block.is_enclosed_container { 2 } else { 1 }
         {
-            return Some(Position::new(start + 1, 0));
+            return None;
         }
 
         let pos = Position::new(end, 0);
