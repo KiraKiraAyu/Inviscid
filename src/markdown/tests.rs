@@ -48,16 +48,25 @@ fn unclosed_fence_uses_code_markers_and_content() {
 }
 
 #[test]
-fn test_blockquote_marker_only_starts_an_empty_quote_line() {
-    let lines = vec![">".to_string(), "> hello".to_string()];
+fn blockquote_requires_trailing_space() {
+    assert_eq!(super::prefix::parse_quote_prefix(">"), None);
+    assert_eq!(super::prefix::parse_quote_prefix(">text"), None);
+    assert_eq!(super::prefix::parse_quote_prefix("> "), Some(2));
+    assert_eq!(super::prefix::parse_quote_prefix(">\t"), Some(2));
+    assert_eq!(quote_depth(">"), 0);
+    assert_eq!(quote_depth("> "), 1);
+    assert_eq!(quote_depth("> >"), 1);
+    assert_eq!(quote_depth("> > "), 2);
+
+    let bare = MarkdownScanner::scan_document(&[">".to_string(), ">text".to_string()]);
+    assert!(bare.iter().all(|line| line.quote.is_none()));
+
+    let lines = vec!["> ".to_string(), "> hello".to_string()];
     let parsed = MarkdownScanner::scan_document(&lines);
     assert_eq!(parsed.len(), 2);
     assert!(matches!(parsed[0].kind, BlockKind::Paragraph));
     assert!(matches!(parsed[1].kind, BlockKind::Paragraph));
     assert!(parsed.iter().all(|line| line.quote.is_some()));
-
-    let plain = MarkdownScanner::scan_document(&[">text".to_string()]);
-    assert!(matches!(plain[0].kind, BlockKind::Paragraph));
 }
 
 #[test]

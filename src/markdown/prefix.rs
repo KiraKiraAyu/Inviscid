@@ -62,9 +62,7 @@ pub fn parse_ordered_prefix(trimmed: &str) -> Option<(usize, usize)> {
 
 pub fn parse_quote_prefix(trimmed: &str) -> Option<usize> {
     let rest = trimmed.strip_prefix('>')?;
-    if rest.is_empty() {
-        Some(1)
-    } else if rest.starts_with(' ') || rest.starts_with('\t') {
+    if rest.starts_with(' ') || rest.starts_with('\t') {
         Some(2)
     } else {
         None
