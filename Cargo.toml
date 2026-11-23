@@ -17,10 +17,12 @@ test = false
 [dependencies]
 anyhow = "1.0"
 dirs = "7.0.0"
+fontdb = "0.23"
 futures = "0.3"
 gpui = "0.2.2"
 gpui_sum_tree = "0.2.2"
 latex-rust = "3.0.1"
+ttf-parser = "0.25"
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
 parking_lot = "0.12"
 rfd = "0.17.2"

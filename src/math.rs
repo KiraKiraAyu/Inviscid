@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock, Weak};
 
-use latex_rust::{Dim, MathFont, MathStyle, SvgOptions};
+use latex_rust::{BoxContent, Dim, MathBox, MathFont, MathStyle, SvgOptions};
 use parking_lot::{Mutex, RwLock};
 
+mod fallback_font;
 mod preprocess;
 
 const MAX_TEX_CHARS: usize = 4096;
@@ -115,6 +117,110 @@ fn register_svg(svg: &str) -> (String, Arc<[u8]>) {
     unreachable!("SVG hash collision suffix space exhausted")
 }
 
+fn dim_to_f64(dim: &Dim) -> f64 {
+    dim.as_ratio()
+        .map(|(num, den)| num as f64 / den as f64)
+        .unwrap_or(0.0)
+}
+
+fn collect_sentinel_placements(
+    bx: &MathBox,
+    origin_x: f64,
+    parent_baseline: f64,
+    em_pt: f64,
+    placements: &mut HashMap<(u8, u8, u8), (f64, f64, f64)>,
+) {
+    let baseline = parent_baseline - dim_to_f64(&bx.shift) * em_pt;
+    match &bx.content {
+        BoxContent::HList(kids) => {
+            let mut x = origin_x;
+            for kid in kids {
+                collect_sentinel_placements(kid, x, baseline, em_pt, placements);
+                x += dim_to_f64(&kid.width) * em_pt;
+            }
+        }
+        BoxContent::VList(kids) => {
+            if let Some(first) = kids.first() {
+                collect_sentinel_placements(first, origin_x, baseline, em_pt, placements);
+                let mut y_below = dim_to_f64(&first.depth) * em_pt;
+                for kid in kids.iter().skip(1) {
+                    let kid_h = dim_to_f64(&kid.height) * em_pt;
+                    let kid_d = dim_to_f64(&kid.depth) * em_pt;
+                    let child_base = baseline + y_below + kid_h;
+                    collect_sentinel_placements(kid, origin_x, child_base, em_pt, placements);
+                    y_below += kid_h + kid_d;
+                }
+            }
+        }
+        BoxContent::Overlap(kids) => {
+            for kid in kids {
+                collect_sentinel_placements(kid, origin_x, baseline, em_pt, placements);
+            }
+        }
+        BoxContent::Color(color, inner) => {
+            if color.r == 0xfe {
+                placements.insert(
+                    (color.r, color.g, color.b),
+                    (origin_x, baseline, dim_to_f64(&bx.width) * em_pt),
+                );
+            }
+            collect_sentinel_placements(inner, origin_x, baseline, em_pt, placements);
+        }
+        BoxContent::BackColor(_, inner) | BoxContent::Frame { inner, .. } => {
+            collect_sentinel_placements(inner, origin_x, baseline, em_pt, placements);
+        }
+        BoxContent::Empty
+        | BoxContent::Kern(_)
+        | BoxContent::Rule
+        | BoxContent::Glyph { .. }
+        | BoxContent::Line { .. } => {}
+    }
+}
+
+fn inject_fallback_svg_paths(
+    mut svg: String,
+    layout: &MathBox,
+    em_pt: f64,
+    slots: &[fallback_font::FallbackSlot],
+) -> Result<String, String> {
+    if slots.is_empty() {
+        return Ok(svg);
+    }
+
+    let mut placements = HashMap::with_capacity(slots.len());
+    let initial_baseline = dim_to_f64(&layout.height) * em_pt;
+    collect_sentinel_placements(layout, 0.0, initial_baseline, em_pt, &mut placements);
+
+    for slot in slots {
+        let Some(&(origin_x_pt, baseline_y_pt, width_pt)) = placements.get(&slot.color_rgb) else {
+            return Err("fallback glyph layout box missing".to_string());
+        };
+        let needle = format!("<g fill=\"{0}\" stroke=\"{0}\">\n</g>", slot.color_hex);
+        if !svg.contains(&needle) {
+            return Err("fallback glyph SVG slot missing".to_string());
+        }
+        let scale_pt = if slot.width_em > 0.0 {
+            width_pt / f64::from(slot.width_em)
+        } else {
+            em_pt
+        };
+        let mut replacement = String::from("<g>\n");
+        let mut gx = origin_x_pt;
+        for glyph in &slot.glyphs {
+            let _ = writeln!(
+                replacement,
+                "<path d=\"{}\" transform=\"translate({:.4} {:.4}) scale({:.4} {:.4})\"/>",
+                glyph.path_d, gx, baseline_y_pt, scale_pt, -scale_pt
+            );
+            gx += f64::from(glyph.advance_em) * scale_pt;
+        }
+        replacement.push_str("</g>");
+        svg = svg.replacen(&needle, &replacement, 1);
+    }
+
+    Ok(svg)
+}
+
 fn render_uncached(tex: &str, is_display: bool) -> CachedFormula {
     if tex.trim().is_empty() {
         return Err("empty formula".to_string());
@@ -122,7 +228,8 @@ fn render_uncached(tex: &str, is_display: bool) -> CachedFormula {
 
     let font = font().ok_or_else(|| "math font unavailable".to_string())?;
     let normalized = preprocess::normalize_latex(tex);
-    let ast = latex_rust::parse(&normalized).map_err(|err| err.to_string())?;
+    let (prepared, slots) = preprocess::extract_fallback_slots(&normalized, font);
+    let ast = latex_rust::parse(&prepared).map_err(|err| err.to_string())?;
     let style = if is_display {
         MathStyle::Display
     } else {
@@ -142,6 +249,7 @@ fn render_uncached(tex: &str, is_display: bool) -> CachedFormula {
 
     let svg =
         latex_rust::render_svg(&layout, font, &SvgOptions::new()).map_err(|err| err.to_string())?;
+    let svg = inject_fallback_svg_paths(svg, &layout, 12.0, &slots)?;
     if svg.len() > MAX_SVG_BYTES {
         return Err("rendered SVG exceeds size limit".to_string());
     }
@@ -323,5 +431,38 @@ mod tests {
             let rendered = prepare_latex_result(tex, true);
             assert!(rendered.is_ok(), "failed on {tex}: {:?}", rendered.err());
         }
+    }
+
+    #[test]
+    fn all_reported_user_formulas_and_cjk_cases_render_to_svg() {
+        let cases = [
+            r"\text{CPU 利用率} = 1 - p^n",
+            r"gcd(a,b)=gcd(b,a \pmod b)",
+            "234=1×126+108\u{00a0} ⟹\u{00a0} 108=234−1×126\u{00a0}(式A)",
+            "126=1×108+18\u{00a0} ⟹\u{00a0} 18=126−1×108\u{00a0}(式B)",
+            r"c = b^e \pmod m",
+            r"ax \equiv 1 \pmod n",
+            r"x \equiv a^{-1} \cdot b \pmod n",
+            r"x_{\text{总和}} + y",
+            r"\frac{\text{分子}}{\text{分母}}",
+            r"\text{A 中 B}",
+        ];
+
+        for tex in cases {
+            let rendered = prepare_latex_result(tex, true)
+                .unwrap_or_else(|err| panic!("failed to render `{tex}`: {err}"));
+            let svg = rendered.svg_str();
+            assert!(
+                svg.contains("<path"),
+                "rendered SVG missing <path for `{tex}`: {svg}"
+            );
+            assert!(
+                !svg.contains("#fe00"),
+                "rendered SVG leaked sentinel placeholder color for `{tex}`: {svg}"
+            );
+        }
+
+        // Unknown LaTeX command must still report an explicit error.
+        assert!(prepare_latex_result(r"\unknowncommand{1}", false).is_err());
     }
 }
