@@ -558,7 +558,13 @@ pub fn build_line_runs(
             }
         }
 
-        if span.is_marker && !span.is_code && !span.is_link {
+        if (span.is_marker && !span.is_code && !span.is_link)
+            || (scx.is_source
+                && span
+                    .math
+                    .as_ref()
+                    .is_some_and(|math| math.is_display && math.source == "$$"))
+        {
             color = scx.theme.heading_marker;
         }
 

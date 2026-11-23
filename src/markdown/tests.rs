@@ -617,7 +617,29 @@ fn display_math_block_spans_keep_the_full_tex_source() {
         .unwrap();
 
     assert_eq!(math.tex, r"\frac{a}{b} = c");
+    assert_eq!(math.source, "$$");
     assert!(math.is_display);
+    assert!(
+        parsed[2]
+            .spans
+            .iter()
+            .any(|span| span.is_marker && span.text == "$$")
+    );
+
+    let empty_block = vec!["$$".to_string(), "".to_string(), "$$".to_string()];
+    let empty_parsed = MarkdownScanner::scan_document(&empty_block);
+    assert!(
+        empty_parsed[0]
+            .spans
+            .iter()
+            .any(|span| span.is_marker && span.text == "$$")
+    );
+    assert!(
+        empty_parsed[2]
+            .spans
+            .iter()
+            .any(|span| span.is_marker && span.text == "$$")
+    );
 }
 
 #[test]

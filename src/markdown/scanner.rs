@@ -640,18 +640,27 @@ impl MarkdownScanner {
             if in_math_block {
                 current_table_alignments = None;
                 let is_close = is_math_delimiter(raw_line);
+                let char_count = raw_line.chars().count();
+                let (kind, spans) = if is_close {
+                    in_math_block = false;
+                    (
+                        BlockKind::MathBlock { is_start: false },
+                        vec![InlineSpan::hidden_marker(
+                            raw_line.clone(),
+                            (0, char_count),
+                            (0, char_count),
+                        )],
+                    )
+                } else {
+                    (
+                        BlockKind::MathBlockContent,
+                        vec![InlineSpan::plain(raw_line.clone(), (0, char_count))],
+                    )
+                };
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
-                    kind: if is_close {
-                        in_math_block = false;
-                        BlockKind::MathBlock { is_start: false }
-                    } else {
-                        BlockKind::MathBlockContent
-                    },
-                    spans: vec![InlineSpan::plain(
-                        raw_line.clone(),
-                        (0, raw_line.chars().count()),
-                    )],
+                    kind,
+                    spans,
                     quote: None,
                 });
                 continue;
