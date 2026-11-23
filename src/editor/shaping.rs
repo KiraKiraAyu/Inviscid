@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::editor::RenderMode;
 use crate::editor::geometry::{
     CODE_BLOCK_PADDING_X, MATH_EDITOR_PADDING_X, MATH_EDITOR_PADDING_Y, MIN_LINE_CONTENT_WIDTH,
-    TextShapingMode, resolve_inner_available_width,
+    PaintedLineGeometry, TextShapingMode, resolve_inner_available_width,
 };
 use crate::markdown::{BlockKind, InlineSpan, MathSpan, ParsedLine};
 use crate::theme::{ActiveTheme, Theme};
@@ -1111,6 +1111,49 @@ pub struct TableLayoutInfo<'a> {
     pub is_header: bool,
 }
 
+fn closest_visible_byte_in_wrapped_line(
+    relative_point: Point<Pixels>,
+    wrapped_line: &WrappedLine,
+    line_height: Pixels,
+    align_x: Pixels,
+) -> usize {
+    let text_rel_x = (relative_point.x - align_x).max(px(0.0));
+    let num_v = wrapped_line.wrap_boundaries.len() + 1;
+    let last_v = num_v - 1;
+    let max_safe_y = (last_v as f32) * line_height + line_height * 0.5;
+    let clamped_y = relative_point.y.max(px(0.0)).min(max_safe_y);
+    let text_rel_point = point(text_rel_x, clamped_y);
+    match wrapped_line.closest_index_for_position(text_rel_point, line_height) {
+        Ok(idx) => idx,
+        Err(idx) => idx,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn col_from_wrapped_line(
+    in_canvas_point: Point<Pixels>,
+    wrapped_line: &WrappedLine,
+    line_height: Pixels,
+    spans: &[InlineSpan],
+    total_raw_len: usize,
+    is_source: bool,
+    is_active_caret: bool,
+    disclosure_col: usize,
+    is_selection_disclosure: bool,
+) -> usize {
+    let closest_byte =
+        closest_visible_byte_in_wrapped_line(in_canvas_point, wrapped_line, line_height, px(0.0));
+    visible_byte_to_raw_col_with_selection(
+        closest_byte,
+        spans,
+        is_active_caret,
+        disclosure_col,
+        is_source,
+        total_raw_len,
+        is_selection_disclosure,
+    )
+}
+
 /// Performs subpixel hit-testing on arbitrary InlineSpans to a raw document column using GPUI HarfBuzz TextSystem
 fn calculate_col_from_spans(
     relative_point: Point<Pixels>,
@@ -1142,7 +1185,6 @@ fn calculate_col_from_spans(
 
     let closest_byte = match shaped_lines {
         Ok(lines) if !lines.is_empty() => {
-            let text_rel_x = (relative_point.x - lcx.align_x).max(px(0.0));
             let mut remaining_y = relative_point.y.max(px(0.0));
             let mut chosen_line = &lines[0];
             let mut byte_offset = 0;
@@ -1158,18 +1200,13 @@ fn calculate_col_from_spans(
                 byte_offset += line.unwrapped_layout.len;
             }
 
-            let num_v = chosen_line.wrap_boundaries.len() + 1;
-            let last_v = num_v - 1;
-            let max_safe_y = (last_v as f32) * lcx.line_height + lcx.line_height * 0.5;
-            let clamped_y = remaining_y.min(max_safe_y);
-
-            let text_rel_point = point(text_rel_x, clamped_y);
-            let idx_in_line =
-                match chosen_line.closest_index_for_position(text_rel_point, lcx.line_height) {
-                    Ok(idx) => idx,
-                    Err(idx) => idx,
-                };
-            byte_offset + idx_in_line
+            byte_offset
+                + closest_visible_byte_in_wrapped_line(
+                    point(relative_point.x, remaining_y),
+                    chosen_line,
+                    lcx.line_height,
+                    lcx.align_x,
+                )
         }
         _ => 0,
     };
@@ -1330,6 +1367,67 @@ pub fn calculate_table_cell_col_from_point(
     col.clamp(target_cell.col_range.0, target_cell.col_range.1)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn find_link_in_wrapped_line(
+    source_line: crate::buffer::SourceLine,
+    relative_point: Point<Pixels>,
+    wrapped_line: &WrappedLine,
+    line_height: Pixels,
+    align_x: Pixels,
+    spans: &[InlineSpan],
+    is_source: bool,
+    is_active_caret: bool,
+    disclosure_col: usize,
+    is_selection_disclosure: bool,
+) -> Option<crate::editor::HoveredLink> {
+    if relative_point.x < px(0.0) || relative_point.y < px(0.0) || spans.is_empty() {
+        return None;
+    }
+
+    let text_w = wrapped_line.unwrapped_layout.width;
+    if relative_point.x < align_x || relative_point.x > align_x + text_w + px(4.0) {
+        return None;
+    }
+
+    let closest_byte =
+        closest_visible_byte_in_wrapped_line(relative_point, wrapped_line, line_height, align_x);
+
+    let mut cur_byte = 0;
+    for span in spans {
+        let is_visible = span.is_visible_for_selection(
+            is_active_caret,
+            disclosure_col,
+            is_source,
+            is_selection_disclosure,
+        );
+        if !is_visible || span.text.is_empty() {
+            continue;
+        }
+
+        let span_len = span
+            .rendered_text(is_active_caret, disclosure_col, is_source)
+            .len();
+        let span_end_byte = cur_byte + span_len;
+
+        if closest_byte >= cur_byte
+            && closest_byte <= span_end_byte
+            && span.is_link
+            && !span.is_image
+            && let Some(url) = &span.link_url
+        {
+            return Some(crate::editor::HoveredLink {
+                url: url.clone(),
+                line: source_line,
+                col_range: span.group_range,
+            });
+        }
+
+        cur_byte = span_end_byte;
+    }
+
+    None
+}
+
 fn find_link_at_spans(
     source_line: crate::buffer::SourceLine,
     relative_point: Point<Pixels>,
@@ -1360,62 +1458,18 @@ fn find_link_at_spans(
     };
     let wrapped_line = lines.first()?;
 
-    let text_w = wrapped_line.unwrapped_layout.width;
-    if relative_point.x < lcx.align_x || relative_point.x > lcx.align_x + text_w + px(4.0) {
-        return None;
-    }
-
-    let text_rel_x = relative_point.x - lcx.align_x;
-    let num_v = wrapped_line.wrap_boundaries.len() + 1;
-    let last_v = num_v - 1;
-    let max_safe_y = (last_v as f32) * lcx.line_height + lcx.line_height * 0.5;
-    let clamped_y = relative_point.y.max(px(0.0)).min(max_safe_y);
-    let text_rel_point = point(text_rel_x, clamped_y);
-
-    let closest_byte =
-        match wrapped_line.closest_index_for_position(text_rel_point, lcx.line_height) {
-            Ok(idx) => idx,
-            Err(idx) => idx,
-        };
-
-    let mut cur_byte = 0;
-    for span in spans {
-        let is_visible = span.is_visible_for_selection(
-            lcx.scx.is_active_caret,
-            lcx.scx.cursor_col,
-            lcx.scx.is_source,
-            lcx.scx.is_selection_disclosure,
-        );
-        if !is_visible || span.text.is_empty() {
-            continue;
-        }
-
-        let span_len = span
-            .rendered_text(
-                lcx.scx.is_active_caret,
-                lcx.scx.cursor_col,
-                lcx.scx.is_source,
-            )
-            .len();
-        let span_end_byte = cur_byte + span_len;
-
-        if closest_byte >= cur_byte
-            && closest_byte <= span_end_byte
-            && span.is_link
-            && !span.is_image
-            && let Some(url) = &span.link_url
-        {
-            return Some(crate::editor::HoveredLink {
-                url: url.clone(),
-                line: source_line,
-                col_range: span.group_range,
-            });
-        }
-
-        cur_byte = span_end_byte;
-    }
-
-    None
+    find_link_in_wrapped_line(
+        source_line,
+        relative_point,
+        wrapped_line,
+        lcx.line_height,
+        lcx.align_x,
+        spans,
+        lcx.scx.is_source,
+        lcx.scx.is_active_caret,
+        lcx.scx.cursor_col,
+        lcx.scx.is_selection_disclosure,
+    )
 }
 
 pub fn find_link_in_table_row(
@@ -1529,7 +1583,7 @@ enum LinePrepaintState {
         cursor_color: Hsla,
     },
     Shaped {
-        wrapped_line: Box<WrappedLine>,
+        wrapped_line: Arc<WrappedLine>,
         math_paints: Vec<MathPaint>,
         highlight_quads: Vec<(Bounds<Pixels>, Hsla)>,
         selection_quads: Vec<Bounds<Pixels>>,
@@ -1761,6 +1815,7 @@ pub fn render_shaped_line(
         .map(|(math, _)| math_render_size(&math.rendered, font_size).height)
         .fold(px(0.0), Pixels::max);
     let total_canvas_h = (line_height * (est_lines as f32)).max(math_height);
+    let painted_lines = lrc.painted_lines.cloned();
 
     canvas(
         move |bounds, window, cx| {
@@ -1801,6 +1856,21 @@ pub fn render_shaped_line(
                     None
                 };
 
+                if let Some(cache) = &painted_lines {
+                    cache.borrow_mut().record(
+                        source_line,
+                        PaintedLineGeometry {
+                            text_bounds: bounds,
+                            line_height,
+                            wrapped_line: None,
+                            is_source,
+                            is_active_caret,
+                            disclosure_col,
+                            is_selection_disclosure,
+                        },
+                    );
+                }
+
                 return LinePrepaintState::Empty {
                     caret_bounds,
                     cursor_color,
@@ -1829,6 +1899,7 @@ pub fn render_shaped_line(
             let Some(wrapped_line) = lines_iter.next() else {
                 return LinePrepaintState::None;
             };
+            let wrapped_line = Arc::new(wrapped_line);
 
             let has_other_content = spans.iter().any(|span| {
                 span.math.is_none()
@@ -1948,8 +2019,23 @@ pub fn render_shaped_line(
                 None
             };
 
+            if let Some(cache) = &painted_lines {
+                cache.borrow_mut().record(
+                    source_line,
+                    PaintedLineGeometry {
+                        text_bounds: bounds,
+                        line_height,
+                        wrapped_line: Some(Arc::clone(&wrapped_line)),
+                        is_source,
+                        is_active_caret,
+                        disclosure_col,
+                        is_selection_disclosure,
+                    },
+                );
+            }
+
             LinePrepaintState::Shaped {
-                wrapped_line: Box::new(wrapped_line),
+                wrapped_line,
                 math_paints,
                 highlight_quads,
                 selection_quads,

@@ -123,6 +123,10 @@ impl Element for EditorElement {
             |_style, _scroll_offset, hitbox, window, cx| {
                 let (lines_to_prepaint, scrollbar) = {
                     let editor = editor_entity.read(cx);
+                    editor
+                        .painted_lines
+                        .borrow_mut()
+                        .begin_frame(editor.current_painted_frame_key());
                     let layout = editor.layout_snapshot();
                     // Heights are already known: prepare only rows intersecting the viewport.
                     let scroll_top = editor.scroll.current_scroll_top;
@@ -275,6 +279,7 @@ impl Element for EditorElement {
                             is_syntactic_separator: layout.separator(line_idx),
                             text_system: editor.text_system.as_ref(),
                             highlights: &highlights,
+                            painted_lines: Some(&editor.painted_lines),
                         };
 
                         let line_el = render_line_element(

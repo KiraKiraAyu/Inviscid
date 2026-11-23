@@ -1,10 +1,13 @@
 use gpui::*;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::RenderMode;
 use super::layout::{
     SOURCE_GUTTER_WIDTH, get_block_color_override, get_block_typography_with_metrics,
 };
 use super::shaping::{QUOTE_EDGE_PADDING, QUOTE_GUTTER, effective_content_width, math_render_size};
+use crate::buffer::SourceLine;
 use crate::markdown::{BlockKind, ParsedLine};
 use crate::theme::Theme;
 
@@ -283,5 +286,84 @@ pub(crate) fn math_preview_display_size(
         size(rendered_size.width * scale, rendered_size.height * scale)
     } else {
         rendered_size
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaintedFrameKey {
+    pub buffer_revision: u64,
+    pub render_mode: RenderMode,
+    pub viewport_bounds: Bounds<Pixels>,
+    pub scroll_anchor_line: Option<usize>,
+    pub scroll_top: Pixels,
+    pub fold_version: usize,
+    pub font_size: f32,
+    pub line_height: f32,
+    pub soft_wrap: bool,
+    pub active_math_block: Option<(SourceLine, SourceLine)>,
+    pub active_mermaid_block: Option<(SourceLine, SourceLine)>,
+    pub has_marked_range: bool,
+}
+
+#[derive(Clone)]
+pub struct PaintedLineGeometry {
+    pub text_bounds: Bounds<Pixels>,
+    pub line_height: Pixels,
+    pub wrapped_line: Option<Arc<WrappedLine>>,
+    pub is_source: bool,
+    pub is_active_caret: bool,
+    pub disclosure_col: usize,
+    pub is_selection_disclosure: bool,
+}
+
+#[derive(Default)]
+pub struct PaintedLineGeometryCache {
+    frame_key: Option<PaintedFrameKey>,
+    lines: HashMap<SourceLine, PaintedLineGeometry>,
+}
+
+impl PaintedLineGeometryCache {
+    pub fn begin_frame(&mut self, key: PaintedFrameKey) {
+        self.frame_key = Some(key);
+        self.lines.clear();
+    }
+
+    pub fn clear(&mut self) {
+        self.frame_key = None;
+        self.lines.clear();
+    }
+
+    pub fn record(&mut self, line: SourceLine, entry: PaintedLineGeometry) {
+        if entry.text_bounds.size.height <= px(0.0) {
+            return;
+        }
+        self.lines.insert(line, entry);
+    }
+
+    pub fn get(
+        &self,
+        line: SourceLine,
+        expected_key: PaintedFrameKey,
+        is_active_caret: bool,
+        disclosure_col: usize,
+        is_selection_disclosure: bool,
+    ) -> Option<PaintedLineGeometry> {
+        if self.frame_key != Some(expected_key) {
+            return None;
+        }
+        let entry = self.lines.get(&line)?;
+        if !entry.is_source
+            && (entry.is_active_caret != is_active_caret
+                || entry.is_selection_disclosure != is_selection_disclosure
+                || (is_active_caret && entry.disclosure_col != disclosure_col))
+        {
+            return None;
+        }
+        Some(entry.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.lines.len()
     }
 }

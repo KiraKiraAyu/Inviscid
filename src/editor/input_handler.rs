@@ -170,8 +170,57 @@ impl EntityInputHandler for Editor {
         let layout = self.layout_snapshot();
         if let Some(row) = layout.parsed_lines.row(start_pos.line.index()) {
             let parsed = &*row;
-            let line_bounds = self.line_screen_bounds(start_pos.line, element_bounds);
             let is_active_caret = true;
+            let anchor_pos = self
+                .marked_range
+                .as_ref()
+                .map(|marked| self.buffer.utf16_offset_to_pos(marked.end))
+                .filter(|pos| pos.line == start_pos.line)
+                .unwrap_or(start_pos);
+
+            if element_bounds == self.viewport_bounds
+                && let Some(painted) = self.painted_line_geometry(start_pos.line, is_active_caret)
+            {
+                let pos_for_col = |col: usize| {
+                    let target_byte =
+                        crate::editor::shaping::raw_col_to_visible_byte_with_selection(
+                            col,
+                            &parsed.spans,
+                            painted.is_active_caret,
+                            painted.disclosure_col,
+                            painted.is_source,
+                            painted.is_selection_disclosure,
+                        );
+                    painted
+                        .wrapped_line
+                        .as_ref()
+                        .and_then(|wl| wl.position_for_index(target_byte, painted.line_height))
+                        .unwrap_or_default()
+                };
+                let start_cursor_pos = pos_for_col(start_pos.col);
+                let width = if !range_utf16.is_empty() {
+                    let end_pos = self.buffer.utf16_offset_to_pos(range_utf16.end);
+                    if end_pos.line == start_pos.line && end_pos.col >= start_pos.col {
+                        (pos_for_col(end_pos.col).x - start_cursor_pos.x)
+                            .abs()
+                            .max(px(1.5))
+                    } else {
+                        px(1.5)
+                    }
+                } else {
+                    px(1.5)
+                };
+                let anchor = pos_for_col(anchor_pos.col);
+                return Some(Bounds {
+                    origin: point(
+                        painted.text_bounds.origin.x + anchor.x,
+                        painted.text_bounds.origin.y + anchor.y,
+                    ),
+                    size: size(width, painted.line_height),
+                });
+            }
+
+            let line_bounds = self.line_screen_bounds(start_pos.line, element_bounds);
             let theme = cx
                 .try_global::<crate::theme::ThemeManager>()
                 .map(|m| m.theme())
@@ -211,12 +260,6 @@ impl EntityInputHandler for Editor {
                 px(1.5)
             };
 
-            let anchor_pos = self
-                .marked_range
-                .as_ref()
-                .map(|marked| self.buffer.utf16_offset_to_pos(marked.end))
-                .filter(|pos| pos.line == start_pos.line)
-                .unwrap_or(start_pos);
             let anchor = crate::editor::shaping::calculate_pos_from_col(
                 anchor_pos.col,
                 parsed,

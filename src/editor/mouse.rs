@@ -268,22 +268,50 @@ impl Editor {
             }
 
             let is_active_caret = self.is_active_disclosure_line(target_line, window);
-            let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
-            let (wrap_width, scx) =
-                self.line_shaping_from_spec(&spec, is_active_caret, &crate::theme::DEFAULT_THEME);
+            let mut col =
+                if let Some(painted) = self.painted_line_geometry(target_line, is_active_caret) {
+                    if let Some(wrapped_line) = &painted.wrapped_line {
+                        let in_canvas_point = gpui::point(
+                            (point.x - painted.text_bounds.origin.x).max(px(0.0)),
+                            (point.y - painted.text_bounds.origin.y).max(px(0.0)),
+                        );
+                        super::shaping::col_from_wrapped_line(
+                            in_canvas_point,
+                            wrapped_line,
+                            painted.line_height,
+                            &parsed.spans,
+                            parsed.raw_text.chars().count(),
+                            painted.is_source,
+                            painted.is_active_caret,
+                            painted.disclosure_col,
+                            painted.is_selection_disclosure,
+                        )
+                    } else if painted.is_source {
+                        0
+                    } else {
+                        parsed.raw_text.chars().count()
+                    }
+                } else {
+                    let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
+                    let (wrap_width, scx) = self.line_shaping_from_spec(
+                        &spec,
+                        is_active_caret,
+                        &crate::theme::DEFAULT_THEME,
+                    );
 
-            let in_canvas_point =
-                gpui::point(rel_point.x, (rel_point.y - spec.top_offset).max(px(0.0)));
+                    let in_canvas_point =
+                        gpui::point(rel_point.x, (rel_point.y - spec.top_offset).max(px(0.0)));
 
-            let mut col = super::shaping::calculate_col_from_point(
-                in_canvas_point,
-                parsed,
-                spec.font_size,
-                spec.line_height,
-                wrap_width,
-                scx,
-                window,
-            );
+                    super::shaping::calculate_col_from_point(
+                        in_canvas_point,
+                        parsed,
+                        spec.font_size,
+                        spec.line_height,
+                        wrap_width,
+                        scx,
+                        window,
+                    )
+                };
             if !is_source {
                 let prefix_len = parsed.syntax_prefix_len();
                 if col < prefix_len {
@@ -590,6 +618,29 @@ impl Editor {
         let is_active_caret = self.is_active_disclosure_line(line_idx, window)
             && self.buffer.selection().is_empty()
             && !self.is_dragging;
+
+        if let Some(painted) = self.painted_line_geometry(line_idx, is_active_caret) {
+            let wrapped_line = painted.wrapped_line.as_deref()?;
+            let in_canvas_point = gpui::point(
+                point.x - painted.text_bounds.origin.x,
+                point.y - painted.text_bounds.origin.y,
+            );
+            if in_canvas_point.y > painted.text_bounds.size.height {
+                return None;
+            }
+            return super::shaping::find_link_in_wrapped_line(
+                line_idx,
+                in_canvas_point,
+                wrapped_line,
+                painted.line_height,
+                px(0.0),
+                &parsed.spans,
+                painted.is_source,
+                painted.is_active_caret,
+                painted.disclosure_col,
+                painted.is_selection_disclosure,
+            );
+        }
 
         let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
         let (wrap_width, scx) =

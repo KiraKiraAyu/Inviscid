@@ -5324,6 +5324,7 @@ fn test_nested_list_render_live_content() {
             is_syntactic_separator: false,
             text_system: None,
             highlights: &[],
+            painted_lines: None,
         };
 
         let element =
@@ -5749,7 +5750,7 @@ fn test_expanded_math_block_hit_testing_and_ime_roundtrip(cx: &mut gpui::TestApp
     });
 
     let formula = r"\frac{1}{i+l} + \int_{0}^{1} \sum_{k=1}^{n} \frac{1}{i_k + l_k + 1} \, dx + \frac{a_1+b_1}{c_1+d_1} + \sqrt{i^2 + l^2}";
-    let doc = format!("Before\n$$\n{formula}\n$$\nAfter");
+    let doc = format!("Before\n$$\n{formula}\n$$\n{}", "After\n".repeat(60));
     let (editor, cx) = cx.add_window_view(|_window, cx| {
         Editor::new_with_buffer(TextBuffer::from_str(&doc, None), cx)
     });
@@ -5843,6 +5844,226 @@ fn test_expanded_math_block_hit_testing_and_ime_roundtrip(cx: &mut gpui::TestApp
                     window,
                 ),
                 Position::new(target_line, mid_wrapped_col)
+            );
+        });
+    });
+}
+
+#[test]
+fn test_painted_line_geometry_cache_ignores_zero_height_and_checks_disclosure() {
+    use crate::editor::RenderMode;
+    use crate::editor::geometry::{PaintedFrameKey, PaintedLineGeometry, PaintedLineGeometryCache};
+    use gpui::{Bounds, point, px, size};
+
+    let key = PaintedFrameKey {
+        buffer_revision: 1,
+        render_mode: RenderMode::LivePreview,
+        viewport_bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(800.0), px(600.0))),
+        scroll_anchor_line: None,
+        scroll_top: px(0.0),
+        fold_version: 0,
+        font_size: 15.0,
+        line_height: 1.6,
+        soft_wrap: true,
+        active_math_block: None,
+        active_mermaid_block: None,
+        has_marked_range: false,
+    };
+
+    let mut cache = PaintedLineGeometryCache::default();
+    cache.begin_frame(key);
+
+    // Zero-height canvases (e.g. collapsed image source lines) must not be cached.
+    cache.record(
+        SourceLine::new(0),
+        PaintedLineGeometry {
+            text_bounds: Bounds::new(point(px(10.0), px(10.0)), size(px(200.0), px(0.0))),
+            line_height: px(24.0),
+            wrapped_line: None,
+            is_source: false,
+            is_active_caret: false,
+            disclosure_col: 0,
+            is_selection_disclosure: false,
+        },
+    );
+    assert_eq!(cache.len(), 0);
+
+    // Non-source line enforces disclosure match.
+    cache.record(
+        SourceLine::new(1),
+        PaintedLineGeometry {
+            text_bounds: Bounds::new(point(px(10.0), px(34.0)), size(px(200.0), px(24.0))),
+            line_height: px(24.0),
+            wrapped_line: None,
+            is_source: false,
+            is_active_caret: true,
+            disclosure_col: 5,
+            is_selection_disclosure: false,
+        },
+    );
+    assert!(cache.get(SourceLine::new(1), key, true, 5, false).is_some());
+    assert!(cache.get(SourceLine::new(1), key, true, 6, false).is_none());
+    assert!(
+        cache
+            .get(SourceLine::new(1), key, false, 5, false)
+            .is_none()
+    );
+
+    // Raw source lines (e.g. MathBlockContent) do not depend on disclosure_col.
+    cache.record(
+        SourceLine::new(2),
+        PaintedLineGeometry {
+            text_bounds: Bounds::new(point(px(10.0), px(60.0)), size(px(200.0), px(24.0))),
+            line_height: px(24.0),
+            wrapped_line: None,
+            is_source: true,
+            is_active_caret: true,
+            disclosure_col: 2,
+            is_selection_disclosure: false,
+        },
+    );
+    assert!(cache.get(SourceLine::new(2), key, true, 9, false).is_some());
+
+    // Frame key change invalidates cached entries.
+    let mut scrolled_key = key;
+    scrolled_key.scroll_top = px(12.0);
+    assert!(
+        cache
+            .get(SourceLine::new(2), scrolled_key, true, 9, false)
+            .is_none()
+    );
+}
+
+#[gpui::test]
+fn test_painted_line_geometry_cache_math_hits_and_invalidation(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::theme::ThemeManager;
+    use gpui::{EntityInputHandler, point, px};
+
+    let config = AppConfig::default().with_theme("Dracula");
+    let theme_manager = ThemeManager::from_config(&config);
+    cx.update(|cx| {
+        cx.set_global(theme_manager);
+        cx.set_global(config);
+    });
+
+    let formula = r"\frac{1}{i+l} + \int_{0}^{1} \sum_{k=1}^{n} \frac{1}{i_k + l_k + 1} \, dx + \frac{a_1+b_1}{c_1+d_1} + \sqrt{i^2 + l^2}";
+    let doc = format!("Before\n$$\n{formula}\n$$\n{}", "After\n".repeat(60));
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        let mut ed = Editor::new_with_buffer(TextBuffer::from_str(&doc, None), cx);
+        ed.buffer_mut()
+            .set_cursor(Position::new(SourceLine::new(2), 0));
+        window.focus(&ed.focus_handle);
+        ed
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, cx| {
+            let target_line = SourceLine::new(2);
+            let painted = ed
+                .painted_line_geometry(target_line, true)
+                .expect("prepainted math line geometry should be cached");
+            let wrapped = painted
+                .wrapped_line
+                .as_ref()
+                .expect("non-empty math line has wrapped_line");
+            assert!(painted.is_source);
+            assert!(painted.text_bounds.size.height > px(0.0));
+            assert!(
+                !wrapped.wrap_boundaries.is_empty(),
+                "expected wrapped math formula after prepaint"
+            );
+
+            let line_start_utf16 = ed
+                .buffer()
+                .pos_to_utf16_offset(crate::buffer::SourcePosition::new(target_line, 0));
+            let formula_len = formula.chars().count();
+
+            // 1. Clicking painted glyph positions across visual lines 1 and 2 hits exact columns,
+            //    and IME bounds_for_range matches the painted coordinates.
+            for col in [0usize, 8, 20, 45, 75, formula_len] {
+                let col = col.min(formula_len);
+                let byte_ix: usize = formula.chars().take(col).map(char::len_utf8).sum();
+                let glyph_pos = wrapped
+                    .position_for_index(byte_ix, painted.line_height)
+                    .expect("position for visible index");
+                let click = point(
+                    painted.text_bounds.origin.x + glyph_pos.x + px(0.5),
+                    painted.text_bounds.origin.y + glyph_pos.y + painted.line_height * 0.5,
+                );
+                assert_eq!(
+                    ed.find_pos_for_mouse_point(click, window),
+                    Position::new(target_line, col),
+                    "cached click failed at col={col}"
+                );
+
+                let ime_bounds = if col < formula_len {
+                    ed.bounds_for_range(
+                        (line_start_utf16 + col)..(line_start_utf16 + col + 1),
+                        ed.viewport_bounds,
+                        window,
+                        cx,
+                    )
+                    .unwrap()
+                } else {
+                    ed.buffer_mut().set_cursor(Position::new(target_line, col));
+                    ed.bounds_for_range(0..0, ed.viewport_bounds, window, cx)
+                        .unwrap()
+                };
+                assert_eq!(
+                    ime_bounds.origin.x,
+                    painted.text_bounds.origin.x + glyph_pos.x
+                );
+                assert_eq!(
+                    ime_bounds.origin.y,
+                    painted.text_bounds.origin.y + glyph_pos.y
+                );
+            }
+
+            // 2. Clicking in the right preview pane reuses standard editor hit-testing
+            //    and lands on the end of the clicked visual/source line.
+            let right_pane_x = ed.viewport_bounds.right() - px(40.0);
+            let last_visual_y = painted.text_bounds.origin.y
+                + painted.line_height * (wrapped.wrap_boundaries.len() as f32 + 0.5);
+            assert_eq!(
+                ed.find_pos_for_mouse_point(point(right_pane_x, last_visual_y), window),
+                Position::new(target_line, formula_len)
+            );
+
+            // 3. Scrolling or editing invalidates the frame key and falls back cleanly.
+            ed.set_scroll_document_y(20.0);
+            assert!(ed.scroll.current_scroll_top > px(0.0));
+            assert!(ed.painted_line_geometry(target_line, true).is_none());
+            let fallback_bounds = ed
+                .bounds_for_range(
+                    (line_start_utf16 + 4)..(line_start_utf16 + 5),
+                    ed.viewport_bounds,
+                    window,
+                    cx,
+                )
+                .unwrap();
+            assert_eq!(
+                ed.find_pos_for_mouse_point(fallback_bounds.center(), window),
+                Position::new(target_line, 4)
+            );
+
+            ed.buffer_mut().set_cursor(Position::new(target_line, 0));
+            ed.buffer_mut().insert_text("y = ");
+            assert!(ed.painted_line_geometry(target_line, true).is_none());
+            let edited_bounds = ed
+                .bounds_for_range(
+                    (line_start_utf16 + 2)..(line_start_utf16 + 3),
+                    ed.viewport_bounds,
+                    window,
+                    cx,
+                )
+                .unwrap();
+            assert_eq!(
+                ed.find_pos_for_mouse_point(edited_bounds.center(), window),
+                Position::new(target_line, 2)
             );
         });
     });

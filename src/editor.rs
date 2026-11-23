@@ -208,6 +208,7 @@ pub struct Editor {
     pub(crate) load_task: Option<Task<()>>,
 
     pub(crate) layout_cache: RefCell<Arc<DocumentLayoutCache>>,
+    pub(crate) painted_lines: std::rc::Rc<RefCell<geometry::PaintedLineGeometryCache>>,
     layout_scroll_adjustment: std::cell::Cell<Pixels>,
     #[cfg(test)]
     pub(crate) layout_stats: std::cell::Cell<LayoutStats>,
@@ -303,6 +304,39 @@ impl Editor {
     #[inline]
     pub fn viewport_bounds_val(&self) -> Bounds<Pixels> {
         self.viewport_bounds
+    }
+
+    pub(crate) fn current_painted_frame_key(&self) -> geometry::PaintedFrameKey {
+        let layout = self.layout_snapshot();
+        geometry::PaintedFrameKey {
+            buffer_revision: self.buffer.revision(),
+            render_mode: self.render_mode,
+            viewport_bounds: self.viewport_bounds,
+            scroll_anchor_line: self.scroll.anchor_line,
+            scroll_top: self.scroll.current_scroll_top,
+            fold_version: self.display_map.version(),
+            font_size: self.font_size,
+            line_height: self.line_height,
+            soft_wrap: self.soft_wrap,
+            active_math_block: layout.active_math_block,
+            active_mermaid_block: layout.active_mermaid_block,
+            has_marked_range: self.marked_range.is_some(),
+        }
+    }
+
+    pub(crate) fn painted_line_geometry(
+        &self,
+        source_line: crate::buffer::SourceLine,
+        is_active_caret: bool,
+    ) -> Option<geometry::PaintedLineGeometry> {
+        let key = self.current_painted_frame_key();
+        self.painted_lines.borrow().get(
+            source_line,
+            key,
+            is_active_caret,
+            self.disclosure_col(),
+            self.is_selection_disclosure(),
+        )
     }
 
     #[inline]
@@ -572,6 +606,9 @@ impl Editor {
             _async_update_task: Some(async_update_task),
             load_task: None,
             layout_cache: RefCell::new(Arc::new(DocumentLayoutCache::default())),
+            painted_lines: std::rc::Rc::new(RefCell::new(
+                geometry::PaintedLineGeometryCache::default(),
+            )),
             layout_scroll_adjustment: std::cell::Cell::new(px(0.0)),
             #[cfg(test)]
             layout_stats: std::cell::Cell::new(LayoutStats::default()),
@@ -1629,6 +1666,7 @@ pub struct LineRenderContext<'a> {
     pub is_syntactic_separator: bool,
     pub text_system: Option<&'a Arc<WindowTextSystem>>,
     pub highlights: &'a [LineHighlight],
+    pub(crate) painted_lines: Option<&'a std::rc::Rc<RefCell<geometry::PaintedLineGeometryCache>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
