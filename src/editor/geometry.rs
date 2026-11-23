@@ -81,6 +81,7 @@ pub fn resolve_inner_available_width(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_line_text_spec(
     parsed: &ParsedLine,
     mode: RenderMode,
@@ -282,7 +283,7 @@ pub(crate) fn math_preview_display_size(
     let available_width = (content_width / 2.0 - MATH_EDITOR_PADDING_X * 2.0).max(px(0.0));
     let rendered_size = math_render_size(math, font_size);
     if rendered_size.width > available_width && rendered_size.width > px(0.0) {
-        let scale = f32::from(available_width / rendered_size.width);
+        let scale = available_width / rendered_size.width;
         size(rendered_size.width * scale, rendered_size.height * scale)
     } else {
         rendered_size

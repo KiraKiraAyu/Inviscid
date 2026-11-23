@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::buffer::LineSource;
@@ -215,6 +216,95 @@ impl Element for EditorElement {
                                     ),
                                 ));
                             }
+
+                            if let Some((math_start, math_end)) = active_math_block
+                                && math_end.index() > math_start.index() + 1
+                            {
+                                let content_start = math_start.index() + 1;
+                                let content_end = math_end.index() - 1;
+                                if content_start < visible_end
+                                    && content_end >= visible_start
+                                    && let (Some(block_top), Some(block_bottom)) = (
+                                        layout
+                                            .metrics
+                                            .top_relative(content_start, editor.scroll.anchor_line),
+                                        layout.metrics.top_relative(
+                                            math_end.index(),
+                                            editor.scroll.anchor_line,
+                                        ),
+                                    )
+                                {
+                                    let panel_h = (block_bottom - block_top).max(px(0.0));
+                                    if panel_h > px(0.0) {
+                                        let start_row =
+                                            layout.parsed_lines.row(math_start.index());
+                                        let (outer_left, inner_width) =
+                                            if let Some(row) = start_row.as_deref()
+                                                && let Some(quote) = row.quote
+                                            {
+                                                let quote_depth = quote.depth.max(1);
+                                                let start_indent = layout.indent_px(math_start);
+                                                (
+                                                    crate::editor::shaping::QUOTE_GUTTER
+                                                        * quote_depth as f32
+                                                        + start_indent,
+                                                    crate::editor::shaping::effective_content_width(
+                                                        content_width,
+                                                        row,
+                                                        mode,
+                                                        start_indent,
+                                                    ),
+                                                )
+                                            } else {
+                                                (px(0.0), content_width)
+                                            };
+                                        let left_pane_w = inner_width / 2.0;
+                                        let panel_w = (inner_width - left_pane_w).max(px(0.0));
+                                        let math_preview = start_row
+                                            .as_deref()
+                                            .and_then(|row| {
+                                                row.spans
+                                                    .iter()
+                                                    .find_map(|span| span.math.as_ref())
+                                            })
+                                            .map(|math| &math.rendered);
+                                        let panel_y = bounds.origin.y + block_top - scroll_top;
+                                        let panel = div()
+                                            .w(panel_w)
+                                            .h(panel_h)
+                                            .border_l_1()
+                                            .border_color(theme.code_block_border)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .px(crate::editor::geometry::MATH_EDITOR_PADDING_X)
+                                            .py(crate::editor::geometry::MATH_EDITOR_PADDING_Y)
+                                            .when_some(math_preview, |preview, math| {
+                                                let preview_size =
+                                                    crate::editor::geometry::math_preview_display_size(
+                                                        math,
+                                                        px(editor.font_size),
+                                                        inner_width,
+                                                    );
+                                                preview.child(
+                                                    svg()
+                                                        .path(math.asset_path.clone())
+                                                        .w(preview_size.width)
+                                                        .h(preview_size.height)
+                                                        .text_color(theme.text_primary),
+                                                )
+                                            });
+                                        lines_to_prepaint.push((
+                                            panel.into_any_element(),
+                                            point(container_x + outer_left + left_pane_w, panel_y),
+                                            size(
+                                                AvailableSpace::Definite(panel_w),
+                                                AvailableSpace::Definite(panel_h),
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
                         }
                         RenderMode::Source => {}
                     }
@@ -233,15 +323,6 @@ impl Element for EditorElement {
                             editor.is_math_block_expanded(source_line, parsed, active_math_block);
                         let is_mermaid_block_editing = active_mermaid_block
                             .is_some_and(|(start, end)| source_line >= start && source_line <= end);
-                        let math_row = active_math_block
-                            .filter(|(start, _)| source_line == *start + 1)
-                            .and_then(|(start, _)| layout.parsed_lines.row(start.index()));
-                        let math_preview = math_row
-                            .as_ref()
-                            .and_then(|start_line| {
-                                start_line.spans.iter().find_map(|span| span.math.as_ref())
-                            })
-                            .map(|math| &math.rendered);
                         let mermaid_preview = parsed
                             .spans
                             .iter()
@@ -251,7 +332,6 @@ impl Element for EditorElement {
                         let lrc = LineRenderContext {
                             is_active_line,
                             is_math_block_editing,
-                            math_preview,
                             is_mermaid_block_editing,
                             mermaid_preview,
                             is_disclosure_line,

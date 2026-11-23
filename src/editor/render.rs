@@ -10,7 +10,6 @@ use super::Editor;
 use super::LineRenderContext;
 use super::geometry::{
     CODE_BLOCK_PADDING_X, MATH_EDITOR_PADDING_X, MATH_EDITOR_PADDING_Y, TextShapingMode,
-    math_preview_display_size,
 };
 use super::shaping::render_shaped_line;
 
@@ -548,44 +547,13 @@ pub fn render_live_line_content(
                 TextShapingMode::RawSource,
             );
 
+            let left_pane_w = lrc.content_width / 2.0;
             div()
-                .w_full()
-                .flex()
-                .flex_row()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .px(MATH_EDITOR_PADDING_X)
-                        .py(MATH_EDITOR_PADDING_Y)
-                        .child(text_canvas),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .border_l_1()
-                        .border_color(theme.code_block_border)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .px(MATH_EDITOR_PADDING_X)
-                        .py(MATH_EDITOR_PADDING_Y)
-                        .when_some(lrc.math_preview, |preview, math| {
-                            let preview_size = math_preview_display_size(
-                                math,
-                                px(lrc.font_size),
-                                lrc.content_width,
-                            );
-                            preview.child(
-                                svg()
-                                    .path(math.asset_path.clone())
-                                    .w(preview_size.width)
-                                    .h(preview_size.height)
-                                    .text_color(theme.text_primary),
-                            )
-                        }),
-                )
+                .w(left_pane_w)
+                .min_w_0()
+                .px(MATH_EDITOR_PADDING_X)
+                .py(MATH_EDITOR_PADDING_Y)
+                .child(text_canvas)
                 .into_any_element()
         }
 

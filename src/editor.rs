@@ -1638,7 +1638,6 @@ impl Render for Editor {
 pub struct LineRenderContext<'a> {
     pub is_active_line: bool,
     pub is_math_block_editing: bool,
-    pub(crate) math_preview: Option<&'a crate::math::MathSvg>,
     pub is_mermaid_block_editing: bool,
     pub(crate) mermaid_preview: Option<&'a crate::mermaid::MermaidSvg>,
     pub is_disclosure_line: bool,

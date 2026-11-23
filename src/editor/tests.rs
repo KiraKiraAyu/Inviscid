@@ -5297,7 +5297,6 @@ fn test_nested_list_render_live_content() {
         let lrc = LineRenderContext {
             is_active_line: false,
             is_math_block_editing: false,
-            math_preview: None,
             is_mermaid_block_editing: false,
             mermaid_preview: None,
             is_disclosure_line: false,
@@ -5724,12 +5723,14 @@ fn wide_math_preview_layout_height_matches_scaled_svg() {
 
     let lines = vec!["$$".to_string(), "x".to_string(), "$$".to_string()];
     let parsed = MarkdownScanner::scan_document(&lines);
-    let mut lcx = LineLayoutContext::live_preview(content_width).with_math_block_editing(true);
-    lcx.math_preview = Some(math);
+    let tail_min_h = scaled.height + MATH_EDITOR_PADDING_Y * 2.0;
+    let lcx = LineLayoutContext::live_preview(content_width)
+        .with_math_block_editing(true)
+        .with_math_block_tail_min_height(tail_min_h);
 
     let measured_h = get_line_layout_height(&lines, 1, &parsed[1], lcx);
     let single_source_h = px(24.0) + MATH_EDITOR_PADDING_Y * 2.0;
-    let expected_h = single_source_h.max(scaled.height + MATH_EDITOR_PADDING_Y * 2.0);
+    let expected_h = single_source_h.max(tail_min_h);
     assert_eq!(measured_h, expected_h);
     assert!(measured_h < unscaled.height + MATH_EDITOR_PADDING_Y * 2.0);
 }
@@ -6064,6 +6065,132 @@ fn test_painted_line_geometry_cache_math_hits_and_invalidation(cx: &mut gpui::Te
             assert_eq!(
                 ed.find_pos_for_mouse_point(edited_bounds.center(), window),
                 Position::new(target_line, 2)
+            );
+        });
+    });
+}
+
+#[gpui::test]
+fn test_multiline_math_block_split_pane_layout_and_hit_testing(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::editor::geometry::{MATH_EDITOR_PADDING_Y, math_preview_display_size};
+    use crate::theme::ThemeManager;
+    use gpui::{point, px};
+
+    let config = AppConfig::default().with_theme("Dracula");
+    let theme_manager = ThemeManager::from_config(&config);
+    cx.update(|cx| {
+        cx.set_global(theme_manager);
+        cx.set_global(config);
+    });
+
+    // Multi-line formula whose rendered SVG is taller than 3 compact source lines.
+    let line1 = r"\begin{pmatrix} a \\ b \\";
+    let line2 = r"c \\ d \\";
+    let line3 = r"\frac{e}{f} \\ \frac{g}{h} \end{pmatrix}";
+    let doc = format!("Before\n$$\n{line1}\n{line2}\n{line3}\n$$\nAfter");
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        let mut ed = Editor::new_with_buffer(TextBuffer::from_str(&doc, None), cx);
+        ed.buffer_mut()
+            .set_cursor(Position::new(SourceLine::new(2), 0));
+        window.focus(&ed.focus_handle);
+        ed
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, _| {
+            let layout = ed.layout_snapshot();
+            let eager = ed.eager_metrics_for_test();
+            for row in 0..eager.len() {
+                assert_eq!(layout.metrics.height(row), eager.height(row), "row {row}");
+                assert_eq!(layout.metrics.top(row), eager.top(row), "row {row}");
+            }
+
+            // Delimiters collapse to 0; lines 2 and 3 keep compact single-line height;
+            // line 4 (end - 1) absorbs any excess preview height.
+            assert_eq!(layout.metrics.height(1).unwrap(), px(0.0));
+            assert_eq!(layout.metrics.height(5).unwrap(), px(0.0));
+            let compact_h = px(24.0) + MATH_EDITOR_PADDING_Y * 2.0;
+            let h2 = layout.metrics.height(2).unwrap();
+            let h3 = layout.metrics.height(3).unwrap();
+            let h4 = layout.metrics.height(4).unwrap();
+            assert_eq!(h2, compact_h, "first math line must stay compact");
+            assert_eq!(h3, compact_h, "middle math line must stay compact");
+
+            let math = layout
+                .parsed_lines
+                .row(1)
+                .unwrap()
+                .spans
+                .iter()
+                .find_map(|s| s.math.as_ref().map(|m| m.rendered.clone()))
+                .expect("math svg on delimiter row");
+            let scaled_preview_h =
+                math_preview_display_size(&math, px(ed.font_size), layout.content_width).height
+                    + MATH_EDITOR_PADDING_Y * 2.0;
+            assert!(
+                scaled_preview_h > compact_h * 3.0,
+                "fixture preview ({scaled_preview_h:?}) should exceed 3 compact rows ({:?})",
+                compact_h * 3.0
+            );
+            assert!(
+                h4 > compact_h,
+                "tail math line should absorb excess preview height"
+            );
+            assert!(
+                (f32::from(h2 + h3 + h4) - f32::from(scaled_preview_h)).abs() < 0.01,
+                "total block height ({:?}) should equal scaled_preview_h ({scaled_preview_h:?})",
+                h2 + h3 + h4
+            );
+
+            // Clicking each source row hits that exact row and column.
+            for (line_idx, text) in [(2, line1), (3, line2), (4, line3)] {
+                let source_line = SourceLine::new(line_idx);
+                let painted = ed
+                    .painted_line_geometry(source_line, line_idx == 2)
+                    .expect("painted math content line");
+                let wrapped = painted.wrapped_line.as_ref().unwrap();
+                let target_col = 3.min(text.chars().count());
+                let byte_ix: usize = text.chars().take(target_col).map(char::len_utf8).sum();
+                let glyph_pos = wrapped
+                    .position_for_index(byte_ix, painted.line_height)
+                    .unwrap();
+                let click = point(
+                    painted.text_bounds.origin.x + glyph_pos.x + px(0.5),
+                    painted.text_bounds.origin.y + glyph_pos.y + painted.line_height * 0.5,
+                );
+                assert_eq!(
+                    ed.find_pos_for_mouse_point(click, window),
+                    Position::new(source_line, target_col),
+                    "source line {line_idx} click mismatch"
+                );
+            }
+
+            // Clicking the right preview pane (alongside lines 2/3 and in the bottom
+            // overflow area of line 4) reuses standard editor hit-testing -> end of row.
+            let right_pane_x = ed.viewport_bounds.right() - px(40.0);
+            for (line_idx, text) in [(2, line1), (3, line2)] {
+                let source_line = SourceLine::new(line_idx);
+                let (top, bottom) = layout.source_line_y_range(source_line).unwrap();
+                let screen_y = ed.viewport_bounds.origin.y + (top + bottom) * 0.5
+                    - ed.scroll.current_scroll_top;
+                assert_eq!(
+                    ed.find_pos_for_mouse_point(point(right_pane_x, screen_y), window),
+                    Position::new(source_line, text.chars().count()),
+                    "right-pane click alongside line {line_idx}"
+                );
+            }
+            let (top4, bottom4) = layout.source_line_y_range(SourceLine::new(4)).unwrap();
+            let overflow_y =
+                ed.viewport_bounds.origin.y + bottom4 - px(4.0) - ed.scroll.current_scroll_top;
+            assert!(overflow_y > ed.viewport_bounds.origin.y + top4 + compact_h);
+            assert_eq!(
+                ed.find_pos_for_mouse_point(point(right_pane_x, overflow_y), window),
+                Position::new(SourceLine::new(4), line3.chars().count()),
+                "right-pane click in bottom overflow area of tail line"
             );
         });
     });

@@ -300,7 +300,7 @@ impl DocumentLayoutCache {
 
 #[derive(Clone)]
 pub struct LineLayoutContext<'a> {
-    pub(crate) math_preview: Option<crate::math::MathSvg>,
+    pub math_block_tail_min_height: Pixels,
     pub is_active: bool,
     pub math_block_editing: bool,
     pub mermaid_block_editing: bool,
@@ -322,6 +322,10 @@ pub struct LineLayoutContext<'a> {
 impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LineLayoutContext")
+            .field(
+                "math_block_tail_min_height",
+                &self.math_block_tail_min_height,
+            )
             .field("is_active", &self.is_active)
             .field("math_block_editing", &self.math_block_editing)
             .field("mermaid_block_editing", &self.mermaid_block_editing)
@@ -345,8 +349,8 @@ impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
 impl<'a> Default for LineLayoutContext<'a> {
     fn default() -> Self {
         Self {
+            math_block_tail_min_height: px(0.0),
             is_active: false,
-            math_preview: None,
             math_block_editing: false,
             mermaid_block_editing: false,
             is_separator: None,
@@ -376,8 +380,8 @@ impl<'a> LineLayoutContext<'a> {
         doc_path: Option<&'a std::path::Path>,
     ) -> Self {
         Self {
+            math_block_tail_min_height: px(0.0),
             is_active,
-            math_preview: None,
             math_block_editing: false,
             mermaid_block_editing: false,
             is_separator,
@@ -403,6 +407,11 @@ impl<'a> LineLayoutContext<'a> {
 
     pub fn with_math_block_editing(mut self, math_block_editing: bool) -> Self {
         self.math_block_editing = math_block_editing;
+        self
+    }
+
+    pub fn with_math_block_tail_min_height(mut self, min_height: Pixels) -> Self {
+        self.math_block_tail_min_height = min_height;
         self
     }
 
@@ -467,7 +476,7 @@ pub fn get_line_layout_height(
         return px(0.0);
     }
 
-    use crate::editor::geometry::{math_preview_display_size, resolve_line_text_spec};
+    use crate::editor::geometry::resolve_line_text_spec;
     use crate::editor::shaping::{
         LineShapingContext, build_line_runs, calculate_visual_lines_with_runs,
         effective_content_width,
@@ -654,15 +663,7 @@ pub fn get_line_layout_height(
             );
             let source_height =
                 spec.line_height * source_visual_lines as f32 + spec.padding_vertical;
-            let preview_height = lcx
-                .math_preview
-                .as_ref()
-                .map(|math| {
-                    math_preview_display_size(math, px(lcx.font_size), content_width).height
-                        + spec.padding_vertical
-                })
-                .unwrap_or(px(0.0));
-            source_height.max(preview_height)
+            source_height.max(lcx.math_block_tail_min_height)
         }
         BlockKind::Image { url, .. } => {
             let base_h = if lcx.is_active {
@@ -905,8 +906,54 @@ impl Editor {
         .with_text_system(self.text_system.clone())
     }
 
-    #[cfg(test)]
+    fn compute_math_block_tail_min_height(
+        &self,
+        source_line: SourceLine,
+        active_math_block: Option<(SourceLine, SourceLine)>,
+        content_width: Pixels,
+        start_row: Option<&ParsedLine>,
+        mut height_of_preceding: impl FnMut(usize) -> Pixels,
+    ) -> Pixels {
+        let Some((math_start, math_end)) = active_math_block else {
+            return px(0.0);
+        };
+        if math_end.index() <= math_start.index() + 1 || source_line.index() != math_end.index() - 1
+        {
+            return px(0.0);
+        }
+        let Some(start_row) = start_row else {
+            return px(0.0);
+        };
+        let Some(math) = start_row
+            .spans
+            .iter()
+            .find_map(|span| span.math.as_ref().map(|math| &math.rendered))
+        else {
+            return px(0.0);
+        };
 
+        let preview_width = crate::editor::shaping::effective_content_width(
+            content_width,
+            start_row,
+            self.render_mode,
+            self.parsed_line_indent_px(start_row),
+        );
+        let preview_h = crate::editor::geometry::math_preview_display_size(
+            math,
+            px(self.font_size),
+            preview_width,
+        )
+        .height
+            + crate::editor::geometry::MATH_EDITOR_PADDING_Y * 2.0;
+
+        let mut preceding_h = px(0.0);
+        for i in math_start.index() + 1..math_end.index() - 1 {
+            preceding_h += height_of_preceding(i);
+        }
+        (preview_h - preceding_h).max(px(0.0))
+    }
+
+    #[cfg(test)]
     pub(super) fn measure_range(
         &self,
         range: Range<usize>,
@@ -919,31 +966,50 @@ impl Editor {
         assert_eq!(range.len(), parsed.len());
         let parsed_rows = parsed;
         let disclosure = self.disclosure_position();
-        range
-            .zip(parsed)
-            .map(|(idx, parsed)| {
-                let source_line = SourceLine::new(idx);
-                let mut lcx = self.line_layout_ctx(
-                    parsed,
-                    source_line == disclosure.line,
-                    separators.get(idx).copied().unwrap_or(false),
-                    disclosure.col,
-                    content_width,
-                    source_line,
-                    active_math_block,
-                    active_mermaid_block,
-                );
-                lcx.math_preview = active_math_block
-                    .filter(|(start, _)| source_line == *start + 1)
-                    .and_then(|(start, _)| parsed_rows.get(start.index()))
-                    .and_then(|row| {
-                        row.spans
-                            .iter()
-                            .find_map(|span| span.math.as_ref().map(|math| math.rendered.clone()))
-                    });
-                self.measure_line_layout_height(idx, parsed, lcx)
-            })
-            .collect()
+        let mut heights = Vec::with_capacity(range.len());
+        for (idx, parsed) in range.clone().zip(parsed.iter()) {
+            let source_line = SourceLine::new(idx);
+            let mut lcx = self.line_layout_ctx(
+                parsed,
+                source_line == disclosure.line,
+                separators.get(idx).copied().unwrap_or(false),
+                disclosure.col,
+                content_width,
+                source_line,
+                active_math_block,
+                active_mermaid_block,
+            );
+            let start_row = active_math_block.and_then(|(start, _)| parsed_rows.get(start.index()));
+            lcx.math_block_tail_min_height = self.compute_math_block_tail_min_height(
+                source_line,
+                active_math_block,
+                content_width,
+                start_row,
+                |i| {
+                    if let Some(rel) = i.checked_sub(range.start)
+                        && let Some(&h) = heights.get(rel)
+                    {
+                        h
+                    } else {
+                        let row = &parsed_rows[i];
+                        let row_line = SourceLine::new(i);
+                        let row_lcx = self.line_layout_ctx(
+                            row,
+                            row_line == disclosure.line,
+                            separators.get(i).copied().unwrap_or(false),
+                            disclosure.col,
+                            content_width,
+                            row_line,
+                            active_math_block,
+                            active_mermaid_block,
+                        );
+                        self.measure_line_layout_height(i, row, row_lcx)
+                    }
+                },
+            );
+            heights.push(self.measure_line_layout_height(idx, parsed, lcx));
+        }
+        heights
     }
 
     pub(super) fn measure_pending_range(
@@ -977,33 +1043,57 @@ impl Editor {
             #[cfg(not(test))]
             cache.parsed_lines.take_scanned();
             let disclosure = self.disclosure_position();
-            let heights = parsed
-                .iter()
-                .zip(start..end)
-                .map(|(parsed, line)| {
-                    let source_line = SourceLine::new(line);
-                    let mut context = self.line_layout_ctx(
-                        parsed,
-                        source_line == disclosure.line,
-                        cache.separator(line),
-                        disclosure.col,
-                        cache.content_width,
-                        source_line,
-                        cache.active_math_block,
-                        cache.active_mermaid_block,
-                    );
-                    context.math_preview = cache
-                        .active_math_block
-                        .filter(|(start, _)| source_line == *start + 1)
-                        .and_then(|(start, _)| cache.parsed_lines.row(start.index()))
-                        .and_then(|row| {
-                            row.spans.iter().find_map(|span| {
-                                span.math.as_ref().map(|math| math.rendered.clone())
-                            })
-                        });
-                    self.measure_line_layout_height(line, parsed, context)
-                })
-                .collect();
+            let mut heights = Vec::with_capacity(end - start);
+            for (parsed, line) in parsed.iter().zip(start..end) {
+                let source_line = SourceLine::new(line);
+                let mut context = self.line_layout_ctx(
+                    parsed,
+                    source_line == disclosure.line,
+                    cache.separator(line),
+                    disclosure.col,
+                    cache.content_width,
+                    source_line,
+                    cache.active_math_block,
+                    cache.active_mermaid_block,
+                );
+                let start_row = cache
+                    .active_math_block
+                    .filter(|(s, e)| e.index() > s.index() + 1 && line == e.index() - 1)
+                    .and_then(|(s, _)| cache.parsed_lines.row(s.index()));
+                context.math_block_tail_min_height = self.compute_math_block_tail_min_height(
+                    source_line,
+                    cache.active_math_block,
+                    cache.content_width,
+                    start_row.as_deref(),
+                    |i| {
+                        if let Some(rel) = i.checked_sub(start)
+                            && let Some(&h) = heights.get(rel)
+                        {
+                            h
+                        } else if cache.metrics.next_unmeasured(i) != Some(i) {
+                            cache.metrics.height(i).unwrap_or(px(0.0))
+                        } else if let Some(row_arc) = cache.parsed_lines.row(i) {
+                            let mut row = (*row_arc).clone();
+                            self.project_ime_preedit(i, std::slice::from_mut(&mut row));
+                            let row_line = SourceLine::new(i);
+                            let row_lcx = self.line_layout_ctx(
+                                &row,
+                                row_line == disclosure.line,
+                                cache.separator(i),
+                                disclosure.col,
+                                cache.content_width,
+                                row_line,
+                                cache.active_math_block,
+                                cache.active_mermaid_block,
+                            );
+                            self.measure_line_layout_height(i, &row, row_lcx)
+                        } else {
+                            px(0.0)
+                        }
+                    },
+                );
+                heights.push(self.measure_line_layout_height(line, parsed, context));
+            }
             cache.metrics.set_measured(start..end, heights);
             from = end;
         }
