@@ -268,6 +268,17 @@ impl Element for EditorElement {
                                                     .find_map(|span| span.math.as_ref())
                                             })
                                             .map(|math| &math.rendered);
+                                        let fallback_error = if math_preview.is_none() {
+                                            let (tex, err) =
+                                                crate::math::resolve_math_block_fallback(
+                                                    &editor.buffer,
+                                                    math_start,
+                                                    Some(math_end),
+                                                );
+                                            err.filter(|_| !tex.trim().is_empty())
+                                        } else {
+                                            None
+                                        };
                                         let panel_y = bounds.origin.y + block_top - scroll_top;
                                         let panel = div()
                                             .w(panel_w)
@@ -292,6 +303,19 @@ impl Element for EditorElement {
                                                         .w(preview_size.width)
                                                         .h(preview_size.height)
                                                         .text_color(theme.text_primary),
+                                                )
+                                            })
+                                            .when_some(fallback_error, |preview, err| {
+                                                preview.child(
+                                                    div()
+                                                        .w_full()
+                                                        .text_center()
+                                                        .text_size(px(
+                                                            (editor.font_size * (12.0 / 15.0))
+                                                                .round(),
+                                                        ))
+                                                        .text_color(theme.text_muted)
+                                                        .child(err),
                                                 )
                                             });
                                         lines_to_prepaint.push((

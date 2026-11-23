@@ -506,21 +506,81 @@ pub fn render_live_line_content(
                 lrc.font_size,
                 lrc.line_height,
             );
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                lrc,
-                typo.font_size,
-                typo.line_height,
-                quote_text_color(parsed, theme),
-                TextShapingMode::Prose,
-            );
+            if parsed.spans.iter().any(|span| span.math.is_some()) {
+                let text_canvas = render_shaped_line(
+                    source_line,
+                    parsed,
+                    lrc,
+                    typo.font_size,
+                    typo.line_height,
+                    quote_text_color(parsed, theme),
+                    TextShapingMode::Prose,
+                );
+
+                return div()
+                    .w_full()
+                    .pl(lrc.indent_px)
+                    .py(px(8.0))
+                    .child(text_canvas)
+                    .into_any_element();
+            }
+
+            let (raw_tex, render_error) =
+                crate::math::resolve_math_block_fallback(lines, source_line, None);
+            let collapsed_tex = raw_tex
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let display_tex = if collapsed_tex.is_empty() {
+                "$$".to_string()
+            } else {
+                collapsed_tex
+            };
+            let hint = render_error.unwrap_or_default();
 
             div()
                 .w_full()
                 .pl(lrc.indent_px)
                 .py(px(8.0))
-                .child(text_canvas)
+                .child(
+                    div()
+                        .w_full()
+                        .h(typo.line_height)
+                        .px(MATH_EDITOR_PADDING_X)
+                        .rounded(px(4.0))
+                        .bg(theme.code_block_bg)
+                        .border_1()
+                        .border_color(theme.code_block_border)
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .font_family(crate::platform::platform_monospace_font())
+                                .text_size(px((lrc.font_size * (13.0 / 15.0)).round()))
+                                .text_color(theme.code_block_text)
+                                .child(display_tex),
+                        )
+                        .when(!hint.is_empty(), |row| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .max_w(px(260.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(px((lrc.font_size * (12.0 / 15.0)).round()))
+                                    .text_color(theme.text_muted)
+                                    .child(hint),
+                            )
+                        }),
+                )
                 .into_any_element()
         }
 
