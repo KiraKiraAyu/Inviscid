@@ -70,36 +70,103 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
-# Optimize compiler-only and debug-info crates for binary size; keep runtime crates at opt-level = 3.
+# Optimize cold compiler, cached diagram/math/SVG, image-decoder, TLS/network, and config crates for size;
+# keep core UI, layout, rope editing, syntax, and search crates at opt-level = 3.
 [profile.release.package.cranelift-codegen]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.cranelift-assembler-x64]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.cranelift-frontend]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.cranelift-native]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.cranelift-bforest]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.cranelift-entity]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.cranelift-control]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.cranelift-bitset]
-opt-level = "s"
+opt-level = "z"
+[profile.release.package.wasmtime]
+opt-level = "z"
+[profile.release.package.wasmtime-c-api-impl]
+opt-level = "z"
 [profile.release.package.wasmtime-environ]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.wasmtime-internal-cranelift]
-opt-level = "s"
+opt-level = "z"
+[profile.release.package.wasmtime-internal-core]
+opt-level = "z"
+[profile.release.package.wasmtime-internal-cache]
+opt-level = "z"
+[profile.release.package.wasmtime-internal-unwinder]
+opt-level = "z"
+[profile.release.package.wasmtime-internal-jit-icache-coherence]
+opt-level = "z"
 [profile.release.package.wasmparser]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.wasmprinter]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.regalloc2]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.gimli]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.object]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.naga]
-opt-level = "s"
+opt-level = "z"
+
+# Cached diagram, LaTeX math, and SVG rendering crates
+[profile.release.package.mermaid-rs-renderer]
+opt-level = "z"
+[profile.release.package.latex-rust]
+opt-level = "z"
+[profile.release.package.usvg]
+opt-level = "z"
+[profile.release.package.resvg]
+opt-level = "z"
+[profile.release.package.tiny-skia]
+opt-level = "z"
+[profile.release.package.tiny-skia-path]
+opt-level = "z"
+[profile.release.package.rustybuzz]
+opt-level = "z"
+[profile.release.package.skrifa]
+opt-level = "z"
+
+# Async image decoders
+[profile.release.package.exr]
+opt-level = "z"
+[profile.release.package.image]
+opt-level = "z"
+[profile.release.package.image-webp]
+opt-level = "z"
+[profile.release.package.zune-jpeg]
+opt-level = "z"
+
+# Network, TLS, config, file dialogs, and compression
+[profile.release.package.ureq]
+opt-level = "z"
+[profile.release.package.rustls]
+opt-level = "z"
+[profile.release.package.rustls-webpki]
+opt-level = "z"
+[profile.release.package.ring]
+opt-level = "z"
+[profile.release.package.webpki-roots]
+opt-level = "z"
+[profile.release.package.rfd]
+opt-level = "z"
+[profile.release.package.toml]
+opt-level = "z"
+[profile.release.package.toml_parser]
+opt-level = "z"
+[profile.release.package.serde_json]
+opt-level = "z"
+[profile.release.package.zstd]
+opt-level = "z"
+[profile.release.package.zstd-safe]
+opt-level = "z"
+[profile.release.package.zstd-sys]
+opt-level = "z"
