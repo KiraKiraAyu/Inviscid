@@ -923,74 +923,77 @@ impl FenceHint {
 
     fn scan(lines: &(impl LineSource + ?Sized), line: SourceLine) -> Self {
         let target = line.index();
-        let mut in_raw_code = false;
-        let mut in_quoted_code = false;
-        let mut in_math = false;
-        let mut active_fence: Option<usize> = None;
-        let mut active_math: Option<usize> = None;
-        let mut target_fence: Option<(usize, bool)> = None;
-        let mut math_range: Option<(SourceLine, Option<SourceLine>)> = None;
+        let mut suppressed = Vec::new();
 
-        for idx in 0..lines.line_count() {
-            let text = lines.source_line(SourceLine::new(idx));
-            let raw = super::structure::classify(&text);
-            let projected = super::structure::classify(&text[raw.quote_prefix..]);
+        let (target_fence, math_range) = loop {
+            let mut in_raw_code = false;
+            let mut in_quoted_code = false;
+            let mut in_math = false;
+            let mut active_fence: Option<usize> = None;
+            let mut active_math: Option<usize> = None;
+            let mut target_fence: Option<(usize, bool)> = None;
+            let mut math_range: Option<(SourceLine, Option<SourceLine>)> = None;
 
-            if in_raw_code {
-                if raw.is_fence {
-                    if let Some(open) = active_fence.take()
-                        && (open..=idx).contains(&target)
-                    {
-                        target_fence = Some((open, true));
-                    }
-                    in_raw_code = false;
+            for idx in 0..lines.line_count() {
+                let text = lines.source_line(SourceLine::new(idx));
+                let mut raw = super::structure::classify(&text);
+                let mut projected = super::structure::classify(&text[raw.quote_prefix..]);
+                if suppressed.contains(&idx) {
+                    raw.is_fence = false;
+                    raw.is_math_delim = false;
+                    projected.is_fence = false;
+                    projected.is_math_delim = false;
                 }
-            } else if in_quoted_code {
-                if projected.is_fence {
-                    if let Some(open) = active_fence.take()
-                        && (open..=idx).contains(&target)
-                    {
-                        target_fence = Some((open, true));
+
+                if in_raw_code {
+                    if raw.is_fence {
+                        if let Some(open) = active_fence.take()
+                            && (open..=idx).contains(&target)
+                        {
+                            target_fence = Some((open, true));
+                        }
+                        in_raw_code = false;
                     }
-                    in_quoted_code = false;
-                }
-            } else if in_math {
-                if projected.is_math_delim {
-                    if let Some(open) = active_math.take()
-                        && (open..=idx).contains(&target)
-                    {
-                        math_range = Some((SourceLine::new(open), Some(SourceLine::new(idx))));
+                } else if in_quoted_code {
+                    if projected.is_fence {
+                        if let Some(open) = active_fence.take()
+                            && (open..=idx).contains(&target)
+                        {
+                            target_fence = Some((open, true));
+                        }
+                        in_quoted_code = false;
                     }
-                    in_math = false;
+                } else if in_math {
+                    if projected.is_math_delim {
+                        if let Some(open) = active_math.take()
+                            && (open..=idx).contains(&target)
+                        {
+                            math_range = Some((SourceLine::new(open), Some(SourceLine::new(idx))));
+                        }
+                        in_math = false;
+                    }
+                } else if raw.is_fence {
+                    in_raw_code = true;
+                    active_fence = Some(idx);
+                } else if projected.is_fence {
+                    in_quoted_code = true;
+                    active_fence = Some(idx);
+                } else if projected.is_math_delim {
+                    in_math = true;
+                    active_math = Some(idx);
                 }
-            } else if raw.is_fence {
-                in_raw_code = true;
-                active_fence = Some(idx);
-            } else if projected.is_fence {
-                in_quoted_code = true;
-                active_fence = Some(idx);
-            } else if projected.is_math_delim {
-                in_math = true;
-                active_math = Some(idx);
+
+                if idx > target && active_fence.is_none() && active_math.is_none() {
+                    break;
+                }
             }
 
-            if idx > target && active_fence.is_none() && active_math.is_none() {
-                break;
+            if let Some(unclosed) = active_fence.or(active_math) {
+                suppressed.push(unclosed);
+            } else {
+                break (target_fence, math_range);
             }
-        }
-
-        if let Some(open) = active_fence
-            && open <= target
-            && target_fence.is_none()
-        {
-            target_fence = Some((open, false));
-        }
-        if let Some(open) = active_math
-            && open <= target
-            && math_range.is_none()
-        {
-            math_range = Some((SourceLine::new(open), None));
-        }
+        };
 
         let in_fence_body = target_fence.is_some_and(|(open, _)| target > open);
         let fence_has_close = target_fence.is_some_and(|(_, closed)| closed);

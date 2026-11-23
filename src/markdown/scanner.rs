@@ -23,12 +23,30 @@ pub(crate) enum ScanResourcePolicy {
     UiDeferred,
 }
 
-fn find_next_fence_from(lines: &[String], from_idx: usize) -> Option<usize> {
+#[derive(Clone, Copy, Debug, Default)]
+struct ScanRangeOptions {
+    initial_in_code_fence: bool,
+    initial_in_math_block: bool,
+    allow_unclosed_blocks: bool,
+    policy: ScanResourcePolicy,
+}
+
+fn find_next_fence_from(
+    lines: &[String],
+    quote_prefixes: &[Option<usize>],
+    from_idx: usize,
+    opener_is_raw: bool,
+) -> Option<usize> {
     lines
         .get(from_idx..)?
         .iter()
-        .position(|l| is_fence_line(l))
-        .map(|p| p + from_idx)
+        .enumerate()
+        .find_map(|(offset, l)| {
+            let idx = from_idx + offset;
+            let matches_quote =
+                !opener_is_raw || quote_prefixes.get(idx).copied().flatten().is_none();
+            (matches_quote && is_fence_line(l)).then_some(idx)
+        })
 }
 
 fn is_math_delimiter(line: &str) -> bool {
@@ -384,9 +402,11 @@ mod window_tests {
         assert_eq!(projection.quote_prefix(4), Some(2));
         buffer.record_single_line_edit(SourceLine::new(3), |line, _| line.clear());
         let edited = QuoteProjection::from_source(&buffer);
-        assert_eq!(edited.normalized_line(2), "> literal");
+        assert_eq!(edited.normalized_line(2), "literal");
+        assert_eq!(edited.quote_prefix(2), Some(2));
         assert_eq!(projection.normalized_line(2), "> literal");
-        assert_eq!(edited.normalized_line(4), "> quoted");
+        assert_eq!(edited.normalized_line(4), "quoted");
+        assert_eq!(edited.quote_prefix(4), Some(2));
         for row in 0..edited.len() {
             let line = SourceLine::new(row);
             assert_eq!(
@@ -583,9 +603,12 @@ impl MarkdownScanner {
             &normalized,
             &prefixes,
             range,
-            initial_in_code_fence,
-            initial_in_math_block,
-            ScanResourcePolicy::Full,
+            ScanRangeOptions {
+                initial_in_code_fence,
+                initial_in_math_block,
+                allow_unclosed_blocks: false,
+                policy: ScanResourcePolicy::Full,
+            },
         )
     }
 
@@ -594,11 +617,15 @@ impl MarkdownScanner {
         lines: &[String],
         quote_prefixes: &[Option<usize>],
         range: std::ops::Range<usize>,
-        initial_in_code_fence: bool,
-        initial_in_math_block: bool,
-        policy: ScanResourcePolicy,
+        options: ScanRangeOptions,
     ) -> Vec<ParsedLine> {
         let allow_inline_math = true;
+        let ScanRangeOptions {
+            initial_in_code_fence,
+            initial_in_math_block,
+            allow_unclosed_blocks,
+            policy,
+        } = options;
         let render_mermaid = |slice: &[String]| -> Option<crate::mermaid::MermaidSvg> {
             match policy {
                 ScanResourcePolicy::Full => crate::mermaid::prepare_mermaid_lines(slice),
@@ -609,16 +636,18 @@ impl MarkdownScanner {
         let mut in_code_fence = initial_in_code_fence;
         let mut in_math_block = initial_in_math_block;
         let mut current_table_alignments: Option<Vec<TableAlignment>> = None;
-        let mut next_closing_fence: Option<usize> = None;
-        let mut no_more_closing_fences = false;
+        let mut code_opener_is_raw = false;
         let (mut current_code_block_highlights, mut current_mermaid_preview) =
             if initial_in_code_fence && range.start < lines.len() {
                 let open_fence_idx = (0..range.start).rev().find(|&i| is_fence_line(&lines[i]));
-                let close_fence_idx =
-                    find_next_fence_from(lines, range.start).unwrap_or(lines.len());
+                code_opener_is_raw = open_fence_idx
+                    .is_none_or(|i| quote_prefixes.get(i).copied().flatten().is_none());
+                let close_fence =
+                    find_next_fence_from(lines, quote_prefixes, range.start, code_opener_is_raw);
+                let close_fence_idx = close_fence.unwrap_or(lines.len());
                 let preview = open_fence_idx
                     .filter(|&open_idx| is_mermaid_fence(&lines[open_idx]))
-                    .filter(|_| close_fence_idx < lines.len())
+                    .filter(|_| close_fence.is_some())
                     .and_then(|open_idx| render_mermaid(&lines[open_idx + 1..close_fence_idx]));
                 (
                     Some(highlight_fenced_slice(
@@ -669,23 +698,17 @@ impl MarkdownScanner {
             // Code fence blocks (```)
             if let Some(stripped) = trimmed.strip_prefix("```") {
                 if !in_code_fence {
-                    if !no_more_closing_fences
-                        && (next_closing_fence.is_none() || next_closing_fence.unwrap() <= idx)
-                    {
-                        next_closing_fence = find_next_fence_from(lines, idx + 1);
-                        if next_closing_fence.is_none() {
-                            no_more_closing_fences = true;
-                        }
-                    }
-
-                    {
-                        let close_idx = next_closing_fence.unwrap_or(lines.len());
+                    let opener_is_raw = quote_prefixes.get(idx).copied().flatten().is_none();
+                    let close_fence =
+                        find_next_fence_from(lines, quote_prefixes, idx + 1, opener_is_raw);
+                    if close_fence.is_some() || allow_unclosed_blocks {
+                        let close_idx = close_fence.unwrap_or(lines.len());
                         in_code_fence = true;
+                        code_opener_is_raw = opener_is_raw;
                         let lang_str = stripped.trim().to_string();
-                        let mermaid_preview = (is_mermaid_fence(raw_line)
-                            && close_idx < lines.len())
-                        .then(|| render_mermaid(&lines[idx + 1..close_idx]))
-                        .flatten();
+                        let mermaid_preview = (is_mermaid_fence(raw_line) && close_fence.is_some())
+                            .then(|| render_mermaid(&lines[idx + 1..close_idx]))
+                            .flatten();
                         let is_mermaid = mermaid_preview.is_some();
                         current_mermaid_preview = mermaid_preview.clone();
                         current_code_block_highlights =
@@ -720,7 +743,9 @@ impl MarkdownScanner {
                         });
                         continue;
                     }
-                } else {
+                } else if !code_opener_is_raw
+                    || quote_prefixes.get(idx).copied().flatten().is_none()
+                {
                     in_code_fence = false;
                     current_code_block_highlights = None;
                     let is_mermaid = current_mermaid_preview.take().is_some();
@@ -776,60 +801,62 @@ impl MarkdownScanner {
                     .get(idx + 1..)
                     .and_then(|rest| rest.iter().position(|line| is_math_delimiter(line)))
                     .map(|offset| idx + 1 + offset);
-                current_table_alignments = None;
-                in_math_block = true;
-                let open_start = leading_spaces;
-                let open_end = open_start + 2;
-                let mut spans = Vec::new();
-                if open_start > 0 {
-                    spans.push(InlineSpan::plain(
-                        raw_line[..open_start].to_string(),
-                        (0, open_start),
-                    ));
-                }
-                if let Some(rendered) = close_idx.and_then(|close_idx| {
-                    let tex = lines[idx + 1..close_idx].join("\n");
-                    let allow_sync = match policy {
-                        ScanResourcePolicy::Full => true,
-                        ScanResourcePolicy::UiDeferred => {
-                            close_idx - idx <= MAX_UI_MATH_BLOCK_LINES
-                                && tex.len() <= MAX_UI_MATH_BLOCK_BYTES
-                        }
-                    };
-                    let svg = if allow_sync {
-                        crate::math::prepare_latex(&tex, true)
+                if close_idx.is_some() || allow_unclosed_blocks {
+                    current_table_alignments = None;
+                    in_math_block = true;
+                    let open_start = leading_spaces;
+                    let open_end = open_start + 2;
+                    let mut spans = Vec::new();
+                    if open_start > 0 {
+                        spans.push(InlineSpan::plain(
+                            raw_line[..open_start].to_string(),
+                            (0, open_start),
+                        ));
+                    }
+                    if let Some(rendered) = close_idx.and_then(|close_idx| {
+                        let tex = lines[idx + 1..close_idx].join("\n");
+                        let allow_sync = match policy {
+                            ScanResourcePolicy::Full => true,
+                            ScanResourcePolicy::UiDeferred => {
+                                close_idx - idx <= MAX_UI_MATH_BLOCK_LINES
+                                    && tex.len() <= MAX_UI_MATH_BLOCK_BYTES
+                            }
+                        };
+                        let svg = if allow_sync {
+                            crate::math::prepare_latex(&tex, true)
+                        } else {
+                            crate::math::get_cached_latex(&tex, true)
+                        };
+                        svg.map(|rendered| (tex, rendered))
+                    }) {
+                        spans.push(InlineSpan::math(
+                            "$$",
+                            rendered.0,
+                            (open_start, open_end),
+                            rendered.1,
+                            true,
+                        ));
                     } else {
-                        crate::math::get_cached_latex(&tex, true)
-                    };
-                    svg.map(|rendered| (tex, rendered))
-                }) {
-                    spans.push(InlineSpan::math(
-                        "$$",
-                        rendered.0,
-                        (open_start, open_end),
-                        rendered.1,
-                        true,
-                    ));
-                } else {
-                    spans.push(InlineSpan::hidden_marker(
-                        "$$",
-                        (open_start, open_end),
-                        (open_start, open_end),
-                    ));
+                        spans.push(InlineSpan::hidden_marker(
+                            "$$",
+                            (open_start, open_end),
+                            (open_start, open_end),
+                        ));
+                    }
+                    if raw_line.len() > open_end {
+                        spans.push(InlineSpan::plain(
+                            raw_line[open_end..].to_string(),
+                            (open_end, raw_line.chars().count()),
+                        ));
+                    }
+                    result.push(ParsedLine {
+                        raw_text: raw_line.clone(),
+                        kind: BlockKind::MathBlock { is_start: true },
+                        spans,
+                        quote: None,
+                    });
+                    continue;
                 }
-                if raw_line.len() > open_end {
-                    spans.push(InlineSpan::plain(
-                        raw_line[open_end..].to_string(),
-                        (open_end, raw_line.chars().count()),
-                    ));
-                }
-                result.push(ParsedLine {
-                    raw_text: raw_line.clone(),
-                    kind: BlockKind::MathBlock { is_start: true },
-                    spans,
-                    quote: None,
-                });
-                continue;
             }
 
             // Blank lines
@@ -998,21 +1025,40 @@ impl MarkdownScanner {
     }
 }
 
+#[cfg(test)]
 fn step_separator_state(
     index: usize,
     raw_line: &str,
+    suppressed: bool,
     state: &mut crate::buffer::BlockState,
+    active_open: &mut Option<usize>,
     previous_nonempty: &mut bool,
     previous_separator: &mut bool,
 ) -> bool {
-    let raw = super::structure::classify(raw_line);
-    let projected = super::structure::classify(&raw_line[raw.quote_prefix..]);
+    let mut raw = super::structure::classify(raw_line);
+    let mut projected = super::structure::classify(&raw_line[raw.quote_prefix..]);
+    if suppressed {
+        raw.is_fence = false;
+        raw.is_math_delim = false;
+        projected.is_fence = false;
+        projected.is_math_delim = false;
+    }
     let is_blank = if state.is_raw_code() {
         raw.is_blank
     } else {
         projected.is_blank
     };
-    *state = crate::buffer::PrefixSummary::line(raw, projected).0[*state as usize].exit;
+    let next_state = crate::buffer::PrefixSummary::line(raw, projected).0[*state as usize].exit;
+    if *state == crate::buffer::BlockState::Outside
+        && next_state != crate::buffer::BlockState::Outside
+    {
+        *active_open = Some(index);
+    } else if *state != crate::buffer::BlockState::Outside
+        && next_state == crate::buffer::BlockState::Outside
+    {
+        *active_open = None;
+    }
+    *state = next_state;
     let is_sep = is_separator_line(
         index,
         is_blank,
@@ -1032,19 +1078,31 @@ pub fn compute_syntactic_separators(lines: &(impl LineSource + ?Sized)) -> Vec<b
         return separators;
     }
 
-    let mut state = crate::buffer::BlockState::Outside;
-    let mut previous_nonempty = false;
-    let mut prev_is_separator = false;
+    let mut suppressed = vec![false; lines.line_count()];
+    loop {
+        let mut state = crate::buffer::BlockState::Outside;
+        let mut active_open = None;
+        let mut previous_nonempty = false;
+        let mut prev_is_separator = false;
 
-    for (i, separator) in separators.iter_mut().enumerate() {
-        let raw_line = lines.source_line(SourceLine::new(i));
-        *separator = step_separator_state(
-            i,
-            &raw_line,
-            &mut state,
-            &mut previous_nonempty,
-            &mut prev_is_separator,
-        );
+        for (i, separator) in separators.iter_mut().enumerate() {
+            let raw_line = lines.source_line(SourceLine::new(i));
+            *separator = step_separator_state(
+                i,
+                &raw_line,
+                suppressed[i],
+                &mut state,
+                &mut active_open,
+                &mut previous_nonempty,
+                &mut prev_is_separator,
+            );
+        }
+
+        if let Some(open) = active_open {
+            suppressed[open] = true;
+        } else {
+            break;
+        }
     }
 
     separators
@@ -1091,22 +1149,8 @@ pub fn is_syntactic_separator(lines: &(impl LineSource + ?Sized), source_line: S
         return false;
     }
 
-    let mut state = crate::buffer::BlockState::Outside;
-    let mut previous_nonempty = false;
-    let mut prev_is_separator = false;
-
-    for i in 0..=idx {
-        let raw_line = lines.source_line(SourceLine::new(i));
-        step_separator_state(
-            i,
-            &raw_line,
-            &mut state,
-            &mut previous_nonempty,
-            &mut prev_is_separator,
-        );
-    }
-
-    prev_is_separator
+    let index = crate::buffer::StructureIndex::new(lines);
+    local_separator(lines, &index, idx)
 }
 
 pub(crate) fn local_separator(

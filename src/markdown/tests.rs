@@ -21,30 +21,20 @@ fn test_inline_focus_disclosure() {
 }
 
 #[test]
-fn unclosed_fence_uses_code_markers_and_content() {
+fn unclosed_fence_stays_plain_paragraph() {
     let lines1 = vec!["```".to_string(), "hello".to_string()];
     let parsed1 = MarkdownScanner::scan_document(&lines1);
     assert_eq!(parsed1.len(), 2);
-    let line0_visible: String = parsed1[0]
-        .spans
-        .iter()
-        .filter(|s| s.is_visible(false, 0, false))
-        .map(|s| s.text.as_str())
-        .collect();
-    assert_eq!(line0_visible, "");
-    assert!(matches!(parsed1[1].kind, BlockKind::CodeBlockContent));
+    assert_eq!(parsed1[0].kind, BlockKind::Paragraph);
+    assert_eq!(parsed1[0].visible_text(false, 0, false), "```");
+    assert_eq!(parsed1[1].kind, BlockKind::Paragraph);
 
     let lines2 = vec!["```rust".to_string(), "hello".to_string()];
     let parsed2 = MarkdownScanner::scan_document(&lines2);
     assert_eq!(parsed2.len(), 2);
-    let line1_visible: String = parsed2[0]
-        .spans
-        .iter()
-        .filter(|s| s.is_visible(false, 0, false))
-        .map(|s| s.text.as_str())
-        .collect();
-    assert_eq!(line1_visible, "rust");
-    assert!(matches!(parsed2[1].kind, BlockKind::CodeBlockContent));
+    assert_eq!(parsed2[0].kind, BlockKind::Paragraph);
+    assert_eq!(parsed2[0].visible_text(false, 0, false), "```rust");
+    assert_eq!(parsed2[1].kind, BlockKind::Paragraph);
 }
 
 #[test]
@@ -684,7 +674,7 @@ fn math_block_range_ignores_delimiters_inside_code_fences() {
 }
 
 #[test]
-fn unclosed_math_delimiter_enters_math_block_optimistically() {
+fn unclosed_math_delimiter_stays_plain_paragraph() {
     let lines = vec![
         "Before".to_string(),
         "$$".to_string(),
@@ -693,11 +683,9 @@ fn unclosed_math_delimiter_enters_math_block_optimistically() {
     let full_scan = MarkdownScanner::scan_document(&lines);
     let partial_scan = MarkdownScanner::scan_range(&lines, 2..3, false);
 
-    assert!(matches!(
-        full_scan[1].kind,
-        BlockKind::MathBlock { is_start: true }
-    ));
-    assert_eq!(full_scan[2].kind, BlockKind::MathBlockContent);
+    assert_eq!(full_scan[1].kind, BlockKind::Paragraph);
+    assert_eq!(full_scan[1].visible_text(false, 0, false), "$$");
+    assert_eq!(full_scan[2].kind, BlockKind::Paragraph);
     assert_eq!(partial_scan, full_scan[2..3]);
 }
 
@@ -945,25 +933,8 @@ fn unclosed_and_large_closed_code_blocks_preserve_windowed_syntax_highlighting()
 
     let unclosed = vec!["```json".to_string(), "{\"port\": 8080}".to_string()];
     let unclosed_parsed = MarkdownScanner::scan_document(&unclosed);
-    assert!(matches!(
-        unclosed_parsed[0].kind,
-        BlockKind::CodeBlock {
-            is_fence_start: true
-        }
-    ));
-    assert_eq!(unclosed_parsed[1].kind, BlockKind::CodeBlockContent);
-    assert!(
-        unclosed_parsed[1]
-            .spans
-            .iter()
-            .any(|s| s.text == "\"port\"" && s.syntax_token == Some(SyntaxToken::Variable))
-    );
-    assert!(
-        unclosed_parsed[1]
-            .spans
-            .iter()
-            .any(|s| s.text == "8080" && s.syntax_token == Some(SyntaxToken::Number))
-    );
+    assert_eq!(unclosed_parsed[0].kind, BlockKind::Paragraph);
+    assert_eq!(unclosed_parsed[1].kind, BlockKind::Paragraph);
 
     let mut huge_closed = String::from("```json\n[\n");
     for i in 0..1200 {
@@ -989,7 +960,7 @@ fn unclosed_and_large_closed_code_blocks_preserve_windowed_syntax_highlighting()
 }
 
 #[test]
-fn outline_skips_headings_inside_closed_and_unclosed_code_blocks() {
+fn outline_skips_headings_inside_closed_code_blocks_only() {
     let lines = vec![
         "# Top".to_string(),
         "```python".to_string(),
@@ -997,11 +968,11 @@ fn outline_skips_headings_inside_closed_and_unclosed_code_blocks() {
         "```".to_string(),
         "## Real".to_string(),
         "```bash".to_string(),
-        "# unclosed comment".to_string(),
+        "# unclosed heading".to_string(),
     ];
     let items = collect_outline(&lines);
     let titles: Vec<_> = items.iter().map(|item| item.title.as_str()).collect();
-    assert_eq!(titles, vec!["Top", "Real"]);
+    assert_eq!(titles, vec!["Top", "Real", "unclosed heading"]);
 }
 
 #[test]
@@ -1151,12 +1122,12 @@ fn quote_projection_reads_source_sequentially_without_random_line_lookups() {
             "```",
             "尾部",
             "```",
-            "> 未闭合"
+            "未闭合"
         ]
     );
     assert_eq!(
         projection.quote_prefixes(),
-        &[Some(2), None, None, None, Some(2), None, None]
+        &[Some(2), None, None, None, Some(2), None, Some(2)]
     );
     assert_eq!(source.lookups.get(), 0);
 }
@@ -1638,4 +1609,56 @@ fn live_buffer_large_document_editing_and_navigation_zero_materializations() {
 
     assert_eq!(crate::markdown::scanner::FULL_FENCE_SCANS.get(), scans);
     assert_eq!(buffer.full_line_materializations(), mat);
+}
+
+#[test]
+fn live_preview_requires_enter_or_closing_fence_to_enter_math_and_code_blocks() {
+    let mut math = TextBuffer::from_str("$$\n# still heading\n> still quote", None);
+    let (_, before_enter) = MarkdownScanner::scan_window(&math, 0..math.line_count());
+    assert_eq!(before_enter[0].kind, BlockKind::Paragraph);
+    assert_eq!(before_enter[1].kind, BlockKind::Heading { level: 1 });
+    assert!(before_enter[2].quote.is_some());
+
+    math = TextBuffer::from_str("$$", None);
+    let (_, just_opener) = MarkdownScanner::scan_window(&math, 0..math.line_count());
+    assert_eq!(just_opener[0].kind, BlockKind::Paragraph);
+    math.set_cursor(Position::new(SourceLine::new(0), 2));
+    LiveBuffer::new(&mut math).insert_newline();
+    assert_eq!(math.to_string_normalized(), "$$\n\n$$\n");
+    assert_eq!(math.cursor_pos(), Position::new(SourceLine::new(1), 0));
+    let (_, after_enter) = MarkdownScanner::scan_window(&math, 0..math.line_count());
+    assert!(matches!(
+        after_enter[0].kind,
+        BlockKind::MathBlock { is_start: true }
+    ));
+    assert_eq!(after_enter[1].kind, BlockKind::MathBlockContent);
+    assert!(matches!(
+        after_enter[2].kind,
+        BlockKind::MathBlock { is_start: false }
+    ));
+
+    let mut code = TextBuffer::from_str("```rust\n# still heading", None);
+    let (_, unclosed_code) = MarkdownScanner::scan_window(&code, 0..code.line_count());
+    assert_eq!(unclosed_code[0].kind, BlockKind::Paragraph);
+    assert_eq!(unclosed_code[1].kind, BlockKind::Heading { level: 1 });
+
+    code = TextBuffer::from_str("```rust", None);
+    code.set_cursor(Position::new(SourceLine::new(0), 7));
+    LiveBuffer::new(&mut code).insert_newline();
+    assert_eq!(code.to_string_normalized(), "```rust\n\n```\n");
+    assert_eq!(code.cursor_pos(), Position::new(SourceLine::new(1), 0));
+    let (_, closed_code) = MarkdownScanner::scan_window(&code, 0..code.line_count());
+    assert!(matches!(
+        closed_code[0].kind,
+        BlockKind::CodeBlock {
+            is_fence_start: true
+        }
+    ));
+    assert_eq!(closed_code[1].kind, BlockKind::CodeBlockContent);
+    assert!(matches!(
+        closed_code[2].kind,
+        BlockKind::CodeBlock {
+            is_fence_start: false
+        }
+    ));
 }

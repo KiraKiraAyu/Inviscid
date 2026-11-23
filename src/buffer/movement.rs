@@ -161,7 +161,7 @@ mod structure_cache_tests {
 
     #[test]
     fn undo_and_redo_update_structure_incrementally_without_full_rebuild() {
-        let content = "paragraph\n".repeat(2000);
+        let content = format!("{}```\n", "paragraph\n".repeat(2000));
         let mut buffer = TextBuffer::from_str(&content, None);
         let initial_classified = buffer.line_index().classified_lines();
         assert_eq!(initial_classified, buffer.line_count());

@@ -27,7 +27,17 @@ pub(super) fn scan(
             });
         (!is_small_mermaid).then_some((start.index(), end.map(|e| e.index())))
     };
-    if requested.clone().any(|row| bounded_code(row).is_some()) {
+    let bounded_large_math = |row: usize| -> Option<(usize, usize)> {
+        let (start, Some(end)) = index.math_range(SourceLine::new(row))? else {
+            return None;
+        };
+        (end.index() - start.index() > MAX_PREVIEW_BLOCK_EXPANSION)
+            .then_some((start.index(), end.index()))
+    };
+    if requested
+        .clone()
+        .any(|row| bounded_code(row).is_some() || bounded_large_math(row).is_some())
+    {
         let mut rows = Vec::new();
         let mut row = requested.start;
         while row < requested.end {
@@ -36,14 +46,14 @@ pub(super) fn scan(
                     .end
                     .min(close.map_or(requested.end, |end| end + 1));
                 let mut parsed = if row == open {
-                    scan_normalized(source, index, row..stop, false, policy)
+                    scan_normalized(source, index, row..stop, false, true, policy)
                 } else {
                     let ctx_start = row
                         .saturating_sub(CODE_HIGHLIGHT_CONTEXT_LINES)
                         .max(open + 1);
                     let skip = 1 + (row - ctx_start);
                     let indices = std::iter::once(open).chain(ctx_start..stop);
-                    scan_normalized(source, index, indices, false, policy)
+                    scan_normalized(source, index, indices, false, true, policy)
                         .into_iter()
                         .skip(skip)
                         .collect()
@@ -51,9 +61,19 @@ pub(super) fn scan(
                 apply_quote_edges(source, index, row, &mut parsed);
                 rows.extend(parsed);
                 row = stop;
+            } else if let Some((open, close)) = bounded_large_math(row) {
+                let stop = requested.end.min(close + 1);
+                let mut parsed =
+                    scan_normalized(source, index, row..stop, row > open, true, policy);
+                apply_quote_edges(source, index, row, &mut parsed);
+                rows.extend(parsed);
+                row = stop;
             } else {
                 let start = row;
-                while row < requested.end && bounded_code(row).is_none() {
+                while row < requested.end
+                    && bounded_code(row).is_none()
+                    && bounded_large_math(row).is_none()
+                {
                     row += 1;
                 }
                 let (range, parsed) = scan_complete(source, index, start..row, policy);
@@ -115,7 +135,14 @@ fn scan_complete(
     let initial_in_math_block = index
         .math_range(SourceLine::new(range.start))
         .is_some_and(|(start, _)| start.index() < range.start);
-    let mut parsed = scan_normalized(source, index, range.clone(), initial_in_math_block, policy);
+    let mut parsed = scan_normalized(
+        source,
+        index,
+        range.clone(),
+        initial_in_math_block,
+        false,
+        policy,
+    );
     apply_quote_edges(source, index, range.start, &mut parsed);
     (range, parsed)
 }
@@ -125,6 +152,7 @@ fn scan_normalized(
     index: &StructureIndex,
     source_rows: impl Iterator<Item = usize> + Clone,
     initial_in_math_block: bool,
+    allow_unclosed_blocks: bool,
     policy: ScanResourcePolicy,
 ) -> Vec<ParsedLine> {
     let raw: Vec<String> = source_rows
@@ -147,9 +175,12 @@ fn scan_normalized(
         &normalized,
         &prefixes,
         0..raw.len(),
-        false,
-        initial_in_math_block,
-        policy,
+        super::ScanRangeOptions {
+            initial_in_code_fence: false,
+            initial_in_math_block,
+            allow_unclosed_blocks,
+            policy,
+        },
     )
 }
 

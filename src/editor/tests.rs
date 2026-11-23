@@ -2601,7 +2601,7 @@ fn live_hit_testing_maps_code_fence_footer_to_content(cx: &mut gpui::TestAppCont
 fn live_code_fence_navigation_at_document_end(cx: &mut gpui::TestAppContext) {
     use crate::buffer::{Position, TextBuffer};
 
-    for content in ["```rust\nx\n```", "```rust\n```", "```rust\nx"] {
+    for content in ["```rust\nx\n```", "```rust\n```"] {
         let (editor, cx) = cx.add_window_view(|_, cx| {
             super::Editor::new_with_buffer(TextBuffer::from_str(content, None), cx)
         });
@@ -3389,7 +3389,7 @@ fn retained_projection_survives_local_and_structural_edits(cx: &mut gpui::TestAp
             let after = ed.layout_snapshot();
             assert_eq!(
                 after.quote_projection.normalized_lines()[2],
-                "> literal changed"
+                "literal changed"
             );
             assert_eq!(retained.normalized_lines()[2], "> literal");
             let full = crate::markdown::QuoteProjection::from_source(&ed.buffer);

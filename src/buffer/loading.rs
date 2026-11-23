@@ -193,19 +193,34 @@ mod tests {
     fn opening_fence_renders_before_closing_fence_arrives() {
         let buffer = TextBuffer::from_str("```rust\n# not a heading\nlet x = 1;", None);
         let (_, rows) = crate::markdown::MarkdownScanner::scan_window(&buffer, 0..3);
+        assert_eq!(rows[0].kind, crate::markdown::BlockKind::Paragraph);
+        assert_eq!(
+            rows[1].kind,
+            crate::markdown::BlockKind::Heading { level: 1 }
+        );
+        assert_eq!(rows[2].kind, crate::markdown::BlockKind::Paragraph);
+
+        let closed = TextBuffer::from_str("```rust\n# not a heading\nlet x = 1;\n```", None);
+        let (_, closed_rows) = crate::markdown::MarkdownScanner::scan_window(&closed, 0..4);
         assert!(matches!(
-            rows[0].kind,
+            closed_rows[0].kind,
             crate::markdown::BlockKind::CodeBlock {
                 is_fence_start: true
             }
         ));
         assert!(matches!(
-            rows[1].kind,
+            closed_rows[1].kind,
             crate::markdown::BlockKind::CodeBlockContent
         ));
         assert!(matches!(
-            rows[2].kind,
+            closed_rows[2].kind,
             crate::markdown::BlockKind::CodeBlockContent
+        ));
+        assert!(matches!(
+            closed_rows[3].kind,
+            crate::markdown::BlockKind::CodeBlock {
+                is_fence_start: false
+            }
         ));
     }
 

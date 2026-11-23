@@ -136,22 +136,111 @@ impl<'a> SeekTarget<'a, StructureSummary, StructureSummary> for PrefixSeek {
     }
 }
 
-/// Prefix-only O(log N) index of fenced code blocks, math blocks, quote prefixes,
-/// and blank separator runs. Opening delimiters take effect optimistically without lookahead.
+/// Paired O(log N) index of fenced code blocks, math blocks, quote prefixes,
+/// and blank separator runs. Unclosed opening delimiters are neutralized so
+/// only closed blocks take effect.
 #[derive(Clone, Debug)]
 pub(crate) struct StructureIndex {
     tree: SumTree<StructureLine>,
+    effective_tree: Option<SumTree<StructureLine>>,
     #[cfg(test)]
     pub(super) classified_lines: usize,
 }
 
+fn seek_counter_in(
+    tree: &SumTree<StructureLine>,
+    kind: PrefixCounter,
+    ordinal: usize,
+) -> SourceLine {
+    let mut cursor = tree.cursor::<StructureSummary>(());
+    cursor.seek(
+        &PrefixSeek {
+            kind,
+            target: ordinal,
+        },
+        Bias::Right,
+    );
+    SourceLine::new(cursor.start().lines)
+}
+
+fn neutralize_line(tree: &SumTree<StructureLine>, line_idx: usize) -> SumTree<StructureLine> {
+    let mut cursor = tree.cursor::<StructureSummary>(());
+    let mut next = cursor.slice(&Lines(line_idx), Bias::Right);
+    if let Some(item) = cursor.item() {
+        let prefix_count = line_idx - cursor.start().lines;
+        if prefix_count > 0 {
+            next.push(
+                StructureLine {
+                    count: prefix_count,
+                    ..*item
+                },
+                (),
+            );
+        }
+        next.push(
+            StructureLine {
+                count: 1,
+                raw: LineStructure {
+                    is_fence: false,
+                    is_math_delim: false,
+                    ..item.raw
+                },
+                projected: LineStructure {
+                    is_fence: false,
+                    is_math_delim: false,
+                    ..item.projected
+                },
+                is_boundary: false,
+            },
+            (),
+        );
+    }
+    cursor.seek_forward(&Lines(line_idx + 1), Bias::Right);
+    let tail = cursor.item().and_then(|item| {
+        let skipped = (line_idx + 1) - cursor.start().lines;
+        (skipped > 0).then(|| StructureLine {
+            count: item.count - skipped,
+            ..*item
+        })
+    });
+    if tail.is_some() {
+        cursor.next();
+    }
+    next.extend(tail, ());
+    next.append(cursor.suffix(), ());
+    next
+}
+
+fn resolve_paired_tree(tree: &SumTree<StructureLine>) -> Option<SumTree<StructureLine>> {
+    if tree.summary().parser.0[BlockState::Outside as usize].exit == BlockState::Outside {
+        return None;
+    }
+    let mut current = tree.clone();
+    loop {
+        let total = current.summary().parser.0[BlockState::Outside as usize];
+        let (kind, ordinal) = match total.exit {
+            BlockState::Outside => break,
+            BlockState::RawCode | BlockState::QuotedCode => {
+                (PrefixCounter::CodeOpen, total.code_opens - 1)
+            }
+            BlockState::Math => (PrefixCounter::MathOpen, total.math_opens - 1),
+        };
+        let open_line = seek_counter_in(&current, kind, ordinal);
+        current = neutralize_line(&current, open_line.index());
+    }
+    Some(current)
+}
+
 impl StructureIndex {
     pub(crate) fn new(source: &(impl LineSource + ?Sized)) -> Self {
+        let tree = SumTree::from_iter(
+            StructureLine::runs(source.source_lines().map(|line| StructureLine::new(&line))),
+            (),
+        );
+        let effective_tree = resolve_paired_tree(&tree);
         Self {
-            tree: SumTree::from_iter(
-                StructureLine::runs(source.source_lines().map(|line| StructureLine::new(&line))),
-                (),
-            ),
+            tree,
+            effective_tree,
             #[cfg(test)]
             classified_lines: source.line_count(),
         }
@@ -159,6 +248,10 @@ impl StructureIndex {
 
     pub(crate) fn len(&self) -> usize {
         self.tree.summary().lines
+    }
+
+    fn active_tree(&self) -> &SumTree<StructureLine> {
+        self.effective_tree.as_ref().unwrap_or(&self.tree)
     }
 
     pub(crate) fn splice(
@@ -197,6 +290,7 @@ impl StructureIndex {
         tree.append(cursor.suffix(), ());
         drop(cursor);
         self.tree = tree;
+        self.effective_tree = resolve_paired_tree(&self.tree);
         #[cfg(test)]
         {
             self.classified_lines += new.len();
@@ -204,26 +298,19 @@ impl StructureIndex {
     }
 
     fn seek_counter(&self, kind: PrefixCounter, ordinal: usize) -> SourceLine {
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
-        cursor.seek(
-            &PrefixSeek {
-                kind,
-                target: ordinal,
-            },
-            Bias::Right,
-        );
-        SourceLine::new(cursor.start().lines)
+        seek_counter_in(self.active_tree(), kind, ordinal)
     }
 
     pub(crate) fn fence_range(&self, line: SourceLine) -> Option<(SourceLine, Option<SourceLine>)> {
         if line.index() >= self.len() {
             return None;
         }
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let tree = self.active_tree();
+        let mut cursor = tree.cursor::<StructureSummary>(());
         cursor.seek(&Lines(line.index()), Bias::Right);
         let before = cursor.start().parser.0[BlockState::Outside as usize];
         let after = cursor.end().parser.0[BlockState::Outside as usize];
-        let total = self.tree.summary().parser.0[BlockState::Outside as usize];
+        let total = tree.summary().parser.0[BlockState::Outside as usize];
         if after.code_opens > before.code_opens {
             let ordinal = before.code_opens;
             let close = (total.code_closes > ordinal)
@@ -249,11 +336,12 @@ impl StructureIndex {
         if line.index() >= self.len() {
             return None;
         }
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let tree = self.active_tree();
+        let mut cursor = tree.cursor::<StructureSummary>(());
         cursor.seek(&Lines(line.index()), Bias::Right);
         let before = cursor.start().parser.0[BlockState::Outside as usize];
         let after = cursor.end().parser.0[BlockState::Outside as usize];
-        let total = self.tree.summary().parser.0[BlockState::Outside as usize];
+        let total = tree.summary().parser.0[BlockState::Outside as usize];
         if after.math_opens > before.math_opens {
             let ordinal = before.math_opens;
             let close = (total.math_closes > ordinal)
@@ -288,7 +376,7 @@ impl StructureIndex {
         if line.index() >= self.len() {
             return 0;
         }
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let mut cursor = self.active_tree().cursor::<StructureSummary>(());
         cursor.seek(&Lines(line.index()), Bias::Right);
         cursor.item().map_or(0, |item| {
             if cursor.start().parser.0[BlockState::Outside as usize]
@@ -307,7 +395,7 @@ impl StructureIndex {
         if line.index() >= self.len() {
             return false;
         }
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let mut cursor = self.active_tree().cursor::<StructureSummary>(());
         cursor.seek(&Lines(line.index()), Bias::Right);
         cursor.end().parser.0[BlockState::Outside as usize]
             .exit
@@ -318,7 +406,7 @@ impl StructureIndex {
         if row >= self.len() {
             return None;
         }
-        let mut cursor = self.tree.cursor::<StructureSummary>(());
+        let mut cursor = self.active_tree().cursor::<StructureSummary>(());
         cursor.seek(&Lines(row), Bias::Right);
         let start = cursor.end().last_non_blank[BlockState::Outside as usize];
         if start > row {
@@ -370,7 +458,7 @@ pub(in crate::buffer) mod tests {
         assert!(std::mem::size_of::<StructureSummary>() <= 512);
     }
 
-    /// Forward prefix-scan reference for optimistic blocks, independent of SumTree.
+    /// Forward prefix-scan reference for paired blocks, independent of SumTree.
     struct VecIndex<'a> {
         lines: &'a [String],
         fences: Vec<Option<(SourceLine, Option<SourceLine>)>>,
@@ -380,78 +468,84 @@ pub(in crate::buffer) mod tests {
 
     impl<'a> VecIndex<'a> {
         fn build(lines: &'a [String]) -> Self {
-            let mut state = BlockState::Outside;
+            let mut suppressed = vec![false; lines.len()];
             let mut fences = vec![None; lines.len()];
             let mut maths = vec![None; lines.len()];
             let mut quote_prefixes = vec![0; lines.len()];
-            let mut active_open: Option<usize> = None;
 
-            for (i, text) in lines.iter().enumerate() {
-                let raw = classify(text);
-                let projected = classify(&text[raw.quote_prefix..]);
-                let qp = if state.is_raw_code() || raw.is_fence {
-                    0
-                } else {
-                    raw.quote_prefix
-                };
-                quote_prefixes[i] = qp;
+            loop {
+                fences.fill(None);
+                maths.fill(None);
+                quote_prefixes.fill(0);
+                let mut state = BlockState::Outside;
+                let mut active_open: Option<usize> = None;
 
-                match state {
-                    BlockState::Outside => {
-                        if raw.is_fence {
-                            state = BlockState::RawCode;
-                            active_open = Some(i);
-                        } else if projected.is_fence {
-                            state = BlockState::QuotedCode;
-                            active_open = Some(i);
-                        } else if projected.is_math_delim {
-                            state = BlockState::Math;
-                            active_open = Some(i);
-                        }
+                for (i, text) in lines.iter().enumerate() {
+                    let mut raw = classify(text);
+                    let mut projected = classify(&text[raw.quote_prefix..]);
+                    if suppressed[i] {
+                        raw.is_fence = false;
+                        raw.is_math_delim = false;
+                        projected.is_fence = false;
+                        projected.is_math_delim = false;
                     }
-                    BlockState::RawCode => {
-                        let open = active_open.unwrap();
-                        if raw.is_fence {
-                            for slot in &mut fences[open..=i] {
-                                *slot = Some((SourceLine::new(open), Some(SourceLine::new(i))));
+                    let qp = if state.is_raw_code() || raw.is_fence {
+                        0
+                    } else {
+                        raw.quote_prefix
+                    };
+                    quote_prefixes[i] = qp;
+
+                    match state {
+                        BlockState::Outside => {
+                            if raw.is_fence {
+                                state = BlockState::RawCode;
+                                active_open = Some(i);
+                            } else if projected.is_fence {
+                                state = BlockState::QuotedCode;
+                                active_open = Some(i);
+                            } else if projected.is_math_delim {
+                                state = BlockState::Math;
+                                active_open = Some(i);
                             }
-                            state = BlockState::Outside;
-                            active_open = None;
                         }
-                    }
-                    BlockState::QuotedCode => {
-                        let open = active_open.unwrap();
-                        if projected.is_fence {
-                            for slot in &mut fences[open..=i] {
-                                *slot = Some((SourceLine::new(open), Some(SourceLine::new(i))));
+                        BlockState::RawCode => {
+                            let open = active_open.unwrap();
+                            if raw.is_fence {
+                                for slot in &mut fences[open..=i] {
+                                    *slot = Some((SourceLine::new(open), Some(SourceLine::new(i))));
+                                }
+                                state = BlockState::Outside;
+                                active_open = None;
                             }
-                            state = BlockState::Outside;
-                            active_open = None;
                         }
-                    }
-                    BlockState::Math => {
-                        let open = active_open.unwrap();
-                        if projected.is_math_delim {
-                            for slot in &mut maths[open..=i] {
-                                *slot = Some((SourceLine::new(open), Some(SourceLine::new(i))));
+                        BlockState::QuotedCode => {
+                            let open = active_open.unwrap();
+                            if projected.is_fence {
+                                for slot in &mut fences[open..=i] {
+                                    *slot = Some((SourceLine::new(open), Some(SourceLine::new(i))));
+                                }
+                                state = BlockState::Outside;
+                                active_open = None;
                             }
-                            state = BlockState::Outside;
-                            active_open = None;
+                        }
+                        BlockState::Math => {
+                            let open = active_open.unwrap();
+                            if projected.is_math_delim {
+                                for slot in &mut maths[open..=i] {
+                                    *slot = Some((SourceLine::new(open), Some(SourceLine::new(i))));
+                                }
+                                state = BlockState::Outside;
+                                active_open = None;
+                            }
                         }
                     }
                 }
-            }
 
-            if let Some(open) = active_open {
-                let open_line = SourceLine::new(open);
-                if state.is_code() {
-                    for slot in &mut fences[open..] {
-                        *slot = Some((open_line, None));
-                    }
-                } else if state.is_math() {
-                    for slot in &mut maths[open..] {
-                        *slot = Some((open_line, None));
-                    }
+                if let Some(open) = active_open {
+                    suppressed[open] = true;
+                } else {
+                    break;
                 }
             }
 

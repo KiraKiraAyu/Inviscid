@@ -1010,7 +1010,8 @@ mod tests {
         };
         let html = render_markdown_to_html(&buffer, &options);
         assert!(!html.contains("class=\"math-block\""));
-        assert!(html.contains("<code class=\"language-math\">"));
+        assert!(!html.contains("<code class=\"language-math\">"));
+        assert!(html.contains("$$"));
     }
 
     #[test]

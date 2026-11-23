@@ -619,7 +619,7 @@ mod tests {
             assert!(editor.save_file_async(cx).is_err());
             assert_eq!(
                 editor.layout_snapshot().parsed_lines.row(1).unwrap().kind,
-                BlockKind::CodeBlockContent
+                BlockKind::Paragraph
             );
         });
         cx.run_until_parked();
@@ -746,9 +746,10 @@ mod tests {
         let publication = session.take().unwrap().unwrap();
         assert!(!publication.complete);
         assert_eq!(publication.buffer.as_ref().unwrap().line_count(), 3);
+        assert_eq!(publication.windows[0].rows[0].kind, BlockKind::Paragraph);
         assert!(matches!(
             publication.windows[0].rows[1].kind,
-            BlockKind::CodeBlockContent
+            BlockKind::Paragraph | BlockKind::Heading { level: 1 }
         ));
         session.cancel();
         resume.send(()).unwrap();
@@ -1031,9 +1032,11 @@ mod tests {
         editor.read_with(cx, |editor, _| {
             assert!(editor.is_loading());
             let layout = editor.layout_snapshot();
+            let row0 = layout.parsed_lines.row(0).unwrap();
             let row1 = layout.parsed_lines.row(1).unwrap();
-            assert_eq!(row1.kind, BlockKind::MathBlockContent);
-            assert!(editor.is_math_block_expanded(SourceLine::new(1), &row1, None));
+            assert_eq!(row0.kind, BlockKind::Paragraph);
+            assert_eq!(row1.kind, BlockKind::Paragraph);
+            assert!(!editor.is_math_block_expanded(SourceLine::new(1), &row1, None));
             assert_eq!(layout.parsed_lines.row(2).unwrap().raw_text, "still math");
         });
 
@@ -1056,8 +1059,10 @@ mod tests {
                         && editor
                             .layout_snapshot()
                             .parsed_lines
-                            .row(5)
-                            .is_some_and(|row| row.kind == BlockKind::CodeBlockContent)
+                            .row(3)
+                            .is_some_and(|row| {
+                                matches!(row.kind, BlockKind::MathBlock { is_start: false })
+                            })
                 });
                 if ready {
                     break;
@@ -1068,15 +1073,18 @@ mod tests {
         }
         editor.read_with(cx, |editor, _| {
             assert!(editor.is_loading());
+            let layout = editor.layout_snapshot();
             assert_eq!(
-                editor
-                    .layout_snapshot()
-                    .parsed_lines
-                    .row(5)
-                    .unwrap()
-                    .raw_text,
-                "let v = 1;"
+                layout.parsed_lines.row(1).unwrap().kind,
+                BlockKind::MathBlockContent
             );
+            assert_eq!(
+                layout.parsed_lines.row(4).unwrap().kind,
+                BlockKind::Paragraph
+            );
+            let row5 = layout.parsed_lines.row(5).unwrap();
+            assert_eq!(row5.kind, BlockKind::Paragraph);
+            assert_eq!(row5.raw_text, "let v = 1;");
         });
         session.cancel();
         resume.send(()).unwrap();
