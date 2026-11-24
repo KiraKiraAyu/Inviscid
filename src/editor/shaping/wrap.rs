@@ -4,11 +4,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::editor::RenderMode;
-use crate::editor::geometry::{
-    CODE_BLOCK_PADDING_X, MATH_EDITOR_PADDING_X, MIN_LINE_CONTENT_WIDTH,
-    resolve_inner_available_width,
-};
-use crate::markdown::{BlockKind, ParsedLine};
+use crate::editor::geometry::MIN_LINE_CONTENT_WIDTH;
+use crate::markdown::ParsedLine;
 use crate::theme::Theme;
 
 use super::QUOTE_GUTTER;
@@ -35,52 +32,6 @@ pub fn compute_content_width(window_width: Pixels, mode: RenderMode) -> Pixels {
         .max(px(200.0))
 }
 
-/// Computes the effective text content wrapping width for a specific block kind and render mode
-pub fn compute_available_line_width_with_mode(
-    content_width: Pixels,
-    kind: &BlockKind,
-    mode: RenderMode,
-) -> Pixels {
-    resolve_inner_available_width(content_width, kind, mode, px(0.0))
-}
-
-/// Computes the effective text content wrapping width for a specific block kind (defaults to Live Preview)
-pub fn compute_available_line_width(content_width: Pixels, kind: &BlockKind) -> Pixels {
-    compute_available_line_width_with_mode(content_width, kind, RenderMode::LivePreview)
-}
-
-/// Like [`get_block_left_offset`], plus a per-line visual indent in pixels.
-pub fn get_block_left_offset_with_indent(
-    kind: &BlockKind,
-    mode: RenderMode,
-    indent_px: Pixels,
-) -> Pixels {
-    get_block_left_offset(kind, mode) + indent_px
-}
-
-pub fn get_parsed_line_left_offset(
-    parsed: &ParsedLine,
-    mode: RenderMode,
-    indent_px: Pixels,
-    quote_content_indent_px: Pixels,
-) -> Pixels {
-    let quote_depth = parsed.quote.map_or(0, |quote| quote.depth);
-    get_block_left_offset_with_indent(&parsed.kind, mode, indent_px)
-        + if mode == RenderMode::LivePreview && parsed.quote.is_some() {
-            QUOTE_GUTTER * quote_depth as f32
-        } else {
-            px(0.0)
-        }
-        + if mode == RenderMode::LivePreview
-            && parsed.quote.is_some()
-            && parsed.kind.has_syntax_prefix()
-        {
-            quote_content_indent_px
-        } else {
-            px(0.0)
-        }
-}
-
 /// Effective width available to a parsed line after its outer quote and raw
 /// visual indentation have been applied.
 pub fn effective_content_width(
@@ -97,127 +48,6 @@ pub fn effective_content_width(
     } else {
         content_width
     }
-}
-
-/// Like [`compute_available_line_width_with_mode`], minus a per-line visual indent.
-pub fn compute_available_line_width_with_indent(
-    content_width: Pixels,
-    kind: &BlockKind,
-    mode: RenderMode,
-    indent_px: Pixels,
-) -> Pixels {
-    resolve_inner_available_width(content_width, kind, mode, indent_px)
-}
-
-pub fn parsed_line_available_width(
-    content_width: Pixels,
-    parsed: &ParsedLine,
-    mode: RenderMode,
-    indent_px: Pixels,
-    quote_content_indent_px: Pixels,
-) -> Pixels {
-    let content_width = effective_content_width(content_width, parsed, mode, indent_px);
-    let inner_indent = if mode == RenderMode::LivePreview && parsed.quote.is_some() {
-        if parsed.kind.has_syntax_prefix() {
-            quote_content_indent_px
-        } else {
-            px(0.0)
-        }
-    } else {
-        indent_px
-    };
-    compute_available_line_width_with_indent(content_width, &parsed.kind, mode, inner_indent)
-}
-
-/// Computes the left horizontal offset of text content within a block container in Live Preview.
-pub fn get_block_left_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
-    if mode == RenderMode::Source {
-        return px(0.0);
-    }
-    match kind {
-        BlockKind::TaskList { .. } | BlockKind::BulletList | BlockKind::OrderedList { .. } => {
-            crate::editor::geometry::list_marker_width(kind, 15.0)
-        }
-        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => CODE_BLOCK_PADDING_X,
-        BlockKind::CodeBlock {
-            is_fence_start: true,
-        }
-        | BlockKind::MermaidBlock {
-            is_fence_start: true,
-        } => CODE_BLOCK_PADDING_X,
-        BlockKind::MathBlockContent => MATH_EDITOR_PADDING_X,
-        _ => px(0.0),
-    }
-}
-
-/// Computes the top vertical offset of text content within a block container in Live Preview.
-pub fn get_block_top_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
-    if mode == RenderMode::Source {
-        return px(0.0);
-    }
-    let dummy = ParsedLine {
-        raw_text: String::new(),
-        kind: kind.clone(),
-        spans: Vec::new(),
-        quote: None,
-    };
-    crate::editor::geometry::resolve_line_text_spec(
-        &dummy,
-        mode,
-        px(800.0),
-        px(0.0),
-        px(0.0),
-        15.0,
-        1.6,
-        &crate::theme::DEFAULT_THEME,
-    )
-    .top_offset
-}
-
-pub fn get_block_style_for_line(
-    parsed: &ParsedLine,
-    theme: &Theme,
-    is_source: bool,
-) -> (Pixels, Pixels, Option<Hsla>) {
-    get_block_style_for_line_with_metrics(parsed, theme, is_source, 15.0, 1.6)
-}
-
-pub fn get_block_style_for_line_with_metrics(
-    parsed: &ParsedLine,
-    theme: &Theme,
-    is_source: bool,
-    base_font_size: f32,
-    line_height_factor: f32,
-) -> (Pixels, Pixels, Option<Hsla>) {
-    use crate::editor::layout::{get_block_color_override, get_block_typography_with_metrics};
-
-    if is_source {
-        return (
-            px(base_font_size),
-            px((base_font_size * line_height_factor).round()),
-            None,
-        );
-    }
-    match &parsed.kind {
-        BlockKind::CodeBlock {
-            is_fence_start: false,
-        }
-        | BlockKind::MermaidBlock {
-            is_fence_start: false,
-        }
-        | BlockKind::ThematicBreak => (px(0.0), px(0.0), None),
-        _ => {
-            let typo =
-                get_block_typography_with_metrics(&parsed.kind, base_font_size, line_height_factor);
-            let color = get_block_color_override(&parsed.kind, theme);
-            (typo.font_size, typo.line_height, color)
-        }
-    }
-}
-
-#[inline]
-pub fn table_cell_font_metrics(is_header: bool) -> (Pixels, Pixels) {
-    table_cell_font_metrics_for(is_header, 15.0, 1.6)
 }
 
 #[inline]
@@ -238,23 +68,6 @@ pub fn table_cell_font_metrics_for(
             px((13.5 * scale).round()),
             px((20.0 * scale * lh_ratio).round()),
         )
-    }
-}
-
-pub fn line_font_for(kind: &BlockKind, is_source: bool) -> Font {
-    if is_source
-        || matches!(
-            kind,
-            BlockKind::CodeBlockContent
-                | BlockKind::MermaidBlockContent
-                | BlockKind::MathBlockContent
-        )
-    {
-        font(crate::platform::platform_monospace_font())
-    } else if matches!(kind, BlockKind::Heading { .. }) {
-        font(crate::platform::platform_ui_font()).bold()
-    } else {
-        font(crate::platform::platform_ui_font())
     }
 }
 
@@ -297,28 +110,6 @@ pub fn char_advance_ratio_with_mono(c: char, is_monospace: bool) -> f32 {
             _ => 0.53,
         }
     }
-}
-
-#[inline]
-pub fn char_advance_ratio(c: char) -> f32 {
-    char_advance_ratio_with_mono(c, false)
-}
-
-pub fn calculate_wrapped_visual_lines(
-    text: &str,
-    font_size: Pixels,
-    available_width: Pixels,
-) -> usize {
-    calculate_wrapped_visual_lines_with_mode(text, font_size, available_width, true, false)
-}
-
-pub fn calculate_wrapped_visual_lines_with_wrap(
-    text: &str,
-    font_size: Pixels,
-    available_width: Pixels,
-    soft_wrap: bool,
-) -> usize {
-    calculate_wrapped_visual_lines_with_mode(text, font_size, available_width, soft_wrap, false)
 }
 
 /// Computes wrapped visual line count by shaping the styled runs with GPUI's `shape_text`,
@@ -380,28 +171,6 @@ pub fn calculate_visual_lines_with_runs(
         font_size,
         available_width,
         soft_wrap,
-        is_monospace,
-    )
-}
-
-/// Computes wrapped visual line count using `calculate_visual_lines_with_runs` with default single-run styling.
-pub fn calculate_visual_lines(
-    text: &str,
-    font: Font,
-    font_size: Pixels,
-    available_width: Pixels,
-    soft_wrap: bool,
-    text_system: Option<&Arc<WindowTextSystem>>,
-    is_monospace: bool,
-) -> usize {
-    calculate_visual_lines_with_runs(
-        text,
-        &[],
-        font,
-        font_size,
-        available_width,
-        soft_wrap,
-        text_system,
         is_monospace,
     )
 }
@@ -527,70 +296,6 @@ pub fn calculate_wrapped_visual_lines_with_runs_fallback(
     }
 
     visual_lines.max(1)
-}
-
-/// Token- and boundary-aware line wrap estimation used when `TextSystem` is unavailable.
-pub fn calculate_wrapped_visual_lines_with_mode(
-    text: &str,
-    font_size: Pixels,
-    available_width: Pixels,
-    soft_wrap: bool,
-    is_monospace: bool,
-) -> usize {
-    calculate_wrapped_visual_lines_with_runs_fallback(
-        text,
-        &[],
-        font_size,
-        available_width,
-        soft_wrap,
-        is_monospace,
-    )
-}
-
-pub fn calculate_table_row_height(
-    cells: &[crate::markdown::TableCell],
-    is_header: bool,
-    is_active: bool,
-    cursor_col: usize,
-    container_width: Pixels,
-    text_system: Option<&Arc<WindowTextSystem>>,
-    is_selection_disclosure: bool,
-) -> Pixels {
-    calculate_table_row_height_with_preedit(
-        cells,
-        is_header,
-        is_active,
-        cursor_col,
-        container_width,
-        text_system,
-        is_selection_disclosure,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn calculate_table_row_height_with_preedit(
-    cells: &[crate::markdown::TableCell],
-    is_header: bool,
-    is_active: bool,
-    cursor_col: usize,
-    container_width: Pixels,
-    text_system: Option<&Arc<WindowTextSystem>>,
-    is_selection_disclosure: bool,
-    ime_preedit_cols: Option<(usize, usize)>,
-) -> Pixels {
-    calculate_table_row_height_with_metrics(
-        cells,
-        is_header,
-        is_active,
-        cursor_col,
-        container_width,
-        text_system,
-        is_selection_disclosure,
-        ime_preedit_cols,
-        15.0,
-        1.6,
-    )
 }
 
 #[allow(clippy::too_many_arguments)]

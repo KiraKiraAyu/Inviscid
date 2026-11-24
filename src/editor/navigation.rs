@@ -19,22 +19,6 @@ impl Editor {
         self.focus_handle.is_focused(window) && source_line == self.disclosure_position().line
     }
 
-    pub fn line_shaping_context<'a>(
-        &self,
-        override_color: Option<Hsla>,
-        is_active_caret: bool,
-        cursor_col: usize,
-        theme: &'a Theme,
-    ) -> LineShapingContext<'a> {
-        LineShapingContext::new(
-            theme,
-            override_color,
-            self.render_mode == RenderMode::Source,
-            is_active_caret,
-            cursor_col,
-        )
-    }
-
     pub(crate) fn line_text_spec(
         &self,
         parsed: &crate::markdown::ParsedLine,
@@ -93,18 +77,6 @@ impl Editor {
             wrap_width,
             scx.with_ime_preedit(self.ime_preedit_on_line(source_line)),
         )
-    }
-
-    /// Bundles font metrics, available line width, and line shaping context for text layout.
-    pub fn line_shaping_metrics<'a>(
-        &self,
-        parsed: &crate::markdown::ParsedLine,
-        is_active_caret: bool,
-        theme: &'a Theme,
-    ) -> (Pixels, Pixels, Option<Pixels>, LineShapingContext<'a>) {
-        let spec = self.line_text_spec(parsed, theme);
-        let (wrap_width, scx) = self.line_shaping_from_spec(&spec, is_active_caret, theme);
-        (spec.font_size, spec.line_height, wrap_width, scx)
     }
 
     /// Computes the horizontal pixel X position of a buffer column on its line.

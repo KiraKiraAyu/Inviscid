@@ -291,7 +291,7 @@ pub fn calculate_col_from_point(
     calculate_col_from_spans(relative_point, &parsed.spans, lcx, window)
 }
 
-pub struct TableCellGeometry<'a> {
+struct TableCellGeometry<'a> {
     pub target_cell: &'a crate::markdown::TableCell,
     pub font_size: Pixels,
     pub line_height: Pixels,

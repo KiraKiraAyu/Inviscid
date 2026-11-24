@@ -657,7 +657,7 @@ fn test_empty_heading_converted_to_paragraph_no_spacing_jump() {
 
 #[test]
 fn test_link_only_paragraph_cursor_navigation_and_hit_testing() {
-    use crate::editor::shaping::visible_byte_to_raw_col;
+    use crate::editor::shaping::visible_byte_to_raw_col_with_selection;
 
     let lines = vec!["[Inviscid](https://github.com)".to_string()];
     let parsed_doc = MarkdownScanner::scan_document(&lines);
@@ -669,19 +669,23 @@ fn test_link_only_paragraph_cursor_navigation_and_hit_testing() {
 
     // 1. Moving cursor to the right of the visible link in Live Preview (visible_byte == 8, total visible len of "Inviscid")
     // maps to the rightmost boundary of the link group: column 30 (`[Inviscid](https://github.com)|`)
-    let end_col = visible_byte_to_raw_col(8, spans, false, 0, false, total_len);
+    let end_col =
+        visible_byte_to_raw_col_with_selection(8, spans, false, 0, false, total_len, false);
     assert_eq!(end_col, 30);
 
     // 2. Beyond visible length (e.g. visible_byte == 20): still maps to 30
-    let beyond_col = visible_byte_to_raw_col(20, spans, false, 0, false, total_len);
+    let beyond_col =
+        visible_byte_to_raw_col_with_selection(20, spans, false, 0, false, total_len, false);
     assert_eq!(beyond_col, 30);
 
     // 3. At the start of the visible link (visible_byte == 0): maps to column 0 (`|[Inviscid](...)`)
-    let start_col = visible_byte_to_raw_col(0, spans, false, 0, false, total_len);
+    let start_col =
+        visible_byte_to_raw_col_with_selection(0, spans, false, 0, false, total_len, false);
     assert_eq!(start_col, 0);
 
     // 4. In the middle of "Inviscid" (visible_byte == 3 at "Inv|iscid"): maps to column 4 (`[Inv|iscid](...)`)
-    let mid_col = visible_byte_to_raw_col(3, spans, false, 0, false, total_len);
+    let mid_col =
+        visible_byte_to_raw_col_with_selection(3, spans, false, 0, false, total_len, false);
     assert_eq!(mid_col, 4);
 }
 
@@ -765,7 +769,7 @@ fn test_drag_selection_head_marker_disclosure() {
 
 #[test]
 fn test_image_active_cursor_placement() {
-    use crate::editor::shaping::visible_byte_to_raw_col;
+    use crate::editor::shaping::visible_byte_to_raw_col_with_selection;
 
     let lines = vec!["![a](https://www.testdomain.com/index.webp)".to_string()];
     let parsed_doc = MarkdownScanner::scan_document(&lines);
@@ -775,19 +779,19 @@ fn test_image_active_cursor_placement() {
     let total_len = parsed_doc[0].raw_text.chars().count();
 
     assert_eq!(
-        visible_byte_to_raw_col(0, spans, true, 0, false, total_len),
+        visible_byte_to_raw_col_with_selection(0, spans, true, 0, false, total_len, false),
         0
     );
     assert_eq!(
-        visible_byte_to_raw_col(2, spans, true, 2, false, total_len),
+        visible_byte_to_raw_col_with_selection(2, spans, true, 2, false, total_len, false),
         2
     );
     assert_eq!(
-        visible_byte_to_raw_col(3, spans, true, 3, false, total_len),
+        visible_byte_to_raw_col_with_selection(3, spans, true, 3, false, total_len, false),
         3
     );
     assert_eq!(
-        visible_byte_to_raw_col(15, spans, true, 15, false, total_len),
+        visible_byte_to_raw_col_with_selection(15, spans, true, 15, false, total_len, false),
         15
     );
 
@@ -799,25 +803,42 @@ fn test_image_active_cursor_placement() {
     let i_col = img_doc[0].raw_text.find("/index.webp").unwrap() + 1;
 
     assert_eq!(
-        visible_byte_to_raw_col(i_col, img_spans, true, i_col, false, img_total_len),
+        visible_byte_to_raw_col_with_selection(
+            i_col,
+            img_spans,
+            true,
+            i_col,
+            false,
+            img_total_len,
+            false
+        ),
         i_col
     );
 }
 
 #[test]
 fn test_image_shaping_style_consistency() {
-    use crate::editor::shaping::get_block_style_for_line;
+    use crate::editor::RenderMode;
+    use crate::editor::geometry::resolve_line_text_spec;
     use crate::theme::Theme;
 
     let theme = Theme::default();
     let lines = vec!["![](https://www.testdomain.com/index.webp)".to_string()];
     let parsed_doc = MarkdownScanner::scan_document(&lines);
 
-    let (font_size, line_height, override_color) =
-        get_block_style_for_line(&parsed_doc[0], &theme, false);
-    assert_eq!(font_size, px(15.0));
-    assert_eq!(line_height, px(24.0));
-    assert_eq!(override_color, Some(theme.text_secondary));
+    let spec = resolve_line_text_spec(
+        &parsed_doc[0],
+        RenderMode::LivePreview,
+        px(800.0),
+        px(0.0),
+        px(0.0),
+        15.0,
+        1.6,
+        &theme,
+    );
+    assert_eq!(spec.font_size, px(15.0));
+    assert_eq!(spec.line_height, px(24.0));
+    assert_eq!(spec.override_color, Some(theme.text_secondary));
 }
 
 #[test]
@@ -1047,16 +1068,30 @@ fn test_ime_composition_after_heading_prefix() {
 
 #[test]
 fn test_text_soft_wrapping_and_multiline_height() {
-    use crate::editor::shaping::calculate_wrapped_visual_lines;
+    use crate::editor::shaping::calculate_wrapped_visual_lines_with_runs_fallback;
 
     // 1. Short text fits in 1 line
     let short_text = "This is a short line.";
-    let lines_short = calculate_wrapped_visual_lines(short_text, px(15.0), px(800.0));
+    let lines_short = calculate_wrapped_visual_lines_with_runs_fallback(
+        short_text,
+        &[],
+        px(15.0),
+        px(800.0),
+        true,
+        false,
+    );
     assert_eq!(lines_short, 1);
 
     // 2. Long text overflowing 800px width wraps into multiple lines
     let long_chinese_text = "SMC (Smart Money Concepts，聪明钱概念）是一套起源于外汇机构交易圈的分析框架。它的核心假设只有一句话：市场的走向由机构主导，机构的行为留下了可识别的痕迹。与传统技术指标（MACD、RSI、布林带）不同，SMC 不看滞后的统计数据，它看的是价格结构本身——那些机构建仓时必然留下的指纹。";
-    let lines_long = calculate_wrapped_visual_lines(long_chinese_text, px(15.0), px(800.0));
+    let lines_long = calculate_wrapped_visual_lines_with_runs_fallback(
+        long_chinese_text,
+        &[],
+        px(15.0),
+        px(800.0),
+        true,
+        false,
+    );
     assert!(lines_long >= 3);
 
     // 3. Layout height scales proportionally with wrapped lines
@@ -1474,7 +1509,9 @@ fn test_hit_testing_monotonicity_and_strict_boundary_invariants() {
 
 #[test]
 fn test_column_mapping_bijectivity_and_monotonicity() {
-    use crate::editor::shaping::{raw_col_to_visible_byte, visible_byte_to_raw_col};
+    use crate::editor::shaping::{
+        raw_col_to_visible_byte_with_selection, visible_byte_to_raw_col_with_selection,
+    };
     use crate::markdown::parse_inline_spans;
 
     let raw_text = "Hello **bold text** and *italic* and `code` here!";
@@ -1483,8 +1520,10 @@ fn test_column_mapping_bijectivity_and_monotonicity() {
 
     // 1. In active caret mode (disclosed syntax), raw_col -> visible_byte -> raw_col is a bijective roundtrip
     for col in 0..=total_len {
-        let vis_byte = raw_col_to_visible_byte(col, &spans, true, col, false);
-        let roundtrip_col = visible_byte_to_raw_col(vis_byte, &spans, true, col, false, total_len);
+        let vis_byte = raw_col_to_visible_byte_with_selection(col, &spans, true, col, false, false);
+        let roundtrip_col = visible_byte_to_raw_col_with_selection(
+            vis_byte, &spans, true, col, false, total_len, false,
+        );
         assert_eq!(
             roundtrip_col, col,
             "Active caret column bijection failed at col {}",
@@ -1495,7 +1534,7 @@ fn test_column_mapping_bijectivity_and_monotonicity() {
     // 2. In inactive mode (collapsed syntax), raw_col -> visible_byte is monotonic non-decreasing
     let mut prev_byte = 0;
     for col in 0..=total_len {
-        let vis_byte = raw_col_to_visible_byte(col, &spans, false, 0, false);
+        let vis_byte = raw_col_to_visible_byte_with_selection(col, &spans, false, 0, false, false);
         assert!(
             vis_byte >= prev_byte,
             "Visible byte offset must be monotonic non-decreasing at col {}",
@@ -1506,8 +1545,10 @@ fn test_column_mapping_bijectivity_and_monotonicity() {
 
     // 3. Source mode is always bijective regardless of active state
     for col in 0..=total_len {
-        let vis_byte = raw_col_to_visible_byte(col, &spans, false, 0, true);
-        let roundtrip = visible_byte_to_raw_col(vis_byte, &spans, false, 0, true, total_len);
+        let vis_byte = raw_col_to_visible_byte_with_selection(col, &spans, false, 0, true, false);
+        let roundtrip = visible_byte_to_raw_col_with_selection(
+            vis_byte, &spans, false, 0, true, total_len, false,
+        );
         assert_eq!(
             roundtrip, col,
             "Source mode column bijection failed at col {}",
@@ -1987,23 +2028,44 @@ fn test_folding_layout_height_and_navigation() {
 
 #[test]
 fn test_soft_wrap_multi_line_visual_calculation() {
-    use crate::editor::shaping::calculate_wrapped_visual_lines;
+    use crate::editor::shaping::calculate_wrapped_visual_lines_with_runs_fallback;
 
     let short_text = "Hello world";
     assert_eq!(
-        calculate_wrapped_visual_lines(short_text, px(14.0), px(800.0)),
+        calculate_wrapped_visual_lines_with_runs_fallback(
+            short_text,
+            &[],
+            px(14.0),
+            px(800.0),
+            true,
+            false
+        ),
         1
     );
 
     // 200 ASCII chars ~ 200 * (14.0 * 0.55 = 7.7px) ~ 1540px total width
     let long_ascii = "a".repeat(200);
-    let wrapped_800 = calculate_wrapped_visual_lines(&long_ascii, px(14.0), px(800.0));
+    let wrapped_800 = calculate_wrapped_visual_lines_with_runs_fallback(
+        &long_ascii,
+        &[],
+        px(14.0),
+        px(800.0),
+        true,
+        false,
+    );
     assert!(
         wrapped_800 >= 2,
         "200 characters should wrap to at least 2 visual lines under 800px"
     );
 
-    let wrapped_200 = calculate_wrapped_visual_lines(&long_ascii, px(14.0), px(200.0));
+    let wrapped_200 = calculate_wrapped_visual_lines_with_runs_fallback(
+        &long_ascii,
+        &[],
+        px(14.0),
+        px(200.0),
+        true,
+        false,
+    );
     assert!(
         wrapped_200 >= 7,
         "200 characters should wrap to at least 7 visual lines under 200px"
@@ -2011,7 +2073,14 @@ fn test_soft_wrap_multi_line_visual_calculation() {
 
     // Wide characters (CJK)
     let cjk_text = "中文测试".repeat(20); // 80 CJK chars -> 80 * 14px = 1120px
-    let cjk_wrapped = calculate_wrapped_visual_lines(&cjk_text, px(14.0), px(400.0));
+    let cjk_wrapped = calculate_wrapped_visual_lines_with_runs_fallback(
+        &cjk_text,
+        &[],
+        px(14.0),
+        px(400.0),
+        true,
+        false,
+    );
     assert!(
         cjk_wrapped >= 3,
         "80 CJK characters should wrap to at least 3 visual lines under 400px"
@@ -3706,20 +3775,33 @@ fn test_dynamic_tab_size_indent_and_outdent() {
 
 #[test]
 fn test_soft_wrap_toggle_visual_lines() {
-    use crate::editor::shaping::calculate_wrapped_visual_lines_with_wrap;
+    use crate::editor::shaping::calculate_wrapped_visual_lines_with_runs_fallback;
     let long_text = "This is a very long line of text that exceeds standard container width and will wrap into multiple visual lines when soft wrap is active.";
     let width = px(200.0);
     let font_size = px(15.0);
 
-    let wrapped_count = calculate_wrapped_visual_lines_with_wrap(long_text, font_size, width, true);
+    let wrapped_count = calculate_wrapped_visual_lines_with_runs_fallback(
+        long_text,
+        &[],
+        font_size,
+        width,
+        true,
+        false,
+    );
     assert!(
         wrapped_count > 1,
         "Should wrap when soft_wrap is true, got {}",
         wrapped_count
     );
 
-    let unwrapped_count =
-        calculate_wrapped_visual_lines_with_wrap(long_text, font_size, width, false);
+    let unwrapped_count = calculate_wrapped_visual_lines_with_runs_fallback(
+        long_text,
+        &[],
+        font_size,
+        width,
+        false,
+        false,
+    );
     assert_eq!(
         unwrapped_count, 1,
         "Should never wrap when soft_wrap is false"
@@ -3800,7 +3882,9 @@ fn test_typography_and_settings_dynamic_sync(cx: &mut gpui::TestAppContext) {
 
 #[test]
 fn test_list_item_with_markdown_links_layout_height_matches_visible_text() {
-    use crate::editor::layout::{LineLayoutContext, get_block_typography, get_line_layout_height};
+    use crate::editor::layout::{
+        LineLayoutContext, get_block_typography_with_metrics, get_line_layout_height,
+    };
     use crate::markdown::MarkdownScanner;
     use gpui::px;
 
@@ -3816,7 +3900,7 @@ fn test_list_item_with_markdown_links_layout_height_matches_visible_text() {
     // It fits on a single visual line (57 * ~7px = ~400px < 800px).
     // Previously, raw_text (88 chars) wrapped or caused layout height to overestimate to 2 lines.
     let lcx = LineLayoutContext::live_preview(px(800.0));
-    let typo = get_block_typography(&parsed[0].kind);
+    let typo = get_block_typography_with_metrics(&parsed[0].kind, 15.0, 1.6);
     let h0 = get_line_layout_height(&lines, 0, &parsed[0], lcx.clone());
 
     // Height must be exactly 1 visual line: padding_vertical + line_height
@@ -4246,10 +4330,12 @@ fn test_ime_composition_reserves_width_and_wraps(cx: &mut gpui::TestAppContext) 
                 let layout = ed.layout_snapshot();
                 let parsed = &layout.parsed_lines.row(0).unwrap();
                 let disclosure = ed.disclosure_col();
-                let available = crate::editor::shaping::compute_available_line_width_with_mode(
+                let available = crate::editor::geometry::resolve_inner_available_width_scaled(
                     crate::editor::shaping::compute_content_width(px(1000.0), ed.render_mode),
                     &parsed.kind,
                     ed.render_mode,
+                    px(0.0),
+                    ed.font_size,
                 );
                 let scx = crate::editor::shaping::LineShapingContext::new(
                     &theme, None, false, true, disclosure,
@@ -4266,11 +4352,12 @@ fn test_ime_composition_reserves_width_and_wraps(cx: &mut gpui::TestAppContext) 
                     .unwrap();
                 let follow_x = shaped[0]
                     .position_for_index(
-                        crate::editor::shaping::raw_col_to_visible_byte(
+                        crate::editor::shaping::raw_col_to_visible_byte_with_selection(
                             tracked_col,
                             &parsed.spans,
                             true,
                             disclosure,
+                            false,
                             false,
                         ),
                         line_height,
@@ -4279,11 +4366,12 @@ fn test_ime_composition_reserves_width_and_wraps(cx: &mut gpui::TestAppContext) 
                     .unwrap_or(px(0.0));
                 let caret_row = shaped[0]
                     .position_for_index(
-                        crate::editor::shaping::raw_col_to_visible_byte(
+                        crate::editor::shaping::raw_col_to_visible_byte_with_selection(
                             caret_col,
                             &parsed.spans,
                             true,
                             disclosure,
+                            false,
                             false,
                         ),
                         line_height,

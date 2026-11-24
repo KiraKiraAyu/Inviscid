@@ -92,16 +92,6 @@ impl LineTextSpec {
 }
 
 #[inline]
-pub fn resolve_inner_available_width(
-    inner_width: Pixels,
-    kind: &BlockKind,
-    mode: RenderMode,
-    inner_indent: Pixels,
-) -> Pixels {
-    resolve_inner_available_width_scaled(inner_width, kind, mode, inner_indent, 15.0)
-}
-
-#[inline]
 pub fn resolve_inner_available_width_scaled(
     inner_width: Pixels,
     kind: &BlockKind,

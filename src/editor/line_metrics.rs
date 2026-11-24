@@ -321,10 +321,6 @@ impl LineMetrics {
         end
     }
 
-    pub fn set_estimate(&mut self, height: Pixels) {
-        self.estimate = Fixed::from_pixels(height);
-    }
-
     pub(crate) fn splice_estimated(&mut self, range: Range<usize>, count: usize) {
         self.replace_runs(
             range,

@@ -24,23 +24,6 @@ pub(crate) mod preparation_metrics {
 
 /// Maps a raw document column to a byte offset in the visible rendered text.
 /// `disclosure_col` must match the column used when building `spans`.
-pub fn raw_col_to_visible_byte(
-    raw_col: usize,
-    spans: &[InlineSpan],
-    is_active_caret: bool,
-    disclosure_col: usize,
-    is_source: bool,
-) -> usize {
-    raw_col_to_visible_byte_with_selection(
-        raw_col,
-        spans,
-        is_active_caret,
-        disclosure_col,
-        is_source,
-        false,
-    )
-}
-
 pub fn raw_col_to_visible_byte_with_selection(
     raw_col: usize,
     spans: &[InlineSpan],
@@ -103,25 +86,6 @@ pub fn raw_col_to_visible_byte_with_selection(
 }
 
 /// Maps a byte offset in the visible rendered text back to a raw document column.
-pub fn visible_byte_to_raw_col(
-    visible_byte: usize,
-    spans: &[InlineSpan],
-    is_active_caret: bool,
-    cursor_col: usize,
-    is_source: bool,
-    total_raw_len: usize,
-) -> usize {
-    visible_byte_to_raw_col_with_selection(
-        visible_byte,
-        spans,
-        is_active_caret,
-        cursor_col,
-        is_source,
-        total_raw_len,
-        false,
-    )
-}
-
 pub fn visible_byte_to_raw_col_with_selection(
     visible_byte: usize,
     spans: &[InlineSpan],

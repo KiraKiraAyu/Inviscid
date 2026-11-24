@@ -71,10 +71,6 @@ impl BlockTypography {
     }
 }
 
-pub fn get_block_typography(kind: &BlockKind) -> BlockTypography {
-    get_block_typography_with_metrics(kind, 15.0, 1.6)
-}
-
 pub fn get_block_typography_with_metrics(
     kind: &BlockKind,
     base_font_size: f32,
