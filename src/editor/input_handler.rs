@@ -58,7 +58,6 @@ impl EntityInputHandler for Editor {
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.marked_range.is_some() {
             self.marked_range = None;
-            self.invalidate_layout_cache();
         }
         cx.notify();
     }
@@ -226,7 +225,8 @@ impl EntityInputHandler for Editor {
                 .map(|m| m.theme())
                 .unwrap_or(&crate::theme::DEFAULT_THEME);
             let spec = self.line_text_spec(parsed, theme);
-            let (wrap_width, scx) = self.line_shaping_from_spec(&spec, is_active_caret, theme);
+            let (wrap_width, scx) =
+                self.line_shaping_from_spec_on_line(start_pos.line, &spec, is_active_caret, theme);
             let font_size = spec.font_size;
             let line_height = spec.line_height;
 

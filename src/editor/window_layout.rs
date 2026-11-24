@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{buffer::SourceLine, markdown::QuoteProjection};
 use gpui::{Pixels, px};
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
 impl Editor {
     pub(super) fn ensure_window_layout(
@@ -24,11 +24,13 @@ impl Editor {
             && same_view
             && current.active_line == active
             && current.active_col == col
+            && current.marked_range == self.marked_range
             && current.image_cache_version == image
             && current.syntax_cache_version == syntax
         {
             return;
         }
+        let new_marked_line = self.ime_preedit_line_and_cols().map(|(line, _)| line);
         let projection = if same_buffer {
             current.quote_projection.clone()
         } else {
@@ -152,20 +154,11 @@ impl Editor {
         }
         let prev_parsed_lines = current.parsed_lines.clone();
         drop(current);
-        let preedit = if !same_buffer {
-            self.marked_range.clone().and_then(|range| {
-                let start = self.buffer.utf16_offset_to_pos(range.start);
-                let end = self.buffer.utf16_offset_to_pos(range.end);
-                (start.line == end.line).then_some((start.line.index(), start.col..end.col))
-            })
-        } else {
-            None
-        };
         let next_parsed_lines = if !same_buffer {
             if let Some(patch) = &edit_patch
                 && !self.is_loading
             {
-                prev_parsed_lines.apply_edit(&self.buffer, patch, preedit.clone())
+                prev_parsed_lines.apply_edit(&self.buffer, patch)
             } else {
                 ParsedLineStore::windowed(&self.buffer)
                     .with_session(self.background_session.clone())
@@ -174,7 +167,6 @@ impl Editor {
                             .clone()
                             .filter(|snapshot| snapshot.revision == self.buffer.revision()),
                     )
-                    .with_preedit(preedit.clone())
             }
         } else {
             prev_parsed_lines
@@ -189,11 +181,7 @@ impl Editor {
                     .is_none_or(|snapshot| snapshot.revision != self.buffer.revision()))
         {
             if let Some(patch) = &edit_patch {
-                let donated = if preedit.is_none() {
-                    next_parsed_lines.snapshot_windows()
-                } else {
-                    VecDeque::new()
-                };
+                let donated = next_parsed_lines.snapshot_windows();
                 session.submit_target(&self.buffer, Some((patch, donated)), false);
             } else {
                 session.submit_target(&self.buffer, None, reset_metrics);
@@ -223,7 +211,11 @@ impl Editor {
         if !same_buffer {
             cache.parsed_lines = next_parsed_lines;
         }
-        if same_view && (cache.active_line != active || cache.active_col != col) {
+        if same_view
+            && (cache.active_line != active
+                || cache.active_col != col
+                || cache.marked_range != self.marked_range)
+        {
             let map_old = |line: usize| {
                 if let Some(delta) = delta.filter(|_| incremental) {
                     let start = delta.start_line.index();
@@ -236,19 +228,34 @@ impl Editor {
                 }
                 line
             };
-            for line in [map_old(cache.active_line.index()), active.index()] {
-                if line < cache.metrics.len() {
-                    dirty.push(line..line + 1);
+            if cache.active_line != active || cache.active_col != col {
+                for line in [map_old(cache.active_line.index()), active.index()] {
+                    if line < cache.metrics.len() {
+                        dirty.push(line..line + 1);
+                    }
+                }
+                for (start, end) in [cache.active_math_block, cache.active_mermaid_block]
+                    .into_iter()
+                    .flatten()
+                {
+                    dirty.push(map_old(start.index())..map_old(end.index()) + 1);
+                }
+                for (start, end) in [math, mermaid].into_iter().flatten() {
+                    dirty.push(start.index()..end.index() + 1);
                 }
             }
-            for (start, end) in [cache.active_math_block, cache.active_mermaid_block]
+            if cache.marked_range != self.marked_range {
+                for line in [
+                    cache.marked_line.map(|line| map_old(line.index())),
+                    new_marked_line.map(|line| line.index()),
+                ]
                 .into_iter()
                 .flatten()
-            {
-                dirty.push(map_old(start.index())..map_old(end.index()) + 1);
-            }
-            for (start, end) in [math, mermaid].into_iter().flatten() {
-                dirty.push(start.index()..end.index() + 1);
+                {
+                    if line < cache.metrics.len() {
+                        dirty.push(line..line + 1);
+                    }
+                }
             }
         }
         for range in cache.parsed_lines.refresh_resources(
@@ -269,6 +276,8 @@ impl Editor {
         cache.active_col = col;
         cache.active_math_block = math;
         cache.active_mermaid_block = mermaid;
+        cache.marked_range = self.marked_range.clone();
+        cache.marked_line = new_marked_line;
         cache.doc_path = self.buffer.file_path_buf();
         cache.image_cache_version = image;
         cache.syntax_cache_version = syntax;

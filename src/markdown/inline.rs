@@ -27,7 +27,6 @@ pub struct InlineSpan {
     pub image_url: Option<String>,
     pub is_marker: bool,
     pub is_always_hidden_in_live: bool,
-    pub is_ime_preedit: bool,
     pub syntax_token: Option<SyntaxToken>,
     pub group_range: (usize, usize),
     pub span_range: (usize, usize),
@@ -189,41 +188,6 @@ impl InlineSpan {
                     && cursor_col >= self.group_range.0
                     && cursor_col <= self.group_range.1))
     }
-}
-
-pub fn mark_ime_preedit(spans: &[InlineSpan], range: (usize, usize)) -> Vec<InlineSpan> {
-    let (start, end) = range;
-    if start >= end {
-        return spans.to_vec();
-    }
-
-    let mut out = Vec::with_capacity(spans.len() + 2);
-    for span in spans {
-        let (s, e) = span.span_range;
-        if e <= start || s >= end || span.is_ime_preedit {
-            out.push(span.clone());
-            continue;
-        }
-
-        let chars: Vec<char> = span.text.chars().collect();
-        let mid_start = start.max(s);
-        let mid_end = end.min(e).min(s + chars.len());
-        for (from, to, is_preedit) in [
-            (s, mid_start, false),
-            (mid_start, mid_end, true),
-            (mid_end, e, false),
-        ] {
-            if from >= to {
-                continue;
-            }
-            let mut part = span.clone();
-            part.text = chars[from - s..to - s].iter().collect();
-            part.span_range = (from, to);
-            part.is_ime_preedit = is_preedit;
-            out.push(part);
-        }
-    }
-    out
 }
 
 #[derive(Clone, Copy, Default, Debug)]

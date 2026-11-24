@@ -203,6 +203,8 @@ pub struct DocumentLayoutCache {
     pub active_col: usize,
     pub active_math_block: Option<(SourceLine, SourceLine)>,
     pub active_mermaid_block: Option<(SourceLine, SourceLine)>,
+    pub marked_range: Option<Range<usize>>,
+    pub marked_line: Option<SourceLine>,
     pub doc_path: Option<PathBuf>,
     pub image_cache_version: usize,
     pub syntax_cache_version: usize,
@@ -232,6 +234,8 @@ impl Default for DocumentLayoutCache {
             active_col: 0,
             active_math_block: None,
             active_mermaid_block: None,
+            marked_range: None,
+            marked_line: None,
             doc_path: None,
             image_cache_version: 0,
             syntax_cache_version: 0,
@@ -307,6 +311,7 @@ pub struct LineLayoutContext<'a> {
     pub is_separator: Option<bool>,
     pub cursor_col: usize,
     pub is_selection_disclosure: bool,
+    pub ime_preedit_cols: Option<(usize, usize)>,
     pub mode: RenderMode,
     pub content_width: Pixels,
     pub doc_path: Option<&'a std::path::Path>,
@@ -332,6 +337,7 @@ impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
             .field("is_separator", &self.is_separator)
             .field("cursor_col", &self.cursor_col)
             .field("is_selection_disclosure", &self.is_selection_disclosure)
+            .field("ime_preedit_cols", &self.ime_preedit_cols)
             .field("mode", &self.mode)
             .field("content_width", &self.content_width)
             .field("doc_path", &self.doc_path)
@@ -356,6 +362,7 @@ impl<'a> Default for LineLayoutContext<'a> {
             is_separator: None,
             cursor_col: 0,
             is_selection_disclosure: false,
+            ime_preedit_cols: None,
             mode: RenderMode::LivePreview,
             content_width: px(800.0),
             doc_path: None,
@@ -387,6 +394,7 @@ impl<'a> LineLayoutContext<'a> {
             is_separator,
             cursor_col,
             is_selection_disclosure: false,
+            ime_preedit_cols: None,
             mode,
             content_width,
             doc_path,
@@ -422,6 +430,11 @@ impl<'a> LineLayoutContext<'a> {
 
     pub fn with_selection_disclosure(mut self, is_selection_disclosure: bool) -> Self {
         self.is_selection_disclosure = is_selection_disclosure;
+        self
+    }
+
+    pub fn with_ime_preedit(mut self, cols: Option<(usize, usize)>) -> Self {
+        self.ime_preedit_cols = cols.filter(|(s, e)| s < e);
         self
     }
 
@@ -505,7 +518,8 @@ pub fn get_line_layout_height(
             lcx.cursor_col,
         )
         .with_monospace(spec.shaping_mode.is_monospace())
-        .with_selection_disclosure(lcx.is_selection_disclosure);
+        .with_selection_disclosure(lcx.is_selection_disclosure)
+        .with_ime_preedit(lcx.ime_preedit_cols);
         let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
         let visual_lines = calculate_visual_lines_with_runs(
             &line_str,
@@ -530,7 +544,8 @@ pub fn get_line_layout_height(
             lcx.cursor_col,
         )
         .with_monospace(true)
-        .with_selection_disclosure(lcx.is_selection_disclosure);
+        .with_selection_disclosure(lcx.is_selection_disclosure)
+        .with_ime_preedit(lcx.ime_preedit_cols);
         let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
         let visual_lines = calculate_visual_lines_with_runs(
             &line_str,
@@ -554,6 +569,7 @@ pub fn get_line_layout_height(
             lcx.cursor_col,
         )
         .with_selection_disclosure(lcx.is_selection_disclosure)
+        .with_ime_preedit(lcx.ime_preedit_cols)
         .with_heading(is_heading);
         let (line_str, runs) = build_line_runs(&parsed.spans, scx, None, &TextStyle::default());
         let visual_lines = calculate_visual_lines_with_runs(
@@ -648,7 +664,8 @@ pub fn get_line_layout_height(
                 lcx.is_active,
                 lcx.cursor_col,
             )
-            .with_monospace(spec.shaping_mode.is_monospace());
+            .with_monospace(spec.shaping_mode.is_monospace())
+            .with_ime_preedit(lcx.ime_preedit_cols);
             let (source, source_runs) =
                 build_line_runs(&parsed.spans, source_scx, None, &TextStyle::default());
             let source_visual_lines = calculate_visual_lines_with_runs(
@@ -715,7 +732,7 @@ pub fn get_line_layout_height(
                         || next.trim_start().starts_with('#')
                         || next.trim_start().starts_with("```")
                 };
-                let row_h = crate::editor::shaping::calculate_table_row_height(
+                let row_h = crate::editor::shaping::calculate_table_row_height_with_preedit(
                     cells,
                     *is_header,
                     lcx.is_active,
@@ -723,6 +740,7 @@ pub fn get_line_layout_height(
                     lcx.content_width,
                     lcx.text_system.as_ref(),
                     lcx.is_selection_disclosure,
+                    lcx.ime_preedit_cols,
                 );
                 if *is_header {
                     px(8.0) + row_h
@@ -770,30 +788,6 @@ impl Editor {
             stats
         });
         get_line_layout_height(&self.buffer, idx, parsed, lcx)
-    }
-
-    /// Marks active IME preedit text so it participates in line shaping and receives an underline.
-    pub(super) fn project_ime_preedit(&self, first_line: usize, parsed_lines: &mut [ParsedLine]) {
-        let Some(marked) = self.marked_range.clone() else {
-            return;
-        };
-        let start = self.buffer.utf16_offset_to_pos(marked.start);
-        let end = self.buffer.utf16_offset_to_pos(marked.end);
-        if start.line != end.line {
-            return;
-        }
-        let Some(line_idx) = start.line.index().checked_sub(first_line) else {
-            return;
-        };
-        if let Some(line) = parsed_lines.get_mut(line_idx) {
-            line.spans = crate::markdown::mark_ime_preedit(&line.spans, (start.col, end.col));
-            if let BlockKind::Table { cells, .. } = &mut line.kind {
-                for cell in cells.iter_mut() {
-                    cell.spans =
-                        crate::markdown::mark_ime_preedit(&cell.spans, (start.col, end.col));
-                }
-            }
-        }
     }
 
     pub(crate) fn invalidate_layout_cache(&mut self) {
@@ -899,6 +893,7 @@ impl Editor {
             active_mermaid_block.is_some_and(|(start, end)| (start..=end).contains(&source_line)),
         )
         .with_selection_disclosure(self.is_selection_disclosure())
+        .with_ime_preedit(self.ime_preedit_on_line(source_line))
         .with_metrics(self.font_size, self.line_height, self.soft_wrap)
         .with_indent(indent_px)
         .with_quote_content_indent(crate::editor::shaping::quote_content_indent_px(
@@ -1035,8 +1030,6 @@ impl Editor {
                 .metrics
                 .unmeasured_end(start, (start + 32).min(range.end));
             let parsed = cache.parsed_lines.read_range(start..end);
-            let mut parsed = parsed.to_vec();
-            self.project_ime_preedit(start, &mut parsed);
             #[cfg(test)]
             self.layout_stats.update(|mut stats| {
                 stats.lines_scanned += cache.parsed_lines.take_scanned();
@@ -1074,9 +1067,7 @@ impl Editor {
                             h
                         } else if cache.metrics.next_unmeasured(i) != Some(i) {
                             cache.metrics.height(i).unwrap_or(px(0.0))
-                        } else if let Some(row_arc) = cache.parsed_lines.row(i) {
-                            let mut row = (*row_arc).clone();
-                            self.project_ime_preedit(i, std::slice::from_mut(&mut row));
+                        } else if let Some(row) = cache.parsed_lines.row(i) {
                             let row_line = SourceLine::new(i);
                             let row_lcx = self.line_layout_ctx(
                                 &row,
@@ -1147,8 +1138,7 @@ impl Editor {
     #[cfg(test)]
     pub(super) fn eager_metrics_for_test(&self) -> LineMetrics {
         let cache = self.layout_snapshot();
-        let mut parsed = MarkdownScanner::scan_document(&self.buffer.lines());
-        self.project_ime_preedit(0, &mut parsed);
+        let parsed = MarkdownScanner::scan_document(&self.buffer.lines());
         let separators = if self.render_mode == RenderMode::Source {
             Vec::new()
         } else {

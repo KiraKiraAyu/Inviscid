@@ -81,6 +81,20 @@ impl Editor {
         (wrap_width, scx)
     }
 
+    pub(crate) fn line_shaping_from_spec_on_line<'a>(
+        &self,
+        source_line: crate::buffer::SourceLine,
+        spec: &LineTextSpec,
+        is_active_caret: bool,
+        theme: &'a Theme,
+    ) -> (Option<Pixels>, LineShapingContext<'a>) {
+        let (wrap_width, scx) = self.line_shaping_from_spec(spec, is_active_caret, theme);
+        (
+            wrap_width,
+            scx.with_ime_preedit(self.ime_preedit_on_line(source_line)),
+        )
+    }
+
     /// Bundles font metrics, available line width, and line shaping context for text layout.
     pub fn line_shaping_metrics<'a>(
         &self,
@@ -103,8 +117,12 @@ impl Editor {
             let parsed = &*row;
             let is_active_caret = self.is_active_disclosure_line(pos.line, window);
             let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
-            let (wrap_width, scx) =
-                self.line_shaping_from_spec(&spec, is_active_caret, &crate::theme::DEFAULT_THEME);
+            let (wrap_width, scx) = self.line_shaping_from_spec_on_line(
+                pos.line,
+                &spec,
+                is_active_caret,
+                &crate::theme::DEFAULT_THEME,
+            );
             let in_canvas_x = calculate_pos_from_col(
                 pos.col,
                 parsed,
@@ -130,13 +148,18 @@ impl Editor {
         if let Some(row) = layout.parsed_lines.row(pos.line.index()) {
             let parsed = &*row;
             let is_active_caret = self.is_active_disclosure_line(pos.line, window);
-            let (font_size, line_height, wrap_width, scx) =
-                self.line_shaping_metrics(parsed, is_active_caret, &crate::theme::DEFAULT_THEME);
+            let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
+            let (wrap_width, scx) = self.line_shaping_from_spec_on_line(
+                pos.line,
+                &spec,
+                is_active_caret,
+                &crate::theme::DEFAULT_THEME,
+            );
             crate::editor::shaping::get_visual_line_info(
                 pos.col,
                 parsed,
-                font_size,
-                line_height,
+                spec.font_size,
+                spec.line_height,
                 wrap_width,
                 scx,
                 window,
@@ -163,8 +186,12 @@ impl Editor {
             let parsed = &*row;
             let is_active_caret = self.is_active_disclosure_line(source_line, window);
             let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
-            let (wrap_width, scx) =
-                self.line_shaping_from_spec(&spec, is_active_caret, &crate::theme::DEFAULT_THEME);
+            let (wrap_width, scx) = self.line_shaping_from_spec_on_line(
+                source_line,
+                &spec,
+                is_active_caret,
+                &crate::theme::DEFAULT_THEME,
+            );
             let in_canvas_x = (goal_x - spec.left_offset).max(px(0.0));
             let target_y = spec.line_height * (visual_line_idx as f32) + spec.line_height * 0.5;
             let mut col = calculate_col_from_point(

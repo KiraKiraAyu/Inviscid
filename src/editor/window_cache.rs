@@ -20,27 +20,6 @@ pub(crate) struct EditWindowPatch {
     pub code_close: Option<usize>,
 }
 
-pub(crate) fn apply_preedit(
-    rows: &mut [ParsedLine],
-    range_start: usize,
-    preedit: Option<&(usize, Range<usize>)>,
-) {
-    let Some((line, columns)) = preedit else {
-        return;
-    };
-    if *line < range_start || *line >= range_start + rows.len() {
-        return;
-    }
-    let row = &mut rows[*line - range_start];
-    row.spans = crate::markdown::mark_ime_preedit(&row.spans, (columns.start, columns.end));
-    if let crate::markdown::BlockKind::Table { cells, .. } = &mut row.kind {
-        for cell in cells {
-            cell.spans =
-                crate::markdown::mark_ime_preedit(&cell.spans, (columns.start, columns.end));
-        }
-    }
-}
-
 pub(crate) fn shift_range(range: &Range<usize>, line_delta: isize) -> Range<usize> {
     let start = (range.start as isize + line_delta).max(0) as usize;
     let end = (range.end as isize + line_delta).max(start as isize) as usize;
@@ -94,7 +73,6 @@ impl EditWindowPatch {
         windows: &mut VecDeque<WindowEntry>,
         source: &SourceSnapshot,
         index: &StructureIndex,
-        preedit: Option<&(usize, Range<usize>)>,
     ) -> (usize, Vec<Range<usize>>) {
         if self.structural {
             self.shift_or_invalidate(windows);
@@ -145,7 +123,7 @@ impl EditWindowPatch {
                     && scan_target.end <= source.line_count()
                     && scan_target.len() <= max_len
                 {
-                    let (scanned_range, mut scanned_rows) =
+                    let (scanned_range, scanned_rows) =
                         MarkdownScanner::scan_snapshot_window_with_policy(
                             source,
                             index,
@@ -157,7 +135,6 @@ impl EditWindowPatch {
                         && scanned_range.start <= edit_start
                         && scanned_range.end >= edit_new_end
                     {
-                        apply_preedit(&mut scanned_rows, scanned_range.start, preedit);
                         total_scanned += scanned_rows.len();
                         rescanned_ranges.push(scanned_range.clone());
                         let old_local_start = scanned_range.start - window.range.start;

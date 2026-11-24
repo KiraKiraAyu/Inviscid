@@ -398,13 +398,13 @@ fn active_mermaid_source_line_layout_accounts_for_soft_wrapping() {
 #[test]
 fn test_ime_preedit_occupies_inline_width_and_is_underlined() {
     use crate::editor::shaping::{LineShapingContext, build_line_runs};
-    use crate::markdown::{InlineSpan, mark_ime_preedit};
+    use crate::markdown::InlineSpan;
     use crate::theme::Theme;
     use gpui::TextStyle;
 
-    let spans = mark_ime_preedit(&[InlineSpan::plain("leftni right", (0, 12))], (4, 6));
+    let spans = [InlineSpan::plain("leftni right", (0, 12))];
     let theme = Theme::default();
-    let scx = LineShapingContext::new(&theme, None, false, true, 4);
+    let scx = LineShapingContext::new(&theme, None, false, true, 4).with_ime_preedit(Some((4, 6)));
     let (line, runs) = build_line_runs(&spans, scx, None, &TextStyle::default());
 
     assert_eq!(line, "leftni right");
@@ -1602,6 +1602,8 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         active_col: 0,
         active_math_block: None,
         active_mermaid_block: None,
+        marked_range: None,
+        marked_line: None,
         doc_path: None,
         image_cache_version: crate::http::image_cache_version(),
         syntax_cache_version: crate::syntax::syntax_cache_version(),
@@ -1809,6 +1811,8 @@ fn test_folding_layout_height_and_navigation() {
         active_col: 0,
         active_math_block: None,
         active_mermaid_block: None,
+        marked_range: None,
+        marked_line: None,
         doc_path: None,
         image_cache_version: 0,
         syntax_cache_version: 0,
@@ -1899,6 +1903,8 @@ fn test_folding_layout_height_and_navigation() {
         active_col: 0,
         active_math_block: None,
         active_mermaid_block: None,
+        marked_range: None,
+        marked_line: None,
         doc_path: None,
         image_cache_version: 0,
         syntax_cache_version: 0,
@@ -4192,7 +4198,8 @@ fn test_ime_composition_on_empty_line_is_inline_and_underlined(cx: &mut gpui::Te
                     false,
                     true,
                     ed.disclosure_col(),
-                ),
+                )
+                .with_ime_preedit(ed.ime_preedit_on_line(crate::buffer::SourceLine::new(1))),
                 None,
                 &window.text_style(),
             );
@@ -5304,6 +5311,7 @@ fn test_nested_list_render_live_content() {
             mermaid_preview: None,
             is_disclosure_line: false,
             is_selection_disclosure: false,
+            ime_preedit_cols: None,
             is_focused: false,
             cursor_col: 0,
             disclosure_col: 0,
@@ -5887,7 +5895,7 @@ fn test_painted_line_geometry_cache_ignores_zero_height_and_checks_disclosure() 
         soft_wrap: true,
         active_math_block: None,
         active_mermaid_block: None,
-        has_marked_range: false,
+        marked_range: None,
     };
 
     let mut cache = PaintedLineGeometryCache::default();

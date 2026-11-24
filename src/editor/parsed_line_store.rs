@@ -1,4 +1,4 @@
-use super::window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry, apply_preedit};
+use super::window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry};
 use crate::markdown::ParsedLine;
 use std::{
     cell::RefCell,
@@ -27,7 +27,6 @@ struct WindowStore {
     index: crate::buffer::StructureIndex,
     windows: RefCell<VecDeque<WindowEntry>>,
     scanned: std::cell::Cell<usize>,
-    preedit: Option<(usize, Range<usize>)>,
 }
 
 /// Owns its window so eviction cannot invalidate an in-flight row reader.
@@ -76,7 +75,6 @@ impl ParsedLineStore {
                 index: buffer.line_index().structure_snapshot(),
                 windows: RefCell::default(),
                 scanned: std::cell::Cell::new(0),
-                preedit: None,
             })),
             resources: Arc::default(),
         }
@@ -113,13 +111,6 @@ impl ParsedLineStore {
         })
     }
 
-    pub(crate) fn with_preedit(mut self, preedit: Option<(usize, Range<usize>)>) -> Self {
-        if let Some(store) = &mut self.windows {
-            Arc::make_mut(store).preedit = preedit;
-        }
-        self
-    }
-
     pub(crate) fn with_prepared(
         mut self,
         prepared: Option<Arc<super::loading::PreparedSnapshot>>,
@@ -144,10 +135,9 @@ impl ParsedLineStore {
         &self,
         buffer: &crate::buffer::TextBuffer,
         patch: &EditWindowPatch,
-        preedit: Option<(usize, Range<usize>)>,
     ) -> Self {
         let Some(prev_store) = &self.windows else {
-            return Self::windowed(buffer).with_preedit(preedit);
+            return Self::windowed(buffer);
         };
         let mut windows = if let Some(prepared) = &prev_store.prepared {
             prepared.windows.clone()
@@ -157,8 +147,7 @@ impl ParsedLineStore {
         use crate::buffer::LineSource;
         let source = buffer.source_snapshot();
         let index = buffer.line_index().structure_snapshot();
-        let (scanned, rescanned_ranges) =
-            patch.apply_edit(&mut windows, &source, &index, preedit.as_ref());
+        let (scanned, rescanned_ranges) = patch.apply_edit(&mut windows, &source, &index);
 
         let mut resources: Vec<Resource> = if patch.structural {
             let cut = patch.local_new_range.start;
@@ -221,7 +210,6 @@ impl ParsedLineStore {
                 index,
                 windows: RefCell::new(windows),
                 scanned: std::cell::Cell::new(scanned),
-                preedit,
             })),
             resources: Arc::new(RefCell::new(resources)),
         }
@@ -287,14 +275,12 @@ impl ParsedLineStore {
             if let Some(session) = &store.session {
                 session.request(requested.clone());
             }
-            let (range, mut rows) =
-                crate::markdown::MarkdownScanner::scan_snapshot_window_with_policy(
-                    &store.source,
-                    &store.index,
-                    requested,
-                    crate::markdown::ScanResourcePolicy::UiDeferred,
-                );
-            apply_preedit(&mut rows, range.start, store.preedit.as_ref());
+            let (range, rows) = crate::markdown::MarkdownScanner::scan_snapshot_window_with_policy(
+                &store.source,
+                &store.index,
+                requested,
+                crate::markdown::ScanResourcePolicy::UiDeferred,
+            );
             store.scanned.set(store.scanned.get() + rows.len());
             let mut resources = self.resources.borrow_mut();
             for resource in
@@ -392,7 +378,6 @@ impl ParsedLineStore {
                 index: store.index.clone(),
                 windows: RefCell::new(windows),
                 scanned: std::cell::Cell::new(scanned),
-                preedit: store.preedit.clone(),
             }));
         }
         ranges

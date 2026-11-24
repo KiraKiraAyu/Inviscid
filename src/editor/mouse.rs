@@ -299,7 +299,8 @@ impl Editor {
                     }
                 } else {
                     let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
-                    let (wrap_width, scx) = self.line_shaping_from_spec(
+                    let (wrap_width, scx) = self.line_shaping_from_spec_on_line(
+                        target_line,
                         &spec,
                         is_active_caret,
                         &crate::theme::DEFAULT_THEME,
@@ -649,8 +650,12 @@ impl Editor {
         }
 
         let spec = self.line_text_spec(parsed, &crate::theme::DEFAULT_THEME);
-        let (wrap_width, scx) =
-            self.line_shaping_from_spec(&spec, is_active_caret, &crate::theme::DEFAULT_THEME);
+        let (wrap_width, scx) = self.line_shaping_from_spec_on_line(
+            line_idx,
+            &spec,
+            is_active_caret,
+            &crate::theme::DEFAULT_THEME,
+        );
 
         let lcx = super::shaping::SpanLayoutContext::new(
             spec.font_size,

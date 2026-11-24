@@ -125,30 +125,51 @@ fn large_blank_runs_and_quote_edges_match_eager_after_edits(cx: &mut gpui::TestA
 
 #[gpui::test]
 fn windowed_ime_preedit_reaches_cached_render_rows(cx: &mut gpui::TestAppContext) {
+    use crate::editor::shaping::{LineShapingContext, build_line_runs};
+    use crate::theme::DEFAULT_THEME;
+    use gpui::TextStyle;
+
     let text = "paragraph\n".repeat(20_000);
     let editor = cx.new(|cx| Editor::new_with_buffer(TextBuffer::from_str(&text, None), cx));
     editor.update(cx, |ed, _| {
+        ed.ensure_layout_cache();
+        let initial_rebuilds = ed.layout_stats.get().full_rebuilds;
+
         ed.marked_range = Some(1..4);
         ed.ensure_layout_cache();
+        assert_eq!(ed.layout_stats.get().full_rebuilds, initial_rebuilds);
+
         let layout = ed.layout_snapshot();
-        assert!(
-            layout
-                .parsed_lines
-                .row(0)
-                .unwrap()
-                .spans
-                .iter()
-                .any(|span| span.is_ime_preedit)
-        );
-        assert!(
-            !layout
-                .parsed_lines
-                .row(1)
-                .unwrap()
-                .spans
-                .iter()
-                .any(|span| span.is_ime_preedit)
-        );
+        let row0 = layout.parsed_lines.row(0).unwrap();
+        let row1 = layout.parsed_lines.row(1).unwrap();
+        let row0_ptr: *const _ = &*row0;
+
+        assert_eq!(ed.ime_preedit_on_line(SourceLine::new(0)), Some((1, 4)));
+        assert_eq!(ed.ime_preedit_on_line(SourceLine::new(1)), None);
+
+        let scx0 = LineShapingContext::new(&DEFAULT_THEME, None, false, true, 1)
+            .with_ime_preedit(ed.ime_preedit_on_line(SourceLine::new(0)));
+        let (text0, runs0) = build_line_runs(&row0.spans, scx0, None, &TextStyle::default());
+        assert_eq!(text0, "paragraph");
+        assert!(runs0.iter().any(|run| run.underline.is_some()));
+
+        let scx1 = LineShapingContext::new(&DEFAULT_THEME, None, false, false, 0)
+            .with_ime_preedit(ed.ime_preedit_on_line(SourceLine::new(1)));
+        let (_, runs1) = build_line_runs(&row1.spans, scx1, None, &TextStyle::default());
+        assert!(runs1.iter().all(|run| run.underline.is_none()));
+
+        drop(row0);
+        drop(row1);
+        drop(layout);
+
+        // Clearing marked_range updates layout without invalidating ParsedLineStore or rebuilding.
+        ed.marked_range = None;
+        ed.ensure_layout_cache();
+        assert_eq!(ed.layout_stats.get().full_rebuilds, initial_rebuilds);
+        let cleared_layout = ed.layout_snapshot();
+        let cleared_row0 = cleared_layout.parsed_lines.row(0).unwrap();
+        assert!(std::ptr::eq(row0_ptr, &*cleared_row0));
+        assert_eq!(ed.ime_preedit_on_line(SourceLine::new(0)), None);
     });
 }
 

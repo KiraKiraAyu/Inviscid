@@ -303,7 +303,7 @@ pub struct PaintedFrameKey {
     pub soft_wrap: bool,
     pub active_math_block: Option<(SourceLine, SourceLine)>,
     pub active_mermaid_block: Option<(SourceLine, SourceLine)>,
-    pub has_marked_range: bool,
+    pub marked_range: Option<(usize, usize)>,
 }
 
 #[derive(Clone)]

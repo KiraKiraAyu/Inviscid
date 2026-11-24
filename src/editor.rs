@@ -306,6 +306,28 @@ impl Editor {
         self.viewport_bounds
     }
 
+    /// Returns `(line, (start_col, end_col))` for a single-line active IME preedit range.
+    pub(crate) fn ime_preedit_line_and_cols(
+        &self,
+    ) -> Option<(crate::buffer::SourceLine, (usize, usize))> {
+        self.marked_range.clone().and_then(|range| {
+            let start = self.buffer.utf16_offset_to_pos(range.start);
+            let end = self.buffer.utf16_offset_to_pos(range.end);
+            (start.line == end.line && start.col < end.col)
+                .then_some((start.line, (start.col, end.col)))
+        })
+    }
+
+    /// Returns `(start_col, end_col)` when `line` contains an active single-line IME preedit range.
+    pub(crate) fn ime_preedit_on_line(
+        &self,
+        line: crate::buffer::SourceLine,
+    ) -> Option<(usize, usize)> {
+        self.ime_preedit_line_and_cols()
+            .filter(|(marked_line, _)| *marked_line == line)
+            .map(|(_, cols)| cols)
+    }
+
     pub(crate) fn current_painted_frame_key(&self) -> geometry::PaintedFrameKey {
         let layout = self.layout_snapshot();
         geometry::PaintedFrameKey {
@@ -320,7 +342,7 @@ impl Editor {
             soft_wrap: self.soft_wrap,
             active_math_block: layout.active_math_block,
             active_mermaid_block: layout.active_mermaid_block,
-            has_marked_range: self.marked_range.is_some(),
+            marked_range: self.marked_range.as_ref().map(|r| (r.start, r.end)),
         }
     }
 
@@ -1642,6 +1664,7 @@ pub struct LineRenderContext<'a> {
     pub(crate) mermaid_preview: Option<&'a crate::mermaid::MermaidSvg>,
     pub is_disclosure_line: bool,
     pub is_selection_disclosure: bool,
+    pub ime_preedit_cols: Option<(usize, usize)>,
     pub is_focused: bool,
     pub cursor_col: usize,
     /// Column used for markdown syntax-marker disclosure.

@@ -398,6 +398,7 @@ pub struct LineShapingContext<'a> {
     pub cursor_col: usize,
     pub is_selection_disclosure: bool,
     pub is_heading: bool,
+    pub ime_preedit_cols: Option<(usize, usize)>,
 }
 
 impl<'a> LineShapingContext<'a> {
@@ -417,6 +418,7 @@ impl<'a> LineShapingContext<'a> {
             cursor_col,
             is_selection_disclosure: false,
             is_heading: false,
+            ime_preedit_cols: None,
         }
     }
 
@@ -432,6 +434,11 @@ impl<'a> LineShapingContext<'a> {
 
     pub fn with_heading(mut self, is_heading: bool) -> Self {
         self.is_heading = is_heading;
+        self
+    }
+
+    pub fn with_ime_preedit(mut self, ime_preedit_cols: Option<(usize, usize)>) -> Self {
+        self.ime_preedit_cols = ime_preedit_cols.filter(|(s, e)| s < e);
         self
     }
 }
@@ -464,6 +471,16 @@ pub(super) mod preparation_metrics {
     pub fn record() {
         CALLS.set(CALLS.get() + 1);
     }
+}
+
+#[inline]
+fn char_offset_to_byte(s: &str, char_idx: usize) -> usize {
+    if char_idx == 0 {
+        return 0;
+    }
+    s.char_indices()
+        .nth(char_idx)
+        .map_or(s.len(), |(byte_idx, _)| byte_idx)
 }
 
 pub fn build_line_runs(
@@ -580,12 +597,44 @@ pub fn build_line_runs(
                 color: Some(color),
             });
         }
-        if span.is_ime_preedit {
-            underline = Some(UnderlineStyle {
-                thickness: px(1.0),
-                color: Some(color),
-                wavy: false,
-            });
+
+        if let Some((pre_start, pre_end)) = scx.ime_preedit_cols
+            && pre_start < pre_end
+            && span.math.is_none()
+            && span.span_range.0 < pre_end
+            && span.span_range.1 > pre_start
+        {
+            let s = span.span_range.0;
+            let e = span.span_range.1;
+            let char_count = rendered_text.chars().count();
+            let mid_start = pre_start.max(s);
+            let mid_end = pre_end.min(e).min(s + char_count);
+            if mid_start < mid_end {
+                let b_start = char_offset_to_byte(&rendered_text, mid_start - s);
+                let b_end = char_offset_to_byte(&rendered_text, mid_end - s);
+                let preedit_underline = Some(UnderlineStyle {
+                    thickness: px(1.0),
+                    color: Some(color),
+                    wavy: false,
+                });
+                for (len, run_underline) in [
+                    (b_start, underline),
+                    (b_end.saturating_sub(b_start), preedit_underline),
+                    (span_byte_len.saturating_sub(b_end), underline),
+                ] {
+                    if len > 0 {
+                        runs.push(TextRun {
+                            len,
+                            font: font.clone(),
+                            color,
+                            background_color,
+                            underline: run_underline,
+                            strikethrough,
+                        });
+                    }
+                }
+                continue;
+            }
         }
 
         runs.push(TextRun {
@@ -917,6 +966,28 @@ pub fn calculate_table_row_height(
     text_system: Option<&Arc<WindowTextSystem>>,
     is_selection_disclosure: bool,
 ) -> Pixels {
+    calculate_table_row_height_with_preedit(
+        cells,
+        is_header,
+        is_active,
+        cursor_col,
+        container_width,
+        text_system,
+        is_selection_disclosure,
+        None,
+    )
+}
+
+pub fn calculate_table_row_height_with_preedit(
+    cells: &[crate::markdown::TableCell],
+    is_header: bool,
+    is_active: bool,
+    cursor_col: usize,
+    container_width: Pixels,
+    text_system: Option<&Arc<WindowTextSystem>>,
+    is_selection_disclosure: bool,
+    ime_preedit_cols: Option<(usize, usize)>,
+) -> Pixels {
     if cells.is_empty() {
         return if is_header { px(34.0) } else { px(30.0) };
     }
@@ -939,7 +1010,8 @@ pub fn calculate_table_row_height(
             is_active,
             cursor_col,
         )
-        .with_selection_disclosure(is_selection_disclosure);
+        .with_selection_disclosure(is_selection_disclosure)
+        .with_ime_preedit(ime_preedit_cols);
         let (cell_text, runs) = build_line_runs(&cell.spans, scx, None, &TextStyle::default());
 
         for span in &cell.spans {
@@ -1759,6 +1831,7 @@ pub fn render_shaped_line(
     let content_width = lrc.content_width;
     let soft_wrap = lrc.soft_wrap;
     let highlights = lrc.highlights.to_vec();
+    let ime_preedit_cols = lrc.ime_preedit_cols;
 
     let is_active_caret = lrc.is_disclosure_line;
     let is_source = shaping_mode.is_source();
@@ -1793,7 +1866,8 @@ pub fn render_shaped_line(
     )
     .with_monospace(is_monospace)
     .with_selection_disclosure(is_selection_disclosure)
-    .with_heading(is_heading);
+    .with_heading(is_heading)
+    .with_ime_preedit(ime_preedit_cols);
     let (line_str_for_measuring, runs_for_measuring) = build_line_runs(
         &spans,
         scx_measure,
@@ -1836,7 +1910,8 @@ pub fn render_shaped_line(
                 )
                 .with_monospace(is_monospace)
                 .with_selection_disclosure(is_selection_disclosure)
-                .with_heading(is_heading);
+                .with_heading(is_heading)
+                .with_ime_preedit(ime_preedit_cols);
                 let (line_str, runs) =
                     build_line_runs(&spans, scx, hovered_link_range, &window.text_style());
                 let cursor_color = theme.cursor.opacity(cursor_opacity);
@@ -2120,6 +2195,7 @@ pub struct TableCellRenderContext<'a> {
     pub is_disclosure_cell: bool,
     pub disclosure_col: usize,
     pub is_selection_disclosure: bool,
+    pub ime_preedit_cols: Option<(usize, usize)>,
     pub cursor_col: usize,
     pub cursor_opacity: f32,
     pub align: crate::markdown::TableAlignment,
@@ -2149,6 +2225,7 @@ pub fn render_shaped_cell_canvas(
     let is_disclosure_cell = tcx.is_disclosure_cell;
     let disclosure_col = tcx.disclosure_col;
     let is_selection_disclosure = tcx.is_selection_disclosure;
+    let ime_preedit_cols = tcx.ime_preedit_cols;
     let cursor_col = tcx.cursor_col;
     let cursor_opacity = tcx.cursor_opacity;
     let align = tcx.align;
@@ -2167,7 +2244,8 @@ pub fn render_shaped_cell_canvas(
                 let theme = cx.theme();
                 let scx =
                     LineShapingContext::new(theme, None, false, is_disclosure_cell, disclosure_col)
-                        .with_selection_disclosure(is_selection_disclosure);
+                        .with_selection_disclosure(is_selection_disclosure)
+                        .with_ime_preedit(ime_preedit_cols);
                 let (line_str, runs) =
                     build_line_runs(&spans, scx, hovered_link_range, &window.text_style());
                 let cursor_color = theme.cursor.opacity(cursor_opacity);

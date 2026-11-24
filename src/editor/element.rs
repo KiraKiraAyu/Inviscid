@@ -360,6 +360,7 @@ impl Element for EditorElement {
                             mermaid_preview,
                             is_disclosure_line,
                             is_selection_disclosure,
+                            ime_preedit_cols: editor.ime_preedit_on_line(source_line),
                             is_focused,
                             cursor_col,
                             disclosure_col,

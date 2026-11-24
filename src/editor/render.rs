@@ -410,7 +410,7 @@ pub fn render_live_line_content(
 
             let num_cells = cells.len();
 
-            let row_h = super::shaping::calculate_table_row_height(
+            let row_h = super::shaping::calculate_table_row_height_with_preedit(
                 cells,
                 *is_header,
                 lrc.is_disclosure_line,
@@ -418,6 +418,7 @@ pub fn render_live_line_content(
                 lrc.content_width,
                 lrc.text_system,
                 lrc.is_selection_disclosure,
+                lrc.ime_preedit_cols,
             );
 
             let hovered_link_range = lrc.hovered_link.and_then(|hl| {
@@ -486,6 +487,7 @@ pub fn render_live_line_content(
                     // the caret target stays on the live caret column.
                     disclosure_col: lrc.disclosure_col,
                     is_selection_disclosure: lrc.is_selection_disclosure,
+                    ime_preedit_cols: lrc.ime_preedit_cols,
                     cursor_col: selection.head.col,
                     cursor_opacity: lrc.cursor_opacity,
                     align,
