@@ -6,13 +6,6 @@ pub struct GrammarSpec {
     pub default_highlights_scm: &'static str,
 }
 
-impl GrammarSpec {
-    #[inline]
-    pub fn wasm_symbol(&self) -> &'static str {
-        self.canonical_id
-    }
-}
-
 use std::borrow::Cow;
 
 pub(crate) fn extract_fence_token(lang_hint: &str) -> Option<Cow<'_, str>> {

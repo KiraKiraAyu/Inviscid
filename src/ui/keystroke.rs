@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use gpui::KeyDownEvent;
 
-pub mod context {
+pub(crate) mod context {
     /// Active in the project panel file tree, but not while an inline rename/create input is
     /// focused (so `Delete` / `Ctrl+Delete` inside the text box are not intercepted by tree actions).
     pub const PROJECT_PANEL_TREE: &str = "ProjectPanel && !InlineInput";

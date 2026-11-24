@@ -868,7 +868,8 @@ fn test_continuation_and_toggle() {
 
 #[test]
 fn test_fenced_code_block_wasm_syntax_highlighting_and_incremental_scan() {
-    use crate::syntax::{SyntaxToken, register_global_wasm_grammar};
+    use crate::syntax::registry::register_global_wasm_grammar;
+    use crate::syntax::token::SyntaxToken;
 
     let wasm_bytes = include_bytes!("../../tests/fixtures/tree-sitter-json.wasm");
     register_global_wasm_grammar("json", wasm_bytes, None)
@@ -925,7 +926,8 @@ fn test_fenced_code_block_wasm_syntax_highlighting_and_incremental_scan() {
 
 #[test]
 fn unclosed_and_large_closed_code_blocks_preserve_windowed_syntax_highlighting() {
-    use crate::syntax::{SyntaxToken, register_global_wasm_grammar};
+    use crate::syntax::registry::register_global_wasm_grammar;
+    use crate::syntax::token::SyntaxToken;
 
     let wasm_bytes = include_bytes!("../../tests/fixtures/tree-sitter-json.wasm");
     register_global_wasm_grammar("json", wasm_bytes, None)

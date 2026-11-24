@@ -1,6 +1,6 @@
-pub mod color;
-pub mod manager;
-pub mod registry;
+mod color;
+mod manager;
+pub(crate) mod registry;
 
 use gpui::Hsla;
 use serde::Deserialize;

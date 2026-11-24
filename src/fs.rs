@@ -1,8 +1,8 @@
 //! File system utilities.
 
-pub mod workspace_index;
+pub(crate) mod workspace_index;
 pub use workspace_index::{
-    FileTreeEntry, FileTreeEntryKind, WorkspaceFileIndex, WorkspaceSnapshot, scan_expanded_tree,
+    FileTreeEntry, WorkspaceFileIndex, WorkspaceSnapshot, scan_expanded_tree,
 };
 
 use crate::buffer::LineEnding;

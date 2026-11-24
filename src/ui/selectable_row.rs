@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels,
+    AnyElement, App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement,
     RenderOnce, StatefulInteractiveElement, Styled, Window, div,
 };
 
@@ -13,7 +13,6 @@ type OnClickCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>
 #[derive(IntoElement)]
 pub struct SelectableRow {
     id: ElementId,
-    height: Pixels,
     selected: bool,
     leading: Option<AnyElement>,
     trailing: Option<AnyElement>,
@@ -24,17 +23,11 @@ impl SelectableRow {
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
-            height: ControlHeight::LG,
             selected: false,
             leading: None,
             trailing: None,
             on_click: None,
         }
-    }
-
-    pub fn height(mut self, height: Pixels) -> Self {
-        self.height = height;
-        self
     }
 
     /// Highlights the row with an accent border.
@@ -68,7 +61,7 @@ impl RenderOnce for SelectableRow {
 
         div()
             .id(self.id)
-            .h(self.height)
+            .h(ControlHeight::LG)
             .w_full()
             .px(Spacing::MD)
             .rounded(Radius::MD)

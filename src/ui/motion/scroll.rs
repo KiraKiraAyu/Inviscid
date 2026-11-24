@@ -469,18 +469,6 @@ pub fn schedule_vsync_scroll_frame<E: 'static>(
     });
 }
 
-/// Spawns a fallback timer smooth-scroll loop when no `Window` is available at the call site.
-pub fn start_scroll_animation<E: 'static>(
-    entity: &mut E,
-    cx: &mut Context<E>,
-    get_task_slot: impl Fn(&mut E) -> &mut Option<Task<()>> + Copy + 'static,
-    step_frame: impl Fn(&mut E) -> bool + 'static,
-) {
-    start_scroll_animation_with_event(entity, cx, get_task_slot, move |entity, _cx| {
-        step_frame(entity)
-    });
-}
-
 pub fn start_scroll_animation_with_event<E: 'static>(
     entity: &mut E,
     cx: &mut Context<E>,
@@ -621,18 +609,8 @@ impl SmoothScrollController {
         still_animating
     }
 
-    /// Handles a wheel/touchpad event on a `ScrollHandle`-backed view.
-    pub fn handle_wheel<E: 'static>(
-        entity: &mut E,
-        event: &ScrollWheelEvent,
-        window: Option<&mut Window>,
-        cx: &mut Context<E>,
-        access: impl Fn(&mut E) -> (&mut Self, ScrollHandle) + Copy + 'static,
-    ) {
-        Self::handle_wheel_with(entity, event, window, cx, access, |_, _| {});
-    }
-
-    /// Like [`Self::handle_wheel`], invoking `after_step` after each scroll offset change.
+    /// Handles a wheel/touchpad event on a `ScrollHandle`-backed view, invoking `after_step`
+    /// after each scroll offset change.
     pub fn handle_wheel_with<E: 'static>(
         entity: &mut E,
         event: &ScrollWheelEvent,
@@ -1181,9 +1159,14 @@ mod tests {
                 delta: ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
                 ..Default::default()
             };
-            SmoothScrollController::handle_wheel(host, &pixel_ev, None, cx, |h| {
-                (&mut h.ctrl, h.handle.clone())
-            });
+            SmoothScrollController::handle_wheel_with(
+                host,
+                &pixel_ev,
+                None,
+                cx,
+                |h| (&mut h.ctrl, h.handle.clone()),
+                |_, _| {},
+            );
             assert_eq!(host.ctrl.current_scroll_top, px(40.0));
             assert_eq!(host.handle.offset().y, px(-40.0));
 
@@ -1192,9 +1175,14 @@ mod tests {
                 delta: ScrollDelta::Lines(point(0.0, -3.0)),
                 ..Default::default()
             };
-            SmoothScrollController::handle_wheel(host, &line_ev, None, cx, |h| {
-                (&mut h.ctrl, h.handle.clone())
-            });
+            SmoothScrollController::handle_wheel_with(
+                host,
+                &line_ev,
+                None,
+                cx,
+                |h| (&mut h.ctrl, h.handle.clone()),
+                |_, _| {},
+            );
             assert_eq!(host.ctrl.target_scroll_top, px(140.0));
             assert!(host.ctrl.is_animating());
 
@@ -1219,9 +1207,14 @@ mod tests {
                 delta: ScrollDelta::Lines(point(0.0, -3.0)),
                 ..Default::default()
             };
-            SmoothScrollController::handle_wheel(host, &wheel_ev, None, cx, |h| {
-                (&mut h.ctrl, h.handle.clone())
-            });
+            SmoothScrollController::handle_wheel_with(
+                host,
+                &wheel_ev,
+                None,
+                cx,
+                |h| (&mut h.ctrl, h.handle.clone()),
+                |_, _| {},
+            );
             assert_eq!(host.ctrl.target_scroll_top, px(100.0));
             assert!(host.ctrl.is_animating());
         });

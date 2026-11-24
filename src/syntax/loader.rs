@@ -121,16 +121,13 @@ pub(crate) fn spawn_local_grammar_loader(canonical_id: String) {
     let (_, cache_dir) = get_global_config_snapshot();
     syntax_worker_pool().spawn(move || {
         let Some(cache_root) = cache_dir else {
-            mark_global_failed_if_loading(&canonical_id, "Grammar cache directory unavailable");
+            mark_global_failed_if_loading(&canonical_id);
             return;
         };
         let Some((wasm_bytes, custom_scm)) =
             find_grammar_in_dirs_by_id(&canonical_id, &[cache_root.as_path()])
         else {
-            mark_global_failed_if_loading(
-                &canonical_id,
-                format!("Failed to read local grammar '{}'", canonical_id),
-            );
+            mark_global_failed_if_loading(&canonical_id);
             return;
         };
 
@@ -148,7 +145,7 @@ pub(crate) fn spawn_local_grammar_loader(canonical_id: String) {
                     "Warning: Failed to load local grammar '{}': {:#}",
                     canonical_id, err
                 );
-                mark_global_failed_if_loading(&canonical_id, format!("{err:#}"));
+                mark_global_failed_if_loading(&canonical_id);
             }
         }
     });
@@ -319,7 +316,7 @@ fn dispatch_remote_loader(canonical_id: String, cancel_token: Arc<AtomicBool>) {
     let (base_url, cache_dir) = get_global_config_snapshot();
 
     if base_url.is_empty() {
-        mark_global_failed_if_loading(&canonical_id, "Remote downloading is disabled");
+        mark_global_failed_if_loading(&canonical_id);
         return;
     }
 
@@ -371,7 +368,7 @@ fn dispatch_remote_loader(canonical_id: String, cancel_token: Arc<AtomicBool>) {
                         "Warning: Failed to load Tree-sitter grammar '{canonical_id}': {err_msg}"
                     );
                 }
-                mark_global_failed_if_loading(&canonical_id, err_msg);
+                mark_global_failed_if_loading(&canonical_id);
             }
         }
     });

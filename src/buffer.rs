@@ -14,20 +14,20 @@ mod fingerprint_loading_tests;
 mod history_tests;
 mod loading;
 pub(crate) use loading::StreamingBuffer;
-pub mod movement;
-pub mod operations;
+pub(crate) mod movement;
+pub(crate) mod operations;
 mod parser_summary;
-pub mod primitives;
+pub(crate) mod primitives;
 mod source;
 mod structure_index;
 #[cfg(test)]
-pub mod tests;
+mod tests;
 
-pub use fingerprint::{FingerprintJob, FingerprintResult};
 #[cfg(test)]
 pub(crate) use parser_summary::{BlockState, PrefixSummary};
 pub use primitives::*;
-pub use source::{LineSource, SourceSnapshot};
+pub use source::LineSource;
+pub(crate) use source::SourceSnapshot;
 pub(crate) use structure_index::StructureIndex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -418,11 +418,6 @@ impl TextBuffer {
     #[inline]
     pub fn line_ending(&self) -> LineEnding {
         self.line_ending
-    }
-
-    #[inline]
-    pub fn last_saved_mtime(&self) -> Option<SystemTime> {
-        self.last_saved_mtime
     }
 
     #[inline]

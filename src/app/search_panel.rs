@@ -84,10 +84,7 @@ impl SearchPanel {
         Self::with_file_index(WorkspaceFileIndex::default(), cx)
     }
 
-    pub(crate) fn with_file_index(
-        file_index: WorkspaceFileIndex,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(crate) fn with_file_index(file_index: WorkspaceFileIndex, cx: &mut Context<Self>) -> Self {
         let collocated_mode = cx
             .try_global::<crate::config::AppConfig>()
             .is_some_and(|cfg| cfg.collocated_mode);

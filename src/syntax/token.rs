@@ -1,6 +1,6 @@
 use gpui::Hsla;
 
-pub use crate::markdown::SyntaxToken;
+pub(crate) use crate::markdown::SyntaxToken;
 use crate::theme::Theme;
 
 impl SyntaxToken {

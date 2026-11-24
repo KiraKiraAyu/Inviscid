@@ -7,27 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Waker};
 
-pub use parking_lot::{Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-
-/// Error indicating failure to receive a notification in [`VersionReceiver::try_recv`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TryRecvError {
-    /// No newer version has been published since the last receive.
-    Empty,
-    /// The notifier has closed or all senders were dropped.
-    Closed,
-}
-
-impl fmt::Display for TryRecvError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => write!(f, "no new version available"),
-            Self::Closed => write!(f, "version notifier closed"),
-        }
-    }
-}
-
-impl std::error::Error for TryRecvError {}
+pub use parking_lot::{Condvar, Mutex, RwLock};
 
 /// Shared internal state for a [`VersionedNotifier`] and its subscribers.
 struct NotifierState {
@@ -44,8 +24,7 @@ struct NotifierState {
 /// Unlike unbounded queues, [`VersionedNotifier`] holds a single version counter,
 /// ensuring that rapid mutations never cause memory growth or queue bloat.
 ///
-/// Senders can publish new versions without blocking, and subscribers can either
-/// synchronously inspect the latest version via [`VersionReceiver::try_recv`] or
+/// Senders can publish new versions without blocking, and subscribers
 /// asynchronously await changes using [`futures::Stream`].
 pub struct VersionedNotifier {
     state: OnceLock<Arc<NotifierState>>,
@@ -236,30 +215,6 @@ impl Drop for VersionReceiver {
 }
 
 impl VersionReceiver {
-    /// Tries to receive the latest version without blocking.
-    ///
-    /// Returns `Ok(version)` if a newer version has been published since the last receive.
-    /// Returns `Err(TryRecvError::Empty)` if no new version is available.
-    /// Returns `Err(TryRecvError::Closed)` if the notifier has closed or all senders dropped.
-    #[inline]
-    pub fn try_recv(&mut self) -> Result<usize, TryRecvError> {
-        let latest = self.state.version.load(Ordering::Acquire);
-        if latest != self.last_seen_version {
-            self.last_seen_version = latest;
-            Ok(latest)
-        } else if self.state.closed.load(Ordering::Acquire) {
-            Err(TryRecvError::Closed)
-        } else {
-            Err(TryRecvError::Empty)
-        }
-    }
-
-    /// Returns the last version seen by this receiver.
-    #[inline]
-    pub fn last_seen_version(&self) -> usize {
-        self.last_seen_version
-    }
-
     /// Checks whether the notifier has closed.
     #[inline]
     pub fn is_closed(&self) -> bool {
@@ -324,6 +279,8 @@ mod tests {
 
     #[test]
     fn test_versioned_notifier_version_increment_and_notification() {
+        use futures::{FutureExt, StreamExt};
+
         let notifier = VersionedNotifier::new();
         let mut sub1 = notifier.subscribe();
         let mut sub2 = notifier.subscribe();
@@ -331,18 +288,20 @@ mod tests {
         notifier.notify();
         assert_eq!(notifier.version(), 1);
 
-        assert_eq!(sub1.try_recv(), Ok(1));
-        assert_eq!(sub2.try_recv(), Ok(1));
+        assert_eq!(sub1.next().now_or_never(), Some(Some(1)));
+        assert_eq!(sub2.next().now_or_never(), Some(Some(1)));
 
         notifier.notify();
         assert_eq!(notifier.version(), 2);
 
-        assert_eq!(sub1.try_recv(), Ok(2));
-        assert_eq!(sub2.try_recv(), Ok(2));
+        assert_eq!(sub1.next().now_or_never(), Some(Some(2)));
+        assert_eq!(sub2.next().now_or_never(), Some(Some(2)));
     }
 
     #[test]
     fn test_versioned_notifier_cleans_up_dropped_subscribers() {
+        use futures::{FutureExt, StreamExt};
+
         let notifier = VersionedNotifier::new();
         let sub1 = notifier.subscribe();
         let mut sub2 = notifier.subscribe();
@@ -353,12 +312,14 @@ mod tests {
 
         notifier.notify();
         assert_eq!(notifier.version(), 1);
-        assert_eq!(sub2.try_recv(), Ok(1));
+        assert_eq!(sub2.next().now_or_never(), Some(Some(1)));
         assert_eq!(notifier.listener_count(), 1);
     }
 
     #[test]
     fn test_versioned_notifier_coalescing() {
+        use futures::{FutureExt, StreamExt};
+
         let notifier = VersionedNotifier::new();
         let mut sub = notifier.subscribe();
 
@@ -367,8 +328,8 @@ mod tests {
         notifier.notify();
 
         assert_eq!(notifier.version(), 3);
-        assert_eq!(sub.try_recv(), Ok(3));
-        assert_eq!(sub.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(sub.next().now_or_never(), Some(Some(3)));
+        assert_eq!(sub.next().now_or_never(), None);
     }
 
     #[test]
@@ -390,31 +351,29 @@ mod tests {
 
     #[test]
     fn test_notifier_drop_closes_stream_and_receiver() {
-        use futures::StreamExt;
+        use futures::{FutureExt, StreamExt};
         let notifier = VersionedNotifier::new();
         let mut sub = notifier.subscribe();
 
-        assert_eq!(sub.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(sub.next().now_or_never(), None);
         drop(notifier);
 
-        assert_eq!(sub.try_recv(), Err(TryRecvError::Closed));
         let next = futures::executor::block_on(sub.next());
         assert_eq!(next, None);
     }
 
     #[test]
     fn test_notifier_explicit_close() {
-        use futures::StreamExt;
+        use futures::{FutureExt, StreamExt};
         let notifier = VersionedNotifier::new();
         let mut sub = notifier.subscribe();
 
         notifier.notify();
-        assert_eq!(sub.try_recv(), Ok(1));
+        assert_eq!(sub.next().now_or_never(), Some(Some(1)));
 
         notifier.close();
         assert!(notifier.is_closed());
         assert!(sub.is_closed());
-        assert_eq!(sub.try_recv(), Err(TryRecvError::Closed));
 
         let next = futures::executor::block_on(sub.next());
         assert_eq!(next, None);
@@ -422,13 +381,14 @@ mod tests {
 
     #[test]
     fn test_receiver_clone() {
+        use futures::{FutureExt, StreamExt};
         let notifier = VersionedNotifier::new();
         let mut sub1 = notifier.subscribe();
         notifier.notify();
 
         let mut sub2 = sub1.clone();
-        assert_eq!(sub1.try_recv(), Ok(1));
-        assert_eq!(sub2.try_recv(), Ok(1));
+        assert_eq!(sub1.next().now_or_never(), Some(Some(1)));
+        assert_eq!(sub2.next().now_or_never(), Some(Some(1)));
     }
 
     #[test]

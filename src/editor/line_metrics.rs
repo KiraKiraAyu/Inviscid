@@ -4,7 +4,6 @@ use std::{cmp::Ordering, ops::Range};
 
 pub const DOCUMENT_TOP_PADDING: Pixels = px(24.0);
 pub const DOCUMENT_BOTTOM_PADDING: Pixels = px(24.0);
-pub const EMPTY_DOCUMENT_HEIGHT: Pixels = px(48.0);
 
 #[cfg(test)]
 thread_local! {

@@ -139,7 +139,6 @@ fn invalid_utf8_load_cannot_edit_or_overwrite_file(cx: &mut gpui::TestAppContext
     let editor = cx.new(|cx| super::Editor::new_with_path(path.clone(), cx));
     editor.update(cx, |editor, cx| {
         assert!(!editor.can_edit());
-        editor.set_read_only(false);
         editor.toggle_read_only();
         editor.toggle_read_only();
         assert!(!editor.can_edit());
@@ -657,7 +656,7 @@ fn test_empty_heading_converted_to_paragraph_no_spacing_jump() {
 
 #[test]
 fn test_link_only_paragraph_cursor_navigation_and_hit_testing() {
-    use crate::editor::shaping::visible_byte_to_raw_col_with_selection;
+    use crate::editor::shaping::runs::visible_byte_to_raw_col_with_selection;
 
     let lines = vec!["[Inviscid](https://github.com)".to_string()];
     let parsed_doc = MarkdownScanner::scan_document(&lines);
@@ -691,7 +690,7 @@ fn test_link_only_paragraph_cursor_navigation_and_hit_testing() {
 
 #[test]
 fn test_resolve_image_source() {
-    use crate::editor::render::resolve_image_source;
+    use crate::editor::render::image::resolve_image_source;
     use gpui::{ImageSource, Resource};
     use std::path::Path;
 
@@ -769,7 +768,7 @@ fn test_drag_selection_head_marker_disclosure() {
 
 #[test]
 fn test_image_active_cursor_placement() {
-    use crate::editor::shaping::visible_byte_to_raw_col_with_selection;
+    use crate::editor::shaping::runs::visible_byte_to_raw_col_with_selection;
 
     let lines = vec!["![a](https://www.testdomain.com/index.webp)".to_string()];
     let parsed_doc = MarkdownScanner::scan_document(&lines);
@@ -843,7 +842,7 @@ fn test_image_shaping_style_consistency() {
 
 #[test]
 fn test_image_dimension_extraction_and_layout_height() {
-    use crate::http::{extract_image_dimensions, record_image_size};
+    use crate::http::dimensions::extract_image_dimensions;
 
     // 1. Test PNG header parser: 1920x1080
     let mut png_bytes = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n'];
@@ -857,8 +856,7 @@ fn test_image_dimension_extraction_and_layout_height() {
 
     // 2. Test get_line_layout_height with recorded dimensions
     let test_url = "https://www.testdomain.com/test_1080p.png";
-    record_image_size(test_url, 1920, 1080);
-    crate::http::mark_url_loaded(test_url);
+    crate::http::mark_url_loaded_with_size(test_url, Some((1920, 1080)));
 
     let lines = vec![format!("![]({})", test_url)];
     let parsed_doc = MarkdownScanner::scan_document(&lines);
@@ -1509,9 +1507,8 @@ fn test_hit_testing_monotonicity_and_strict_boundary_invariants() {
 
 #[test]
 fn test_column_mapping_bijectivity_and_monotonicity() {
-    use crate::editor::shaping::{
-        raw_col_to_visible_byte_with_selection, visible_byte_to_raw_col_with_selection,
-    };
+    use crate::editor::shaping::raw_col_to_visible_byte_with_selection;
+    use crate::editor::shaping::runs::visible_byte_to_raw_col_with_selection;
     use crate::markdown::parse_inline_spans;
 
     let raw_text = "Hello **bold text** and *italic* and `code` here!";
@@ -1682,8 +1679,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
 
     // 2. Simulate image finishing downloading in background
     let initial_img_v = initial_cache.image_cache_version;
-    crate::http::record_image_size(url, 1600, 800); // 2:1 aspect ratio -> 800px width yields 400px height
-    crate::http::mark_url_loaded(url);
+    crate::http::mark_url_loaded_with_size(url, Some((1600, 800))); // 2:1 aspect ratio -> 800px width yields 400px height
     let new_img_v = crate::http::image_cache_version();
     assert!(new_img_v > initial_img_v);
 
@@ -3522,7 +3518,7 @@ fn test_debounced_auto_save_lifecycle(cx: &mut gpui::TestAppContext) {
 
     let (editor, cx) = cx.add_window_view(|_window, cx| {
         let mut ed = super::Editor::new_with_path(temp_path.clone(), cx);
-        ed.set_auto_save_delay(Duration::from_millis(50));
+        ed.auto_save_delay = Duration::from_millis(50);
         ed
     });
     cx.run_until_parked();
@@ -3531,7 +3527,7 @@ fn test_debounced_auto_save_lifecycle(cx: &mut gpui::TestAppContext) {
     cx.update(|_window, cx| {
         editor.update(cx, |ed, _cx| {
             assert!(!ed.is_dirty());
-            assert!(!ed.has_auto_save_task());
+            assert!(ed.auto_save_task.is_none());
         });
     });
 
@@ -3542,7 +3538,7 @@ fn test_debounced_auto_save_lifecycle(cx: &mut gpui::TestAppContext) {
                 ed.buffer_mut().insert_text("Added text ");
             });
             assert!(ed.is_dirty());
-            assert!(ed.has_auto_save_task());
+            assert!(ed.auto_save_task.is_some());
         });
     });
 
@@ -3564,7 +3560,7 @@ fn test_debounced_auto_save_lifecycle(cx: &mut gpui::TestAppContext) {
                 ed.buffer_mut().insert_text("more text ");
             });
             assert!(ed.is_dirty());
-            assert!(ed.has_auto_save_task());
+            assert!(ed.auto_save_task.is_some());
         });
     });
 
@@ -3593,7 +3589,10 @@ fn test_debounced_auto_save_lifecycle(cx: &mut gpui::TestAppContext) {
     cx.update(|_window, cx| {
         editor.update(cx, |ed, _cx| {
             assert!(!ed.is_dirty(), "Editor should be clean after auto save");
-            assert!(!ed.has_auto_save_task(), "Auto save task should be cleared");
+            assert!(
+                ed.auto_save_task.is_none(),
+                "Auto save task should be cleared"
+            );
         });
     });
 
@@ -3604,13 +3603,13 @@ fn test_debounced_auto_save_lifecycle(cx: &mut gpui::TestAppContext) {
                 ed.buffer_mut().insert_text("temporary edit");
             });
             assert!(ed.is_dirty());
-            assert!(ed.has_auto_save_task());
+            assert!(ed.auto_save_task.is_some());
 
             // Undo back to saved content
             ed.undo(cx);
             assert!(!ed.is_dirty(), "Editor should be clean after undo");
             assert!(
-                !ed.has_auto_save_task(),
+                ed.auto_save_task.is_none(),
                 "Auto save task must be cancelled on undo to clean"
             );
         });
@@ -3619,7 +3618,7 @@ fn test_debounced_auto_save_lifecycle(cx: &mut gpui::TestAppContext) {
     // 5. Test Untitled document: should never schedule auto save
     let (untitled_editor, cx) = cx.add_window_view(|_window, cx| {
         let mut ed = super::Editor::new(cx);
-        ed.set_auto_save_delay(Duration::from_millis(50));
+        ed.auto_save_delay = Duration::from_millis(50);
         ed
     });
     cx.run_until_parked();
@@ -3631,7 +3630,7 @@ fn test_debounced_auto_save_lifecycle(cx: &mut gpui::TestAppContext) {
             });
             assert!(ed.is_dirty());
             assert!(
-                !ed.has_auto_save_task(),
+                ed.auto_save_task.is_none(),
                 "Untitled editor must never schedule auto save"
             );
         });
@@ -3675,7 +3674,7 @@ fn test_debounced_auto_save_edge_cases(cx: &mut gpui::TestAppContext) {
 
     let (editor, cx) = cx.add_window_view(|_window, cx| {
         let mut ed = super::Editor::new_with_path(temp_path.clone(), cx);
-        ed.set_auto_save_delay(Duration::from_millis(50));
+        ed.auto_save_delay = Duration::from_millis(50);
         ed
     });
     cx.run_until_parked();
@@ -3687,7 +3686,7 @@ fn test_debounced_auto_save_edge_cases(cx: &mut gpui::TestAppContext) {
             });
             assert!(ed.is_dirty());
             assert!(
-                !ed.has_auto_save_task(),
+                ed.auto_save_task.is_none(),
                 "Disabled auto_save config must not schedule task"
             );
         });
@@ -3705,12 +3704,12 @@ fn test_debounced_auto_save_edge_cases(cx: &mut gpui::TestAppContext) {
             ed.perform_edit(cx, |ed| {
                 ed.buffer_mut().insert_text("new change");
             });
-            assert!(ed.has_auto_save_task());
+            assert!(ed.auto_save_task.is_some());
 
             // Manual save should immediately clear auto_save_task
             let task = ed.save_file_async(cx).expect("Save should succeed");
             assert!(
-                !ed.has_auto_save_task(),
+                ed.auto_save_task.is_none(),
                 "Manual save must cancel auto save task"
             );
             drop(task);
@@ -3723,14 +3722,14 @@ fn test_debounced_auto_save_edge_cases(cx: &mut gpui::TestAppContext) {
             ed.perform_edit(cx, |ed| {
                 ed.buffer_mut().insert_text("another change");
             });
-            assert!(ed.has_auto_save_task());
+            assert!(ed.auto_save_task.is_some());
 
-            ed.set_read_only(true);
+            ed.toggle_read_only();
             assert!(
-                !ed.has_auto_save_task(),
+                ed.auto_save_task.is_none(),
                 "Setting read-only must cancel auto save task"
             );
-            ed.set_read_only(false);
+            ed.toggle_read_only();
         });
     });
 
@@ -3740,7 +3739,7 @@ fn test_debounced_auto_save_edge_cases(cx: &mut gpui::TestAppContext) {
             ed.replace_text_in_range(None, "typed via input handler", window, cx);
             assert!(ed.is_dirty());
             assert!(
-                ed.has_auto_save_task(),
+                ed.auto_save_task.is_some(),
                 "InputHandler typing must trigger debounced auto save"
             );
         });
@@ -4587,7 +4586,7 @@ fn ime_cancellation_only_replaces_marked_text(cx: &mut gpui::TestAppContext) {
 fn test_syntax_highlighting_runs_in_live_preview_and_source_modes() {
     use crate::editor::shaping::{LineShapingContext, build_line_runs};
     use crate::markdown::InlineSpan;
-    use crate::syntax::SyntaxToken;
+    use crate::syntax::token::SyntaxToken;
     use crate::theme::Theme;
     use gpui::{FontStyle, TextStyle};
 
@@ -4631,7 +4630,8 @@ fn test_syntax_highlighting_runs_in_live_preview_and_source_modes() {
 #[gpui::test]
 fn test_code_block_incremental_edit_and_syntax_cache_invalidation(cx: &mut gpui::TestAppContext) {
     use crate::buffer::{Position, TextBuffer};
-    use crate::syntax::{SyntaxToken, register_global_wasm_grammar};
+    use crate::syntax::registry::register_global_wasm_grammar;
+    use crate::syntax::token::SyntaxToken;
 
     let wasm_bytes = include_bytes!("../../tests/fixtures/tree-sitter-json.wasm");
     register_global_wasm_grammar("json", wasm_bytes, None)
@@ -4683,7 +4683,7 @@ fn test_code_block_incremental_edit_and_syntax_cache_invalidation(cx: &mut gpui:
 #[gpui::test]
 fn test_quoted_code_block_incremental_edit_matches_full_rebuild(cx: &mut gpui::TestAppContext) {
     use crate::buffer::{Position, TextBuffer};
-    use crate::syntax::register_global_wasm_grammar;
+    use crate::syntax::registry::register_global_wasm_grammar;
     use gpui::{AppContext, Bounds, point, px, size};
 
     let wasm_bytes = include_bytes!("../../tests/fixtures/tree-sitter-json.wasm");
@@ -4744,7 +4744,10 @@ fn test_editor_save_preserves_line_ending_and_tracks_mtime(cx: &mut gpui::TestAp
     cx.update(|_window, cx| {
         editor.update(cx, |ed, _cx| {
             assert_eq!(ed.buffer().line_ending(), crate::buffer::LineEnding::CrLf);
-            assert!(!ed.is_externally_modified());
+            assert_eq!(
+                ed.external_disk_hash,
+                Some(crate::fs::read_file_hash(&test_file).unwrap())
+            );
         });
     });
 
@@ -4768,7 +4771,10 @@ fn test_editor_save_preserves_line_ending_and_tracks_mtime(cx: &mut gpui::TestAp
     cx.update(|_window, cx| {
         editor.update(cx, |ed, _cx| {
             assert!(!ed.is_dirty());
-            assert!(!ed.is_externally_modified());
+            assert_eq!(
+                ed.external_disk_hash,
+                Some(crate::fs::read_file_hash(&test_file).unwrap())
+            );
         });
     });
 }
@@ -4946,10 +4952,7 @@ fn test_deleted_file_can_be_kept_and_recreated(cx: &mut gpui::TestAppContext) {
     cx.run_until_parked();
     cx.update(|_window, cx| {
         editor.update(cx, |ed, cx| {
-            assert_eq!(
-                ed.external_change_state(),
-                super::ExternalChangeState::Deleted
-            );
+            assert_eq!(ed.external_change, super::ExternalChangeState::Deleted);
             assert!(ed.save_file_async(cx).is_err());
             ed.keep_local_changes(cx);
             let task = ed
@@ -5923,7 +5926,10 @@ fn update_file_path_refreshes_baseline_asynchronously(cx: &mut gpui::TestAppCont
 
     editor.read_with(cx, |ed, _| {
         assert_eq!(ed.file_path(), Some(file_b.as_path()));
-        assert!(!ed.is_externally_modified());
+        assert_eq!(
+            ed.external_disk_hash,
+            Some(crate::fs::read_file_hash(&file_b).unwrap())
+        );
     });
 }
 
@@ -5983,9 +5989,8 @@ fn wide_math_preview_layout_height_matches_scaled_svg() {
     let lines = vec!["$$".to_string(), "x".to_string(), "$$".to_string()];
     let parsed = MarkdownScanner::scan_document(&lines);
     let tail_min_h = scaled.height + MATH_EDITOR_PADDING_Y * 2.0;
-    let lcx = LineLayoutContext::live_preview(content_width)
-        .with_math_block_editing(true)
-        .with_math_block_tail_min_height(tail_min_h);
+    let mut lcx = LineLayoutContext::live_preview(content_width).with_math_block_editing(true);
+    lcx.math_block_tail_min_height = tail_min_h;
 
     let measured_h = get_line_layout_height(&lines, 1, &parsed[1], lcx);
     let single_source_h = px(24.0) + MATH_EDITOR_PADDING_Y * 2.0;

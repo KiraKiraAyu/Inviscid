@@ -1,21 +1,16 @@
 use gpui::prelude::*;
 use gpui::*;
-use std::{collections::HashSet, ops::Range, path::{Path, PathBuf}};
+use std::{
+    collections::HashSet,
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
 use crate::app::project_panel::inline_input::{InlineInput, InlineInputKind};
 use crate::app::project_panel::{DraggedProjectEntry, FileTreeEntry, ProjectPanel};
 use crate::theme::Theme;
 use crate::ui::dock_panel;
 use crate::ui::{FontSize, Icon, IconName, IconSize, Radius, Spacing};
-
-/// Calculates the index in `entries` where a new inline input row should be rendered.
-pub fn calculate_new_entry_insert_index(
-    entries: &[FileTreeEntry],
-    root_dir: Option<&Path>,
-    input: &InlineInput,
-) -> Option<usize> {
-    calculate_new_entry_insert_index_for_list(entries, None, root_dir, input)
-}
 
 fn calculate_new_entry_insert_index_for_list(
     entries: &[FileTreeEntry],
@@ -502,7 +497,12 @@ mod tests {
                 )
             });
             assert_eq!(
-                calculate_new_entry_insert_index(&entries, root_dir, folder_at_root.read(cx)),
+                calculate_new_entry_insert_index_for_list(
+                    &entries,
+                    None,
+                    root_dir,
+                    folder_at_root.read(cx),
+                ),
                 Some(0)
             );
 
@@ -518,7 +518,12 @@ mod tests {
                 )
             });
             assert_eq!(
-                calculate_new_entry_insert_index(&entries, root_dir, folder_in_src.read(cx)),
+                calculate_new_entry_insert_index_for_list(
+                    &entries,
+                    None,
+                    root_dir,
+                    folder_in_src.read(cx),
+                ),
                 Some(1)
             );
 
@@ -535,7 +540,12 @@ mod tests {
                 )
             });
             assert_eq!(
-                calculate_new_entry_insert_index(&entries, root_dir, file_at_root.read(cx)),
+                calculate_new_entry_insert_index_for_list(
+                    &entries,
+                    None,
+                    root_dir,
+                    file_at_root.read(cx),
+                ),
                 Some(5)
             );
 
@@ -551,7 +561,12 @@ mod tests {
                 )
             });
             assert_eq!(
-                calculate_new_entry_insert_index(&entries, root_dir, file_in_src.read(cx)),
+                calculate_new_entry_insert_index_for_list(
+                    &entries,
+                    None,
+                    root_dir,
+                    file_in_src.read(cx),
+                ),
                 Some(1)
             );
 
@@ -568,7 +583,12 @@ mod tests {
                 )
             });
             assert_eq!(
-                calculate_new_entry_insert_index(&entries, root_dir, rename.read(cx)),
+                calculate_new_entry_insert_index_for_list(
+                    &entries,
+                    None,
+                    root_dir,
+                    rename.read(cx)
+                ),
                 None
             );
         });

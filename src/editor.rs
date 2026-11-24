@@ -26,20 +26,20 @@ use crate::theme::{ActiveTheme, Theme};
 use crate::ui::Spacing;
 
 pub mod actions;
-pub mod display_map;
-pub mod element;
-pub mod find;
-pub mod find_bar;
-pub mod geometry;
-pub mod input_handler;
-pub mod keymap;
-pub mod layout;
-pub mod line_metrics;
+pub(crate) mod display_map;
+pub(crate) mod element;
+pub(crate) mod find;
+pub(crate) mod find_bar;
+pub(crate) mod geometry;
+pub(crate) mod input_handler;
+pub(crate) mod keymap;
+pub(crate) mod layout;
+pub(crate) mod line_metrics;
 pub(crate) mod loading;
-pub mod mouse;
-pub mod navigation;
-pub mod parsed_line_store;
-pub mod render;
+pub(crate) mod mouse;
+pub(crate) mod navigation;
+pub(crate) mod parsed_line_store;
+pub(crate) mod render;
 mod scroll_anchor;
 pub mod shaping;
 #[cfg(test)]
@@ -48,10 +48,9 @@ mod window_cache;
 mod window_layout;
 
 pub use actions::*;
-pub use display_map::*;
-pub use element::EditorElement;
-pub use layout::*;
-pub use render::*;
+pub(crate) use display_map::*;
+pub(crate) use element::EditorElement;
+pub(crate) use layout::*;
 
 /// Allowed file extensions for editing in Inviscid.
 pub const WHITELISTED_EXTENSIONS: &[&str] = &["md", "markdown", "txt"];
@@ -432,20 +431,6 @@ impl Editor {
         self.scroll_task.is_some() || self.scroll_frame_scheduled
     }
 
-    #[inline]
-    pub fn has_auto_save_task(&self) -> bool {
-        self.auto_save_task.is_some()
-    }
-
-    #[inline]
-    pub fn auto_save_delay(&self) -> std::time::Duration {
-        self.auto_save_delay
-    }
-
-    pub fn set_auto_save_delay(&mut self, delay: std::time::Duration) {
-        self.auto_save_delay = delay;
-    }
-
     pub(crate) fn schedule_auto_save_if_needed(&mut self, cx: &mut Context<Self>) {
         if !self.can_edit() || self.buffer.file_path().is_none() || !self.buffer.is_dirty() {
             self.auto_save_task = None;
@@ -706,7 +691,8 @@ impl Editor {
         }));
     }
 
-    pub fn new_with_path(path: PathBuf, cx: &mut Context<Self>) -> Self {
+    #[cfg(test)]
+    pub(super) fn new_with_path(path: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut load_error = None;
         let (buffer, disk_hash) = if path.exists() && is_whitelisted_extension(&path) {
             let disk_hash = crate::fs::read_file_hash(&path).ok();
@@ -755,13 +741,6 @@ impl Editor {
         self.is_editable() && !self.is_read_only() && !self.is_loading
     }
 
-    pub fn set_read_only(&mut self, is_read_only: bool) {
-        self.is_read_only = is_read_only;
-        if self.is_read_only {
-            self.auto_save_task = None;
-        }
-    }
-
     pub fn toggle_read_only(&mut self) {
         self.is_read_only = !self.is_read_only;
         if self.is_read_only {
@@ -776,7 +755,7 @@ impl Editor {
     }
 
     /// Folds `start_line..=end_line`, moving the cursor to `start_line` if it was inside the folded region.
-    pub fn fold_internal(
+    fn fold_internal(
         &mut self,
         start_line: crate::buffer::SourceLine,
         end_line: crate::buffer::SourceLine,
@@ -803,7 +782,7 @@ impl Editor {
         cx.notify();
     }
 
-    pub fn unfold_internal(&mut self, start_line: crate::buffer::SourceLine) -> bool {
+    fn unfold_internal(&mut self, start_line: crate::buffer::SourceLine) -> bool {
         self.display_map.synchronize(&self.buffer);
         let changed = self.display_map.fold_map_mut().unfold(start_line);
         if changed {
@@ -824,7 +803,7 @@ impl Editor {
         changed
     }
 
-    pub fn unfold_all_internal(&mut self) {
+    fn unfold_all_internal(&mut self) {
         self.display_map.synchronize(&self.buffer);
         self.display_map.fold_map_mut().unfold_all();
         self.ensure_layout_cache();
@@ -862,7 +841,7 @@ impl Editor {
     }
 
     /// Clamps cursor out of hidden markdown prefixes when switching into Live Preview.
-    pub fn normalize_cursor_for_mode(&mut self, new_mode: RenderMode) {
+    fn normalize_cursor_for_mode(&mut self, new_mode: RenderMode) {
         if new_mode != RenderMode::LivePreview {
             return;
         }
@@ -1027,7 +1006,7 @@ impl Editor {
     }
 
     /// Returns selected text for clipboard, including leading block prefixes (`#`, `-`, `>`) when a full line is selected in Live Preview.
-    pub fn selected_text_for_clipboard(&self) -> Option<String> {
+    pub(crate) fn selected_text_for_clipboard(&self) -> Option<String> {
         Self::selected_text_for_clipboard_internal(&self.buffer, self.render_mode)
     }
 
@@ -1286,34 +1265,9 @@ impl Editor {
         cx.notify();
     }
 
-    /// Returns true if the file on disk has been modified externally since it was opened or last saved.
-    pub fn is_externally_modified(&self) -> bool {
-        if let Some(path) = self.buffer.file_path() {
-            return match crate::fs::read_file_hash(path) {
-                Ok(current_hash) => self.external_disk_hash != Some(current_hash),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    self.external_disk_hash.is_some()
-                }
-                Err(error) => {
-                    eprintln!(
-                        "Failed to inspect file {:?} for external changes: {}",
-                        path, error
-                    );
-                    false
-                }
-            };
-        }
-        false
-    }
-
     #[inline]
-    pub fn external_change_pending(&self) -> bool {
+    pub(crate) fn external_change_pending(&self) -> bool {
         self.external_change != ExternalChangeState::None
-    }
-
-    #[inline]
-    pub fn external_change_state(&self) -> ExternalChangeState {
-        self.external_change
     }
 
     fn refresh_external_baseline_async(

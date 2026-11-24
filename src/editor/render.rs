@@ -11,10 +11,8 @@ use super::geometry::{TextShapingMode, resolve_line_text_spec};
 use super::shaping::render_shaped_line;
 
 mod blocks;
-mod image;
+pub(crate) mod image;
 mod table;
-
-pub use image::{render_loading_metaball_animation, resolve_image_source};
 
 /// Renders a line in Live Preview mode.
 pub fn render_live_line_content(

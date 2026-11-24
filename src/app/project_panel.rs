@@ -10,17 +10,19 @@ use crate::theme::{DEFAULT_THEME, ThemeManager};
 use crate::ui::text_input::{TextInput, TextInputBg, TextInputEvent};
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
 
-pub mod confirm_modal;
+mod confirm_modal;
 pub mod context_menu;
 pub mod fs_ops;
-pub mod inline_input;
-pub mod tree_view;
+mod inline_input;
+mod tree_view;
 
-pub use confirm_modal::{ConfirmModalKind, ConfirmModalState};
+pub use confirm_modal::ConfirmModalKind;
+pub(crate) use confirm_modal::ConfirmModalState;
 use context_menu::{ContextMenuAction, ContextMenuState, FileClipboard};
-pub use inline_input::{InlineInput, InlineInputEvent, InlineInputKind};
+pub(crate) use inline_input::InlineInputEvent;
+pub use inline_input::{InlineInput, InlineInputKind};
 
-pub use crate::fs::{FileTreeEntry, FileTreeEntryKind};
+pub(crate) use crate::fs::FileTreeEntry;
 use crate::fs::{WorkspaceFileIndex, WorkspaceSnapshot, scan_expanded_tree};
 
 /// Smooth scroll physics state for the file tree (re-exports unified SmoothScrollPhysics)
@@ -497,7 +499,7 @@ impl ProjectPanel {
     }
 
     /// Returns whether `dir_path` is expanded in the currently active view (filtered or unfiltered).
-    pub fn is_dir_currently_expanded(&self, dir_path: &Path) -> bool {
+    pub(crate) fn is_dir_currently_expanded(&self, dir_path: &Path) -> bool {
         if !self.filter_query.trim().is_empty() {
             !self.filter_collapsed_dirs.contains(dir_path)
         } else {
@@ -685,23 +687,6 @@ impl ProjectPanel {
         }
     }
 
-    /// Handles mouse wheel and precision touchpad events with smooth scroll physics
-    #[cfg(test)]
-    pub(crate) fn handle_scroll_wheel(
-        &mut self,
-        event: &ScrollWheelEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        crate::ui::SmoothScrollController::handle_wheel(
-            self,
-            event,
-            Some(window),
-            cx,
-            Self::scroll_access,
-        );
-    }
-
     /// Opens context menu manually (useful for testing or programmatic triggering).
     pub fn open_context_menu(
         &mut self,
@@ -723,7 +708,12 @@ impl ProjectPanel {
     }
 
     /// Starts an inline rename for the specified target.
-    pub fn start_rename(&mut self, target: &Path, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn start_rename(
+        &mut self,
+        target: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(ref root) = self.root_dir
             && target == root
         {
@@ -792,7 +782,7 @@ impl ProjectPanel {
         }
     }
 
-    pub fn handle_inline_commit(&mut self, text: String, cx: &mut Context<Self>) {
+    pub(crate) fn handle_inline_commit(&mut self, text: String, cx: &mut Context<Self>) {
         let input = match self.inline_input.take() {
             Some(i) => i,
             None => return,
@@ -1353,7 +1343,7 @@ impl ProjectPanel {
     }
 
     /// Computes the safe bounds for positioning context menus within the window workspace.
-    pub fn safe_menu_bounds(&self, window_bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+    pub(crate) fn safe_menu_bounds(&self, window_bounds: Bounds<Pixels>) -> Bounds<Pixels> {
         crate::app::workspace::workspace_safe_bounds(window_bounds)
     }
 }
@@ -1940,7 +1930,14 @@ mod tests {
             };
             host.update(cx, |host, cx| {
                 host.panel.update(cx, |panel, cx| {
-                    panel.handle_scroll_wheel(&event, window, cx)
+                    crate::ui::SmoothScrollController::handle_wheel_with(
+                        panel,
+                        &event,
+                        Some(window),
+                        cx,
+                        ProjectPanel::scroll_access,
+                        |_, _| {},
+                    );
                 });
             });
         });
@@ -1960,6 +1957,7 @@ mod tests {
 
     #[test]
     fn test_file_tree_entry_invariants() {
+        use crate::fs::workspace_index::FileTreeEntryKind;
         let file = FileTreeEntry::new_file(PathBuf::from("/ws/main.rs"), "main.rs".to_string(), 1);
         assert_eq!(file.kind, FileTreeEntryKind::File);
         assert!(!file.is_dir());

@@ -170,11 +170,6 @@ pub fn is_url_loaded(url: &str) -> bool {
     read_cache(|cache| cache.is_loaded(url))
 }
 
-pub fn mark_url_loaded(url: &str) {
-    write_cache(|cache| cache.mark_loaded(url));
-    notify_image_mutation();
-}
-
 pub fn is_url_failed(url: &str) -> bool {
     read_cache(|cache| cache.is_failed(url))
 }

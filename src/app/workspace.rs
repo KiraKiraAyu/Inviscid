@@ -2,16 +2,14 @@ use gpui::prelude::*;
 use gpui::*;
 use std::path::PathBuf;
 
-pub mod fs;
-pub mod sidebar;
-pub mod tabs;
-pub mod welcome;
+mod fs;
+mod sidebar;
+mod tabs;
+mod welcome;
 
-pub use fs::{extract_workspace_name_from_paths, workspace_safe_bounds};
-pub use sidebar::{
-    DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, clamp_sidebar_width,
-};
-pub use tabs::TabItem;
+pub(crate) use fs::{extract_workspace_name_from_paths, workspace_safe_bounds};
+pub use sidebar::{DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
+pub(crate) use tabs::TabItem;
 use tabs::TabKind;
 
 use crate::app::search_panel::SearchPanel;
@@ -467,7 +465,7 @@ impl Workspace {
         self.sync_active_editor_state(cx);
     }
 
-    pub fn init_editor(
+    pub(crate) fn init_editor(
         path: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> (Entity<Editor>, Subscription, Option<Task<()>>) {
@@ -909,7 +907,7 @@ impl Workspace {
         self.sync_active_editor_state(cx);
     }
 
-    pub fn toggle_tab_read_only(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_tab_read_only(&mut self, tab_idx: usize, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get(tab_idx)
             && tab.kind == TabKind::Editor
         {
@@ -956,7 +954,7 @@ impl Workspace {
         }
     }
 
-    pub fn reveal_tab_in_file_explorer(&self, tab_idx: usize, cx: &App) {
+    pub(crate) fn reveal_tab_in_file_explorer(&self, tab_idx: usize, cx: &App) {
         if let Some(tab) = self.tabs.get(tab_idx)
             && let Some(path) = tab.editor.read(cx).file_path()
         {
@@ -1210,7 +1208,7 @@ impl Workspace {
     }
 
     /// Updates paths for any open tabs matching the renamed file or directory.
-    pub fn handle_path_renamed(
+    pub(crate) fn handle_path_renamed(
         &mut self,
         old_path: &std::path::Path,
         new_path: &std::path::Path,
@@ -1585,7 +1583,7 @@ impl Workspace {
         self.active_tab_kind() == Some(TabKind::WorkspaceSearch)
     }
 
-    pub fn get_tabs_meta(&self, cx: &App) -> Vec<tab_bar::TabMeta> {
+    pub(crate) fn get_tabs_meta(&self, cx: &App) -> Vec<tab_bar::TabMeta> {
         tabs::collect_tabs_meta(&self.tabs, cx)
     }
 
@@ -2402,8 +2400,7 @@ mod tests {
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("sub/doc.md"), "needle\n").unwrap();
 
-        let (ws, cx) =
-            cx.add_window_view(|_window, cx| Workspace::new(Some(root.clone()), cx));
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(Some(root.clone()), cx));
         cx.run_until_parked();
 
         ws.read_with(cx, |ws, _| {
@@ -2488,8 +2485,7 @@ mod tests {
         let root = temp_dir.path().to_path_buf();
         std::fs::write(root.join("doc.md"), "needle\n").unwrap();
 
-        let (ws, cx) =
-            cx.add_window_view(|_window, cx| Workspace::new(Some(root.clone()), cx));
+        let (ws, cx) = cx.add_window_view(|_window, cx| Workspace::new(Some(root.clone()), cx));
         cx.run_until_parked();
 
         // 1. Open Search, type a query, let the debounced search finish, then close Search tab

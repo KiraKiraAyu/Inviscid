@@ -104,6 +104,7 @@ impl VecMetrics {
             .iter()
             .map(|&h| Fixed::from_pixels(h).0)
             .sum::<i64>();
-        Fixed(height + Fixed::from_pixels(EMPTY_DOCUMENT_HEIGHT).0).pixels()
+        Fixed(height + Fixed::from_pixels(DOCUMENT_TOP_PADDING + DOCUMENT_BOTTOM_PADDING).0)
+            .pixels()
     }
 }

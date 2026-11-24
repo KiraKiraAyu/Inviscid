@@ -221,11 +221,17 @@ fn build_tree_entry(
             Some((FileTreeEntry::new_collocated_doc(path, name, depth), false))
         } else {
             let expanded = kind_info.is_real_dir && is_expanded(&path);
-            Some((FileTreeEntry::new_dir(path, name, depth, expanded), expanded))
+            Some((
+                FileTreeEntry::new_dir(path, name, depth, expanded),
+                expanded,
+            ))
         }
     } else if kind_info.raw_is_dir {
         let expanded = kind_info.is_real_dir && is_expanded(&path);
-        Some((FileTreeEntry::new_dir(path, name, depth, expanded), expanded))
+        Some((
+            FileTreeEntry::new_dir(path, name, depth, expanded),
+            expanded,
+        ))
     } else {
         Some((FileTreeEntry::new_file(path, name, depth), false))
     }
@@ -330,12 +336,7 @@ fn walk_workspace(
             entry.path_is_symlink(),
             entry.path(),
         );
-        if kind_info.raw_is_dir
-            && entry
-                .file_name()
-                .to_str()
-                .is_some_and(is_pruned_dir_name)
-        {
+        if kind_info.raw_is_dir && entry.file_name().to_str().is_some_and(is_pruned_dir_name) {
             return false;
         }
         if collocated_mode {
@@ -414,10 +415,7 @@ fn walk_workspace(
     searchable_files.sort();
 
     let bundle_dirs: HashSet<&Path> = if collocated_mode {
-        searchable_files
-            .iter()
-            .filter_map(|p| p.parent())
-            .collect()
+        searchable_files.iter().filter_map(|p| p.parent()).collect()
     } else {
         HashSet::new()
     };
@@ -831,7 +829,11 @@ mod tests {
         fs::write(root.join("a.txt"), "x").unwrap();
         let index = WorkspaceFileIndex::default();
 
-        assert!(index.get_or_scan(root, false, &AtomicBool::new(true)).is_none());
+        assert!(
+            index
+                .get_or_scan(root, false, &AtomicBool::new(true))
+                .is_none()
+        );
         assert!(index.lookup(root, false).is_err());
     }
 
@@ -887,10 +889,8 @@ mod tests {
         let mut expanded = HashSet::new();
         expanded.insert(root.join("sub"));
         let entries = scan_expanded_tree(root, &expanded, false, &not_cancelled()).unwrap();
-        let names: Vec<(&str, usize)> = entries
-            .iter()
-            .map(|e| (e.name.as_str(), e.depth))
-            .collect();
+        let names: Vec<(&str, usize)> =
+            entries.iter().map(|e| (e.name.as_str(), e.depth)).collect();
         assert_eq!(
             names,
             vec![

@@ -1,15 +1,16 @@
-pub mod cache;
-pub mod client;
-pub mod dimensions;
-pub mod path;
+pub(crate) mod cache;
+pub(crate) mod client;
+pub(crate) mod dimensions;
+pub(crate) mod path;
 
-pub use cache::*;
-pub use client::*;
-pub use dimensions::*;
-pub use path::*;
+pub(crate) use cache::*;
+pub use client::UreqClient;
+pub(crate) use client::*;
+pub(crate) use path::*;
 
 #[cfg(test)]
 mod tests {
+    use super::dimensions::extract_image_dimensions;
     use super::*;
 
     #[test]
@@ -233,6 +234,8 @@ mod tests {
 
     #[test]
     fn test_image_cache_versioning_and_notification() {
+        use futures::{FutureExt, StreamExt};
+
         let initial_v = image_cache_version();
         let mut sub = subscribe_image_updates();
 
@@ -240,18 +243,18 @@ mod tests {
         record_image_size("https://example.com/stream_test.png", 640, 480);
         let v1 = image_cache_version();
         assert!(v1 > initial_v);
-        assert!(sub.try_recv().is_ok());
+        assert!(sub.next().now_or_never().flatten().is_some());
 
         // Mark loaded increments version and notifies
-        mark_url_loaded("https://example.com/stream_test.png");
+        mark_url_loaded_with_size("https://example.com/stream_test.png", Some((640, 480)));
         let v2 = image_cache_version();
         assert!(v2 > v1);
-        assert!(sub.try_recv().is_ok());
+        assert!(sub.next().now_or_never().flatten().is_some());
 
         // Mark failed increments version and notifies
         mark_url_failed("https://example.com/failed_test.png");
         let v3 = image_cache_version();
         assert!(v3 > v2);
-        assert!(sub.try_recv().is_ok());
+        assert!(sub.next().now_or_never().flatten().is_some());
     }
 }

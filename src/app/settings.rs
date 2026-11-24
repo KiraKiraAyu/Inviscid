@@ -8,15 +8,14 @@
 use gpui::prelude::*;
 use gpui::*;
 
-pub mod appearance;
-pub mod bounds;
-pub mod category;
-pub mod editor;
-pub mod general;
-pub mod keybindings;
+mod appearance;
+mod bounds;
+mod category;
+mod editor;
+mod general;
+mod keybindings;
 pub(crate) mod persistence;
 
-pub use bounds::*;
 pub use category::SettingsCategory;
 
 use crate::config::AppConfig;

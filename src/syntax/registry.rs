@@ -1,6 +1,6 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use tree_sitter::{Language, Query, StreamingIterator};
@@ -134,7 +134,7 @@ impl LoadedGrammar {
 pub enum GrammarState {
     Loaded(Arc<LoadedGrammar>),
     Loading,
-    Failed(String),
+    Failed,
 }
 
 struct RegistrySlot {
@@ -159,6 +159,9 @@ impl RegistrySlot {
 pub struct SyntaxRegistry {
     entries: HashMap<String, RegistrySlot>,
     base_url: String,
+    #[cfg(test)]
+    pub(super) cache_dir: Option<PathBuf>,
+    #[cfg(not(test))]
     cache_dir: Option<PathBuf>,
     next_seq: AtomicU64,
     max_loaded: usize,
@@ -205,21 +208,13 @@ impl SyntaxRegistry {
         if self.base_url != normalized {
             self.base_url = normalized;
             self.entries
-                .retain(|_, slot| !matches!(slot.state, GrammarState::Failed(_)));
+                .retain(|_, slot| !matches!(slot.state, GrammarState::Failed));
             self.retry_epoch = self.retry_epoch.wrapping_add(1);
         }
     }
 
     pub fn base_url(&self) -> &str {
         &self.base_url
-    }
-
-    pub fn cache_dir(&self) -> Option<&Path> {
-        self.cache_dir.as_deref()
-    }
-
-    pub fn set_cache_dir(&mut self, cache_dir: Option<PathBuf>) {
-        self.cache_dir = cache_dir;
     }
 
     pub fn get_state(&self, canonical_id: &str) -> Option<&GrammarState> {
@@ -303,23 +298,24 @@ impl SyntaxRegistry {
         evicted
     }
 
-    pub fn mark_failed(&mut self, canonical_id: &str, reason: impl Into<String>) {
+    pub fn mark_failed(&mut self, canonical_id: &str) {
         let seq = self.alloc_seq();
         self.entries.insert(
             canonical_id.to_string(),
-            RegistrySlot::new(GrammarState::Failed(reason.into()), seq),
+            RegistrySlot::new(GrammarState::Failed, seq),
         );
     }
 
     /// Transitions `canonical_id` to `Failed` only if it is still `Loading`, so a stale
     /// background failure cannot overwrite a grammar that was synchronously registered or loaded.
-    pub fn mark_failed_if_loading(&mut self, canonical_id: &str, reason: impl Into<String>) {
+    pub fn mark_failed_if_loading(&mut self, canonical_id: &str) {
         if matches!(self.get_state(canonical_id), Some(GrammarState::Loading)) {
-            self.mark_failed(canonical_id, reason);
+            self.mark_failed(canonical_id);
         }
     }
 
     /// Synchronously compiles and registers a `.wasm` grammar in this registry.
+    #[cfg(test)]
     pub fn register_wasm_bytes(
         &mut self,
         lang_hint: &str,
@@ -327,7 +323,7 @@ impl SyntaxRegistry {
         custom_scm: Option<&str>,
     ) -> Result<Arc<LoadedGrammar>> {
         let canonical_id = normalize_language_id(lang_hint)
-            .ok_or_else(|| anyhow!("Unsupported language identifier: '{}'", lang_hint))?;
+            .ok_or_else(|| anyhow::anyhow!("Unsupported language identifier: '{}'", lang_hint))?;
         let loaded = Arc::new(
             LoadedGrammar::from_wasm_bytes_with_id(&canonical_id, wasm_bytes, custom_scm)
                 .with_context(|| format!("Registering wasm grammar for '{}'", canonical_id))?,
@@ -583,19 +579,20 @@ pub(crate) fn clear_global_loading(canonical_id: &str) {
     write_registry(|reg| reg.clear_loading(canonical_id));
 }
 
-pub(crate) fn mark_global_failed_if_loading(canonical_id: &str, reason: impl Into<String>) {
-    write_registry(|reg| reg.mark_failed_if_loading(canonical_id, reason));
+pub(crate) fn mark_global_failed_if_loading(canonical_id: &str) {
+    write_registry(|reg| reg.mark_failed_if_loading(canonical_id));
 }
 
 /// Synchronously registers a `.wasm` grammar in the global [`SyntaxRegistry`] and increments
 /// [`syntax_cache_version`].
-pub fn register_global_wasm_grammar(
+#[cfg(test)]
+pub(crate) fn register_global_wasm_grammar(
     lang_hint: &str,
     wasm_bytes: &[u8],
     custom_scm: Option<&str>,
 ) -> Result<Arc<LoadedGrammar>> {
     let canonical_id = normalize_language_id(lang_hint)
-        .ok_or_else(|| anyhow!("Unsupported language identifier: '{}'", lang_hint))?;
+        .ok_or_else(|| anyhow::anyhow!("Unsupported language identifier: '{}'", lang_hint))?;
     let loaded = Arc::new(
         LoadedGrammar::from_wasm_bytes_with_id(&canonical_id, wasm_bytes, custom_scm)
             .with_context(|| format!("Registering wasm grammar for '{}'", canonical_id))?,
@@ -676,7 +673,7 @@ pub fn highlight_code_block(lang_hint: &str, lines: &[String]) -> Vec<Vec<Inline
     } else if !has_remote_url {
         write_registry(|reg| {
             if reg.get_state(&canonical_id).is_none() {
-                reg.mark_failed(&canonical_id, "Remote downloading is disabled");
+                reg.mark_failed(&canonical_id);
             }
         });
     } else {

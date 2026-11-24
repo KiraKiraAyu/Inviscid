@@ -67,7 +67,7 @@ fn grammar_completions_only_reparse_matching_code_blocks(cx: &mut gpui::TestAppC
         editor.update(cx, |ed, _| {
             ed.ensure_layout_cache();
             ed.layout_stats.set(super::super::LayoutStats::default());
-            crate::syntax::register_global_wasm_grammar(
+            crate::syntax::registry::register_global_wasm_grammar(
                 "json",
                 include_bytes!("../../../tests/fixtures/tree-sitter-json.wasm"),
                 None,

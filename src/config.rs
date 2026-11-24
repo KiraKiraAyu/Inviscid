@@ -100,7 +100,7 @@ impl Default for SerializedBounds {
 }
 
 impl SerializedBounds {
-    pub fn from_gpui_bounds(bounds: gpui::Bounds<gpui::Pixels>) -> Self {
+    fn from_gpui_bounds(bounds: gpui::Bounds<gpui::Pixels>) -> Self {
         Self {
             x: f32::from(bounds.origin.x),
             y: f32::from(bounds.origin.y),
@@ -109,14 +109,14 @@ impl SerializedBounds {
         }
     }
 
-    pub fn to_gpui_bounds(self) -> gpui::Bounds<gpui::Pixels> {
+    fn to_gpui_bounds(self) -> gpui::Bounds<gpui::Pixels> {
         gpui::Bounds::new(
             gpui::point(gpui::px(self.x), gpui::px(self.y)),
             gpui::size(gpui::px(self.width), gpui::px(self.height)),
         )
     }
 
-    pub fn is_valid(self) -> bool {
+    fn is_valid(self) -> bool {
         self.x.is_finite()
             && self.y.is_finite()
             && self.width.is_finite()
@@ -273,10 +273,7 @@ impl Default for UiLayoutState {
 }
 
 impl UiLayoutState {
-    pub fn from_workspace_and_fallback(
-        ws: &WorkspaceState,
-        fallback: Option<&UiLayoutState>,
-    ) -> Self {
+    fn from_workspace_and_fallback(ws: &WorkspaceState, fallback: Option<&UiLayoutState>) -> Self {
         Self {
             window_bounds: ws
                 .window_bounds
@@ -537,12 +534,12 @@ impl AppConfig {
 
 impl AppConfig {
     /// Standard system config path (`%APPDATA%/inviscid/config.toml` or `~/.config/inviscid/config.toml`).
-    pub fn config_path() -> Option<PathBuf> {
+    fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|p| p.join("inviscid").join("config.toml"))
     }
 
     /// Standard system state path (`%LOCALAPPDATA%/inviscid/state.toml` or `~/.local/share/inviscid/state.toml`).
-    pub fn state_path() -> Option<PathBuf> {
+    fn state_path() -> Option<PathBuf> {
         dirs::data_local_dir()
             .or_else(dirs::data_dir)
             .or_else(dirs::config_dir)

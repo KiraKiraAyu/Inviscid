@@ -21,7 +21,7 @@ pub struct TabMeta {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DraggedTab {
+pub(crate) struct DraggedTab {
     pub ix: usize,
     pub title: String,
     pub dir_hint: Option<String>,
@@ -235,10 +235,6 @@ impl TabBar {
         (flush_left, flush_right)
     }
 
-    pub fn is_first_tab_flush_left(&self) -> bool {
-        self.active_tab_edge_flush().0
-    }
-
     fn scroll_active_tab_into_view(&self) {
         self.scroll_handle.scroll_to_item(self.active_tab_idx);
         let viewport = self.scroll_handle.bounds();
@@ -435,7 +431,7 @@ impl TabBar {
 
     /// Returns whether the tab at `idx` should display its directory hint.
     /// A directory hint is only shown if there are multiple tabs sharing the same title.
-    pub fn should_show_dir_hint(&self, idx: usize) -> bool {
+    pub(crate) fn should_show_dir_hint(&self, idx: usize) -> bool {
         let Some(target) = self.tabs_meta.get(idx) else {
             return false;
         };
@@ -1083,13 +1079,13 @@ mod tests {
         tab_bar.update(cx, |tb, cx| {
             tb.sync(tabs.clone(), 1, false, px(100.0), cx);
             assert_eq!(tb.active_tab_idx(), 1);
-            assert!(!tb.is_first_tab_flush_left());
+            assert!(!tb.active_tab_edge_flush().0);
         });
 
         // Switching back to the first tab restores flush-left connection
         tab_bar.update(cx, |tb, cx| {
             tb.sync(tabs.clone(), 0, false, px(100.0), cx);
-            assert!(tb.is_first_tab_flush_left());
+            assert!(tb.active_tab_edge_flush().0);
         });
     }
 }

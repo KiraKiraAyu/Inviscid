@@ -317,7 +317,7 @@ pub struct PreparedExport {
 }
 
 /// Returns true when `editor` holds a ready, editable document that can be exported.
-pub fn can_export_editor(editor: &Editor) -> bool {
+fn can_export_editor(editor: &Editor) -> bool {
     editor.can_edit()
 }
 

@@ -4,29 +4,28 @@ use std::path::PathBuf;
 pub mod about;
 pub mod actions;
 pub mod commands;
-pub mod image_cache;
+pub(crate) mod image_cache;
 pub(crate) mod menu;
-pub mod outline_panel;
+pub(crate) mod outline_panel;
 pub mod project_panel;
-pub mod search_panel;
+pub(crate) mod search_panel;
 pub mod settings;
 mod sidebar_view;
 pub mod status_bar;
 pub mod tab_bar;
-pub mod title_bar;
+pub(crate) mod title_bar;
 pub mod workspace;
 
 pub use about::AboutWindow;
-pub use image_cache::BoundedImageCache;
+pub(crate) use image_cache::BoundedImageCache;
 pub use menu::ActiveMenu;
-pub use outline_panel::{OutlinePanel, OutlinePanelEvent};
-pub use project_panel::{DraggedProjectEntry, FileTreeEntry, FileTreeEntryKind, ProjectPanel};
-pub use search_panel::SearchPanel;
+pub(crate) use outline_panel::{OutlinePanel, OutlinePanelEvent};
+pub use project_panel::ProjectPanel;
 pub use settings::SettingsWindow;
 pub use sidebar_view::SidebarView;
 pub use status_bar::StatusBar;
-pub use tab_bar::{DraggedTab, TabBar, TabMeta};
-pub use title_bar::{TitleBar, TitleBarEvent};
+pub use tab_bar::TabBar;
+pub use title_bar::TitleBar;
 pub use workspace::Workspace;
 
 use crate::config::{AppConfig, WindowLayoutState, WorkspaceState};
@@ -107,7 +106,7 @@ impl InviscidWindow {
         Self::init(Some(path), None, cx)
     }
 
-    pub fn new_from_workspace(ws: &WorkspaceState, cx: &mut Context<Self>) -> Self {
+    fn new_from_workspace(ws: &WorkspaceState, cx: &mut Context<Self>) -> Self {
         Self::init(None, Some(ws), cx)
     }
 

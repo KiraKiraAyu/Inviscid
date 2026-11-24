@@ -1,27 +1,27 @@
-pub mod builtins;
-pub mod loader;
-pub mod queries;
-pub mod registry;
-pub mod token;
+pub(crate) mod builtins;
+pub(crate) mod loader;
+pub(crate) mod queries;
+pub(crate) mod registry;
+pub(crate) mod token;
 
-pub use builtins::*;
-pub use loader::{GrammarCdnPreset, normalize_grammar_base_url};
-pub use queries::*;
-pub use registry::{
-    LoadedGrammar, highlight_code_block, register_global_wasm_grammar, set_global_grammar_base_url,
-    subscribe_syntax_updates, syntax_cache_version,
+pub(crate) use loader::{GrammarCdnPreset, normalize_grammar_base_url};
+pub(crate) use queries::*;
+pub use registry::set_global_grammar_base_url;
+pub(crate) use registry::{
+    LoadedGrammar, highlight_code_block, subscribe_syntax_updates, syntax_cache_version,
 };
 pub(crate) use registry::{peek_global_loaded, syntax_retry_epoch};
-pub use token::*;
 
 #[cfg(test)]
 mod tests {
+    use super::builtins::resolve_grammar_spec;
     use super::loader::{
         DebouncedGrammarLoader, build_grammar_download_url, find_grammar_in_dirs_by_id,
     };
     use super::registry::{
         GrammarState, LoadedGrammar, SyntaxRegistry, highlight_lines_with_grammar,
     };
+    use super::token::SyntaxToken;
     use super::*;
 
     const JSON_GRAMMAR_WASM: &[u8] = include_bytes!("../tests/fixtures/tree-sitter-json.wasm");
@@ -104,7 +104,7 @@ mod tests {
         let spec = resolve_grammar_spec("json").unwrap();
         let language = crate::wasm::WasmHost::global()
             .unwrap()
-            .load_tree_sitter_language(spec.wasm_symbol(), JSON_GRAMMAR_WASM)
+            .load_tree_sitter_language(spec.canonical_id, JSON_GRAMMAR_WASM)
             .unwrap();
 
         let mixed_scm = r#"
@@ -341,12 +341,9 @@ mod tests {
 
     #[test]
     fn test_syntax_registry_disables_host_cache_and_cdn_by_default_in_tests() {
-        let mut registry = SyntaxRegistry::new();
+        let registry = SyntaxRegistry::new();
         assert!(registry.base_url().is_empty());
-        assert!(registry.cache_dir().is_none());
-        let custom_dir = std::env::temp_dir().join("inviscid_custom_grammar_cache_dir");
-        registry.set_cache_dir(Some(custom_dir.clone()));
-        assert_eq!(registry.cache_dir(), Some(custom_dir.as_path()));
+        assert!(registry.cache_dir.is_none());
     }
 
     #[test]
@@ -356,14 +353,14 @@ mod tests {
         registry
             .register_wasm_bytes("json", JSON_GRAMMAR_WASM, None)
             .unwrap();
-        registry.mark_failed_if_loading("json", "stale remote timeout");
+        registry.mark_failed_if_loading("json");
         assert!(registry.get_loaded("json").is_some());
 
         registry.mark_loading("missing_lang");
-        registry.mark_failed_if_loading("missing_lang", "not found");
+        registry.mark_failed_if_loading("missing_lang");
         assert!(matches!(
             registry.get_state("missing_lang"),
-            Some(GrammarState::Failed(_))
+            Some(GrammarState::Failed)
         ));
     }
 

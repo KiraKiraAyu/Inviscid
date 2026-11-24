@@ -427,11 +427,6 @@ impl<'a> LineLayoutContext<'a> {
         self
     }
 
-    pub fn with_math_block_tail_min_height(mut self, min_height: Pixels) -> Self {
-        self.math_block_tail_min_height = min_height;
-        self
-    }
-
     pub fn with_mermaid_block_editing(mut self, mermaid_block_editing: bool) -> Self {
         self.mermaid_block_editing = mermaid_block_editing;
         self

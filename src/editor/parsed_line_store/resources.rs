@@ -246,7 +246,7 @@ mod tests {
         assert!(!changed_before);
 
         if !already_loaded {
-            crate::syntax::register_global_wasm_grammar("json", JSON_GRAMMAR_WASM, None)
+            crate::syntax::registry::register_global_wasm_grammar("json", JSON_GRAMMAR_WASM, None)
                 .expect("register json grammar");
             assert!(resources[0].changed(false, true));
             assert!(!resources[0].changed(false, true));
