@@ -263,6 +263,8 @@ impl Editor {
                     cells,
                     alignments,
                     is_header: *is_header,
+                    base_font_size: self.font_size,
+                    line_height: self.line_height,
                 };
                 let col = super::shaping::calculate_table_cell_col_from_point(
                     rel_point,
@@ -612,6 +614,8 @@ impl Editor {
                 cells,
                 alignments,
                 is_header: *is_header,
+                base_font_size: self.font_size,
+                line_height: self.line_height,
             };
             return super::shaping::find_link_in_table_row(
                 line_idx,

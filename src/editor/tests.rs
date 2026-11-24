@@ -1600,6 +1600,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         content_width,
         active_line: crate::buffer::SourceLine::new(cursor_line),
         active_col: 0,
+        selection_range: None,
         active_math_block: None,
         active_mermaid_block: None,
         marked_range: None,
@@ -1810,6 +1811,7 @@ fn test_folding_layout_height_and_navigation() {
         content_width,
         active_line: crate::buffer::SourceLine::new(0),
         active_col: 0,
+        selection_range: None,
         active_math_block: None,
         active_mermaid_block: None,
         marked_range: None,
@@ -1903,6 +1905,7 @@ fn test_folding_layout_height_and_navigation() {
         content_width,
         active_line: crate::buffer::SourceLine::new(0),
         active_col: 0,
+        selection_range: None,
         active_math_block: None,
         active_mermaid_block: None,
         marked_range: None,
@@ -5896,6 +5899,196 @@ fn wide_math_preview_layout_height_matches_scaled_svg() {
     let expected_h = single_source_h.max(tail_min_h);
     assert_eq!(measured_h, expected_h);
     assert!(measured_h < unscaled.height + MATH_EDITOR_PADDING_Y * 2.0);
+}
+
+#[test]
+fn block_box_spec_and_layout_scale_consistently_at_non_default_font_size() {
+    use crate::editor::RenderMode;
+    use crate::editor::geometry::{resolve_line_text_spec, table_row_margin};
+    use crate::editor::layout::{LineLayoutContext, get_line_layout_height};
+    use crate::editor::shaping::{
+        calculate_table_row_height_with_metrics, table_cell_font_metrics_for,
+    };
+    use crate::markdown::MarkdownScanner;
+    use crate::theme::DEFAULT_THEME;
+
+    let lines = vec![
+        "# Heading".to_string(),
+        "```rust".to_string(),
+        "let x = 1;".to_string(),
+        "```".to_string(),
+        "---".to_string(),
+        "- Bullet item".to_string(),
+        "Paragraph text".to_string(),
+        "| H | V |".to_string(),
+        "| --- | --- |".to_string(),
+        "| a | b |".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    let font_size = 18.0;
+    let line_height = 1.8;
+    let width = px(800.0);
+    let lcx = LineLayoutContext::live_preview(width).with_metrics(font_size, line_height, true);
+
+    for (idx, row) in parsed.iter().enumerate() {
+        let spec = resolve_line_text_spec(
+            row,
+            RenderMode::LivePreview,
+            width,
+            px(0.0),
+            px(0.0),
+            font_size,
+            line_height,
+            &DEFAULT_THEME,
+        );
+        let h = get_line_layout_height(&lines, idx, row, lcx.clone());
+        match idx {
+            0 | 1 | 2 | 5 | 6 => {
+                assert_eq!(h, spec.padding_vertical + spec.line_height, "row {idx}");
+            }
+            3 => {
+                assert_eq!(
+                    h,
+                    spec.fixed_height.unwrap() + spec.margin_bottom,
+                    "closing fence"
+                );
+            }
+            4 => {
+                assert_eq!(h, spec.fixed_height.unwrap(), "thematic break");
+            }
+            7 => {
+                let row_h = calculate_table_row_height_with_metrics(
+                    match &row.kind {
+                        crate::markdown::BlockKind::Table { cells, .. } => cells,
+                        _ => unreachable!(),
+                    },
+                    true,
+                    false,
+                    0,
+                    width,
+                    None,
+                    false,
+                    None,
+                    font_size,
+                    line_height,
+                );
+                assert_eq!(h, table_row_margin(font_size) + row_h);
+                let (cell_fs, cell_lh) = table_cell_font_metrics_for(true, font_size, line_height);
+                assert!(cell_fs > px(14.0));
+                assert!(cell_lh > px(22.0));
+            }
+            9 => {
+                let row_h = calculate_table_row_height_with_metrics(
+                    match &row.kind {
+                        crate::markdown::BlockKind::Table { cells, .. } => cells,
+                        _ => unreachable!(),
+                    },
+                    false,
+                    false,
+                    0,
+                    width,
+                    None,
+                    false,
+                    None,
+                    font_size,
+                    line_height,
+                );
+                assert_eq!(h, row_h + table_row_margin(font_size));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn wrapped_paragraph_with_inline_math_does_not_multiply_math_height_per_line() {
+    use crate::editor::RenderMode;
+    use crate::editor::geometry::resolve_line_text_spec;
+    use crate::editor::layout::{LineLayoutContext, get_line_layout_height};
+    use crate::editor::shaping::{
+        LineShapingContext, build_line_runs, calculate_visual_lines_with_runs, math_render_size,
+    };
+    use crate::markdown::MarkdownScanner;
+    use crate::theme::DEFAULT_THEME;
+    use gpui::{TextStyle, font};
+
+    let text = r"This paragraph wraps across multiple lines with $\frac{\sum_{i=1}^n x_i^2}{\prod_{j=1}^m y_j}$ trailing words for wrapping check.";
+    let lines = vec![text.to_string()];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    let width = px(220.0);
+    let spec = resolve_line_text_spec(
+        &parsed[0],
+        RenderMode::LivePreview,
+        width,
+        px(0.0),
+        px(0.0),
+        15.0,
+        1.6,
+        &DEFAULT_THEME,
+    );
+    let scx = LineShapingContext::new(&DEFAULT_THEME, None, false, false, 0);
+    let (line_str, runs) = build_line_runs(&parsed[0].spans, scx, None, &TextStyle::default());
+    let visual_lines = calculate_visual_lines_with_runs(
+        &line_str,
+        &runs,
+        font(crate::platform::platform_ui_font()),
+        spec.font_size,
+        spec.available_width,
+        true,
+        None,
+        false,
+    );
+    assert!(visual_lines >= 2);
+
+    let max_math_h = parsed[0]
+        .spans
+        .iter()
+        .filter_map(|s| s.math.as_ref())
+        .map(|m| math_render_size(&m.rendered, spec.font_size).height)
+        .fold(px(0.0), gpui::Pixels::max);
+    assert!(max_math_h > spec.line_height);
+
+    let h = get_line_layout_height(
+        &lines,
+        0,
+        &parsed[0],
+        LineLayoutContext::live_preview(width),
+    );
+    assert_eq!(
+        h,
+        spec.padding_vertical + spec.text_block_content_height(visual_lines, max_math_h)
+    );
+    assert!(h < spec.padding_vertical + max_math_h * (visual_lines as f32));
+}
+
+#[gpui::test]
+fn selecting_image_line_dirties_and_expands_image_row_height(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, Selection, TextBuffer};
+    use crate::editor::geometry::IMAGE_SOURCE_GAP;
+    use gpui::AppContext;
+
+    let text = "before\n![alt](https://example.invalid/commit4-selected-img.png)\nafter\n";
+    let editor = cx.new(|cx| super::Editor::new_with_buffer(TextBuffer::from_str(text, None), cx));
+    editor.update(cx, |ed, _| {
+        ed.ensure_layout_cache();
+        let initial_rebuilds = ed.layout_stats.get().full_rebuilds;
+        let collapsed_h = ed.layout_snapshot().metrics.height(1).unwrap();
+
+        ed.buffer_mut().set_selection(Selection {
+            anchor: Position::new(SourceLine::new(0), 0),
+            head: Position::new(SourceLine::new(1), 5),
+        });
+        ed.ensure_layout_cache();
+        assert_eq!(ed.layout_stats.get().full_rebuilds, initial_rebuilds);
+        let expanded_h = ed.layout_snapshot().metrics.height(1).unwrap();
+        let expected_line_h = px((ed.font_size * ed.line_height).round());
+        assert_eq!(expanded_h, collapsed_h + expected_line_h + IMAGE_SOURCE_GAP);
+
+        ed.buffer_mut()
+            .set_cursor(Position::new(SourceLine::new(0), 0));
+        ed.ensure_layout_cache();
+        assert_eq!(ed.layout_snapshot().metrics.height(1).unwrap(), collapsed_h);
+    });
 }
 
 #[gpui::test]

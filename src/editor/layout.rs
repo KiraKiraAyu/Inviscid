@@ -88,22 +88,22 @@ pub fn get_block_typography_with_metrics(
             1 => BlockTypography::new(
                 px((26.0 * scale).round()),
                 px((36.0 * scale * lh_ratio).round()),
-                px((18.0 * scale).round()),
+                px((14.0 * scale).round()) + px((4.0 * scale).round()),
             ),
             2 => BlockTypography::new(
                 px((22.0 * scale).round()),
                 px((32.0 * scale * lh_ratio).round()),
-                px((18.0 * scale).round()),
+                px((14.0 * scale).round()) + px((4.0 * scale).round()),
             ),
             3 => BlockTypography::new(
                 px((18.0 * scale).round()),
                 px((28.0 * scale * lh_ratio).round()),
-                px((18.0 * scale).round()),
+                px((14.0 * scale).round()) + px((4.0 * scale).round()),
             ),
             _ => BlockTypography::new(
                 px((16.0 * scale).round()),
                 px((24.0 * scale * lh_ratio).round()),
-                px((18.0 * scale).round()),
+                px((14.0 * scale).round()) + px((4.0 * scale).round()),
             ),
         },
         BlockKind::CodeBlock { is_fence_start } | BlockKind::MermaidBlock { is_fence_start } => {
@@ -111,7 +111,7 @@ pub fn get_block_typography_with_metrics(
                 BlockTypography::new(
                     px((12.0 * scale).round()),
                     px((20.0 * scale * lh_ratio).round()),
-                    px((14.0 * scale).round()),
+                    px((6.0 * scale).round()) + px((4.0 * scale).round()) * 2.0,
                 )
             } else {
                 BlockTypography::new(
@@ -129,7 +129,7 @@ pub fn get_block_typography_with_metrics(
         BlockKind::MathBlock { is_start: true } => BlockTypography::new(
             px(base_font_size),
             px((base_font_size * line_height_factor).round()),
-            px((8.0 * scale).round()),
+            px((8.0 * scale).round()) * 2.0,
         ),
         BlockKind::MathBlockContent => BlockTypography::new(
             px(base_font_size),
@@ -150,7 +150,7 @@ pub fn get_block_typography_with_metrics(
             BlockTypography::new(
                 px(base_font_size),
                 px((base_font_size * line_height_factor).round()),
-                px((8.0 * scale).round()),
+                px((4.0 * scale).round()) * 2.0,
             )
         }
         BlockKind::ThematicBreak => BlockTypography::new(
@@ -161,12 +161,12 @@ pub fn get_block_typography_with_metrics(
         BlockKind::Image { .. } => BlockTypography::new(
             px(base_font_size),
             px((base_font_size * line_height_factor).round()),
-            px((8.0 * scale).round()),
+            px((4.0 * scale).round()) * 2.0,
         ),
         BlockKind::Paragraph => BlockTypography::new(
             px(base_font_size),
             px((base_font_size * line_height_factor).round()),
-            px((8.0 * scale).round()),
+            px((4.0 * scale).round()) * 2.0,
         ),
     }
 }
@@ -201,6 +201,7 @@ pub struct DocumentLayoutCache {
     pub content_width: Pixels,
     pub active_line: SourceLine,
     pub active_col: usize,
+    pub selection_range: Option<(SourceLine, SourceLine)>,
     pub active_math_block: Option<(SourceLine, SourceLine)>,
     pub active_mermaid_block: Option<(SourceLine, SourceLine)>,
     pub marked_range: Option<Range<usize>>,
@@ -233,6 +234,7 @@ impl Default for DocumentLayoutCache {
             content_width: px(0.0),
             active_line: SourceLine::new(0),
             active_col: 0,
+            selection_range: None,
             active_math_block: None,
             active_mermaid_block: None,
             marked_range: None,
@@ -308,6 +310,7 @@ impl DocumentLayoutCache {
 pub struct LineLayoutContext<'a> {
     pub math_block_tail_min_height: Pixels,
     pub is_active: bool,
+    pub is_selected: bool,
     pub math_block_editing: bool,
     pub mermaid_block_editing: bool,
     pub is_separator: Option<bool>,
@@ -334,6 +337,7 @@ impl<'a> std::fmt::Debug for LineLayoutContext<'a> {
                 &self.math_block_tail_min_height,
             )
             .field("is_active", &self.is_active)
+            .field("is_selected", &self.is_selected)
             .field("math_block_editing", &self.math_block_editing)
             .field("mermaid_block_editing", &self.mermaid_block_editing)
             .field("is_separator", &self.is_separator)
@@ -359,6 +363,7 @@ impl<'a> Default for LineLayoutContext<'a> {
         Self {
             math_block_tail_min_height: px(0.0),
             is_active: false,
+            is_selected: false,
             math_block_editing: false,
             mermaid_block_editing: false,
             is_separator: None,
@@ -391,6 +396,7 @@ impl<'a> LineLayoutContext<'a> {
         Self {
             math_block_tail_min_height: px(0.0),
             is_active,
+            is_selected: false,
             math_block_editing: false,
             mermaid_block_editing: false,
             is_separator,
@@ -412,6 +418,11 @@ impl<'a> LineLayoutContext<'a> {
 
     pub fn with_folded(mut self, is_folded: bool) -> Self {
         self.is_folded = is_folded;
+        self
+    }
+
+    pub fn with_selected(mut self, is_selected: bool) -> Self {
+        self.is_selected = is_selected;
         self
     }
 
@@ -491,7 +502,10 @@ pub fn get_line_layout_height(
         return px(0.0);
     }
 
-    use crate::editor::geometry::resolve_line_text_spec;
+    use crate::editor::geometry::{
+        IMAGE_CARD_MARGIN_Y, IMAGE_SOURCE_GAP, mermaid_preview_chrome, resolve_line_text_spec,
+        table_row_margin,
+    };
     use crate::editor::shaping::{
         LineShapingContext, build_line_runs, calculate_visual_lines_with_runs,
         effective_content_width,
@@ -536,12 +550,11 @@ pub fn get_line_layout_height(
         return spec.line_height * (visual_lines as f32);
     }
 
-    let typo = get_block_typography_with_metrics(&parsed.kind, lcx.font_size, lcx.line_height);
     let wrapped_code_height = || {
         let scx = LineShapingContext::new(
             &crate::theme::DEFAULT_THEME,
-            Some(crate::theme::DEFAULT_THEME.code_block_text),
-            false,
+            spec.override_color,
+            spec.shaping_mode.is_source(),
             lcx.is_active,
             lcx.cursor_col,
         )
@@ -553,14 +566,14 @@ pub fn get_line_layout_height(
             &line_str,
             &runs,
             font(crate::platform::platform_monospace_font()),
-            typo.font_size,
+            spec.font_size,
             available_w,
             lcx.soft_wrap,
             lcx.text_system.as_ref(),
             true,
         );
 
-        typo.padding_vertical + typo.line_height * (visual_lines as f32)
+        spec.padding_vertical + spec.text_block_content_height(visual_lines, px(0.0))
     };
     let wrapped_prose_height = |font: Font, color_override: Option<Hsla>, is_heading: bool| {
         let scx = LineShapingContext::new(
@@ -578,7 +591,7 @@ pub fn get_line_layout_height(
             &line_str,
             &runs,
             font,
-            typo.font_size,
+            spec.font_size,
             available_w,
             lcx.soft_wrap,
             lcx.text_system.as_ref(),
@@ -590,29 +603,42 @@ pub fn get_line_layout_height(
             .filter(|span| !span.math_is_disclosed(lcx.is_active, lcx.cursor_col, false))
             .filter_map(|span| span.math.as_ref())
             .map(|math| {
-                crate::editor::shaping::math_render_size(&math.rendered, px(lcx.font_size)).height
+                crate::editor::shaping::math_render_size(&math.rendered, spec.font_size).height
             })
             .fold(px(0.0), Pixels::max);
-        typo.padding_vertical + typo.line_height.max(math_height) * (visual_lines as f32)
+        spec.padding_vertical + spec.text_block_content_height(visual_lines, math_height)
     };
 
     let height = match &parsed.kind {
-        BlockKind::Heading { .. } => {
-            let color = get_block_color_override(&parsed.kind, &crate::theme::DEFAULT_THEME);
-            wrapped_prose_height(
-                font(crate::platform::platform_ui_font()).bold(),
-                color,
-                true,
-            )
+        BlockKind::Heading { .. } => wrapped_prose_height(
+            font(crate::platform::platform_ui_font()).bold(),
+            spec.override_color,
+            true,
+        ),
+        BlockKind::CodeBlock {
+            is_fence_start: true,
+        } => spec.padding_vertical + spec.line_height,
+        BlockKind::CodeBlock {
+            is_fence_start: false,
+        } => spec.fixed_height.unwrap_or_default() + spec.margin_bottom,
+        BlockKind::MermaidBlock {
+            is_fence_start: false,
+        } => {
+            if lcx.mermaid_block_editing {
+                spec.fixed_height.unwrap_or_default() + spec.margin_bottom
+            } else {
+                px(0.0)
+            }
         }
-        BlockKind::CodeBlock { .. } | BlockKind::ThematicBreak => typo.base_layout_height,
+        BlockKind::ThematicBreak => spec.fixed_height.unwrap_or(px(32.0)),
         BlockKind::CodeBlockContent => wrapped_code_height(),
         BlockKind::MermaidBlock {
             is_fence_start: true,
         } => {
             if lcx.mermaid_block_editing {
-                typo.base_layout_height
+                spec.padding_vertical + spec.line_height
             } else {
+                let (mt, py) = mermaid_preview_chrome(lcx.font_size);
                 parsed
                     .spans
                     .iter()
@@ -631,15 +657,13 @@ pub fn get_line_layout_height(
                                 lcx.indent_px
                             },
                         )
-                        .1 + px(26.0)
+                        .1 + mt
+                            + py * 2.0
                     })
-                    .unwrap_or(typo.base_layout_height)
+                    .unwrap_or(spec.padding_vertical + spec.line_height)
             }
         }
-        BlockKind::MermaidBlock {
-            is_fence_start: false,
-        }
-        | BlockKind::MermaidBlockContent => {
+        BlockKind::MermaidBlockContent => {
             if lcx.mermaid_block_editing {
                 wrapped_code_height()
             } else {
@@ -685,25 +709,27 @@ pub fn get_line_layout_height(
             source_height.max(lcx.math_block_tail_min_height)
         }
         BlockKind::Image { url, .. } => {
-            let base_h = if lcx.is_active {
-                px(38.0)
+            let show_source = lcx.is_active || lcx.is_selected;
+            let base_h = if show_source {
+                spec.padding_vertical + spec.line_height + IMAGE_SOURCE_GAP
             } else {
-                typo.padding_vertical
+                spec.padding_vertical
             };
+            let card_margin = IMAGE_CARD_MARGIN_Y * 2.0;
             if crate::http::is_url_loaded(url) {
                 if let Some((w, h)) = crate::http::read_cache(|cache| {
                     cache.get_size(&crate::http::image_size_key(url, lcx.doc_path))
                 }) && w > 0
                 {
                     let img_h = px((h as f32) * f32::from(content_width) / (w as f32));
-                    base_h + img_h + px(12.0)
+                    base_h + img_h + card_margin
                 } else {
-                    base_h + px(40.0) + px(12.0)
+                    base_h + px(40.0) + card_margin
                 }
             } else if crate::http::is_url_failed(url) {
-                base_h + px(40.0) + px(12.0)
+                base_h + px(40.0) + card_margin
             } else {
-                base_h + px(140.0) + px(12.0)
+                base_h + px(140.0) + card_margin
             }
         }
         BlockKind::Paragraph => {
@@ -734,7 +760,7 @@ pub fn get_line_layout_height(
                         || next.trim_start().starts_with('#')
                         || next.trim_start().starts_with("```")
                 };
-                let row_h = crate::editor::shaping::calculate_table_row_height_with_preedit(
+                let row_h = crate::editor::shaping::calculate_table_row_height_with_metrics(
                     cells,
                     *is_header,
                     lcx.is_active,
@@ -743,11 +769,14 @@ pub fn get_line_layout_height(
                     lcx.text_system.as_ref(),
                     lcx.is_selection_disclosure,
                     lcx.ime_preedit_cols,
+                    lcx.font_size,
+                    lcx.line_height,
                 );
+                let table_margin = table_row_margin(lcx.font_size);
                 if *is_header {
-                    px(8.0) + row_h
+                    table_margin + row_h
                 } else if is_last {
-                    row_h + px(8.0)
+                    row_h + table_margin
                 } else {
                     row_h
                 }
@@ -758,23 +787,7 @@ pub fn get_line_layout_height(
         }
     };
 
-    if let Some(quote) = parsed.quote {
-        height + blockquote_edge_spacing(quote)
-    } else {
-        height
-    }
-}
-
-fn blockquote_edge_spacing(quote: crate::markdown::QuoteContext) -> Pixels {
-    (if quote.is_start {
-        crate::editor::shaping::QUOTE_EDGE_PADDING
-    } else {
-        px(0.0)
-    }) + if quote.is_end {
-        crate::editor::shaping::QUOTE_EDGE_PADDING
-    } else {
-        px(0.0)
-    }
+    height + spec.quote_top_padding + spec.quote_bottom_padding
 }
 
 impl Editor {
@@ -887,6 +900,10 @@ impl Editor {
             self.buffer.file_path(),
         )
         .with_folded(is_folded)
+        .with_selected(
+            self.selection_line_range()
+                .is_some_and(|(start, end)| source_line >= start && source_line <= end),
+        )
         .with_math_block_editing(self.is_math_block_expanded(
             source_line,
             parsed,

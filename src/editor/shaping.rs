@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use crate::editor::RenderMode;
 use crate::editor::geometry::{
-    CODE_BLOCK_PADDING_X, MATH_EDITOR_PADDING_X, MATH_EDITOR_PADDING_Y, MIN_LINE_CONTENT_WIDTH,
-    PaintedLineGeometry, TextShapingMode, resolve_inner_available_width,
+    CODE_BLOCK_PADDING_X, MATH_EDITOR_PADDING_X, MIN_LINE_CONTENT_WIDTH, PaintedLineGeometry,
+    TextShapingMode, resolve_inner_available_width, resolve_inner_available_width_scaled,
 };
 use crate::markdown::{BlockKind, InlineSpan, MathSpan, ParsedLine};
 use crate::theme::{ActiveTheme, Theme};
@@ -128,15 +128,15 @@ pub fn parsed_line_available_width(
     compute_available_line_width_with_indent(content_width, &parsed.kind, mode, inner_indent)
 }
 
-/// Computes the left horizontal offset of text content within a block container in Live Preview
+/// Computes the left horizontal offset of text content within a block container in Live Preview.
 pub fn get_block_left_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
     if mode == RenderMode::Source {
         return px(0.0);
     }
     match kind {
-        BlockKind::TaskList { .. } => px(24.0),
-        BlockKind::BulletList => px(22.0),
-        BlockKind::OrderedList { .. } => px(24.0),
+        BlockKind::TaskList { .. } | BlockKind::BulletList | BlockKind::OrderedList { .. } => {
+            crate::editor::geometry::list_marker_width(kind, 15.0)
+        }
         BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => CODE_BLOCK_PADDING_X,
         BlockKind::CodeBlock {
             is_fence_start: true,
@@ -149,32 +149,28 @@ pub fn get_block_left_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
     }
 }
 
-/// Computes the top vertical offset of text content within a block container in Live Preview
+/// Computes the top vertical offset of text content within a block container in Live Preview.
 pub fn get_block_top_offset(kind: &BlockKind, mode: RenderMode) -> Pixels {
     if mode == RenderMode::Source {
         return px(0.0);
     }
-    match kind {
-        BlockKind::Heading { .. } => px(14.0),
-        BlockKind::CodeBlock {
-            is_fence_start: true,
-        }
-        | BlockKind::MermaidBlock {
-            is_fence_start: true,
-        } => px(10.0),
-        BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => px(1.0),
-        BlockKind::Table {
-            is_header: true, ..
-        } => px(8.0),
-        BlockKind::MathBlock { is_start: true } => px(8.0),
-        BlockKind::MathBlockContent => MATH_EDITOR_PADDING_Y,
-        BlockKind::TaskList { .. }
-        | BlockKind::BulletList
-        | BlockKind::OrderedList { .. }
-        | BlockKind::Paragraph
-        | BlockKind::Image { .. } => px(4.0),
-        _ => px(0.0),
-    }
+    let dummy = ParsedLine {
+        raw_text: String::new(),
+        kind: kind.clone(),
+        spans: Vec::new(),
+        quote: None,
+    };
+    crate::editor::geometry::resolve_line_text_spec(
+        &dummy,
+        mode,
+        px(800.0),
+        px(0.0),
+        px(0.0),
+        15.0,
+        1.6,
+        &crate::theme::DEFAULT_THEME,
+    )
+    .top_offset
 }
 
 /// Maps a raw document column to a byte offset in the visible rendered text.
@@ -445,10 +441,27 @@ impl<'a> LineShapingContext<'a> {
 
 #[inline]
 pub fn table_cell_font_metrics(is_header: bool) -> (Pixels, Pixels) {
+    table_cell_font_metrics_for(is_header, 15.0, 1.6)
+}
+
+#[inline]
+pub fn table_cell_font_metrics_for(
+    is_header: bool,
+    base_font_size: f32,
+    line_height_factor: f32,
+) -> (Pixels, Pixels) {
+    let scale = base_font_size / 15.0;
+    let lh_ratio = line_height_factor / 1.6;
     if is_header {
-        (px(14.0), px(22.0))
+        (
+            px((14.0 * scale).round()),
+            px((22.0 * scale * lh_ratio).round()),
+        )
     } else {
-        (px(13.5), px(20.0))
+        (
+            px((13.5 * scale).round()),
+            px((20.0 * scale * lh_ratio).round()),
+        )
     }
 }
 
@@ -988,8 +1001,42 @@ pub fn calculate_table_row_height_with_preedit(
     is_selection_disclosure: bool,
     ime_preedit_cols: Option<(usize, usize)>,
 ) -> Pixels {
+    calculate_table_row_height_with_metrics(
+        cells,
+        is_header,
+        is_active,
+        cursor_col,
+        container_width,
+        text_system,
+        is_selection_disclosure,
+        ime_preedit_cols,
+        15.0,
+        1.6,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn calculate_table_row_height_with_metrics(
+    cells: &[crate::markdown::TableCell],
+    is_header: bool,
+    is_active: bool,
+    cursor_col: usize,
+    container_width: Pixels,
+    text_system: Option<&Arc<WindowTextSystem>>,
+    is_selection_disclosure: bool,
+    ime_preedit_cols: Option<(usize, usize)>,
+    base_font_size: f32,
+    line_height_factor: f32,
+) -> Pixels {
+    let scale = base_font_size / 15.0;
+    let lh_ratio = line_height_factor / 1.6;
+    let min_h = if is_header {
+        px((34.0 * scale * lh_ratio).round())
+    } else {
+        px((30.0 * scale * lh_ratio).round())
+    };
     if cells.is_empty() {
-        return if is_header { px(34.0) } else { px(30.0) };
+        return min_h;
     }
 
     let num_cells = cells.len();
@@ -997,7 +1044,8 @@ pub fn calculate_table_row_height_with_preedit(
     let cell_w = row_w / (num_cells as f32);
     let inner_cell_w = (cell_w - px(16.0)).max(px(10.0));
 
-    let (font_size, line_height) = table_cell_font_metrics(is_header);
+    let (font_size, line_height) =
+        table_cell_font_metrics_for(is_header, base_font_size, line_height_factor);
     let cell_font = font(crate::platform::platform_ui_font());
 
     let mut max_visual_lines = 1;
@@ -1036,8 +1084,11 @@ pub fn calculate_table_row_height_with_preedit(
         max_visual_lines = max_visual_lines.max(lines);
     }
 
-    let pad = if is_header { px(12.0) } else { px(10.0) };
-    let min_h = if is_header { px(34.0) } else { px(30.0) };
+    let pad = if is_header {
+        px((12.0 * scale).round())
+    } else {
+        px((10.0 * scale).round())
+    };
     (pad + line_height.max(max_math_height) * (max_visual_lines as f32)).max(min_h)
 }
 
@@ -1187,6 +1238,8 @@ pub struct TableLayoutInfo<'a> {
     pub cells: &'a [crate::markdown::TableCell],
     pub alignments: &'a [crate::markdown::TableAlignment],
     pub is_header: bool,
+    pub base_font_size: f32,
+    pub line_height: f32,
 }
 
 fn closest_visible_byte_in_wrapped_line(
@@ -1346,7 +1399,8 @@ fn resolve_table_cell_geometry<'a>(
         .min(num_cells - 1);
     let target_cell = table.cells.get(cell_idx)?;
 
-    let (font_size, line_height) = table_cell_font_metrics(table.is_header);
+    let (font_size, line_height) =
+        table_cell_font_metrics_for(table.is_header, table.base_font_size, table.line_height);
     let align = table
         .alignments
         .get(cell_idx)
@@ -1845,8 +1899,13 @@ pub fn render_shaped_line(
         is_selection_disclosure,
     );
 
-    let available_width =
-        resolve_inner_available_width(content_width, &parsed.kind, lrc.mode, lrc.indent_px);
+    let available_width = resolve_inner_available_width_scaled(
+        content_width,
+        &parsed.kind,
+        lrc.mode,
+        lrc.indent_px,
+        lrc.font_size,
+    );
 
     let is_heading = matches!(parsed.kind, BlockKind::Heading { .. });
     let font = if is_monospace {

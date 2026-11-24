@@ -471,6 +471,15 @@ impl ParsedLineStore {
         ranges
     }
 
+    pub(crate) fn image_line_indices(&self) -> Vec<usize> {
+        self.resources
+            .borrow()
+            .iter()
+            .filter(|res| !res.is_syntax())
+            .map(|res| res.range.start)
+            .collect()
+    }
+
     pub(crate) fn take_scanned(&self) -> usize {
         self.windows
             .as_ref()

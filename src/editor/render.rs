@@ -9,7 +9,8 @@ use crate::ui::{Icon, IconName, IconSize};
 use super::Editor;
 use super::LineRenderContext;
 use super::geometry::{
-    CODE_BLOCK_PADDING_X, MATH_EDITOR_PADDING_X, MATH_EDITOR_PADDING_Y, TextShapingMode,
+    IMAGE_CARD_MARGIN_Y, IMAGE_SOURCE_GAP, TextShapingMode, mermaid_preview_chrome,
+    resolve_line_text_spec, table_row_margin,
 };
 use super::shaping::render_shaped_line;
 
@@ -27,31 +28,34 @@ pub fn render_live_line_content(
     let is_focused = lrc.is_focused;
     let selection = lrc.selection;
     let content_width = lrc.content_width;
+    let spec = resolve_line_text_spec(
+        parsed,
+        lrc.mode,
+        lrc.content_width,
+        lrc.indent_px,
+        lrc.quote_content_indent_px,
+        lrc.font_size,
+        lrc.line_height,
+        theme,
+    );
 
     match &parsed.kind {
         BlockKind::Heading { .. } => {
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
-            let color = crate::editor::layout::get_block_color_override(&parsed.kind, theme);
-
             let text_canvas = render_shaped_line(
                 source_line,
                 parsed,
                 lrc,
-                typo.font_size,
-                typo.line_height,
-                color,
-                TextShapingMode::Prose,
+                spec.font_size,
+                spec.line_height,
+                spec.override_color,
+                spec.shaping_mode,
             );
 
             div()
                 .w_full()
                 .pl(lrc.indent_px)
-                .pt(px(14.0))
-                .pb(px(4.0))
+                .pt(spec.padding_top)
+                .pb(spec.padding_bottom)
                 .child(text_canvas)
                 .into_any_element()
         }
@@ -64,11 +68,12 @@ pub fn render_live_line_content(
                     if let Some(preview) = lrc.mermaid_preview {
                         let (width, height) =
                             crate::mermaid::display_size(preview, lrc.content_width, lrc.indent_px);
+                        let (mt, py) = mermaid_preview_chrome(lrc.font_size);
                         return div()
                             .w_full()
-                            .mt(px(6.0))
+                            .mt(mt)
                             .pl(lrc.indent_px)
-                            .py(px(10.0))
+                            .py(py)
                             .flex()
                             .justify_center()
                             .child(
@@ -87,20 +92,15 @@ pub fn render_live_line_content(
                 }
             }
 
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
             if *is_fence_start {
                 let lang_canvas = render_shaped_line(
                     source_line,
                     parsed,
                     lrc,
-                    typo.font_size,
-                    typo.line_height,
+                    spec.font_size,
+                    spec.line_height,
                     Some(theme.code_block_header_fg),
-                    TextShapingMode::Code,
+                    spec.shaping_mode,
                 );
 
                 let fence_line = if parsed.quote.is_some() {
@@ -113,18 +113,19 @@ pub fn render_live_line_content(
 
                 let header = div()
                     .w_full()
-                    .mt(px(6.0))
+                    .mt(spec.margin_top)
                     .bg(theme.code_block_header_bg)
                     .rounded_t(px(10.0))
-                    .px(CODE_BLOCK_PADDING_X)
-                    .py(px(4.0))
+                    .px(spec.padding_x)
+                    .pt(spec.padding_top)
+                    .pb(spec.padding_bottom)
                     .flex()
                     .justify_between()
                     .items_center()
                     .child(div().flex().items_center().gap(px(6.0)).child(
                         if raw_lang.is_empty() && !(is_active && is_focused) {
                             div()
-                                .text_size(px((lrc.font_size * (12.0 / 15.0)).round()))
+                                .text_size(spec.font_size)
                                 .font_family(crate::platform::platform_monospace_font())
                                 .text_color(theme.text_muted)
                                 .child("plaintext")
@@ -137,8 +138,8 @@ pub fn render_live_line_content(
             } else {
                 let closing = div()
                     .w_full()
-                    .h(px(6.0))
-                    .mb(px(6.0))
+                    .h(spec.fixed_height.unwrap_or(px(6.0)))
+                    .mb(spec.margin_bottom)
                     .bg(theme.code_block_bg)
                     .rounded_b(px(10.0));
                 closing.into_any_element()
@@ -151,33 +152,29 @@ pub fn render_live_line_content(
             {
                 return div().w_full().h(px(0.0)).into_any_element();
             }
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
             let text_canvas = render_shaped_line(
                 source_line,
                 parsed,
                 lrc,
-                typo.font_size,
-                typo.line_height,
+                spec.font_size,
+                spec.line_height,
                 Some(theme.code_block_text),
-                TextShapingMode::Code,
+                spec.shaping_mode,
             );
 
             let content = div()
                 .w_full()
                 .bg(theme.code_block_bg)
-                .px(CODE_BLOCK_PADDING_X)
-                .py(px(1.0))
+                .px(spec.padding_x)
+                .pt(spec.padding_top)
+                .pb(spec.padding_bottom)
                 .child(text_canvas);
             content.into_any_element()
         }
 
         BlockKind::ThematicBreak => div()
             .w_full()
-            .h(px(32.0))
+            .h(spec.fixed_height.unwrap_or(px(32.0)))
             .flex()
             .flex_col()
             .justify_center()
@@ -196,23 +193,18 @@ pub fn render_live_line_content(
 
         BlockKind::TaskList { checked } => {
             let is_checked = *checked;
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
             let text_canvas = render_shaped_line(
                 source_line,
                 parsed,
                 lrc,
-                typo.font_size,
-                typo.line_height,
+                spec.font_size,
+                spec.line_height,
                 if is_checked {
                     Some(theme.text_muted)
                 } else {
                     quote_text_color(parsed, theme)
                 },
-                TextShapingMode::Prose,
+                spec.shaping_mode,
             );
 
             let marker = div()
@@ -257,27 +249,24 @@ pub fn render_live_line_content(
 
             render_list_item_row(
                 marker,
-                px(24.0),
+                spec.marker_width,
                 text_canvas,
-                typo.line_height,
+                spec.line_height,
+                spec.padding_top,
+                spec.padding_bottom,
                 lrc.indent_px,
             )
         }
 
         BlockKind::BulletList => {
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
             let text_canvas = render_shaped_line(
                 source_line,
                 parsed,
                 lrc,
-                typo.font_size,
-                typo.line_height,
+                spec.font_size,
+                spec.line_height,
                 quote_text_color(parsed, theme),
-                TextShapingMode::Prose,
+                spec.shaping_mode,
             );
 
             let marker = div()
@@ -288,28 +277,25 @@ pub fn render_live_line_content(
 
             render_list_item_row(
                 marker,
-                px(22.0),
+                spec.marker_width,
                 text_canvas,
-                typo.line_height,
+                spec.line_height,
+                spec.padding_top,
+                spec.padding_bottom,
                 lrc.indent_px,
             )
         }
 
         BlockKind::OrderedList { num } => {
             let num_label = format!("{}.", num);
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
             let text_canvas = render_shaped_line(
                 source_line,
                 parsed,
                 lrc,
-                typo.font_size,
-                typo.line_height,
+                spec.font_size,
+                spec.line_height,
                 quote_text_color(parsed, theme),
-                TextShapingMode::Prose,
+                spec.shaping_mode,
             );
 
             let marker = div()
@@ -319,9 +305,11 @@ pub fn render_live_line_content(
 
             render_list_item_row(
                 marker,
-                px(24.0),
+                spec.marker_width,
                 text_canvas,
-                typo.line_height,
+                spec.line_height,
+                spec.padding_top,
+                spec.padding_bottom,
                 lrc.indent_px,
             )
         }
@@ -340,19 +328,14 @@ pub fn render_live_line_content(
             img_lrc.is_active_line = should_show_source;
             img_lrc.is_disclosure_line = should_show_source;
 
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
             let text_canvas = render_shaped_line(
                 source_line,
                 parsed,
                 &img_lrc,
-                typo.font_size,
-                typo.line_height,
+                spec.font_size,
+                spec.line_height,
                 Some(theme.text_secondary),
-                TextShapingMode::Prose,
+                spec.shaping_mode,
             );
 
             let preview_card = render_image_preview_card(
@@ -367,17 +350,19 @@ pub fn render_live_line_content(
             if should_show_source {
                 div()
                     .w_full()
-                    .py(px(4.0))
+                    .pt(spec.padding_top)
+                    .pb(spec.padding_bottom)
                     .flex()
                     .flex_col()
-                    .gap(px(6.0))
-                    .child(div().w_full().h(typo.line_height).child(text_canvas))
+                    .gap(IMAGE_SOURCE_GAP)
+                    .child(div().w_full().h(spec.line_height).child(text_canvas))
                     .child(preview_card)
                     .into_any_element()
             } else {
                 div()
                     .w_full()
-                    .py(px(4.0))
+                    .pt(spec.padding_top)
+                    .pb(spec.padding_bottom)
                     .flex()
                     .flex_col()
                     .child(div().h(px(0.0)).overflow_hidden().child(text_canvas))
@@ -410,7 +395,7 @@ pub fn render_live_line_content(
 
             let num_cells = cells.len();
 
-            let row_h = super::shaping::calculate_table_row_height_with_preedit(
+            let row_h = super::shaping::calculate_table_row_height_with_metrics(
                 cells,
                 *is_header,
                 lrc.is_disclosure_line,
@@ -419,6 +404,8 @@ pub fn render_live_line_content(
                 lrc.text_system,
                 lrc.is_selection_disclosure,
                 lrc.ime_preedit_cols,
+                lrc.font_size,
+                lrc.line_height,
             );
 
             let hovered_link_range = lrc.hovered_link.and_then(|hl| {
@@ -440,9 +427,10 @@ pub fn render_live_line_content(
                 .flex()
                 .flex_row();
 
+            let table_margin = table_row_margin(lrc.font_size);
             if *is_header {
                 row_elem = row_elem
-                    .mt(px(8.0))
+                    .mt(table_margin)
                     .border_t_1()
                     .border_b_2()
                     .bg(theme.table_header_bg)
@@ -463,11 +451,15 @@ pub fn render_live_line_content(
 
                 row_elem = row_elem.border_b_1().bg(row_bg);
                 if is_last_row {
-                    row_elem = row_elem.rounded_b(px(6.0)).mb(px(8.0));
+                    row_elem = row_elem.rounded_b(px(6.0)).mb(table_margin);
                 }
             }
 
-            let (font_size, line_height) = super::shaping::table_cell_font_metrics(*is_header);
+            let (font_size, line_height) = super::shaping::table_cell_font_metrics_for(
+                *is_header,
+                lrc.font_size,
+                lrc.line_height,
+            );
 
             for (c_idx, cell) in cells.iter().enumerate() {
                 let align = alignments
@@ -503,26 +495,22 @@ pub fn render_live_line_content(
             if lrc.is_math_block_editing {
                 return div().w_full().h(px(0.0)).into_any_element();
             }
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
             if parsed.spans.iter().any(|span| span.math.is_some()) {
                 let text_canvas = render_shaped_line(
                     source_line,
                     parsed,
                     lrc,
-                    typo.font_size,
-                    typo.line_height,
+                    spec.font_size,
+                    spec.line_height,
                     quote_text_color(parsed, theme),
-                    TextShapingMode::Prose,
+                    spec.shaping_mode,
                 );
 
                 return div()
                     .w_full()
                     .pl(lrc.indent_px)
-                    .py(px(8.0))
+                    .pt(spec.padding_top)
+                    .pb(spec.padding_bottom)
                     .child(text_canvas)
                     .into_any_element();
             }
@@ -545,12 +533,13 @@ pub fn render_live_line_content(
             div()
                 .w_full()
                 .pl(lrc.indent_px)
-                .py(px(8.0))
+                .pt(spec.padding_top)
+                .pb(spec.padding_bottom)
                 .child(
                     div()
                         .w_full()
-                        .h(typo.line_height)
-                        .px(MATH_EDITOR_PADDING_X)
+                        .h(spec.line_height)
+                        .px(super::geometry::MATH_EDITOR_PADDING_X)
                         .rounded(px(4.0))
                         .bg(theme.code_block_bg)
                         .border_1()
@@ -592,29 +581,25 @@ pub fn render_live_line_content(
             if !lrc.is_math_block_editing {
                 return div().w_full().h(px(0.0)).into_any_element();
             }
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
             let mut source_lrc = *lrc;
             source_lrc.indent_px = px(0.0);
             let text_canvas = render_shaped_line(
                 source_line,
                 parsed,
                 &source_lrc,
-                typo.font_size,
-                typo.line_height,
-                None,
-                TextShapingMode::RawSource,
+                spec.font_size,
+                spec.line_height,
+                spec.override_color,
+                spec.shaping_mode,
             );
 
             let left_pane_w = lrc.content_width / 2.0;
             div()
                 .w(left_pane_w)
                 .min_w_0()
-                .px(MATH_EDITOR_PADDING_X)
-                .py(MATH_EDITOR_PADDING_Y)
+                .px(spec.padding_x)
+                .pt(spec.padding_top)
+                .pb(spec.padding_bottom)
                 .child(text_canvas)
                 .into_any_element()
         }
@@ -625,25 +610,21 @@ pub fn render_live_line_content(
                 return div().h(px(0.0)).into_any_element();
             }
 
-            let typo = crate::editor::layout::get_block_typography_with_metrics(
-                &parsed.kind,
-                lrc.font_size,
-                lrc.line_height,
-            );
             let text_canvas = render_shaped_line(
                 source_line,
                 parsed,
                 lrc,
-                typo.font_size,
-                typo.line_height,
+                spec.font_size,
+                spec.line_height,
                 quote_text_color(parsed, theme),
-                TextShapingMode::Prose,
+                spec.shaping_mode,
             );
 
             div()
                 .w_full()
-                .min_h(typo.line_height)
-                .py(px(4.0))
+                .min_h(spec.line_height)
+                .pt(spec.padding_top)
+                .pb(spec.padding_bottom)
                 .child(text_canvas)
                 .into_any_element()
         }
@@ -660,13 +641,16 @@ fn render_list_item_row(
     marker_width: Pixels,
     text_canvas: impl IntoElement,
     line_height: Pixels,
+    padding_top: Pixels,
+    padding_bottom: Pixels,
     indent_px: Pixels,
 ) -> AnyElement {
     div()
         .w_full()
         .pl(indent_px)
         .min_h(line_height)
-        .py(px(4.0))
+        .pt(padding_top)
+        .pb(padding_bottom)
         .flex()
         .flex_row()
         .items_start()
@@ -778,7 +762,7 @@ fn render_image_preview_card(
 
     div()
         .w_full()
-        .my(px(6.0))
+        .my(IMAGE_CARD_MARGIN_Y)
         .flex()
         .flex_col()
         .items_center()

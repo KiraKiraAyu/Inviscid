@@ -329,6 +329,19 @@ impl Editor {
             .map(|(_, cols)| cols)
     }
 
+    /// Returns canonical `(start_line, end_line)` when a non-empty selection is active.
+    pub(crate) fn selection_line_range(
+        &self,
+    ) -> Option<(crate::buffer::SourceLine, crate::buffer::SourceLine)> {
+        let sel = self.buffer.selection();
+        if sel.is_empty() {
+            None
+        } else {
+            let (start, end) = sel.range();
+            Some((start.line, end.line))
+        }
+    }
+
     pub(crate) fn current_painted_frame_key(&self) -> geometry::PaintedFrameKey {
         let layout = self.layout_snapshot();
         geometry::PaintedFrameKey {

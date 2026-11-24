@@ -602,15 +602,25 @@ fn render_line_element(
             render_live_line_content(source_line, parsed, lines, &content_lrc, Some(editor));
 
         let content_element = if let Some(quote) = parsed.quote {
+            let spec = super::geometry::resolve_line_text_spec(
+                parsed,
+                lrc.mode,
+                lrc.content_width,
+                lrc.indent_px,
+                lrc.quote_content_indent_px,
+                lrc.font_size,
+                lrc.line_height,
+                lrc.theme,
+            );
             let quote_depth = quote.depth.max(1);
             let mut quote_line = div()
                 .w_full()
                 .pl(crate::editor::shaping::QUOTE_GUTTER * quote_depth as f32 + lrc.indent_px);
-            if quote.is_start {
-                quote_line = quote_line.pt(px(4.0));
+            if spec.quote_top_padding > px(0.0) {
+                quote_line = quote_line.pt(spec.quote_top_padding);
             }
-            if quote.is_end {
-                quote_line = quote_line.pb(px(4.0));
+            if spec.quote_bottom_padding > px(0.0) {
+                quote_line = quote_line.pb(spec.quote_bottom_padding);
             }
             quote_line.child(content_element).into_any_element()
         } else {

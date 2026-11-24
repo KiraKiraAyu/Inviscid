@@ -26,12 +26,14 @@ impl Editor {
             && same_view
             && current.active_line == active
             && current.active_col == col
+            && current.selection_range == self.selection_line_range()
             && current.marked_range == self.marked_range
             && current.image_cache_version == image
             && current.syntax_cache_version == syntax
         {
             return;
         }
+        let sel_lines = self.selection_line_range();
         let new_marked_line = self.ime_preedit_line_and_cols().map(|(line, _)| line);
         let projection = if same_buffer {
             current.quote_projection.clone()
@@ -231,6 +233,7 @@ impl Editor {
         if same_view
             && (cache.active_line != active
                 || cache.active_col != col
+                || cache.selection_range != sel_lines
                 || cache.marked_range != self.marked_range)
         {
             let map_old = |line: usize| {
@@ -259,6 +262,24 @@ impl Editor {
                 }
                 for (start, end) in [math, mermaid].into_iter().flatten() {
                     dirty.push(start.index()..end.index() + 1);
+                }
+            }
+            if cache.selection_range != sel_lines {
+                let old_sel = cache.selection_range.map(|(s, e)| {
+                    (
+                        SourceLine::new(map_old(s.index())),
+                        SourceLine::new(map_old(e.index())),
+                    )
+                });
+                for line in cache.parsed_lines.image_line_indices() {
+                    let source_line = SourceLine::new(line);
+                    let was_selected =
+                        old_sel.is_some_and(|(s, e)| source_line >= s && source_line <= e);
+                    let is_selected =
+                        sel_lines.is_some_and(|(s, e)| source_line >= s && source_line <= e);
+                    if was_selected != is_selected && line < cache.metrics.len() {
+                        dirty.push(line..line + 1);
+                    }
                 }
             }
             if cache.marked_range != self.marked_range {
@@ -291,6 +312,7 @@ impl Editor {
         cache.content_width = width;
         cache.active_line = active;
         cache.active_col = col;
+        cache.selection_range = sel_lines;
         cache.active_math_block = math;
         cache.active_mermaid_block = mermaid;
         cache.marked_range = self.marked_range.clone();
