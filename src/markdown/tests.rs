@@ -1662,3 +1662,80 @@ fn live_preview_requires_enter_or_closing_fence_to_enter_math_and_code_blocks() 
         }
     ));
 }
+
+#[test]
+fn quoted_table_cells_and_projection_preserve_quote_prefix_offsets() {
+    let lines = vec![
+        "> | a | b |".to_string(),
+        "> | --- | --- |".to_string(),
+        "> | **c** | d |".to_string(),
+    ];
+    let buffer = TextBuffer::from_str(&lines.join("\n"), None);
+    let parsed = MarkdownScanner::scan_document(&lines);
+
+    let BlockKind::Table { cells, .. } = &parsed[2].kind else {
+        panic!("expected quoted table row");
+    };
+    assert_eq!(cells.len(), 2);
+    // `> | **c** | d |`: `**c**` starts at char col 4 (`> | `), ends at 9; `d` is at 12..13.
+    assert_eq!(cells[0].col_range, (4, 9));
+    assert_eq!(cells[1].col_range, (12, 13));
+    let bold = cells[0].spans.iter().find(|s| s.text == "c").unwrap();
+    assert!(bold.is_bold);
+    assert_eq!(bold.span_range, (6, 7));
+    assert_eq!(bold.group_range, (4, 9));
+
+    let block = block_at_buffer(&buffer, SourceLine::new(2)).unwrap();
+    assert_eq!(
+        block.kind,
+        ProjectedBlockKind::Table {
+            delimiter_line: SourceLine::new(1),
+        }
+    );
+    assert_eq!(block.editable_min_col(&buffer, SourceLine::new(2)), 4);
+}
+
+#[test]
+fn table_cells_preserve_pipes_inside_inline_code() {
+    let lines = vec![
+        "| Code | Desc |".to_string(),
+        "| --- | --- |".to_string(),
+        "| `a | b` | c |".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    let BlockKind::Table { cells, .. } = &parsed[2].kind else {
+        panic!("expected table row");
+    };
+    assert_eq!(cells.len(), 2);
+    assert_eq!(cells[0].raw_content, "`a | b`");
+    assert_eq!(cells[1].raw_content, "c");
+}
+
+#[test]
+fn multi_image_or_trailing_text_is_not_classified_as_standalone_image() {
+    let lines = vec![
+        "![a](1.png) text ![b](2.png)".to_string(),
+        "![a](1.png) (note)".to_string(),
+        "![alt](https://example.com/a_(1).png)".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    assert_eq!(parsed[0].kind, BlockKind::Paragraph);
+    assert_eq!(parsed[1].kind, BlockKind::Paragraph);
+    assert!(matches!(
+        &parsed[2].kind,
+        BlockKind::Image { alt, url } if alt == "alt" && url == "https://example.com/a_(1).png"
+    ));
+}
+
+#[test]
+fn indented_code_fence_preserves_full_source_char_columns() {
+    let lines = vec![
+        "  ```rust".to_string(),
+        "  let x = 1;".to_string(),
+        "  ```".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    assert_eq!(parsed[0].visible_text(true, 0, true), "  ```rust");
+    assert_eq!(parsed[0].spans[0].span_range, (0, 5));
+    assert_eq!(parsed[0].spans[1].span_range, (5, 9));
+}

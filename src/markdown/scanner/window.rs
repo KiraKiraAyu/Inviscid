@@ -215,9 +215,6 @@ fn connected(
     }
     let left_prefix = index.quote_prefix(SourceLine::new(left));
     let right_prefix = index.quote_prefix(SourceLine::new(right));
-    if left_prefix > 0 && right_prefix > 0 {
-        return true;
-    }
     let left = source.source_line(SourceLine::new(left));
     let right = source.source_line(SourceLine::new(right));
     left[left_prefix..].contains('|') && right[right_prefix..].contains('|')

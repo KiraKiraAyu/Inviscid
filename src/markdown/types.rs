@@ -97,7 +97,8 @@ impl ParsedLine {
         } else {
             0
         };
-        quote_prefix_len + inner_prefix_len
+        let total_bytes = (quote_prefix_len + inner_prefix_len).min(self.raw_text.len());
+        self.raw_text[..total_bytes].chars().count()
     }
 
     pub fn visible_text(&self, is_active: bool, cursor_col: usize, is_source: bool) -> String {

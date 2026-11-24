@@ -1,3 +1,4 @@
+use super::indent::quote_prefix_len;
 use super::prefix::{
     BlockPrefix, get_block_prefix_len, get_smart_continuation_prefix, is_thematic_break,
     parse_block_prefix, parse_heading_prefix,
@@ -7,7 +8,7 @@ use super::projection::{
 };
 use super::table::{
     TableMetadata, build_empty_table_row, get_cell_index_for_col, get_table_metadata,
-    parse_table_row_cells,
+    parse_source_table_row_cells,
 };
 use crate::buffer::{
     LineSource, Position, Selection, SourceLine, TextBuffer, char_col_to_byte_offset,
@@ -104,7 +105,8 @@ impl<'a> LiveBuffer<'a> {
         }
 
         let new_pos = if let Some(meta) = get_table_metadata(self.buffer, pos.line) {
-            let cells = parse_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
+            let cells =
+                parse_source_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
             let cell_idx = get_cell_index_for_col(&cells, pos.col);
             if let Some(cell) = cells.get(cell_idx) {
                 if pos.col > cell.col_range.1 {
@@ -114,15 +116,16 @@ impl<'a> LiveBuffer<'a> {
                 } else if cell_idx > 0 {
                     Position::new(pos.line, cells[cell_idx - 1].col_range.1)
                 } else if pos.line.index() == meta.delimiter_line.index() + 1 {
-                    let header_cells = parse_table_row_cells(
+                    let header_cells = parse_source_table_row_cells(
                         &self.buffer.line_text(meta.header_line).unwrap_or_default(),
                     );
                     let col = header_cells.last().map(|c| c.col_range.1).unwrap_or(2);
                     Position::new(meta.header_line, col)
                 } else if pos.line.index() > meta.delimiter_line.index() + 1 {
                     let prev_row = pos.line - 1;
-                    let prev_cells =
-                        parse_table_row_cells(&self.buffer.line_text(prev_row).unwrap_or_default());
+                    let prev_cells = parse_source_table_row_cells(
+                        &self.buffer.line_text(prev_row).unwrap_or_default(),
+                    );
                     let col = prev_cells.last().map(|c| c.col_range.1).unwrap_or(2);
                     Position::new(prev_row, col)
                 } else if let Some(prev_line) = self.adjacent_editable(meta.header_line, false) {
@@ -201,7 +204,8 @@ impl<'a> LiveBuffer<'a> {
 
         let line_len = self.buffer.line_len(pos.line);
         let new_pos = if let Some(meta) = get_table_metadata(self.buffer, pos.line) {
-            let cells = parse_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
+            let cells =
+                parse_source_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
             let cell_idx = get_cell_index_for_col(&cells, pos.col);
             if let Some(cell) = cells.get(cell_idx) {
                 if pos.col < cell.col_range.0 {
@@ -215,7 +219,7 @@ impl<'a> LiveBuffer<'a> {
                     if next_row < self.buffer.line_count()
                         && next_row <= meta.last_table_line.index()
                     {
-                        let next_cells = parse_table_row_cells(
+                        let next_cells = parse_source_table_row_cells(
                             &self
                                 .buffer
                                 .line_text(SourceLine::new(next_row))
@@ -228,8 +232,9 @@ impl<'a> LiveBuffer<'a> {
                     }
                 } else if pos.line < meta.last_table_line {
                     let next_row = pos.line + 1;
-                    let next_cells =
-                        parse_table_row_cells(&self.buffer.line_text(next_row).unwrap_or_default());
+                    let next_cells = parse_source_table_row_cells(
+                        &self.buffer.line_text(next_row).unwrap_or_default(),
+                    );
                     let col = next_cells.first().map(|c| c.col_range.0).unwrap_or(2);
                     Position::new(next_row, col)
                 } else if let Some(next_line) = self.adjacent_editable(meta.last_table_line, true) {
@@ -660,11 +665,20 @@ impl<'a> LiveBuffer<'a> {
             Some(idx) => cells.get(idx).map(|c| c.col_range.1).unwrap_or(2),
             None => cells.first().map(|c| c.col_range.1).unwrap_or(2),
         };
+        let build_row_with_quote = || {
+            let header = self.buffer.line_text(meta.header_line).unwrap_or_default();
+            let qlen = quote_prefix_len(&header);
+            format!(
+                "{}{}",
+                &header[..qlen],
+                build_empty_table_row(meta.num_columns)
+            )
+        };
 
         if pos.line == meta.header_line {
             let next_row = meta.delimiter_line.index() + 1;
             if next_row < self.buffer.line_count() && next_row <= meta.last_table_line.index() {
-                let next_cells = parse_table_row_cells(
+                let next_cells = parse_source_table_row_cells(
                     &self
                         .buffer
                         .line_text(SourceLine::new(next_row))
@@ -678,8 +692,8 @@ impl<'a> LiveBuffer<'a> {
                     )));
                 return;
             }
-            let new_row = build_empty_table_row(meta.num_columns);
-            let cells = parse_table_row_cells(&new_row);
+            let new_row = build_row_with_quote();
+            let cells = parse_source_table_row_cells(&new_row);
             let col = resolve_col(&cells);
             self.buffer.replace_line_range(
                 meta.delimiter_line + 1,
@@ -693,16 +707,16 @@ impl<'a> LiveBuffer<'a> {
         if pos.line < meta.last_table_line {
             let next_row = pos.line + 1;
             let next_cells =
-                parse_table_row_cells(&self.buffer.line_text(next_row).unwrap_or_default());
+                parse_source_table_row_cells(&self.buffer.line_text(next_row).unwrap_or_default());
             let target_col = resolve_col(&next_cells);
             self.buffer
                 .set_selection_direct(Selection::cursor(Position::new(next_row, target_col)));
             return;
         }
 
-        let new_row = build_empty_table_row(meta.num_columns);
+        let new_row = build_row_with_quote();
         let insert_idx = meta.last_table_line.index() + 1;
-        let cells = parse_table_row_cells(&new_row);
+        let cells = parse_source_table_row_cells(&new_row);
         let col = resolve_col(&cells);
         self.buffer.replace_line_range(
             SourceLine::new(insert_idx),
@@ -719,7 +733,7 @@ impl<'a> LiveBuffer<'a> {
         };
 
         let current_cells =
-            parse_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
+            parse_source_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
         let cell_idx = get_cell_index_for_col(&current_cells, pos.col);
 
         if cell_idx + 1 < current_cells.len() {
@@ -740,7 +754,7 @@ impl<'a> LiveBuffer<'a> {
         };
 
         let current_cells =
-            parse_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
+            parse_source_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
         let cell_idx = get_cell_index_for_col(&current_cells, pos.col);
 
         if cell_idx > 0 {
@@ -751,8 +765,9 @@ impl<'a> LiveBuffer<'a> {
         }
 
         if pos.line == meta.delimiter_line + 1 {
-            let header_cells =
-                parse_table_row_cells(&self.buffer.line_text(meta.header_line).unwrap_or_default());
+            let header_cells = parse_source_table_row_cells(
+                &self.buffer.line_text(meta.header_line).unwrap_or_default(),
+            );
             let target_col = header_cells.last().map(|c| c.col_range.1).unwrap_or(2);
             self.buffer
                 .set_selection_direct(Selection::cursor(Position::new(
@@ -765,7 +780,7 @@ impl<'a> LiveBuffer<'a> {
         if pos.line > meta.delimiter_line + 1 {
             let prev_row = pos.line - 1;
             let prev_cells =
-                parse_table_row_cells(&self.buffer.line_text(prev_row).unwrap_or_default());
+                parse_source_table_row_cells(&self.buffer.line_text(prev_row).unwrap_or_default());
             let target_col = prev_cells.last().map(|c| c.col_range.1).unwrap_or(2);
             self.buffer
                 .set_selection_direct(Selection::cursor(Position::new(prev_row, target_col)));
@@ -782,7 +797,7 @@ impl<'a> LiveBuffer<'a> {
         };
 
         let current_cells =
-            parse_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
+            parse_source_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
         let cell_idx = get_cell_index_for_col(&current_cells, pos.col);
 
         self.table_navigate_or_insert_next_row(&meta, Some(cell_idx));
@@ -801,7 +816,7 @@ impl<'a> LiveBuffer<'a> {
         }
 
         let current_cells =
-            parse_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
+            parse_source_table_row_cells(&self.buffer.line_text(pos.line).unwrap_or_default());
         let cell_idx = get_cell_index_for_col(&current_cells, pos.col);
         if let Some(cell) = current_cells.get(cell_idx) {
             if pos.col <= cell.col_range.0 {

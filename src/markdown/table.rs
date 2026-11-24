@@ -1,4 +1,4 @@
-﻿use super::inline::parse_inline_spans;
+﻿use super::inline::{parse_inline_spans, parse_inline_spans_with_render};
 use super::prefix::is_fence_line;
 use super::types::{TableAlignment, TableCell};
 use crate::buffer::{LineSource, SourceLine};
@@ -40,6 +40,25 @@ pub fn parse_table_alignments(delimiter_line: &str) -> Vec<TableAlignment> {
         .collect()
 }
 
+fn find_matching_backtick_span_end(content: &str, start: usize) -> Option<usize> {
+    let tick_count = content[start..].bytes().take_while(|&b| b == b'`').count();
+    if tick_count == 0 || tick_count >= 3 {
+        return None;
+    }
+    let bytes = content.as_bytes();
+    let mut j = start + tick_count;
+    while j + tick_count <= bytes.len() {
+        if bytes[j..(j + tick_count)].iter().all(|&b| b == b'`')
+            && (j + tick_count == bytes.len() || bytes[j + tick_count] != b'`')
+            && (j == 0 || bytes[j - 1] != b'`')
+        {
+            return Some(j + tick_count);
+        }
+        j += 1;
+    }
+    None
+}
+
 pub fn split_raw_cells(line: &str) -> Vec<&str> {
     let trimmed = line.trim();
     let content = trimmed.strip_prefix('|').unwrap_or(trimmed);
@@ -48,14 +67,24 @@ pub fn split_raw_cells(line: &str) -> Vec<&str> {
     let mut cells = Vec::new();
     let mut last_idx = 0;
     let mut in_escape = false;
+    let mut skip_until = 0;
 
     for (idx, ch) in content.char_indices() {
+        if idx < skip_until {
+            continue;
+        }
         if in_escape {
             in_escape = false;
             continue;
         }
         if ch == '\\' {
             in_escape = true;
+            continue;
+        }
+        if ch == '`'
+            && let Some(end) = find_matching_backtick_span_end(content, idx)
+        {
+            skip_until = end;
             continue;
         }
         if ch == '|' {
@@ -68,6 +97,13 @@ pub fn split_raw_cells(line: &str) -> Vec<&str> {
 }
 
 pub fn parse_table_row_cells(row_line: &str) -> Vec<TableCell> {
+    parse_table_row_cells_with_render(row_line, true)
+}
+
+pub(crate) fn parse_table_row_cells_with_render(
+    row_line: &str,
+    allow_math_render: bool,
+) -> Vec<TableCell> {
     let leading_spaces = row_line.chars().take_while(|c| c.is_whitespace()).count();
     let trimmed = row_line.trim();
 
@@ -89,8 +125,10 @@ pub fn parse_table_row_cells(row_line: &str) -> Vec<TableCell> {
 
         let spans = if cell_trimmed.is_empty() {
             Vec::new()
-        } else {
+        } else if allow_math_render {
             parse_inline_spans(cell_trimmed, cell_start_col)
+        } else {
+            parse_inline_spans_with_render(cell_trimmed, cell_start_col, false)
         };
 
         result.push(TableCell {
@@ -103,6 +141,26 @@ pub fn parse_table_row_cells(row_line: &str) -> Vec<TableCell> {
     }
 
     result
+}
+
+pub(crate) fn parse_source_table_row_cells(raw_line: &str) -> Vec<TableCell> {
+    let quote_bytes = super::indent::quote_prefix_len(raw_line);
+    if quote_bytes == 0 {
+        return parse_table_row_cells(raw_line);
+    }
+    let quote_chars = raw_line[..quote_bytes].chars().count();
+    let mut cells = parse_table_row_cells(&raw_line[quote_bytes..]);
+    for cell in &mut cells {
+        cell.col_range.0 += quote_chars;
+        cell.col_range.1 += quote_chars;
+        for span in &mut cell.spans {
+            span.group_range.0 += quote_chars;
+            span.group_range.1 += quote_chars;
+            span.span_range.0 += quote_chars;
+            span.span_range.1 += quote_chars;
+        }
+    }
+    cells
 }
 
 pub fn get_cell_index_for_col(cells: &[TableCell], col: usize) -> usize {
@@ -121,23 +179,41 @@ pub struct TableMetadata {
     pub alignments: Vec<TableAlignment>,
 }
 
+fn stripped_for_depth(line: &str, target_depth: usize) -> Option<&str> {
+    if super::indent::quote_depth(line) != target_depth {
+        return None;
+    }
+    Some(&line[super::indent::quote_prefix_len(line)..])
+}
+
 pub fn get_table_metadata(
     lines: &(impl LineSource + ?Sized),
     target_line: SourceLine,
 ) -> Option<TableMetadata> {
-    let target_line = target_line.index();
+    let target_idx = target_line.index();
     let line_count = lines.line_count();
-    if target_line >= line_count {
+    if target_idx >= line_count {
+        return None;
+    }
+
+    let target_raw = lines.source_line(target_line);
+    let target_depth = super::indent::quote_depth(&target_raw);
+    let target_inner = stripped_for_depth(&target_raw, target_depth)?;
+    if !target_inner.contains('|') {
         return None;
     }
 
     let mut header_idx = None;
-    for cur in (0..=target_line).rev() {
+    for cur in (0..=target_idx).rev() {
         let cur_line = lines.source_line(SourceLine::new(cur));
-        let trimmed = cur_line.trim();
+        let Some(cur_inner) = stripped_for_depth(&cur_line, target_depth) else {
+            break;
+        };
+        let trimmed = cur_inner.trim();
         if cur + 1 < line_count
-            && cur_line.contains('|')
-            && is_table_delimiter_row(&lines.source_line(SourceLine::new(cur + 1)))
+            && cur_inner.contains('|')
+            && stripped_for_depth(&lines.source_line(SourceLine::new(cur + 1)), target_depth)
+                .is_some_and(is_table_delimiter_row)
         {
             header_idx = Some(cur);
             break;
@@ -150,13 +226,18 @@ pub fn get_table_metadata(
 
     let header_line = header_idx?;
     let delimiter_line = header_line + 1;
-    let alignments = parse_table_alignments(&lines.source_line(SourceLine::new(delimiter_line)));
+    let delim_raw = lines.source_line(SourceLine::new(delimiter_line));
+    let delim_inner = stripped_for_depth(&delim_raw, target_depth)?;
+    let alignments = parse_table_alignments(delim_inner);
     let num_columns = alignments.len().max(1);
 
     let mut last_table_line = delimiter_line;
     for idx in (delimiter_line + 1)..line_count {
         let line = lines.source_line(SourceLine::new(idx));
-        let trimmed = line.trim();
+        let Some(inner) = stripped_for_depth(&line, target_depth) else {
+            break;
+        };
+        let trimmed = inner.trim();
         if trimmed.is_empty()
             || !trimmed.contains('|')
             || trimmed.starts_with('#')
@@ -167,7 +248,7 @@ pub fn get_table_metadata(
         last_table_line = idx;
     }
 
-    if target_line > last_table_line {
+    if target_idx > last_table_line {
         return None;
     }
 

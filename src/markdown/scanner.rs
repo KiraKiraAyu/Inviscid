@@ -3,8 +3,10 @@ use super::inline::{InlineSpan, parse_inline_spans_with_render};
 use super::prefix::{
     BlockPrefix, fence_info, is_fence_line, is_thematic_break, parse_block_prefix,
 };
-use super::table::{is_table_delimiter_row, parse_table_alignments, parse_table_row_cells};
-use super::types::{BlockKind, ParsedLine, QuoteContext, TableAlignment};
+use super::table::{
+    is_table_delimiter_row, parse_table_alignments, parse_table_row_cells_with_render,
+};
+use super::types::{BlockKind, ParsedLine, QuoteContext, TableAlignment, TableCell};
 #[cfg(test)]
 use crate::buffer::EditDelta;
 use crate::buffer::{LineSource, SourceLine};
@@ -89,10 +91,6 @@ impl QuoteProjection {
         }
         if let Some(blank) = self.index.blank_range(range.end - 1) {
             range.end = blank.end;
-        }
-        for group in self.quote_ranges(range.clone()) {
-            range.start = range.start.min(group.start);
-            range.end = range.end.max(group.end);
         }
         while range.start > 0
             && self.normalized_line(range.start).contains('|')
@@ -328,6 +326,97 @@ fn shift_spans(spans: &mut [InlineSpan], offset: usize) {
     }
 }
 
+fn parse_standalone_image(trimmed: &str) -> Option<(String, String)> {
+    let rest = trimmed.strip_prefix("![")?;
+    if !trimmed.ends_with(')') {
+        return None;
+    }
+    let mut chars = rest.char_indices().peekable();
+    let mut close_bracket = None;
+    while let Some((byte_idx, ch)) = chars.next() {
+        if ch == '\\' {
+            let _ = chars.next();
+            continue;
+        }
+        if ch == ']' {
+            close_bracket = Some(byte_idx);
+            break;
+        }
+    }
+    let close_bracket = close_bracket?;
+    let after_bracket = rest.get(close_bracket + 1..)?;
+    if !after_bracket.starts_with('(') {
+        return None;
+    }
+    let alt = rest[..close_bracket].to_string();
+    let url_body = &after_bracket[1..];
+    let mut paren_depth = 1usize;
+    let mut url_chars = url_body.char_indices().peekable();
+    while let Some((byte_idx, ch)) = url_chars.next() {
+        if ch == '\\' {
+            let _ = url_chars.next();
+            continue;
+        }
+        match ch {
+            '(' => paren_depth += 1,
+            ')' => {
+                paren_depth -= 1;
+                if paren_depth == 0 {
+                    if byte_idx + 1 != url_body.len() {
+                        return None;
+                    }
+                    return Some((alt, url_body[..byte_idx].to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn char_byte_offsets(s: &str) -> Vec<usize> {
+    s.char_indices()
+        .map(|(byte, _)| byte)
+        .chain(std::iter::once(s.len()))
+        .collect()
+}
+
+fn reassemble_table_row_spans(raw_line: &str, cells: &[TableCell]) -> Vec<InlineSpan> {
+    let offsets = char_byte_offsets(raw_line);
+    let total_chars = offsets.len().saturating_sub(1);
+    let mut spans = Vec::with_capacity(cells.len() * 2 + 2);
+    let mut cursor = 0usize;
+
+    for cell in cells {
+        let cell_start = cell.col_range.0.min(total_chars);
+        let cell_end = cell.col_range.1.min(total_chars);
+        if cell_start > cursor {
+            spans.push(InlineSpan::plain(
+                raw_line[offsets[cursor]..offsets[cell_start]].to_string(),
+                (cursor, cell_start),
+            ));
+        }
+        if !cell.spans.is_empty() {
+            spans.extend(cell.spans.iter().cloned());
+        } else if cell_end > cell_start {
+            spans.push(InlineSpan::plain(
+                raw_line[offsets[cell_start]..offsets[cell_end]].to_string(),
+                (cell_start, cell_end),
+            ));
+        }
+        cursor = cursor.max(cell_end);
+    }
+
+    if cursor < total_chars {
+        spans.push(InlineSpan::plain(
+            raw_line[offsets[cursor]..offsets[total_chars]].to_string(),
+            (cursor, total_chars),
+        ));
+    }
+
+    spans
+}
+
 pub struct MarkdownScanner;
 
 #[cfg(test)]
@@ -464,6 +553,21 @@ mod window_tests {
         let (range, parsed) = MarkdownScanner::scan_window(&buffer, 10_000..10_064);
         assert_eq!(range, 10_000..10_064);
         assert_eq!(parsed.len(), 64);
+    }
+
+    #[test]
+    fn large_blockquote_window_does_not_expand_across_whole_quote() {
+        let mut lines = vec!["> line".to_string(); 10_000];
+        lines[0] = "> first".to_string();
+        lines[9_999] = "> last".to_string();
+        let buffer = TextBuffer::from_str(&lines.join("\n"), None);
+        let (range, parsed) = MarkdownScanner::scan_window(&buffer, 5_000..5_064);
+        assert_eq!(range, 5_000..5_064);
+        assert_eq!(parsed.len(), 64);
+        assert!(parsed.iter().all(|row| {
+            row.quote
+                .is_some_and(|q| !q.is_start && !q.is_end && q.depth == 1)
+        }));
     }
 
     #[test]
@@ -715,13 +819,20 @@ impl MarkdownScanner {
                             Some(highlight_fenced_slice(lines, Some(idx), close_idx));
 
                         let mut spans = Vec::new();
-                        // Opening backticks are hidden in Live Preview mode
-                        spans.push(InlineSpan::hidden_marker("```", (0, 3), (0, 3)));
+                        // Opening backticks (and any leading indentation) are hidden in Live Preview mode
+                        let leading_chars = raw_line[..leading_spaces].chars().count();
+                        let fence_end_col = leading_chars + 3;
+                        let raw_chars = raw_line.chars().count();
+                        spans.push(InlineSpan::hidden_marker(
+                            raw_line[..leading_spaces + 3].to_string(),
+                            (0, fence_end_col),
+                            (0, fence_end_col),
+                        ));
                         if !lang_str.is_empty() {
-                            let actual_lang_col = leading_spaces + 3;
+                            let actual_lang_byte = leading_spaces + 3;
                             spans.push(InlineSpan::plain(
-                                raw_line[actual_lang_col..].to_string(),
-                                (actual_lang_col, raw_line.chars().count()),
+                                raw_line[actual_lang_byte..].to_string(),
+                                (fence_end_col, raw_chars),
                             ));
                         }
                         if let Some(rendered) = mermaid_preview {
@@ -806,11 +917,14 @@ impl MarkdownScanner {
                     in_math_block = true;
                     let open_start = leading_spaces;
                     let open_end = open_start + 2;
+                    let open_start_col = raw_line[..open_start].chars().count();
+                    let open_end_col = open_start_col + 2;
+                    let raw_chars = raw_line.chars().count();
                     let mut spans = Vec::new();
                     if open_start > 0 {
                         spans.push(InlineSpan::plain(
                             raw_line[..open_start].to_string(),
-                            (0, open_start),
+                            (0, open_start_col),
                         ));
                     }
                     if let Some(rendered) = close_idx.and_then(|close_idx| {
@@ -832,21 +946,21 @@ impl MarkdownScanner {
                         spans.push(InlineSpan::math(
                             "$$",
                             rendered.0,
-                            (open_start, open_end),
+                            (open_start_col, open_end_col),
                             rendered.1,
                             true,
                         ));
                     } else {
                         spans.push(InlineSpan::hidden_marker(
                             "$$",
-                            (open_start, open_end),
-                            (open_start, open_end),
+                            (open_start_col, open_end_col),
+                            (open_start_col, open_end_col),
                         ));
                     }
                     if raw_line.len() > open_end {
                         spans.push(InlineSpan::plain(
                             raw_line[open_end..].to_string(),
-                            (open_end, raw_line.chars().count()),
+                            (open_end_col, raw_chars),
                         ));
                     }
                     result.push(ParsedLine {
@@ -865,7 +979,10 @@ impl MarkdownScanner {
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::Paragraph,
-                    spans: vec![InlineSpan::plain(raw_line.clone(), (0, raw_line.len()))],
+                    spans: vec![InlineSpan::plain(
+                        raw_line.clone(),
+                        (0, raw_line.chars().count()),
+                    )],
                     quote: None,
                 });
                 continue;
@@ -901,19 +1018,17 @@ impl MarkdownScanner {
                     let actual_prefix_len = prefix.total_len;
                     let content = &raw_line[actual_prefix_len..];
                     let prefix_str = &raw_line[..actual_prefix_len];
+                    let prefix_chars = prefix_str.chars().count();
 
-                    let mut marker_span = InlineSpan::hidden_marker(
-                        prefix_str,
-                        (0, actual_prefix_len),
-                        (0, actual_prefix_len),
-                    );
+                    let mut marker_span =
+                        InlineSpan::hidden_marker(prefix_str, (0, prefix_chars), (0, prefix_chars));
                     if matches!(kind, BlockKind::Heading { .. }) {
                         marker_span.is_bold = true;
                     }
                     let mut inline_spans = vec![marker_span];
                     inline_spans.extend(parse_inline_spans_with_render(
                         content,
-                        actual_prefix_len,
+                        prefix_chars,
                         allow_inline_math,
                     ));
 
@@ -928,13 +1043,8 @@ impl MarkdownScanner {
             }
 
             // Standalone image (![alt](url))
-            if trimmed.starts_with("![")
-                && trimmed.ends_with(')')
-                && let Some(bracket_end) = trimmed.find("](")
-            {
+            if let Some((alt, url)) = parse_standalone_image(trimmed) {
                 current_table_alignments = None;
-                let alt = trimmed[2..bracket_end].to_string();
-                let url = trimmed[(bracket_end + 2)..(trimmed.len() - 1)].to_string();
                 let inline_spans = parse_inline_spans_with_render(raw_line, 0, allow_inline_math);
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
@@ -949,13 +1059,21 @@ impl MarkdownScanner {
             if let Some(alignments) = &current_table_alignments
                 && trimmed.contains('|')
             {
-                let cells = parse_table_row_cells(raw_line);
-                let inline_spans = parse_inline_spans_with_render(raw_line, 0, allow_inline_math);
+                let is_delimiter = is_table_delimiter_row(trimmed);
+                let cells = parse_table_row_cells_with_render(raw_line, allow_inline_math);
+                let inline_spans = if is_delimiter {
+                    vec![InlineSpan::plain(
+                        raw_line.clone(),
+                        (0, raw_line.chars().count()),
+                    )]
+                } else {
+                    reassemble_table_row_spans(raw_line, &cells)
+                };
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
                     kind: BlockKind::Table {
                         is_header: false,
-                        is_delimiter: is_table_delimiter_row(trimmed),
+                        is_delimiter,
                         alignments: alignments.clone(),
                         cells,
                     },
@@ -970,8 +1088,8 @@ impl MarkdownScanner {
                 && is_table_delimiter_row(&lines[idx + 1])
             {
                 let alignments = parse_table_alignments(&lines[idx + 1]);
-                let cells = parse_table_row_cells(raw_line);
-                let inline_spans = parse_inline_spans_with_render(raw_line, 0, allow_inline_math);
+                let cells = parse_table_row_cells_with_render(raw_line, allow_inline_math);
+                let inline_spans = reassemble_table_row_spans(raw_line, &cells);
                 current_table_alignments = Some(alignments.clone());
                 result.push(ParsedLine {
                     raw_text: raw_line.clone(),
@@ -1009,6 +1127,13 @@ impl MarkdownScanner {
                         || quote_prefixes[source_idx + 1].is_none(),
                 });
                 shift_spans(&mut parsed.spans, prefix_chars);
+                if let BlockKind::Table { cells, .. } = &mut parsed.kind {
+                    for cell in cells {
+                        cell.col_range.0 += prefix_chars;
+                        cell.col_range.1 += prefix_chars;
+                        shift_spans(&mut cell.spans, prefix_chars);
+                    }
+                }
                 parsed.spans.insert(
                     0,
                     InlineSpan::hidden_marker(

@@ -3,7 +3,7 @@ use super::prefix::{
     BlockPrefix, fence_info, is_thematic_break, parse_block_prefix, parse_fence_prefix,
 };
 use super::scanner::local_separator;
-use super::table::{get_table_metadata, is_table_delimiter_row, parse_table_row_cells};
+use super::table::{get_table_metadata, is_table_delimiter_row, parse_source_table_row_cells};
 use crate::buffer::{LineSource, Position, SourceLine, StructureIndex, TextBuffer};
 use std::ops::Range;
 
@@ -104,7 +104,7 @@ impl ProjectedBlock {
             }
             ProjectedBlockKind::MathBlock => raw[..quote_bytes].chars().count().min(raw_chars),
             ProjectedBlockKind::Table { .. } => {
-                let cells = parse_table_row_cells(&raw);
+                let cells = parse_source_table_row_cells(&raw);
                 cells
                     .first()
                     .map_or(0, |cell| cell.col_range.0)
@@ -253,7 +253,7 @@ fn is_block_line_editable(
 ) -> bool {
     if matches!(block.kind, ProjectedBlockKind::Paragraph) {
         let raw = lines.source_line(line);
-        if is_table_delimiter_row(&raw) {
+        if is_table_delimiter_row(strip_quote_prefix(&raw)) {
             return false;
         }
     }
