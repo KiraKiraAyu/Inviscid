@@ -212,6 +212,7 @@ pub struct DocumentLayoutCache {
     pub font_size: f32,
     pub line_height: f32,
     pub soft_wrap: bool,
+    pub is_dark_theme: bool,
     pub parsed_lines: super::parsed_line_store::ParsedLineStore,
     pub metrics: super::line_metrics::LineMetrics,
     pub space_width: Pixels,
@@ -243,6 +244,7 @@ impl Default for DocumentLayoutCache {
             font_size: 15.0,
             line_height: 1.6,
             soft_wrap: true,
+            is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
             parsed_lines: Default::default(),
             metrics: Default::default(),
             space_width: px(0.0),
@@ -813,6 +815,7 @@ impl Editor {
             && cache.font_size == self.font_size
             && cache.line_height == self.line_height
             && cache.soft_wrap == self.soft_wrap
+            && cache.is_dark_theme == self.is_dark_theme
     }
 
     /// Width of one space character in the UI font at the current font size.

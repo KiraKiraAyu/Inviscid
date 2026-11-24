@@ -234,6 +234,7 @@ pub struct Editor {
     pub(crate) soft_wrap: bool,
     pub(crate) cursor_blink: bool,
     pub(crate) cursor_breathing: bool,
+    pub(crate) is_dark_theme: bool,
 
     /// Window text system handle, captured on first render (`None` before then and in headless tests).
     pub(crate) text_system: Option<Arc<WindowTextSystem>>,
@@ -593,6 +594,7 @@ impl Editor {
             })
             .unwrap_or((RenderMode::LivePreview, false, 15.0, 1.6, true, true, true));
 
+        let is_dark_theme = cx.theme().is_dark();
         let doc_path = buffer.file_path_buf();
         let mut editor = Self {
             background_session: None,
@@ -610,6 +612,7 @@ impl Editor {
             soft_wrap,
             cursor_blink,
             cursor_breathing,
+            is_dark_theme,
             is_dragging: false,
             drag_code_block_bounds: None,
             marked_range: None,
@@ -1501,6 +1504,11 @@ impl Editor {
         }));
     }
 
+    #[inline]
+    pub(crate) fn sync_theme(&mut self, cx: &App) {
+        self.is_dark_theme = cx.theme().is_dark();
+    }
+
     fn render_unsupported_file_prompt(&self, theme: &Theme) -> impl IntoElement {
         div()
             .id("unsupported_file_view")
@@ -1519,6 +1527,8 @@ impl Editor {
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let prev_dark = self.is_dark_theme;
+        self.sync_theme(cx);
         if self.text_system.is_none() {
             // Layout measurement must shape text exactly like painting does, which requires the
             // window's text system; drop anything measured with the headless fallback.
@@ -1536,7 +1546,7 @@ impl Render for Editor {
                 }
             }
 
-            let mut layout_changed = false;
+            let mut layout_changed = prev_dark != self.is_dark_theme;
             if (self.font_size - config.editor_font_size).abs() > f32::EPSILON {
                 self.font_size = config.editor_font_size;
                 layout_changed = true;

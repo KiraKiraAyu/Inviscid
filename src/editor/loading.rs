@@ -1,4 +1,5 @@
 use super::{Editor, EditorEvent, ExternalChangeState, Position};
+use crate::theme::ActiveTheme;
 use gpui::Context;
 use std::{io, path::PathBuf, sync::Arc};
 mod session;
@@ -122,7 +123,11 @@ impl Editor {
                     session: session.clone(),
                     windows: file.windows,
                     optimistic: self.is_loading && !file.complete,
+                    is_dark_theme: file.is_dark_theme,
                 }));
+                if !self.is_loading && file.is_dark_theme != self.is_dark_theme {
+                    session.submit_target(&self.buffer, None, self.is_dark_theme, true);
+                }
                 {
                     let mut cache = self.layout_cache.borrow_mut();
                     // Multiple publications can arrive before a frame catches layout up.
@@ -131,11 +136,12 @@ impl Editor {
                         && cache.lines_len == self.buffer.line_count()
                         && cache.metrics.len() == self.buffer.line_count()
                         && cache.parsed_lines.is_windowed()
+                        && (self.is_loading || file.is_dark_theme == self.is_dark_theme)
                     {
                         let cache = Arc::make_mut(&mut cache);
                         cache.parsed_lines =
                             super::parsed_line_store::ParsedLineStore::windowed(&self.buffer)
-                                .with_session(Some(session.clone()))
+                                .with_theme(self.is_dark_theme)
                                 .with_prepared(self.prepared_document.clone());
                         let max_len = cache.metrics.len();
                         if finishing && self.buffer.line_index().structure().has_unclosed_blocks() {
@@ -243,7 +249,7 @@ pub(crate) fn spawn_editor_load(
     path: PathBuf,
     cx: &mut Context<Editor>,
 ) -> (Arc<DocumentSession>, gpui::Task<()>) {
-    let session = DocumentSession::new();
+    let session = DocumentSession::new_with_theme(cx.theme().is_dark());
     let session_work = spawn_session(&session, path, cx.background_executor());
     let task = listen_to_session(session.clone(), session_work, cx);
     (session, task)
@@ -253,7 +259,7 @@ pub(crate) fn spawn_editor_worker(
     doc_path: Option<PathBuf>,
     cx: &mut Context<Editor>,
 ) -> (Arc<DocumentSession>, gpui::Task<()>) {
-    let session = DocumentSession::new();
+    let session = DocumentSession::new_with_theme(cx.theme().is_dark());
     let worker_session = session.clone();
     let prepare_work = cx
         .background_executor()

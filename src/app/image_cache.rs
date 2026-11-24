@@ -281,14 +281,23 @@ impl BoundedImageCache {
 
         match result {
             Ok(image) => {
-                if let Resource::Uri(url) = source {
-                    let dims = (image.frame_count() > 0)
-                        .then(|| image.size(0))
-                        .and_then(|sz| {
-                            (sz.width.0 > 0 && sz.height.0 > 0)
-                                .then_some((sz.width.0 as u32, sz.height.0 as u32))
-                        });
-                    crate::http::mark_url_loaded_with_size(url.as_ref(), dims);
+                let dims = (image.frame_count() > 0)
+                    .then(|| image.size(0))
+                    .and_then(|sz| {
+                        (sz.width.0 > 0 && sz.height.0 > 0)
+                            .then_some((sz.width.0 as u32, sz.height.0 as u32))
+                    });
+                match source {
+                    Resource::Uri(url) => {
+                        crate::http::mark_url_loaded_with_size(url.as_ref(), dims);
+                    }
+                    Resource::Path(path) => {
+                        if let Some((w, h)) = dims {
+                            let key = path.to_string_lossy();
+                            crate::http::record_image_size(key.as_ref(), w, h);
+                        }
+                    }
+                    _ => {}
                 }
                 let bytes = render_image_bytes(&image);
                 entry.bytes = bytes;

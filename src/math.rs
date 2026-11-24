@@ -275,6 +275,16 @@ pub(crate) fn get_cached_latex_result(tex: &str, is_display: bool) -> Option<Cac
     cache.lock().get(&key)
 }
 
+/// Returns `true` when rendering `tex` would do no new work (cached as `Ok`/`Err` or oversized).
+pub(crate) fn is_latex_cached(tex: &str, is_display: bool) -> bool {
+    let Ok(key) = formula_key(tex, is_display) else {
+        return true;
+    };
+    RENDER_CACHE
+        .get()
+        .is_some_and(|cache| cache.lock().entries.contains_key(&key))
+}
+
 pub(crate) fn prepare_latex_result(tex: &str, is_display: bool) -> CachedFormula {
     let key = formula_key(tex, is_display)?;
     let cache = RENDER_CACHE.get_or_init(Default::default);

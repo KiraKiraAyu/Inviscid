@@ -172,9 +172,27 @@ fn source_from_lines(lines: &[String]) -> Option<String> {
 }
 
 pub(crate) fn get_cached_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
+    get_cached_mermaid_lines_for_theme(lines, false)
+}
+
+pub(crate) fn get_cached_mermaid_lines_for_theme(
+    lines: &[String],
+    is_dark: bool,
+) -> Option<MermaidSvg> {
     let source = source_from_lines(lines)?;
     let cache = RENDER_CACHE.get()?;
-    cache.lock().get(&source, false).flatten()
+    cache.lock().get(&source, is_dark).flatten()
+}
+
+/// Returns `true` when rendering these Mermaid lines for `is_dark` would do no new work
+/// (already cached as valid or invalid syntax, or exceeding size/line bounds).
+pub(crate) fn is_mermaid_cached_for_theme(lines: &[String], is_dark: bool) -> bool {
+    let Some(source) = source_from_lines(lines) else {
+        return true;
+    };
+    RENDER_CACHE
+        .get()
+        .is_some_and(|cache| cache.lock().entries.contains_key(&(source, is_dark)))
 }
 
 pub(crate) fn prepare_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {

@@ -1,9 +1,10 @@
-use super::window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry};
-use crate::markdown::ParsedLine;
+use super::window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry, WindowQuality};
+use crate::markdown::{BlockKind, ParsedLine, ScanOptions};
 use std::{
     cell::RefCell,
     collections::VecDeque,
     ops::{Deref, Range},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -21,12 +22,30 @@ pub struct ParsedLineStore {
 
 #[derive(Clone, Debug)]
 struct WindowStore {
-    prepared: Option<Arc<super::loading::PreparedSnapshot>>,
     session: Option<Arc<super::loading::DocumentSession>>,
+    streaming_optimistic: bool,
+    doc_path: Option<PathBuf>,
+    is_dark_theme: bool,
     source: crate::buffer::SourceSnapshot,
     index: crate::buffer::StructureIndex,
     windows: RefCell<VecDeque<WindowEntry>>,
     scanned: std::cell::Cell<usize>,
+}
+
+fn window_contains_mermaid(rows: &[ParsedLine]) -> bool {
+    rows.iter().any(|row| {
+        matches!(
+            row.kind,
+            BlockKind::MermaidBlock { .. } | BlockKind::MermaidBlockContent
+        ) || (matches!(
+            row.kind,
+            BlockKind::CodeBlock {
+                is_fence_start: true
+            }
+        ) && crate::markdown::is_mermaid_fence(crate::markdown::strip_quote_prefix(
+            &row.raw_text,
+        )))
+    })
 }
 
 /// Owns its window so eviction cannot invalidate an in-flight row reader.
@@ -69,8 +88,10 @@ impl ParsedLineStore {
             #[cfg(test)]
             eager: Arc::default(),
             windows: Some(Arc::new(WindowStore {
-                prepared: None,
                 session: None,
+                streaming_optimistic: false,
+                doc_path: buffer.file_path_buf(),
+                is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
                 source: buffer.source_snapshot(),
                 index: buffer.line_index().structure_snapshot(),
                 windows: RefCell::default(),
@@ -78,6 +99,13 @@ impl ParsedLineStore {
             })),
             resources: Arc::default(),
         }
+    }
+
+    pub(crate) fn with_theme(mut self, is_dark_theme: bool) -> Self {
+        if let Some(store) = &mut self.windows {
+            Arc::make_mut(store).is_dark_theme = is_dark_theme;
+        }
+        self
     }
 
     pub(crate) fn with_session(
@@ -88,6 +116,50 @@ impl ParsedLineStore {
             Arc::make_mut(store).session = session;
         }
         self
+    }
+
+    pub(crate) fn update_theme(&self, is_dark_theme: bool) -> Self {
+        let Some(prev_store) = &self.windows else {
+            return self.clone();
+        };
+        if prev_store.is_dark_theme == is_dark_theme {
+            return self.clone();
+        }
+        let mut windows = VecDeque::with_capacity(prev_store.windows.borrow().len());
+        let mut invalidated_ranges = Vec::new();
+        for window in prev_store.windows.borrow().iter() {
+            if window_contains_mermaid(&window.rows) {
+                invalidated_ranges.push(window.range.clone());
+            } else {
+                windows.push_back(window.clone());
+            }
+        }
+        let resources: Vec<Resource> = self
+            .resources
+            .borrow()
+            .iter()
+            .filter(|res| {
+                !invalidated_ranges
+                    .iter()
+                    .any(|inv| res.range.start < inv.end && inv.start < res.range.end)
+            })
+            .cloned()
+            .collect();
+        Self {
+            #[cfg(test)]
+            eager: Arc::default(),
+            windows: Some(Arc::new(WindowStore {
+                session: prev_store.session.clone(),
+                streaming_optimistic: prev_store.streaming_optimistic,
+                doc_path: prev_store.doc_path.clone(),
+                is_dark_theme,
+                source: prev_store.source.clone(),
+                index: prev_store.index.clone(),
+                windows: RefCell::new(windows),
+                scanned: std::cell::Cell::new(0),
+            })),
+            resources: Arc::new(RefCell::new(resources)),
+        }
     }
 
     pub fn row(&self, line: usize) -> Option<ParsedRow> {
@@ -115,8 +187,29 @@ impl ParsedLineStore {
         mut self,
         prepared: Option<Arc<super::loading::PreparedSnapshot>>,
     ) -> Self {
-        if let Some(store) = &mut self.windows {
-            Arc::make_mut(store).prepared = prepared;
+        if let Some(prepared) = prepared
+            && let Some(store) = &mut self.windows
+        {
+            let store = Arc::make_mut(store);
+            store.session = Some(prepared.session.clone());
+            store.streaming_optimistic = prepared.optimistic;
+            *store.windows.borrow_mut() = prepared.windows.clone();
+            let mut resources = self.resources.borrow_mut();
+            for window in &prepared.windows {
+                if window.quality == WindowQuality::SourceStub {
+                    continue;
+                }
+                for resource in Resource::collect(
+                    window.range.start,
+                    &window.rows,
+                    store.doc_path.as_deref(),
+                    Some((&store.source, &store.index)),
+                ) {
+                    if !resources.iter().any(|old| old.range == resource.range) {
+                        resources.push(resource);
+                    }
+                }
+            }
         }
         self
     }
@@ -125,9 +218,6 @@ impl ParsedLineStore {
         let Some(store) = &self.windows else {
             return VecDeque::new();
         };
-        if let Some(prepared) = &store.prepared {
-            return prepared.windows.clone();
-        }
         store.windows.borrow().clone()
     }
 
@@ -135,19 +225,22 @@ impl ParsedLineStore {
         &self,
         buffer: &crate::buffer::TextBuffer,
         patch: &EditWindowPatch,
+        is_dark_theme: bool,
     ) -> Self {
         let Some(prev_store) = &self.windows else {
-            return Self::windowed(buffer);
+            return Self::windowed(buffer).with_theme(is_dark_theme);
         };
-        let mut windows = if let Some(prepared) = &prev_store.prepared {
-            prepared.windows.clone()
-        } else {
-            prev_store.windows.borrow().clone()
-        };
+        if prev_store.is_dark_theme != is_dark_theme {
+            return self
+                .update_theme(is_dark_theme)
+                .apply_edit(buffer, patch, is_dark_theme);
+        }
+        let mut windows = prev_store.windows.borrow().clone();
         use crate::buffer::LineSource;
         let source = buffer.source_snapshot();
         let index = buffer.line_index().structure_snapshot();
-        let (scanned, rescanned_ranges) = patch.apply_edit(&mut windows, &source, &index);
+        let (scanned, rescanned_ranges) =
+            patch.apply_edit(&mut windows, &source, &index, is_dark_theme);
 
         let mut resources: Vec<Resource> = if patch.structural {
             let cut = patch.local_new_range.start;
@@ -186,6 +279,7 @@ impl ParsedLineStore {
                 for resource in Resource::collect(
                     range.start,
                     &window.rows[start..end],
+                    prev_store.doc_path.as_deref(),
                     Some((&source, &index)),
                 ) {
                     if !resources.iter().any(|old| old.range == resource.range) {
@@ -195,17 +289,14 @@ impl ParsedLineStore {
             }
         }
 
-        let session = prev_store
-            .session
-            .clone()
-            .or_else(|| prev_store.prepared.as_ref().map(|p| p.session.clone()));
-
         Self {
             #[cfg(test)]
             eager: Arc::default(),
             windows: Some(Arc::new(WindowStore {
-                prepared: None,
-                session,
+                session: prev_store.session.clone(),
+                streaming_optimistic: false,
+                doc_path: buffer.file_path_buf(),
+                is_dark_theme,
                 source,
                 index,
                 windows: RefCell::new(windows),
@@ -236,56 +327,47 @@ impl ParsedLineStore {
     }
 
     fn load_window(&self, store: &WindowStore, requested: Range<usize>) -> WindowEntry {
-        if let Some(prepared) = &store.prepared {
-            if let Some(window) = prepared.windows.iter().rev().find(|window| {
-                window.range.start <= requested.start && window.range.end >= requested.end
-            }) {
-                return WindowEntry {
-                    range: window.range.clone(),
-                    rows: window.rows.clone(),
-                };
-            }
-            prepared.session.request(requested.clone());
-            let mut windows = store.windows.borrow_mut();
-            if let Some(window) = windows.iter().find(|window| window.range == requested) {
-                return window.clone();
-            }
-            let index = if prepared.optimistic {
-                store.index.optimistic()
-            } else {
-                store.index.clone()
-            };
-            let window = super::loading::source_window(&store.source, &index, requested);
-            let window = WindowEntry {
-                range: window.range,
-                rows: window.rows,
-            };
-            if windows.len() == MAX_WINDOWS {
-                windows.pop_front();
-            }
-            windows.push_back(window.clone());
-            return window;
-        }
         let mut windows = store.windows.borrow_mut();
         let window = if let Some(position) = windows.iter().position(|window| {
             window.range.start <= requested.start && window.range.end >= requested.end
         }) {
-            windows.remove(position).unwrap()
-        } else {
+            let window = windows.remove(position).unwrap();
+            if window.quality != WindowQuality::Full
+                && let Some(session) = &store.session
+            {
+                session.request(requested);
+            }
+            window
+        } else if store.streaming_optimistic {
             if let Some(session) = &store.session {
                 session.request(requested.clone());
             }
-            let (range, rows) = crate::markdown::MarkdownScanner::scan_snapshot_window_with_policy(
-                &store.source,
-                &store.index,
-                requested,
-                crate::markdown::ScanResourcePolicy::UiDeferred,
-            );
+            let index = store.index.optimistic();
+            super::loading::source_window(&store.source, &index, requested)
+        } else {
+            let (range, rows, has_deferred) =
+                crate::markdown::MarkdownScanner::scan_snapshot_window_with_options(
+                    &store.source,
+                    &store.index,
+                    requested.clone(),
+                    ScanOptions::ui_deferred(store.is_dark_theme),
+                );
+            let quality = if has_deferred {
+                if let Some(session) = &store.session {
+                    session.request(requested);
+                }
+                WindowQuality::UiDeferred
+            } else {
+                WindowQuality::Full
+            };
             store.scanned.set(store.scanned.get() + rows.len());
             let mut resources = self.resources.borrow_mut();
-            for resource in
-                Resource::collect(range.start, &rows, Some((&store.source, &store.index)))
-            {
+            for resource in Resource::collect(
+                range.start,
+                &rows,
+                store.doc_path.as_deref(),
+                Some((&store.source, &store.index)),
+            ) {
                 if !resources.iter().any(|old| old.range == resource.range) {
                     resources.push(resource);
                 }
@@ -293,6 +375,7 @@ impl ParsedLineStore {
             WindowEntry {
                 range,
                 rows: Arc::new(rows),
+                quality,
             }
         };
         if windows.len() == MAX_WINDOWS {
@@ -317,7 +400,7 @@ impl ParsedLineStore {
         if self
             .windows
             .as_ref()
-            .is_some_and(|store| store.prepared.is_some())
+            .is_some_and(|store| store.streaming_optimistic)
         {
             return Vec::new();
         }
@@ -352,12 +435,12 @@ impl ParsedLineStore {
                 {
                     continue;
                 }
-                let (range, rows) =
-                    crate::markdown::MarkdownScanner::scan_snapshot_window_with_policy(
+                let (range, rows, has_deferred) =
+                    crate::markdown::MarkdownScanner::scan_snapshot_window_with_options(
                         &store.source,
                         &store.index,
                         range,
-                        crate::markdown::ScanResourcePolicy::UiDeferred,
+                        ScanOptions::ui_deferred(store.is_dark_theme),
                     );
                 scanned += rows.len();
                 for window in windows.iter_mut() {
@@ -369,11 +452,16 @@ impl ParsedLineStore {
                     Arc::make_mut(&mut window.rows)
                         [start - window.range.start..end - window.range.start]
                         .clone_from_slice(&rows[start - range.start..end - range.start]);
+                    if has_deferred {
+                        window.quality = window.quality.min(WindowQuality::UiDeferred);
+                    }
                 }
             }
             self.windows = Some(Arc::new(WindowStore {
-                prepared: store.prepared.clone(),
                 session: store.session.clone(),
+                streaming_optimistic: store.streaming_optimistic,
+                doc_path: store.doc_path.clone(),
+                is_dark_theme: store.is_dark_theme,
                 source: store.source.clone(),
                 index: store.index.clone(),
                 windows: RefCell::new(windows),
@@ -440,7 +528,7 @@ impl ParsedLineStore {
 #[cfg(test)]
 impl From<Arc<Vec<ParsedLine>>> for ParsedLineStore {
     fn from(lines: Arc<Vec<ParsedLine>>) -> Self {
-        let resources = Arc::new(RefCell::new(Resource::collect(0, &lines, None)));
+        let resources = Arc::new(RefCell::new(Resource::collect(0, &lines, None, None)));
         Self {
             eager: lines,
             windows: None,
@@ -465,7 +553,9 @@ impl Deref for ParsedLineStore {
 #[cfg(test)]
 mod tests {
     use super::ParsedLineStore;
-    use crate::markdown::MarkdownScanner;
+    use crate::editor::window_cache::{WINDOW_ROWS, WindowEntry, WindowQuality};
+    use crate::markdown::{BlockKind, MarkdownScanner};
+    use std::collections::VecDeque;
     use std::sync::Arc;
 
     #[test]
@@ -517,5 +607,55 @@ mod tests {
         store.make_mut().remove(0);
         assert_eq!(snapshot.as_slice(), original);
         assert_eq!(store.get(0).as_deref(), original.get(1));
+    }
+
+    #[test]
+    fn relative_local_image_size_key_refreshes_matching_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let doc_path = dir.path().join("notes.md");
+        let buffer = crate::buffer::TextBuffer::from_str(
+            "paragraph\n![diagram](./assets/pic.png)\nend",
+            Some(doc_path.clone()),
+        );
+        let mut store = ParsedLineStore::windowed(&buffer);
+        let _ = store.read_range(0..buffer.line_count());
+        assert!(store.refresh_resources(true, false).is_empty());
+
+        let resolved_key = crate::http::image_size_key("./assets/pic.png", Some(&doc_path));
+        assert_ne!(resolved_key, "./assets/pic.png");
+        crate::http::record_image_size(&resolved_key, 640, 320);
+
+        assert_eq!(store.refresh_resources(true, false), vec![1..2]);
+        assert!(store.refresh_resources(true, false).is_empty());
+    }
+
+    #[test]
+    fn post_load_scroll_to_uncached_window_uses_ui_deferred_instead_of_source_stub() {
+        let mut text = String::new();
+        for i in 0..400 {
+            if i == 300 {
+                text.push_str("# Deferred Heading\n");
+            } else {
+                text.push_str("paragraph\n");
+            }
+        }
+        let buffer = crate::buffer::TextBuffer::from_str(&text, None);
+        let session = crate::editor::loading::DocumentSession::new();
+        let (range, rows) = MarkdownScanner::scan_window(&buffer, 0..WINDOW_ROWS);
+        let snapshot = Arc::new(crate::editor::loading::PreparedSnapshot {
+            revision: buffer.revision(),
+            session,
+            windows: VecDeque::from([WindowEntry {
+                range,
+                rows: Arc::new(rows),
+                quality: WindowQuality::Full,
+            }]),
+            optimistic: false,
+            is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
+        });
+
+        let store = ParsedLineStore::windowed(&buffer).with_prepared(Some(snapshot));
+        let row300 = store.row(300).unwrap();
+        assert_eq!(row300.kind, BlockKind::Heading { level: 1 });
     }
 }

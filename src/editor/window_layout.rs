@@ -19,6 +19,8 @@ impl Editor {
         let same_buffer = current.buffer_revision == self.buffer.revision()
             && current.lines_len == self.buffer.line_count()
             && current.parsed_lines.is_windowed();
+        let theme_changed =
+            current.parsed_lines.is_windowed() && current.is_dark_theme != self.is_dark_theme;
         let same_view = self.cache_matches_view(&current, width);
         if same_buffer
             && same_view
@@ -158,16 +160,18 @@ impl Editor {
             if let Some(patch) = &edit_patch
                 && !self.is_loading
             {
-                prev_parsed_lines.apply_edit(&self.buffer, patch)
+                prev_parsed_lines.apply_edit(&self.buffer, patch, self.is_dark_theme)
             } else {
                 ParsedLineStore::windowed(&self.buffer)
+                    .with_theme(self.is_dark_theme)
                     .with_session(self.background_session.clone())
-                    .with_prepared(
-                        self.prepared_document
-                            .clone()
-                            .filter(|snapshot| snapshot.revision == self.buffer.revision()),
-                    )
+                    .with_prepared(self.prepared_document.clone().filter(|snapshot| {
+                        snapshot.revision == self.buffer.revision()
+                            && (self.is_loading || snapshot.is_dark_theme == self.is_dark_theme)
+                    }))
             }
+        } else if theme_changed {
+            prev_parsed_lines.update_theme(self.is_dark_theme)
         } else {
             prev_parsed_lines
         };
@@ -175,16 +179,29 @@ impl Editor {
         if !self.is_loading
             && let Some(session) = &self.background_session
             && (reset_metrics
+                || theme_changed
                 || self
                     .prepared_document
                     .as_ref()
                     .is_none_or(|snapshot| snapshot.revision != self.buffer.revision()))
         {
-            if let Some(patch) = &edit_patch {
+            if let Some(patch) = &edit_patch
+                && !theme_changed
+            {
                 let donated = next_parsed_lines.snapshot_windows();
-                session.submit_target(&self.buffer, Some((patch, donated)), false);
+                session.submit_target(
+                    &self.buffer,
+                    Some((patch, donated)),
+                    self.is_dark_theme,
+                    false,
+                );
             } else {
-                session.submit_target(&self.buffer, None, reset_metrics);
+                session.submit_target(
+                    &self.buffer,
+                    None,
+                    self.is_dark_theme,
+                    reset_metrics || theme_changed,
+                );
             }
         }
         let mut cached = self.layout_cache.borrow_mut();
@@ -208,7 +225,7 @@ impl Editor {
                 .metrics
                 .splice_estimated(start..start + delta.old_line_count, delta.new_line_count);
         }
-        if !same_buffer {
+        if !same_buffer || theme_changed {
             cache.parsed_lines = next_parsed_lines;
         }
         if same_view
@@ -285,6 +302,7 @@ impl Editor {
         cache.font_size = self.font_size;
         cache.line_height = self.line_height;
         cache.soft_wrap = self.soft_wrap;
+        cache.is_dark_theme = self.is_dark_theme;
         cache.space_width = self.space_width();
         cache.quote_projection = projection;
         #[cfg(test)]

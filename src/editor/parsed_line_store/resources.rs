@@ -2,6 +2,7 @@ use crate::buffer::{LineSource, SourceLine, SourceSnapshot, StructureIndex};
 use crate::markdown::{BlockKind, ParsedLine};
 use std::{
     ops::Range,
+    path::Path,
     sync::{Arc, Weak},
 };
 
@@ -15,6 +16,7 @@ pub(in crate::editor) struct Resource {
 enum State {
     Image {
         url: String,
+        size_key: String,
         signature: (bool, bool, Option<(u32, u32)>),
     },
     Syntax {
@@ -24,12 +26,12 @@ enum State {
     },
 }
 
-fn image_signature(url: &str) -> (bool, bool, Option<(u32, u32)>) {
+fn image_signature(url: &str, size_key: &str) -> (bool, bool, Option<(u32, u32)>) {
     crate::http::read_cache(|cache| {
         (
             cache.is_loaded(url),
             cache.is_failed(url),
-            cache.get_size(url),
+            cache.get_size(size_key),
         )
     })
 }
@@ -79,6 +81,7 @@ impl Resource {
     pub fn collect(
         start: usize,
         rows: &[ParsedLine],
+        doc_path: Option<&Path>,
         context: Option<(&SourceSnapshot, &StructureIndex)>,
     ) -> Vec<Self> {
         let retry_epoch = crate::syntax::syntax_retry_epoch();
@@ -106,13 +109,18 @@ impl Resource {
         for (offset, row) in rows.iter().enumerate() {
             let line = start + offset;
             match &row.kind {
-                BlockKind::Image { url, .. } => resources.push(Self {
-                    range: line..line + 1,
-                    state: State::Image {
-                        url: url.clone(),
-                        signature: image_signature(url),
-                    },
-                }),
+                BlockKind::Image { url, .. } => {
+                    let size_key = crate::http::image_size_key(url, doc_path);
+                    let signature = image_signature(url, &size_key);
+                    resources.push(Self {
+                        range: line..line + 1,
+                        state: State::Image {
+                            url: url.clone(),
+                            size_key,
+                            signature,
+                        },
+                    });
+                }
                 BlockKind::CodeBlock {
                     is_fence_start: true,
                 } => {
@@ -166,8 +174,12 @@ impl Resource {
 
     pub fn changed(&mut self, images: bool, syntax: bool) -> bool {
         match &mut self.state {
-            State::Image { url, signature } if images => {
-                let next = image_signature(url);
+            State::Image {
+                url,
+                size_key,
+                signature,
+            } if images => {
+                let next = image_signature(url, size_key);
                 let changed = *signature != next;
                 *signature = next;
                 changed
@@ -224,7 +236,7 @@ mod tests {
         let index = buffer.line_index().structure_snapshot();
         let (range, rows) = MarkdownScanner::scan_snapshot_window(&source, &index, 5..12);
 
-        let mut resources = Resource::collect(range.start, &rows, Some((&source, &index)));
+        let mut resources = Resource::collect(range.start, &rows, None, Some((&source, &index)));
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].range, 5..12);
         assert!(resources[0].is_syntax());

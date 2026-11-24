@@ -1611,6 +1611,7 @@ fn test_image_layout_invalidates_and_resizes_on_cache_update() {
         font_size: 15.0,
         line_height: 1.6,
         soft_wrap: true,
+        is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
         parsed_lines: parsed_doc.clone().into(),
         metrics: Default::default(),
         space_width: px(0.0),
@@ -1820,6 +1821,7 @@ fn test_folding_layout_height_and_navigation() {
         font_size: 15.0,
         line_height: 1.6,
         soft_wrap: true,
+        is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
         parsed_lines: parsed_doc.clone().into(),
         metrics: Default::default(),
         space_width: px(0.0),
@@ -1912,6 +1914,7 @@ fn test_folding_layout_height_and_navigation() {
         font_size: 15.0,
         line_height: 1.6,
         soft_wrap: true,
+        is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
         parsed_lines: parsed_doc.clone().into(),
         metrics: Default::default(),
         space_width: px(0.0),
@@ -5654,6 +5657,155 @@ fn mermaid_svg_generation_is_deferred_to_background_worker(cx: &mut gpui::TestAp
             }
         ));
         assert!(row0.spans.iter().any(|span| span.mermaid.is_some()));
+    });
+}
+
+#[gpui::test]
+fn edited_mermaid_block_upgrades_from_ui_deferred_to_full(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    let editor = cx.new(|cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str("paragraph\n", None), cx)
+    });
+    cx.run_until_parked();
+
+    editor.update(cx, |ed, cx| {
+        ed.perform_edit(cx, |ed| {
+            ed.buffer_mut()
+                .insert_text("```mermaid\nflowchart LR\nEditUpgradeA --> EditUpgradeB\n```\n");
+        });
+        let row0 = ed.layout_snapshot().parsed_lines.row(0).unwrap();
+        assert!(matches!(
+            row0.kind,
+            crate::markdown::BlockKind::CodeBlock { .. }
+        ));
+        assert!(
+            ed.layout_snapshot()
+                .parsed_lines
+                .snapshot_windows()
+                .iter()
+                .any(|w| w.quality == crate::editor::window_cache::WindowQuality::UiDeferred)
+        );
+    });
+
+    cx.run_until_parked();
+    editor.read_with(cx, |ed, _| {
+        let row0 = ed.layout_snapshot().parsed_lines.row(0).unwrap();
+        assert!(matches!(
+            row0.kind,
+            crate::markdown::BlockKind::MermaidBlock {
+                is_fence_start: true
+            }
+        ));
+        assert!(row0.spans.iter().any(|span| span.mermaid.is_some()));
+        assert!(
+            ed.layout_snapshot()
+                .parsed_lines
+                .snapshot_windows()
+                .iter()
+                .all(|w| w.quality == crate::editor::window_cache::WindowQuality::Full)
+        );
+    });
+}
+
+#[gpui::test]
+fn invalid_mermaid_block_negative_caches_and_stops_repreparing(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    let bad_lines = vec!["not_a_valid_diagram_commit3_test_$$$".to_string()];
+    let text = format!("```mermaid\n{}\n```\n\ntrailing\n", bad_lines[0]);
+    let editor = cx.new(|cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&text, None), cx)
+    });
+
+    editor.update(cx, |ed, _| {
+        ed.ensure_layout_cache();
+        assert!(
+            ed.layout_snapshot()
+                .parsed_lines
+                .snapshot_windows()
+                .iter()
+                .any(|w| w.quality == crate::editor::window_cache::WindowQuality::UiDeferred)
+        );
+    });
+
+    cx.run_until_parked();
+    editor.update(cx, |ed, cx| {
+        assert!(crate::mermaid::is_mermaid_cached_for_theme(
+            &bad_lines,
+            ed.is_dark_theme
+        ));
+        assert!(
+            ed.layout_snapshot()
+                .parsed_lines
+                .snapshot_windows()
+                .iter()
+                .all(|w| w.quality == crate::editor::window_cache::WindowQuality::Full)
+        );
+
+        // Editing an unrelated trailing line stays at Full without re-entering UiDeferred.
+        ed.perform_edit(cx, |ed| {
+            ed.buffer_mut()
+                .set_cursor(crate::buffer::Position::new(SourceLine::new(4), 0));
+            ed.buffer_mut().insert_text("more ");
+        });
+        ed.ensure_layout_cache();
+        assert!(
+            ed.layout_snapshot()
+                .parsed_lines
+                .snapshot_windows()
+                .iter()
+                .all(|w| w.quality == crate::editor::window_cache::WindowQuality::Full)
+        );
+    });
+}
+
+#[gpui::test]
+fn switching_theme_polarity_rerenders_mermaid_for_new_theme(cx: &mut gpui::TestAppContext) {
+    let diagram = "flowchart LR\nThemeSwitchA --> ThemeSwitchB";
+    let text = format!("```mermaid\n{diagram}\n```\nparagraph");
+    let (editor, cx) = cx.add_window_view(|_, cx| {
+        super::Editor::new_with_buffer(crate::buffer::TextBuffer::from_str(&text, None), cx)
+    });
+    cx.run_until_parked();
+
+    let dark_asset = editor.read_with(cx, |ed, _| {
+        assert!(ed.is_dark_theme);
+        ed.layout_snapshot()
+            .parsed_lines
+            .row(0)
+            .unwrap()
+            .spans
+            .iter()
+            .find_map(|span| span.mermaid.as_ref())
+            .expect("dark mermaid SVG should be rendered")
+            .rendered
+            .asset_path
+            .clone()
+    });
+
+    cx.update(|window, cx| {
+        let light_config = crate::config::AppConfig::default().with_theme("GitHub Light");
+        cx.set_global(crate::theme::ThemeManager::from_config(&light_config));
+        cx.set_global(light_config);
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    cx.run_until_parked();
+
+    editor.read_with(cx, |ed, _| {
+        assert!(!ed.is_dark_theme);
+        let light_asset = ed
+            .layout_snapshot()
+            .parsed_lines
+            .row(0)
+            .unwrap()
+            .spans
+            .iter()
+            .find_map(|span| span.mermaid.as_ref())
+            .expect("light mermaid SVG should be rendered")
+            .rendered
+            .asset_path
+            .clone();
+        assert_ne!(light_asset, dark_asset);
     });
 }
 

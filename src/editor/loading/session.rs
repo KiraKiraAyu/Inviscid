@@ -1,6 +1,6 @@
 use super::super::{
     parsed_line_store::resources::Resource,
-    window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry},
+    window_cache::{EditWindowPatch, MAX_WINDOWS, WINDOW_ROWS, WindowEntry, WindowQuality},
 };
 use crate::buffer::{
     LineSource, SourceLine, SourceSnapshot, StreamingBuffer, StructureIndex, TextBuffer,
@@ -27,6 +27,7 @@ pub(crate) struct Publication {
     pub buffer: Option<TextBuffer>,
     pub revision: u64,
     pub windows: VecDeque<PreparedWindow>,
+    pub is_dark_theme: bool,
     pub complete: bool,
     pub disk_hash: u64,
 }
@@ -35,6 +36,7 @@ pub(crate) struct Publication {
 struct CachedWindow {
     window: WindowEntry,
     revision: u64,
+    is_dark_theme: bool,
     resources: Vec<Resource>,
 }
 
@@ -45,6 +47,7 @@ struct WorkTarget {
     revision: u64,
     from_disk: bool,
     complete: bool,
+    is_dark_theme: bool,
     disk_hash: u64,
     immutable_before: usize,
 }
@@ -56,6 +59,7 @@ struct SessionState {
     target: Option<WorkTarget>,
     windows: VecDeque<CachedWindow>,
     last_published_revision: Option<u64>,
+    is_dark_theme: bool,
 }
 
 /// Decoupled reader mailbox, viewport request target, and background window cache.
@@ -83,6 +87,7 @@ pub(crate) struct PreparedSnapshot {
     pub session: Arc<DocumentSession>,
     pub windows: VecDeque<PreparedWindow>,
     pub optimistic: bool,
+    pub is_dark_theme: bool,
 }
 
 fn clamp_request(requested: &Range<usize>, line_count: usize) -> Range<usize> {
@@ -91,6 +96,10 @@ fn clamp_request(requested: &Range<usize>, line_count: usize) -> Range<usize> {
 
 impl DocumentSession {
     pub fn new() -> Arc<Self> {
+        Self::new_with_theme(crate::theme::DEFAULT_THEME.is_dark())
+    }
+
+    pub fn new_with_theme(is_dark_theme: bool) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(SessionState {
                 latest: None,
@@ -98,6 +107,7 @@ impl DocumentSession {
                 target: None,
                 windows: VecDeque::new(),
                 last_published_revision: None,
+                is_dark_theme,
             }),
             work: VersionedNotifier::new(),
             updates: VersionedNotifier::new(),
@@ -126,10 +136,18 @@ impl DocumentSession {
         &self,
         buffer: &TextBuffer,
         incremental: Option<(&EditWindowPatch, VecDeque<WindowEntry>)>,
+        is_dark_theme: bool,
         force: bool,
     ) {
         let mut state = self.state.lock();
+        let theme_changed = state.is_dark_theme != is_dark_theme
+            || state
+                .target
+                .as_ref()
+                .is_some_and(|target| target.is_dark_theme != is_dark_theme);
+        state.is_dark_theme = is_dark_theme;
         if !force
+            && !theme_changed
             && state
                 .target
                 .as_ref()
@@ -138,13 +156,17 @@ impl DocumentSession {
             return;
         }
         let sequential = !force
+            && !theme_changed
             && state
                 .target
                 .as_ref()
                 .is_some_and(|target| target.revision.checked_add(1) == Some(buffer.revision()));
         let source = buffer.source_snapshot();
         let index = buffer.line_index().structure_snapshot();
-        if sequential && let Some((patch, patched_windows)) = incremental {
+        let doc_path = buffer.file_path_buf();
+        if theme_changed {
+            state.windows.clear();
+        } else if sequential && let Some((patch, patched_windows)) = incremental {
             let mut windows: VecDeque<WindowEntry> = state
                 .windows
                 .drain(..)
@@ -159,21 +181,28 @@ impl DocumentSession {
                     let resources = Resource::collect(
                         window.range.start,
                         &window.rows,
+                        doc_path.as_deref(),
                         Some((&source, &index)),
                     );
                     next_windows.push_back(CachedWindow {
                         window,
                         revision: buffer.revision(),
+                        is_dark_theme,
                         resources,
                     });
                 }
             }
             for window in patched_windows {
-                let resources =
-                    Resource::collect(window.range.start, &window.rows, Some((&source, &index)));
+                let resources = Resource::collect(
+                    window.range.start,
+                    &window.rows,
+                    doc_path.as_deref(),
+                    Some((&source, &index)),
+                );
                 next_windows.push_back(CachedWindow {
                     window,
                     revision: buffer.revision(),
+                    is_dark_theme,
                     resources,
                 });
             }
@@ -191,6 +220,7 @@ impl DocumentSession {
             revision: buffer.revision(),
             from_disk: false,
             complete: true,
+            is_dark_theme,
             disk_hash,
             immutable_before: 0,
         });
@@ -237,12 +267,14 @@ impl DocumentSession {
                 .windows
                 .retain(|cached| cached.window.range.end < previous_tail);
         }
+        let is_dark_theme = state.is_dark_theme;
         state.target = Some(WorkTarget {
             source: source.clone(),
             index: index.clone(),
             revision,
             from_disk: true,
             complete,
+            is_dark_theme,
             disk_hash,
             immutable_before: if reset_optimistic_cache {
                 0
@@ -266,6 +298,7 @@ impl DocumentSession {
             buffer: Some(buffer),
             revision,
             windows,
+            is_dark_theme,
             complete,
             disk_hash,
         }));
@@ -288,6 +321,8 @@ impl DocumentSession {
             let already_covered = state.windows.iter_mut().any(|cached| {
                 let covers = cached.window.range.start <= range.start
                     && cached.window.range.end >= range.end
+                    && cached.window.quality == WindowQuality::Full
+                    && cached.is_dark_theme == target.is_dark_theme
                     && (cached.revision == target.revision
                         || (target.from_disk && cached.window.range.end < target.immutable_before));
                 covers
@@ -316,6 +351,7 @@ impl DocumentSession {
                         buffer: prev_buffer,
                         revision: target.revision,
                         windows,
+                        is_dark_theme: target.is_dark_theme,
                         complete: target.complete || prev_complete,
                         disk_hash: target.disk_hash.max(prev_hash),
                     }));
@@ -329,8 +365,12 @@ impl DocumentSession {
         };
         let (target, range) = target;
         let pre_syntax_version = crate::syntax::syntax_cache_version();
-        let (scanned_range, rows) =
-            MarkdownScanner::scan_snapshot_window(&target.source, &target.index, range);
+        let (scanned_range, rows, _) = MarkdownScanner::scan_snapshot_window_with_options(
+            &target.source,
+            &target.index,
+            range,
+            crate::markdown::ScanOptions::full(target.is_dark_theme),
+        );
         prepare_resources(&rows, path);
         if self.cancelled.load(Ordering::Acquire) {
             return;
@@ -338,6 +378,7 @@ impl DocumentSession {
         let mut resources = Resource::collect(
             scanned_range.start,
             &rows,
+            path,
             Some((&target.source, &target.index)),
         );
         if crate::syntax::syntax_cache_version() != pre_syntax_version {
@@ -350,8 +391,9 @@ impl DocumentSession {
         let Some(current) = state.target.clone() else {
             return;
         };
-        let still_valid = current.revision == target.revision
-            || (current.from_disk && scanned_range.end < current.immutable_before);
+        let still_valid = current.is_dark_theme == target.is_dark_theme
+            && (current.revision == target.revision
+                || (current.from_disk && scanned_range.end < current.immutable_before));
         if !still_valid {
             return;
         }
@@ -362,8 +404,10 @@ impl DocumentSession {
             window: WindowEntry {
                 range: scanned_range,
                 rows,
+                quality: WindowQuality::Full,
             },
             revision: current.revision,
+            is_dark_theme: target.is_dark_theme,
             resources,
         });
         while state.windows.len() > MAX_WINDOWS {
@@ -386,6 +430,7 @@ impl DocumentSession {
             buffer: prev_buffer,
             revision: current.revision,
             windows,
+            is_dark_theme: current.is_dark_theme,
             complete: current.complete || prev_complete,
             disk_hash: current.disk_hash.max(prev_hash),
         }));
@@ -557,6 +602,7 @@ mod tests {
                         buffer: Some(stream.buffer.clone()),
                         revision: stream.buffer.revision(),
                         windows: VecDeque::from([source]),
+                        is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
                         complete: false,
                         disk_hash: stream.disk_hash(),
                     }),
@@ -579,7 +625,9 @@ mod tests {
                         windows: VecDeque::from([PreparedWindow {
                             range,
                             rows: Arc::new(rows),
+                            quality: WindowQuality::Full,
                         }]),
+                        is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
                         complete: false,
                         disk_hash: stream.disk_hash(),
                     }),
@@ -622,6 +670,7 @@ mod tests {
                     buffer: Some(stream.buffer.clone()),
                     revision: stream.buffer.revision(),
                     windows: VecDeque::from([window]),
+                    is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
                     complete: false,
                     disk_hash: stream.disk_hash(),
                 }),
@@ -643,6 +692,7 @@ mod tests {
                     buffer: Some(stream.buffer.clone()),
                     revision: stream.buffer.revision(),
                     windows: VecDeque::new(),
+                    is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
                     complete: true,
                     disk_hash: stream.disk_hash(),
                 }),
@@ -657,6 +707,7 @@ mod tests {
                     buffer: Some(stream.buffer.clone()),
                     revision: stream.buffer.revision(),
                     windows: VecDeque::new(),
+                    is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
                     complete: true,
                     disk_hash: stream.disk_hash(),
                 }),
@@ -779,6 +830,7 @@ mod tests {
                 buffer: Some(stream.buffer.clone()),
                 revision: stream.buffer.revision(),
                 windows: VecDeque::new(),
+                is_dark_theme: crate::theme::DEFAULT_THEME.is_dark(),
                 complete: false,
                 disk_hash: stream.disk_hash(),
             }));
@@ -956,7 +1008,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         };
         buffer.record_single_line_edit(SourceLine::new(0), |line, _| *line = "# Edited".into());
-        session.submit_target(&buffer, None, false);
+        session.submit_target(&buffer, None, crate::theme::DEFAULT_THEME.is_dark(), false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let edited_pub = loop {
             if let Some(Ok(pub_item)) = session.take()
@@ -1183,7 +1235,12 @@ mod tests {
             is_code_interior: false,
             code_close: None,
         };
-        session.submit_target(&buffer, Some((&patch, VecDeque::new())), false);
+        session.submit_target(
+            &buffer,
+            Some((&patch, VecDeque::new())),
+            crate::theme::DEFAULT_THEME.is_dark(),
+            false,
+        );
         session.request(1025..1101);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let edited_pub = loop {
@@ -1249,6 +1306,7 @@ pub(crate) fn source_window(
     PreparedWindow {
         range,
         rows: Arc::new(rows),
+        quality: WindowQuality::SourceStub,
     }
 }
 

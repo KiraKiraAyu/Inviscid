@@ -25,12 +25,36 @@ pub(crate) enum ScanResourcePolicy {
     UiDeferred,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) struct ScanOptions {
+    pub policy: ScanResourcePolicy,
+    pub is_dark_theme: bool,
+}
+
+impl ScanOptions {
+    #[inline]
+    pub const fn full(is_dark_theme: bool) -> Self {
+        Self {
+            policy: ScanResourcePolicy::Full,
+            is_dark_theme,
+        }
+    }
+
+    #[inline]
+    pub const fn ui_deferred(is_dark_theme: bool) -> Self {
+        Self {
+            policy: ScanResourcePolicy::UiDeferred,
+            is_dark_theme,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct ScanRangeOptions {
     initial_in_code_fence: bool,
     initial_in_math_block: bool,
     allow_unclosed_blocks: bool,
-    policy: ScanResourcePolicy,
+    options: ScanOptions,
 }
 
 fn find_next_fence_from(
@@ -61,7 +85,7 @@ fn is_mermaid_info(info: &str) -> bool {
         .is_some_and(|language| language.eq_ignore_ascii_case("mermaid"))
 }
 
-fn is_mermaid_fence(line: &str) -> bool {
+pub(crate) fn is_mermaid_fence(line: &str) -> bool {
     fence_info(line).is_some_and(is_mermaid_info)
 }
 
@@ -619,7 +643,7 @@ impl MarkdownScanner {
         let snapshot = source.source_snapshot();
         let index = snapshot.structure_index();
         let len = snapshot.line_count();
-        window::scan(&snapshot, &index, 0..len, ScanResourcePolicy::Full).1
+        window::scan(&snapshot, &index, 0..len, ScanOptions::default()).1
     }
 
     pub fn scan_window(
@@ -627,7 +651,8 @@ impl MarkdownScanner {
         range: std::ops::Range<usize>,
     ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
         let index = buffer.line_index().structure_snapshot();
-        window::scan(buffer, &index, range, ScanResourcePolicy::Full)
+        let (range, rows, _) = window::scan(buffer, &index, range, ScanOptions::default());
+        (range, rows)
     }
 
     pub(crate) fn scan_snapshot_window(
@@ -635,16 +660,17 @@ impl MarkdownScanner {
         index: &crate::buffer::StructureIndex,
         range: std::ops::Range<usize>,
     ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
-        window::scan(source, index, range, ScanResourcePolicy::Full)
+        let (range, rows, _) = window::scan(source, index, range, ScanOptions::default());
+        (range, rows)
     }
 
-    pub(crate) fn scan_snapshot_window_with_policy(
+    pub(crate) fn scan_snapshot_window_with_options(
         source: &crate::buffer::SourceSnapshot,
         index: &crate::buffer::StructureIndex,
         range: std::ops::Range<usize>,
-        policy: ScanResourcePolicy,
-    ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
-        window::scan(source, index, range, policy)
+        options: ScanOptions,
+    ) -> (std::ops::Range<usize>, Vec<ParsedLine>, bool) {
+        window::scan(source, index, range, options)
     }
 
     #[cfg(test)]
@@ -702,7 +728,7 @@ impl MarkdownScanner {
         let prefixes: Vec<Option<usize>> = (0..projection.len())
             .map(|row| projection.quote_prefix(row))
             .collect();
-        Self::scan_normalized_range_with_state(
+        Self::scan_normalized_range_with_state_and_deferred(
             lines,
             &normalized,
             &prefixes,
@@ -711,29 +737,40 @@ impl MarkdownScanner {
                 initial_in_code_fence,
                 initial_in_math_block,
                 allow_unclosed_blocks: false,
-                policy: ScanResourcePolicy::Full,
+                options: ScanOptions::default(),
             },
         )
+        .0
     }
 
-    fn scan_normalized_range_with_state(
+    fn scan_normalized_range_with_state_and_deferred(
         source_lines: &(impl LineSource + ?Sized),
         lines: &[String],
         quote_prefixes: &[Option<usize>],
         range: std::ops::Range<usize>,
-        options: ScanRangeOptions,
-    ) -> Vec<ParsedLine> {
+        scan_options: ScanRangeOptions,
+    ) -> (Vec<ParsedLine>, bool) {
         let allow_inline_math = true;
         let ScanRangeOptions {
             initial_in_code_fence,
             initial_in_math_block,
             allow_unclosed_blocks,
-            policy,
-        } = options;
-        let render_mermaid = |slice: &[String]| -> Option<crate::mermaid::MermaidSvg> {
-            match policy {
-                ScanResourcePolicy::Full => crate::mermaid::prepare_mermaid_lines(slice),
-                ScanResourcePolicy::UiDeferred => crate::mermaid::get_cached_mermaid_lines(slice),
+            options,
+        } = scan_options;
+        let mut has_deferred = false;
+        let render_mermaid = |slice: &[String],
+                              deferred: &mut bool|
+         -> Option<crate::mermaid::MermaidSvg> {
+            match options.policy {
+                ScanResourcePolicy::Full => {
+                    crate::mermaid::prepare_mermaid_lines_for_theme(slice, options.is_dark_theme)
+                }
+                ScanResourcePolicy::UiDeferred => {
+                    if !crate::mermaid::is_mermaid_cached_for_theme(slice, options.is_dark_theme) {
+                        *deferred = true;
+                    }
+                    crate::mermaid::get_cached_mermaid_lines_for_theme(slice, options.is_dark_theme)
+                }
             }
         };
         let mut result = Vec::with_capacity(range.len());
@@ -752,7 +789,9 @@ impl MarkdownScanner {
                 let preview = open_fence_idx
                     .filter(|&open_idx| is_mermaid_fence(&lines[open_idx]))
                     .filter(|_| close_fence.is_some())
-                    .and_then(|open_idx| render_mermaid(&lines[open_idx + 1..close_fence_idx]));
+                    .and_then(|open_idx| {
+                        render_mermaid(&lines[open_idx + 1..close_fence_idx], &mut has_deferred)
+                    });
                 (
                     Some(highlight_fenced_slice(
                         lines,
@@ -811,7 +850,7 @@ impl MarkdownScanner {
                         code_opener_is_raw = opener_is_raw;
                         let lang_str = stripped.trim().to_string();
                         let mermaid_preview = (is_mermaid_fence(raw_line) && close_fence.is_some())
-                            .then(|| render_mermaid(&lines[idx + 1..close_idx]))
+                            .then(|| render_mermaid(&lines[idx + 1..close_idx], &mut has_deferred))
                             .flatten();
                         let is_mermaid = mermaid_preview.is_some();
                         current_mermaid_preview = mermaid_preview.clone();
@@ -929,7 +968,7 @@ impl MarkdownScanner {
                     }
                     if let Some(rendered) = close_idx.and_then(|close_idx| {
                         let tex = lines[idx + 1..close_idx].join("\n");
-                        let allow_sync = match policy {
+                        let allow_sync = match options.policy {
                             ScanResourcePolicy::Full => true,
                             ScanResourcePolicy::UiDeferred => {
                                 close_idx - idx <= MAX_UI_MATH_BLOCK_LINES
@@ -939,6 +978,9 @@ impl MarkdownScanner {
                         let svg = if allow_sync {
                             crate::math::prepare_latex(&tex, true)
                         } else {
+                            if !crate::math::is_latex_cached(&tex, true) {
+                                has_deferred = true;
+                            }
                             crate::math::get_cached_latex(&tex, true)
                         };
                         svg.map(|rendered| (tex, rendered))
@@ -1146,7 +1188,7 @@ impl MarkdownScanner {
             }
         }
 
-        result
+        (result, has_deferred)
     }
 }
 

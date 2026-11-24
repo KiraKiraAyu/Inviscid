@@ -1,14 +1,23 @@
 use crate::buffer::{EditDelta, LineSource, SourceSnapshot, StructureIndex};
-use crate::markdown::{MarkdownScanner, ParsedLine, ScanResourcePolicy};
+use crate::markdown::{MarkdownScanner, ParsedLine, ScanOptions};
 use std::{collections::VecDeque, ops::Range, sync::Arc};
 
 pub(crate) const WINDOW_ROWS: usize = 256;
 pub(crate) const MAX_WINDOWS: usize = 8;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub(crate) enum WindowQuality {
+    SourceStub,
+    UiDeferred,
+    #[default]
+    Full,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct WindowEntry {
     pub range: Range<usize>,
     pub rows: Arc<Vec<ParsedLine>>,
+    pub quality: WindowQuality,
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +82,7 @@ impl EditWindowPatch {
         windows: &mut VecDeque<WindowEntry>,
         source: &SourceSnapshot,
         index: &StructureIndex,
+        is_dark_theme: bool,
     ) -> (usize, Vec<Range<usize>>) {
         if self.structural {
             self.shift_or_invalidate(windows);
@@ -123,12 +133,12 @@ impl EditWindowPatch {
                     && scan_target.end <= source.line_count()
                     && scan_target.len() <= max_len
                 {
-                    let (scanned_range, scanned_rows) =
-                        MarkdownScanner::scan_snapshot_window_with_policy(
+                    let (scanned_range, scanned_rows, has_deferred) =
+                        MarkdownScanner::scan_snapshot_window_with_options(
                             source,
                             index,
                             scan_target,
-                            ScanResourcePolicy::UiDeferred,
+                            ScanOptions::ui_deferred(is_dark_theme),
                         );
                     if scanned_range.start >= window.range.start
                         && scanned_range.end <= new_win_end
@@ -143,6 +153,16 @@ impl EditWindowPatch {
                         let rows = Arc::make_mut(&mut window.rows);
                         rows.splice(old_local_start..old_local_end, scanned_rows);
                         window.range.end = new_win_end;
+                        let patch_quality = if has_deferred {
+                            WindowQuality::UiDeferred
+                        } else {
+                            WindowQuality::Full
+                        };
+                        window.quality = if window.quality == WindowQuality::SourceStub {
+                            patch_quality
+                        } else {
+                            window.quality.min(patch_quality)
+                        };
                         debug_assert_eq!(window.rows.len(), window.range.len());
 
                         if window.rows.len() > max_len {
@@ -150,12 +170,14 @@ impl EditWindowPatch {
                             let tail_rows = Arc::make_mut(&mut window.rows).split_off(split_at);
                             let mid = window.range.start + split_at;
                             let tail_range = mid..window.range.end;
+                            let tail_quality = window.quality;
                             window.range.end = mid;
                             updated.push_back(window);
                             if updated.len() < MAX_WINDOWS {
                                 updated.push_back(WindowEntry {
                                     range: tail_range,
                                     rows: Arc::new(tail_rows),
+                                    quality: tail_quality,
                                 });
                             }
                         } else {
