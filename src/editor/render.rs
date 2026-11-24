@@ -2,32 +2,28 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::buffer::{LineSource, SourceLine};
-use crate::markdown::{BlockKind, ParsedLine, table};
+use crate::markdown::{BlockKind, ParsedLine};
 use crate::theme::Theme;
-use crate::ui::{Icon, IconName, IconSize};
 
 use super::Editor;
 use super::LineRenderContext;
-use super::geometry::{
-    IMAGE_CARD_MARGIN_Y, IMAGE_SOURCE_GAP, TextShapingMode, mermaid_preview_chrome,
-    resolve_line_text_spec, table_row_margin,
-};
+use super::geometry::{TextShapingMode, resolve_line_text_spec};
 use super::shaping::render_shaped_line;
+
+mod blocks;
+mod image;
+mod table;
+
+pub use image::{render_loading_metaball_animation, resolve_image_source};
 
 /// Renders a line in Live Preview mode.
 pub fn render_live_line_content(
-    source_line: crate::buffer::SourceLine,
+    source_line: SourceLine,
     parsed: &ParsedLine,
     lines: &(impl LineSource + ?Sized),
     lrc: &LineRenderContext,
     editor: Option<&Entity<Editor>>,
 ) -> AnyElement {
-    let line_idx = source_line.index();
-    let theme = lrc.theme;
-    let is_active = lrc.is_active_line;
-    let is_focused = lrc.is_focused;
-    let selection = lrc.selection;
-    let content_width = lrc.content_width;
     let spec = resolve_line_text_spec(
         parsed,
         lrc.mode,
@@ -36,830 +32,61 @@ pub fn render_live_line_content(
         lrc.quote_content_indent_px,
         lrc.font_size,
         lrc.line_height,
-        theme,
+        lrc.theme,
     );
 
     match &parsed.kind {
-        BlockKind::Heading { .. } => {
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                lrc,
-                spec.font_size,
-                spec.line_height,
-                spec.override_color,
-                spec.shaping_mode,
-            );
-
-            div()
-                .w_full()
-                .pl(lrc.indent_px)
-                .pt(spec.padding_top)
-                .pb(spec.padding_bottom)
-                .child(text_canvas)
-                .into_any_element()
-        }
-
+        BlockKind::Heading { .. } => blocks::render_heading_line(source_line, parsed, lrc, &spec),
         BlockKind::CodeBlock { is_fence_start } | BlockKind::MermaidBlock { is_fence_start } => {
-            if matches!(parsed.kind, BlockKind::MermaidBlock { .. })
-                && !lrc.is_mermaid_block_editing
-            {
-                if *is_fence_start {
-                    if let Some(preview) = lrc.mermaid_preview {
-                        let (width, height) =
-                            crate::mermaid::display_size(preview, lrc.content_width, lrc.indent_px);
-                        let (mt, py) = mermaid_preview_chrome(lrc.font_size);
-                        return div()
-                            .w_full()
-                            .mt(mt)
-                            .pl(lrc.indent_px)
-                            .py(py)
-                            .flex()
-                            .justify_center()
-                            .child(
-                                img(preview.asset_path.clone())
-                                    .id(ElementId::NamedInteger(
-                                        "mermaid_img".into(),
-                                        line_idx as u64,
-                                    ))
-                                    .w(width)
-                                    .h(height),
-                            )
-                            .into_any_element();
-                    }
-                } else {
-                    return div().w_full().h(px(0.0)).into_any_element();
-                }
-            }
-
-            if *is_fence_start {
-                let lang_canvas = render_shaped_line(
-                    source_line,
-                    parsed,
-                    lrc,
-                    spec.font_size,
-                    spec.line_height,
-                    Some(theme.code_block_header_fg),
-                    spec.shaping_mode,
-                );
-
-                let fence_line = if parsed.quote.is_some() {
-                    let prefix_len = crate::markdown::quote_prefix_len(&parsed.raw_text);
-                    parsed.raw_text[prefix_len..].trim_start()
-                } else {
-                    parsed.raw_text.trim_start()
-                };
-                let raw_lang = fence_line.strip_prefix("```").unwrap_or("").trim();
-
-                let header = div()
-                    .w_full()
-                    .mt(spec.margin_top)
-                    .bg(theme.code_block_header_bg)
-                    .rounded_t(px(10.0))
-                    .px(spec.padding_x)
-                    .pt(spec.padding_top)
-                    .pb(spec.padding_bottom)
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .child(div().flex().items_center().gap(px(6.0)).child(
-                        if raw_lang.is_empty() && !(is_active && is_focused) {
-                            div()
-                                .text_size(spec.font_size)
-                                .font_family(crate::platform::platform_monospace_font())
-                                .text_color(theme.text_muted)
-                                .child("plaintext")
-                                .into_any_element()
-                        } else {
-                            div().min_w(px(50.0)).child(lang_canvas).into_any_element()
-                        },
-                    ));
-                header.into_any_element()
-            } else {
-                let closing = div()
-                    .w_full()
-                    .h(spec.fixed_height.unwrap_or(px(6.0)))
-                    .mb(spec.margin_bottom)
-                    .bg(theme.code_block_bg)
-                    .rounded_b(px(10.0));
-                closing.into_any_element()
-            }
+            blocks::render_code_or_mermaid_fence(source_line, parsed, lrc, &spec, *is_fence_start)
         }
-
         BlockKind::CodeBlockContent | BlockKind::MermaidBlockContent => {
-            if matches!(parsed.kind, BlockKind::MermaidBlockContent)
-                && !lrc.is_mermaid_block_editing
-            {
-                return div().w_full().h(px(0.0)).into_any_element();
-            }
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                lrc,
-                spec.font_size,
-                spec.line_height,
-                Some(theme.code_block_text),
-                spec.shaping_mode,
-            );
-
-            let content = div()
-                .w_full()
-                .bg(theme.code_block_bg)
-                .px(spec.padding_x)
-                .pt(spec.padding_top)
-                .pb(spec.padding_bottom)
-                .child(text_canvas);
-            content.into_any_element()
+            blocks::render_code_or_mermaid_content(source_line, parsed, lrc, &spec)
         }
-
-        BlockKind::ThematicBreak => div()
-            .w_full()
-            .h(spec.fixed_height.unwrap_or(px(32.0)))
-            .flex()
-            .flex_col()
-            .justify_center()
-            .child(
-                div()
-                    .w_full()
-                    .h(px(1.5))
-                    .rounded(px(1.0))
-                    .bg(if is_active && is_focused {
-                        theme.text_accent
-                    } else {
-                        theme.thematic_break
-                    }),
-            )
-            .into_any_element(),
-
+        BlockKind::ThematicBreak => blocks::render_thematic_break_line(lrc, &spec),
         BlockKind::TaskList { checked } => {
-            let is_checked = *checked;
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                lrc,
-                spec.font_size,
-                spec.line_height,
-                if is_checked {
-                    Some(theme.text_muted)
-                } else {
-                    quote_text_color(parsed, theme)
-                },
-                spec.shaping_mode,
-            );
-
-            let marker = div()
-                .id(ElementId::NamedInteger(
-                    "task_check".into(),
-                    line_idx as u64,
-                ))
-                .w(px(16.0))
-                .h(px(16.0))
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(if is_checked {
-                    theme.task_box_checked_bg
-                } else {
-                    theme.task_box_border
-                })
-                .bg(if is_checked {
-                    theme.task_box_checked_bg
-                } else {
-                    transparent_black()
-                })
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .when_some(editor, |this, ed| {
-                    let ed = ed.clone();
-                    this.on_mouse_down(MouseButton::Left, move |_, _window, cx| {
-                        ed.update(cx, |this, cx| {
-                            this.toggle_task_checkbox(source_line, cx);
-                        });
-                    })
-                })
-                .child(if is_checked {
-                    Icon::new(IconName::Check)
-                        .size(IconSize::Indicator)
-                        .color(theme.task_box_checked_fg)
-                        .into_any_element()
-                } else {
-                    div().into_any_element()
-                });
-
-            render_list_item_row(
-                marker,
-                spec.marker_width,
-                text_canvas,
-                spec.line_height,
-                spec.padding_top,
-                spec.padding_bottom,
-                lrc.indent_px,
-            )
+            blocks::render_task_list_line(source_line, parsed, lrc, &spec, *checked, editor)
         }
-
-        BlockKind::BulletList => {
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                lrc,
-                spec.font_size,
-                spec.line_height,
-                quote_text_color(parsed, theme),
-                spec.shaping_mode,
-            );
-
-            let marker = div()
-                .w(px(5.5))
-                .h(px(5.5))
-                .rounded(px(3.0))
-                .bg(theme.list_marker);
-
-            render_list_item_row(
-                marker,
-                spec.marker_width,
-                text_canvas,
-                spec.line_height,
-                spec.padding_top,
-                spec.padding_bottom,
-                lrc.indent_px,
-            )
-        }
-
+        BlockKind::BulletList => blocks::render_bullet_list_line(source_line, parsed, lrc, &spec),
         BlockKind::OrderedList { num } => {
-            let num_label = format!("{}.", num);
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                lrc,
-                spec.font_size,
-                spec.line_height,
-                quote_text_color(parsed, theme),
-                spec.shaping_mode,
-            );
-
-            let marker = div()
-                .text_size(px((lrc.font_size * (14.0 / 15.0)).round()))
-                .text_color(theme.list_marker)
-                .child(num_label);
-
-            render_list_item_row(
-                marker,
-                spec.marker_width,
-                text_canvas,
-                spec.line_height,
-                spec.padding_top,
-                spec.padding_bottom,
-                lrc.indent_px,
-            )
+            blocks::render_ordered_list_line(source_line, parsed, lrc, &spec, *num)
         }
-
         BlockKind::Image { alt, url } => {
-            let is_selected_line = if !selection.is_empty() {
-                let (start, end) = selection.range();
-                source_line >= start.line && source_line <= end.line
-            } else {
-                false
-            };
-
-            let should_show_source = is_active || is_selected_line;
-
-            let mut img_lrc = *lrc;
-            img_lrc.is_active_line = should_show_source;
-            img_lrc.is_disclosure_line = should_show_source;
-
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                &img_lrc,
-                spec.font_size,
-                spec.line_height,
-                Some(theme.text_secondary),
-                spec.shaping_mode,
-            );
-
-            let preview_card = render_image_preview_card(
-                source_line,
-                alt,
-                url,
-                lrc.doc_path,
-                theme,
-                content_width,
-            );
-
-            if should_show_source {
-                div()
-                    .w_full()
-                    .pt(spec.padding_top)
-                    .pb(spec.padding_bottom)
-                    .flex()
-                    .flex_col()
-                    .gap(IMAGE_SOURCE_GAP)
-                    .child(div().w_full().h(spec.line_height).child(text_canvas))
-                    .child(preview_card)
-                    .into_any_element()
-            } else {
-                div()
-                    .w_full()
-                    .pt(spec.padding_top)
-                    .pb(spec.padding_bottom)
-                    .flex()
-                    .flex_col()
-                    .child(div().h(px(0.0)).overflow_hidden().child(text_canvas))
-                    .child(preview_card)
-                    .into_any_element()
-            }
+            image::render_image_line(source_line, parsed, lrc, &spec, alt, url)
         }
-
         BlockKind::Table {
             is_header,
             is_delimiter,
             alignments,
             cells,
-        } => {
-            if *is_delimiter {
-                // Table delimiter row is visually hidden in Live Preview
-                return div().h(px(0.0)).into_any_element();
-            }
-
-            let active_cell_idx = if is_active && is_focused {
-                Some(table::get_cell_index_for_col(cells, selection.head.col))
-            } else {
-                None
-            };
-            let disclosure_cell_idx = if lrc.is_disclosure_line {
-                Some(table::get_cell_index_for_col(cells, lrc.disclosure_col))
-            } else {
-                None
-            };
-
-            let num_cells = cells.len();
-
-            let hovered_link_range = lrc.hovered_link.and_then(|hl| {
-                if hl.line == source_line {
-                    Some(hl.col_range)
-                } else {
-                    None
-                }
-            });
-
-            let row_h = super::shaping::calculate_table_row_height_cached(
-                cells,
-                *is_header,
-                lrc.is_disclosure_line,
-                lrc.disclosure_col,
-                lrc.content_width,
-                lrc.text_system,
-                lrc.is_selection_disclosure,
-                lrc.ime_preedit_cols,
-                lrc.font_size,
-                lrc.line_height,
-                Some(source_line),
-                lrc.buffer_revision,
-                theme,
-                hovered_link_range,
-                lrc.shaped_rows,
-            );
-
-            let mut row_elem = div()
-                .relative()
-                .w_full()
-                .min_h(row_h)
-                .h(row_h)
-                .border_l_1()
-                .border_r_1()
-                .border_color(theme.table_border)
-                .flex()
-                .flex_row();
-
-            let table_margin = table_row_margin(lrc.font_size);
-            if *is_header {
-                row_elem = row_elem
-                    .mt(table_margin)
-                    .border_t_1()
-                    .border_b_2()
-                    .bg(theme.table_header_bg)
-                    .rounded_t(px(6.0));
-            } else {
-                let row_bg = if line_idx.is_multiple_of(2) {
-                    theme.table_alt_bg
-                } else {
-                    gpui::transparent_black()
-                };
-
-                let is_last_row = if line_idx + 1 >= lines.line_count() {
-                    true
-                } else {
-                    let next = lines.source_line(SourceLine::new(line_idx + 1));
-                    !next.contains('|') || next.trim().is_empty()
-                };
-
-                row_elem = row_elem.border_b_1().bg(row_bg);
-                if is_last_row {
-                    row_elem = row_elem.rounded_b(px(6.0)).mb(table_margin);
-                }
-            }
-
-            let (font_size, line_height) = super::shaping::table_cell_font_metrics_for(
-                *is_header,
-                lrc.font_size,
-                lrc.line_height,
-            );
-
-            for (c_idx, cell) in cells.iter().enumerate() {
-                let align = alignments
-                    .get(c_idx)
-                    .copied()
-                    .unwrap_or(crate::markdown::TableAlignment::None);
-                let is_last = c_idx + 1 == num_cells;
-                let is_active_cell = active_cell_idx == Some(c_idx);
-                let is_disclosure_cell = disclosure_cell_idx == Some(c_idx);
-                let tcx = super::shaping::TableCellRenderContext {
-                    source_line,
-                    cell_idx: c_idx,
-                    col_range: cell.col_range,
-                    theme,
-                    font_size,
-                    line_height,
-                    is_active_cell,
-                    is_disclosure_cell,
-                    // Disclosure must match what `get_line_layout_height` measured this row with;
-                    // the caret target stays on the live caret column.
-                    disclosure_col: lrc.disclosure_col,
-                    is_selection_disclosure: lrc.is_selection_disclosure,
-                    ime_preedit_cols: lrc.ime_preedit_cols,
-                    selection,
-                    is_dragging: lrc.is_dragging,
-                    is_focused,
-                    cursor_col: selection.head.col,
-                    cursor_opacity: lrc.cursor_opacity,
-                    align,
-                    hovered_link_range,
-                    highlights: lrc.highlights,
-                    buffer_revision: lrc.buffer_revision,
-                    shaped_rows: lrc.shaped_rows,
-                };
-                row_elem = row_elem.child(render_table_cell(cell, is_last, tcx));
-            }
-
-            row_elem.into_any_element()
-        }
-
+        } => table::render_table_row(
+            source_line,
+            lines,
+            lrc,
+            *is_header,
+            *is_delimiter,
+            alignments,
+            cells,
+        ),
         BlockKind::MathBlock { is_start: true } => {
-            if lrc.is_math_block_editing {
-                return div().w_full().h(px(0.0)).into_any_element();
-            }
-            if parsed.spans.iter().any(|span| span.math.is_some()) {
-                let text_canvas = render_shaped_line(
-                    source_line,
-                    parsed,
-                    lrc,
-                    spec.font_size,
-                    spec.line_height,
-                    quote_text_color(parsed, theme),
-                    spec.shaping_mode,
-                );
-
-                return div()
-                    .w_full()
-                    .pl(lrc.indent_px)
-                    .pt(spec.padding_top)
-                    .pb(spec.padding_bottom)
-                    .child(text_canvas)
-                    .into_any_element();
-            }
-
-            let (raw_tex, render_error) =
-                crate::math::resolve_math_block_fallback(lines, source_line, None);
-            let collapsed_tex = raw_tex
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let display_tex = if collapsed_tex.is_empty() {
-                "$$".to_string()
-            } else {
-                collapsed_tex
-            };
-            let hint = render_error.unwrap_or_default();
-
-            div()
-                .w_full()
-                .pl(lrc.indent_px)
-                .pt(spec.padding_top)
-                .pb(spec.padding_bottom)
-                .child(
-                    div()
-                        .w_full()
-                        .h(spec.line_height)
-                        .px(super::geometry::MATH_EDITOR_PADDING_X)
-                        .rounded(px(4.0))
-                        .bg(theme.code_block_bg)
-                        .border_1()
-                        .border_color(theme.code_block_border)
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(12.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .font_family(crate::platform::platform_monospace_font())
-                                .text_size(px((lrc.font_size * (13.0 / 15.0)).round()))
-                                .text_color(theme.code_block_text)
-                                .child(display_tex),
-                        )
-                        .when(!hint.is_empty(), |row| {
-                            row.child(
-                                div()
-                                    .flex_none()
-                                    .max_w(px(260.0))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_size(px((lrc.font_size * (12.0 / 15.0)).round()))
-                                    .text_color(theme.text_muted)
-                                    .child(hint),
-                            )
-                        }),
-                )
-                .into_any_element()
+            blocks::render_math_block_start_line(source_line, parsed, lines, lrc, &spec)
         }
-
         BlockKind::MathBlock { is_start: false } => div().w_full().h(px(0.0)).into_any_element(),
-
         BlockKind::MathBlockContent => {
-            if !lrc.is_math_block_editing {
-                return div().w_full().h(px(0.0)).into_any_element();
-            }
-            let mut source_lrc = *lrc;
-            source_lrc.indent_px = px(0.0);
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                &source_lrc,
-                spec.font_size,
-                spec.line_height,
-                spec.override_color,
-                spec.shaping_mode,
-            );
-
-            let left_pane_w = lrc.content_width / 2.0;
-            div()
-                .w(left_pane_w)
-                .min_w_0()
-                .px(spec.padding_x)
-                .pt(spec.padding_top)
-                .pb(spec.padding_bottom)
-                .child(text_canvas)
-                .into_any_element()
+            blocks::render_math_block_content_line(source_line, parsed, lrc, &spec)
         }
-
-        BlockKind::Paragraph => {
-            if lrc.is_syntactic_separator && !is_active {
-                // Syntactic blank separator lines between blocks: collapsed to 0 height in Live Preview
-                return div().h(px(0.0)).into_any_element();
-            }
-
-            let text_canvas = render_shaped_line(
-                source_line,
-                parsed,
-                lrc,
-                spec.font_size,
-                spec.line_height,
-                quote_text_color(parsed, theme),
-                spec.shaping_mode,
-            );
-
-            div()
-                .w_full()
-                .min_h(spec.line_height)
-                .pt(spec.padding_top)
-                .pb(spec.padding_bottom)
-                .child(text_canvas)
-                .into_any_element()
-        }
+        BlockKind::Paragraph => blocks::render_paragraph_line(source_line, parsed, lrc, &spec),
     }
 }
 
 #[inline]
-fn quote_text_color(parsed: &ParsedLine, theme: &Theme) -> Option<Hsla> {
+pub(super) fn quote_text_color(parsed: &ParsedLine, theme: &Theme) -> Option<Hsla> {
     parsed.quote.map(|_| theme.quote_text)
-}
-
-fn render_list_item_row(
-    marker: impl IntoElement,
-    marker_width: Pixels,
-    text_canvas: impl IntoElement,
-    line_height: Pixels,
-    padding_top: Pixels,
-    padding_bottom: Pixels,
-    indent_px: Pixels,
-) -> AnyElement {
-    div()
-        .w_full()
-        .pl(indent_px)
-        .min_h(line_height)
-        .pt(padding_top)
-        .pb(padding_bottom)
-        .flex()
-        .flex_row()
-        .items_start()
-        .child(
-            div()
-                .w(marker_width)
-                .h(line_height)
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_start()
-                .child(marker),
-        )
-        .child(div().flex_grow().child(text_canvas))
-        .into_any_element()
-}
-
-fn render_table_cell(
-    cell: &crate::markdown::TableCell,
-    is_last: bool,
-    tcx: super::shaping::TableCellRenderContext,
-) -> impl IntoElement {
-    let theme = tcx.theme;
-    let cell_canvas = super::shaping::render_shaped_cell_canvas(&cell.spans, tcx);
-
-    let mut cell_elem = div()
-        .flex_1()
-        .min_w(px(60.0))
-        .h_full()
-        .px(px(8.0))
-        .flex()
-        .flex_row()
-        .items_center();
-
-    if !is_last {
-        cell_elem = cell_elem.border_r_1().border_color(theme.table_cell_border);
-    }
-
-    cell_elem.child(cell_canvas)
-}
-
-pub fn resolve_image_source(url: &str, doc_path: Option<&std::path::Path>) -> ImageSource {
-    let clean = url.trim();
-    if let Some(path) = crate::http::parse_file_url_path(clean, doc_path) {
-        ImageSource::Resource(Resource::Path(path.into()))
-    } else {
-        ImageSource::Resource(Resource::Uri(clean.to_string().into()))
-    }
-}
-
-fn render_image_preview_card(
-    source_line: crate::buffer::SourceLine,
-    alt: &str,
-    url: &str,
-    doc_path: Option<&std::path::Path>,
-    theme: &Theme,
-    content_width: Pixels,
-) -> impl IntoElement {
-    let line_idx = source_line.index();
-    let alt_string = if alt.is_empty() {
-        "Image".to_string()
-    } else {
-        alt.to_string()
-    };
-    let image_source = resolve_image_source(url, doc_path);
-    let accent_color = theme.text_accent;
-    let muted_color = theme.text_muted;
-
-    let img_element = img(image_source)
-        .id(ElementId::NamedInteger(
-            "editor_img".into(),
-            line_idx as u64,
-        ))
-        .w(content_width)
-        .max_w_full()
-        .rounded(px(6.0))
-        .with_loading(move || {
-            div()
-                .w_full()
-                .h(px(140.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(render_loading_metaball_animation(
-                    ElementId::NamedInteger("loading_metaball".into(), line_idx as u64),
-                    accent_color,
-                    px(48.0),
-                ))
-                .into_any_element()
-        })
-        .with_fallback(move || {
-            div()
-                .w_full()
-                .h(px(40.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(6.0))
-                .text_size(px(12.0))
-                .text_color(muted_color)
-                .child(
-                    Icon::new(IconName::ImageBroken)
-                        .size(IconSize::Small)
-                        .color(muted_color),
-                )
-                .child(format!("Failed to load image: {}", alt_string))
-                .into_any_element()
-        });
-
-    div()
-        .w_full()
-        .my(IMAGE_CARD_MARGIN_Y)
-        .flex()
-        .flex_col()
-        .items_center()
-        .child(img_element)
-}
-
-/// Renders an animated loading indicator.
-pub fn render_loading_metaball_animation(
-    id: impl Into<ElementId>,
-    color: Hsla,
-    size_px: Pixels,
-) -> impl IntoElement {
-    div()
-        .size(size_px)
-        .flex()
-        .items_center()
-        .justify_center()
-        .with_animation(
-            id,
-            Animation::new(std::time::Duration::from_millis(750)).repeat(),
-            move |_container, delta| {
-                // Sine harmonic oscillation: 0.0 -> 1.0 -> 0.0
-                let t = (1.0 - (delta * 2.0 * std::f32::consts::PI).cos()) / 2.0;
-                let s = f32::from(size_px) / 24.0;
-
-                let cx1 = (4.0 + 5.0 * t) * s;
-                let r1 = (3.0 + 5.0 * t) * s;
-
-                let cx2 = (15.0 + 5.0 * t) * s;
-                let r2 = (8.0 - 5.0 * t) * s;
-
-                let cy = 12.0 * s;
-
-                let mut group = div().size(size_px).relative();
-
-                // Circle 1
-                group = group.child(
-                    div()
-                        .absolute()
-                        .left(px(cx1 - r1))
-                        .top(px(cy - r1))
-                        .size(px(r1 * 2.0))
-                        .rounded(px(r1))
-                        .bg(color),
-                );
-
-                // Circle 2
-                group = group.child(
-                    div()
-                        .absolute()
-                        .left(px(cx2 - r2))
-                        .top(px(cy - r2))
-                        .size(px(r2 * 2.0))
-                        .rounded(px(r2))
-                        .bg(color),
-                );
-
-                // Gooey metaball connecting bridge
-                let dist = cx2 - cx1;
-                let max_connect_dist = (r1 + r2) * 1.35;
-                if dist < max_connect_dist && dist > 0.1 {
-                    let overlap = 1.0 - (dist / max_connect_dist);
-                    let bridge_h = (r1.min(r2) * 1.6) * overlap;
-                    group = group.child(
-                        div()
-                            .absolute()
-                            .left(px(cx1))
-                            .top(px(cy - bridge_h / 2.0))
-                            .w(px(cx2 - cx1))
-                            .h(px(bridge_h))
-                            .rounded(px(bridge_h / 2.0))
-                            .bg(color),
-                    );
-                }
-
-                group
-            },
-        )
 }
 
 /// Renders a line in Source mode with a line-number gutter.
 pub fn render_source_line(
-    source_line: crate::buffer::SourceLine,
+    source_line: SourceLine,
     parsed: &ParsedLine,
     lrc: &LineRenderContext,
     editor: Option<&Entity<Editor>>,
