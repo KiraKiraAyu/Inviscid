@@ -5643,10 +5643,13 @@ fn mermaid_svg_generation_is_deferred_to_background_worker(cx: &mut gpui::TestAp
         );
         assert!(row0.spans.iter().all(|span| span.mermaid.is_none()));
         assert!(
-            crate::mermaid::get_cached_mermaid_lines(&[
-                "flowchart LR".to_string(),
-                "MermaidUiAsyncA --> MermaidUiAsyncB".to_string(),
-            ])
+            crate::mermaid::get_cached_mermaid_lines_for_theme(
+                &[
+                    "flowchart LR".to_string(),
+                    "MermaidUiAsyncA --> MermaidUiAsyncB".to_string(),
+                ],
+                ed.is_dark_theme,
+            )
             .is_none()
         );
     });

@@ -171,11 +171,6 @@ fn source_from_lines(lines: &[String]) -> Option<String> {
     Some(source)
 }
 
-#[cfg(test)]
-pub(crate) fn get_cached_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
-    get_cached_mermaid_lines_for_theme(lines, false)
-}
-
 pub(crate) fn get_cached_mermaid_lines_for_theme(
     lines: &[String],
     is_dark: bool,
@@ -194,11 +189,6 @@ pub(crate) fn is_mermaid_cached_for_theme(lines: &[String], is_dark: bool) -> bo
     RENDER_CACHE
         .get()
         .is_some_and(|cache| cache.lock().entries.contains_key(&(source, is_dark)))
-}
-
-#[cfg(test)]
-pub(crate) fn prepare_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
-    prepare_mermaid_lines_for_theme(lines, false)
 }
 
 pub(crate) fn prepare_mermaid_lines_for_theme(
@@ -297,7 +287,7 @@ mod tests {
             "flowchart LR".to_string(),
             "    A[Start] --> B[Done]".to_string(),
         ];
-        let rendered = prepare_mermaid_lines(&lines).unwrap();
+        let rendered = prepare_mermaid_lines_for_theme(&lines, false).unwrap();
 
         assert!(rendered.width > 0);
         assert!(rendered.height > 0);
@@ -331,7 +321,7 @@ mod tests {
         let source = "x".repeat(MAX_DIAGRAM_SOURCE_BYTES + 1);
         let lines = vec![source.clone()];
 
-        assert!(prepare_mermaid_lines(&lines).is_none());
+        assert!(prepare_mermaid_lines_for_theme(&lines, false).is_none());
         assert!(!render_cache_contains(&source));
     }
 
@@ -339,21 +329,21 @@ mod tests {
     fn oversized_source_lines_are_rejected_without_caching() {
         let oversized_line = vec!["x".repeat(MAX_DIAGRAM_SOURCE_BYTES + 1)];
         let oversized_line_key = oversized_line.join("\n");
-        assert!(prepare_mermaid_lines(&oversized_line).is_none());
+        assert!(prepare_mermaid_lines_for_theme(&oversized_line, false).is_none());
         assert!(!render_cache_contains(&oversized_line_key));
 
         let too_many_lines = vec!["A --> B".to_string(); MAX_DIAGRAM_LINES + 1];
         let too_many_lines_key = too_many_lines.join("\n");
-        assert!(prepare_mermaid_lines(&too_many_lines).is_none());
+        assert!(prepare_mermaid_lines_for_theme(&too_many_lines, false).is_none());
         assert!(!render_cache_contains(&too_many_lines_key));
     }
 
     #[test]
     fn invalid_and_oversized_diagrams_are_not_rendered() {
-        assert!(prepare_mermaid_lines(&["not a diagram".to_string()]).is_none());
+        assert!(prepare_mermaid_lines_for_theme(&["not a diagram".to_string()], false).is_none());
 
         let source = format!("flowchart TD\n{}", "A --> B\n".repeat(2048));
         let lines = source.lines().map(str::to_string).collect::<Vec<_>>();
-        assert!(prepare_mermaid_lines(&lines).is_none());
+        assert!(prepare_mermaid_lines_for_theme(&lines, false).is_none());
     }
 }
