@@ -209,6 +209,7 @@ pub struct Editor {
 
     pub(crate) layout_cache: RefCell<Arc<DocumentLayoutCache>>,
     pub(crate) painted_lines: std::rc::Rc<RefCell<geometry::PaintedLineGeometryCache>>,
+    pub(crate) shaped_rows: std::rc::Rc<RefCell<shaping::ShapedRowCache>>,
     layout_scroll_adjustment: std::cell::Cell<Pixels>,
     #[cfg(test)]
     pub(crate) layout_stats: std::cell::Cell<LayoutStats>,
@@ -647,6 +648,7 @@ impl Editor {
             painted_lines: std::rc::Rc::new(RefCell::new(
                 geometry::PaintedLineGeometryCache::default(),
             )),
+            shaped_rows: std::rc::Rc::new(RefCell::new(shaping::ShapedRowCache::default())),
             layout_scroll_adjustment: std::cell::Cell::new(px(0.0)),
             #[cfg(test)]
             layout_stats: std::cell::Cell::new(LayoutStats::default()),
@@ -1711,7 +1713,9 @@ pub struct LineRenderContext<'a> {
     pub is_syntactic_separator: bool,
     pub text_system: Option<&'a Arc<WindowTextSystem>>,
     pub highlights: &'a [LineHighlight],
+    pub buffer_revision: u64,
     pub(crate) painted_lines: Option<&'a std::rc::Rc<RefCell<geometry::PaintedLineGeometryCache>>>,
+    pub(crate) shaped_rows: Option<&'a std::rc::Rc<RefCell<shaping::ShapedRowCache>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

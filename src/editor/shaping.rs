@@ -1,4 +1,8 @@
 use gpui::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::editor::RenderMode;
@@ -1028,6 +1032,43 @@ pub fn calculate_table_row_height_with_metrics(
     base_font_size: f32,
     line_height_factor: f32,
 ) -> Pixels {
+    calculate_table_row_height_cached(
+        cells,
+        is_header,
+        is_active,
+        cursor_col,
+        container_width,
+        text_system,
+        is_selection_disclosure,
+        ime_preedit_cols,
+        base_font_size,
+        line_height_factor,
+        None,
+        0,
+        &crate::theme::DEFAULT_THEME,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn calculate_table_row_height_cached(
+    cells: &[crate::markdown::TableCell],
+    is_header: bool,
+    is_active: bool,
+    cursor_col: usize,
+    container_width: Pixels,
+    text_system: Option<&Arc<WindowTextSystem>>,
+    is_selection_disclosure: bool,
+    ime_preedit_cols: Option<(usize, usize)>,
+    base_font_size: f32,
+    line_height_factor: f32,
+    source_line: Option<crate::buffer::SourceLine>,
+    buffer_revision: u64,
+    theme: &Theme,
+    hovered_link_range: Option<(usize, usize)>,
+    shaped_rows: Option<&Rc<RefCell<ShapedRowCache>>>,
+) -> Pixels {
     let scale = base_font_size / 15.0;
     let lh_ratio = line_height_factor / 1.6;
     let min_h = if is_header {
@@ -1050,17 +1091,10 @@ pub fn calculate_table_row_height_with_metrics(
 
     let mut max_visual_lines = 1;
     let mut max_math_height = px(0.0);
-    for cell in cells {
-        let scx = LineShapingContext::new(
-            &crate::theme::DEFAULT_THEME,
-            None,
-            false,
-            is_active,
-            cursor_col,
-        )
-        .with_selection_disclosure(is_selection_disclosure)
-        .with_ime_preedit(ime_preedit_cols);
-        let (cell_text, runs) = build_line_runs(&cell.spans, scx, None, &TextStyle::default());
+    for (c_idx, cell) in cells.iter().enumerate() {
+        let scx = LineShapingContext::new(theme, None, false, is_active, cursor_col)
+            .with_selection_disclosure(is_selection_disclosure)
+            .with_ime_preedit(ime_preedit_cols);
 
         for span in &cell.spans {
             if !span.math_is_disclosed(is_active, cursor_col, false)
@@ -1071,16 +1105,61 @@ pub fn calculate_table_row_height_with_metrics(
             }
         }
 
-        let lines = calculate_visual_lines_with_runs(
-            &cell_text,
-            &runs,
-            cell_font.clone(),
-            font_size,
-            inner_cell_w,
-            true,
-            text_system,
-            false,
-        );
+        let lines = if let (Some(ts), Some(src_line), Some(cache)) =
+            (text_system, source_line, shaped_rows)
+        {
+            let wrap_width = Some(inner_cell_w);
+            let key = ShapedLineKey::new(
+                buffer_revision,
+                src_line.index(),
+                Some(c_idx),
+                theme,
+                font_size,
+                wrap_width,
+                None,
+                &scx,
+                hovered_link_range,
+            );
+            if let Some(cached) = shape_line_or_cached(
+                &key,
+                &cell.spans,
+                scx,
+                hovered_link_range,
+                font_size,
+                wrap_width,
+                ts,
+                &TextStyle::default(),
+                Some(cache),
+            ) {
+                cached.visual_lines
+            } else {
+                let (cell_text, runs) =
+                    build_line_runs(&cell.spans, scx, hovered_link_range, &TextStyle::default());
+                calculate_visual_lines_with_runs(
+                    &cell_text,
+                    &runs,
+                    cell_font.clone(),
+                    font_size,
+                    inner_cell_w,
+                    true,
+                    text_system,
+                    false,
+                )
+            }
+        } else {
+            let (cell_text, runs) =
+                build_line_runs(&cell.spans, scx, hovered_link_range, &TextStyle::default());
+            calculate_visual_lines_with_runs(
+                &cell_text,
+                &runs,
+                cell_font.clone(),
+                font_size,
+                inner_cell_w,
+                true,
+                text_system,
+                false,
+            )
+        };
         max_visual_lines = max_visual_lines.max(lines);
     }
 
@@ -1660,7 +1739,203 @@ pub fn find_link_at_pixel_point(
     find_link_at_spans(source_line, relative_point, &parsed.spans, lcx, window)
 }
 
-use super::LineRenderContext;
+use super::{LineHighlight, LineRenderContext};
+
+const SHAPED_ROW_CACHE_LIMIT: usize = 512;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ShapedLineKey {
+    pub buffer_revision: u64,
+    pub line_idx: usize,
+    pub cell_idx: Option<usize>,
+    pub theme_fingerprint: u64,
+    pub font_size_bits: u32,
+    pub wrap_width_bits: Option<u32>,
+    pub override_color_bits: Option<(u32, u32, u32, u32)>,
+    pub is_source: bool,
+    pub is_monospace: bool,
+    pub is_heading: bool,
+    pub is_active_caret: bool,
+    pub disclosure_col: usize,
+    pub is_selection_disclosure: bool,
+    pub ime_preedit_cols: Option<(usize, usize)>,
+    pub hovered_link_range: Option<(usize, usize)>,
+}
+
+impl ShapedLineKey {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        buffer_revision: u64,
+        line_idx: usize,
+        cell_idx: Option<usize>,
+        theme: &Theme,
+        font_size: Pixels,
+        wrap_width: Option<Pixels>,
+        override_color: Option<Hsla>,
+        scx: &LineShapingContext<'_>,
+        hovered_link_range: Option<(usize, usize)>,
+    ) -> Self {
+        let effective_active = !scx.is_source && scx.is_active_caret;
+        Self {
+            buffer_revision,
+            line_idx,
+            cell_idx,
+            theme_fingerprint: theme.fingerprint(),
+            font_size_bits: f32::from(font_size).to_bits(),
+            wrap_width_bits: wrap_width.map(|w| f32::from(w).to_bits()),
+            override_color_bits: override_color
+                .map(|c| (c.h.to_bits(), c.s.to_bits(), c.l.to_bits(), c.a.to_bits())),
+            is_source: scx.is_source,
+            is_monospace: scx.is_monospace,
+            is_heading: scx.is_heading,
+            is_active_caret: effective_active,
+            disclosure_col: if effective_active { scx.cursor_col } else { 0 },
+            is_selection_disclosure: effective_active && scx.is_selection_disclosure,
+            ime_preedit_cols: scx.ime_preedit_cols,
+            hovered_link_range,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct CachedShapedLine {
+    pub wrapped_line: Option<Arc<WrappedLine>>,
+    pub visual_lines: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct ShapedRowCache {
+    entries: HashMap<ShapedLineKey, (CachedShapedLine, u64)>,
+    tick: u64,
+}
+
+impl ShapedRowCache {
+    pub fn get(&mut self, key: &ShapedLineKey) -> Option<CachedShapedLine> {
+        let (entry, last_used) = self.entries.get_mut(key)?;
+        self.tick = self.tick.wrapping_add(1);
+        *last_used = self.tick;
+        Some(entry.clone())
+    }
+
+    pub fn insert(&mut self, key: ShapedLineKey, value: CachedShapedLine) {
+        if !self.entries.contains_key(&key)
+            && self.entries.len() >= SHAPED_ROW_CACHE_LIMIT
+            && let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(k, _)| k.clone())
+        {
+            self.entries.remove(&oldest_key);
+        }
+        self.tick = self.tick.wrapping_add(1);
+        self.entries.insert(key, (value, self.tick));
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn invalidate_range(&mut self, range: Range<usize>) {
+        self.entries
+            .retain(|key, _| key.line_idx < range.start || key.line_idx >= range.end);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_edit(
+        &mut self,
+        old_rev: u64,
+        new_rev: u64,
+        line_delta: isize,
+        dirty_old_range: Range<usize>,
+        edit_old_range: Range<usize>,
+        structural: bool,
+        mut can_reuse_dirty_neighbor: impl FnMut(usize, usize) -> bool,
+    ) {
+        let previous: Vec<_> = self.entries.drain().collect();
+        for (mut key, value) in previous {
+            if key.buffer_revision != old_rev {
+                continue;
+            }
+            if key.line_idx < dirty_old_range.start {
+                key.buffer_revision = new_rev;
+                self.entries.insert(key, value);
+            } else if !structural && key.line_idx >= dirty_old_range.end {
+                key.buffer_revision = new_rev;
+                key.line_idx = ((key.line_idx as isize) + line_delta).max(0) as usize;
+                self.entries.insert(key, value);
+            } else if !structural
+                && (key.line_idx < edit_old_range.start || key.line_idx >= edit_old_range.end)
+            {
+                let new_line_idx = if key.line_idx < edit_old_range.start {
+                    key.line_idx
+                } else {
+                    ((key.line_idx as isize) + line_delta).max(0) as usize
+                };
+                if can_reuse_dirty_neighbor(key.line_idx, new_line_idx) {
+                    key.buffer_revision = new_rev;
+                    key.line_idx = new_line_idx;
+                    self.entries.insert(key, value);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    pub fn contains_line(&self, line_idx: usize, buffer_revision: u64) -> bool {
+        self.entries
+            .keys()
+            .any(|key| key.line_idx == line_idx && key.buffer_revision == buffer_revision)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn shape_line_or_cached(
+    key: &ShapedLineKey,
+    spans: &[InlineSpan],
+    scx: LineShapingContext<'_>,
+    hovered_link_range: Option<(usize, usize)>,
+    font_size: Pixels,
+    wrap_width: Option<Pixels>,
+    text_system: &Arc<WindowTextSystem>,
+    base_style: &TextStyle,
+    cache: Option<&Rc<RefCell<ShapedRowCache>>>,
+) -> Option<CachedShapedLine> {
+    if let Some(cache) = cache
+        && let Some(hit) = cache.borrow_mut().get(key)
+    {
+        return Some(hit);
+    }
+
+    let (line_str, runs) = build_line_runs(spans, scx, hovered_link_range, base_style);
+    let entry = if line_str.is_empty() || runs.is_empty() {
+        CachedShapedLine {
+            wrapped_line: None,
+            visual_lines: 1,
+        }
+    } else {
+        let shaped = text_system
+            .shape_text(line_str.into(), font_size, &runs, wrap_width, None)
+            .ok()?;
+        let mut iter = shaped.into_iter();
+        let wrapped_line = iter.next()?;
+        let visual_lines = wrapped_line.wrap_boundaries.len() + 1;
+        CachedShapedLine {
+            wrapped_line: Some(Arc::new(wrapped_line)),
+            visual_lines,
+        }
+    };
+
+    if let Some(cache) = cache {
+        cache.borrow_mut().insert(key.clone(), entry.clone());
+    }
+    Some(entry)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RangeTail {
@@ -1669,11 +1944,28 @@ enum RangeTail {
     Continues,
 }
 
+fn align_quad_origin_x(
+    origin_x: Pixels,
+    align_bounds_width: Pixels,
+    row_width: Pixels,
+    align: TextAlign,
+) -> Pixels {
+    origin_x
+        + match align {
+            TextAlign::Left => px(0.0),
+            TextAlign::Center => ((align_bounds_width - row_width) / 2.0).max(px(0.0)),
+            TextAlign::Right => (align_bounds_width - row_width).max(px(0.0)),
+        }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn push_visual_row_quads(
     wrapped_line: &WrappedLine,
     range: std::ops::Range<usize>,
     tail: RangeTail,
     origin: Point<Pixels>,
+    align: TextAlign,
+    align_bounds_width: Pixels,
     line_height: Pixels,
     mut push: impl FnMut(Bounds<Pixels>),
 ) {
@@ -1690,6 +1982,8 @@ fn push_visual_row_quads(
             let seg_start = range.start.max(row_start);
             let seg_end = range.end.min(row_end);
             let row_x = layout.x_for_index(row_start);
+            let row_width = layout.x_for_index(row_end) - row_x;
+            let row_origin_x = align_quad_origin_x(origin.x, align_bounds_width, row_width, align);
             let x1 = layout.x_for_index(seg_start) - row_x;
             let x2 = if seg_end == row_end && tail != RangeTail::Clipped {
                 (layout.x_for_index(seg_end) - row_x + px(8.0)).max(x1 + px(4.0))
@@ -1700,8 +1994,8 @@ fn push_visual_row_quads(
             if x2 > x1 || tail == RangeTail::Continues {
                 let y = origin.y + (row as f32) * line_height;
                 push(Bounds::from_corners(
-                    point(origin.x + x1, y),
-                    point(origin.x + x2.max(x1 + px(2.0)), y + line_height),
+                    point(row_origin_x + x1, y),
+                    point(row_origin_x + x2.max(x1 + px(2.0)), y + line_height),
                 ));
             }
         }
@@ -1709,13 +2003,166 @@ fn push_visual_row_quads(
     }
 }
 
-enum LinePrepaintState {
+#[inline]
+pub(crate) fn clip_range_to_bounds(
+    range: Range<usize>,
+    bounds: (usize, usize),
+) -> Option<Range<usize>> {
+    let start = range.start.max(bounds.0);
+    let end = range.end.min(bounds.1);
+    (start < end).then_some(start..end)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_selection_quads(
+    selection: crate::buffer::Selection,
+    source_line: crate::buffer::SourceLine,
+    raw_line_len: usize,
+    col_bounds: (usize, usize),
+    clip_to_bounds: bool,
+    spans: &[InlineSpan],
+    is_active_caret: bool,
+    disclosure_col: usize,
+    is_source: bool,
+    is_selection_disclosure: bool,
+    wrapped_line: &WrappedLine,
+    origin: Point<Pixels>,
+    align: TextAlign,
+    align_bounds_width: Pixels,
+    line_height: Pixels,
+) -> Vec<Bounds<Pixels>> {
+    let mut quads = Vec::new();
+    if selection.is_empty() {
+        return quads;
+    }
+    let (sel_start, sel_end) = (selection.start(), selection.end());
+    if source_line < sel_start.line || source_line > sel_end.line {
+        return quads;
+    }
+
+    let (line_start_col, line_end_col) = if sel_start.line == sel_end.line {
+        (
+            sel_start.col.min(raw_line_len),
+            sel_end.col.min(raw_line_len),
+        )
+    } else if source_line == sel_start.line {
+        (sel_start.col.min(raw_line_len), raw_line_len)
+    } else if source_line == sel_end.line {
+        (0, sel_end.col.min(raw_line_len))
+    } else {
+        (0, raw_line_len)
+    };
+
+    let (start_raw_col, end_raw_col) = if clip_to_bounds {
+        let Some(clipped) = clip_range_to_bounds(line_start_col..line_end_col, col_bounds) else {
+            return quads;
+        };
+        (clipped.start, clipped.end)
+    } else {
+        (line_start_col, line_end_col)
+    };
+
+    let to_visible = |raw_col: usize| {
+        raw_col_to_visible_byte_with_selection(
+            raw_col,
+            spans,
+            is_active_caret,
+            disclosure_col,
+            is_source,
+            is_selection_disclosure,
+        )
+    };
+
+    let tail = if clip_to_bounds {
+        RangeTail::Clipped
+    } else if source_line < sel_end.line {
+        RangeTail::Continues
+    } else if end_raw_col == raw_line_len {
+        RangeTail::EndOfLine
+    } else {
+        RangeTail::Clipped
+    };
+
+    push_visual_row_quads(
+        wrapped_line,
+        to_visible(start_raw_col)..to_visible(end_raw_col),
+        tail,
+        origin,
+        align,
+        align_bounds_width,
+        line_height,
+        |quad| quads.push(quad),
+    );
+    quads
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_highlight_quads(
+    highlights: &[LineHighlight],
+    col_bounds: (usize, usize),
+    clip_to_bounds: bool,
+    spans: &[InlineSpan],
+    is_active_caret: bool,
+    disclosure_col: usize,
+    is_source: bool,
+    is_selection_disclosure: bool,
+    wrapped_line: &WrappedLine,
+    origin: Point<Pixels>,
+    align: TextAlign,
+    align_bounds_width: Pixels,
+    line_height: Pixels,
+    theme: &Theme,
+) -> Vec<(Bounds<Pixels>, Hsla)> {
+    let mut quads = Vec::new();
+    let to_visible = |raw_col: usize| {
+        raw_col_to_visible_byte_with_selection(
+            raw_col,
+            spans,
+            is_active_caret,
+            disclosure_col,
+            is_source,
+            is_selection_disclosure,
+        )
+    };
+    for highlight in highlights {
+        let range = if clip_to_bounds {
+            let Some(clipped) = clip_range_to_bounds(highlight.cols.clone(), col_bounds) else {
+                continue;
+            };
+            clipped
+        } else {
+            highlight.cols.clone()
+        };
+        let color = highlight.kind.color(theme);
+        let tail = if !clip_to_bounds && highlight.continues {
+            RangeTail::Continues
+        } else {
+            RangeTail::Clipped
+        };
+        push_visual_row_quads(
+            wrapped_line,
+            to_visible(range.start)..to_visible(range.end),
+            tail,
+            origin,
+            align,
+            align_bounds_width,
+            line_height,
+            |quad| quads.push((quad, color)),
+        );
+    }
+    quads
+}
+
+enum ShapedTextPrepaintState {
     Empty {
         caret_bounds: Option<Bounds<Pixels>>,
         cursor_color: Hsla,
     },
     Shaped {
         wrapped_line: Arc<WrappedLine>,
+        origin: Point<Pixels>,
+        text_align: TextAlign,
+        clip_bounds: Option<Bounds<Pixels>>,
         math_paints: Vec<MathPaint>,
         highlight_quads: Vec<(Bounds<Pixels>, Hsla)>,
         selection_quads: Vec<Bounds<Pixels>>,
@@ -1724,6 +2171,65 @@ enum LinePrepaintState {
         cursor_color: Hsla,
     },
     None,
+}
+
+fn paint_shaped_text(
+    prepaint: ShapedTextPrepaintState,
+    line_height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    match prepaint {
+        ShapedTextPrepaintState::Empty {
+            caret_bounds,
+            cursor_color,
+        } => {
+            if let Some(caret) = caret_bounds {
+                window.paint_quad(fill(caret, cursor_color));
+            }
+        }
+        ShapedTextPrepaintState::Shaped {
+            wrapped_line,
+            origin,
+            text_align,
+            clip_bounds,
+            math_paints,
+            highlight_quads,
+            selection_quads,
+            selection_color,
+            caret_bounds,
+            cursor_color,
+        } => {
+            for (quad, color) in highlight_quads {
+                window.paint_quad(fill(quad, color));
+            }
+            for sel_quad in selection_quads {
+                window.paint_quad(fill(sel_quad, selection_color));
+            }
+            let _ = wrapped_line.paint_background(
+                origin,
+                line_height,
+                text_align,
+                clip_bounds,
+                window,
+                cx,
+            );
+            let _ = wrapped_line.paint(origin, line_height, text_align, clip_bounds, window, cx);
+            for math in math_paints {
+                let _ = window.paint_svg(
+                    math.bounds,
+                    math.asset_path,
+                    TransformationMatrix::default(),
+                    math.color,
+                    cx,
+                );
+            }
+            if let Some(caret) = caret_bounds {
+                window.paint_quad(fill(caret, cursor_color));
+            }
+        }
+        ShapedTextPrepaintState::None => {}
+    }
 }
 
 struct MathPaint {
@@ -1886,6 +2392,8 @@ pub fn render_shaped_line(
     let soft_wrap = lrc.soft_wrap;
     let highlights = lrc.highlights.to_vec();
     let ime_preedit_cols = lrc.ime_preedit_cols;
+    let buffer_revision = lrc.buffer_revision;
+    let shaped_rows = lrc.shaped_rows.cloned();
 
     let is_active_caret = lrc.is_disclosure_line;
     let is_source = shaping_mode.is_source();
@@ -1906,6 +2414,11 @@ pub fn render_shaped_line(
         lrc.indent_px,
         lrc.font_size,
     );
+    let wrap_width = if soft_wrap && available_width > px(0.0) {
+        Some(available_width)
+    } else {
+        None
+    };
 
     let is_heading = matches!(parsed.kind, BlockKind::Heading { .. });
     let font = if is_monospace {
@@ -1927,24 +2440,51 @@ pub fn render_shaped_line(
     .with_selection_disclosure(is_selection_disclosure)
     .with_heading(is_heading)
     .with_ime_preedit(ime_preedit_cols);
-    let (line_str_for_measuring, runs_for_measuring) = build_line_runs(
-        &spans,
-        scx_measure,
+    let shape_key = ShapedLineKey::new(
+        buffer_revision,
+        source_line.index(),
+        None,
+        lrc.theme,
+        font_size,
+        wrap_width,
+        override_color,
+        &scx_measure,
         hovered_link_range,
-        &TextStyle::default(),
     );
 
     let est_lines = if font_size > px(0.0) && available_width > px(0.0) {
-        calculate_visual_lines_with_runs(
-            &line_str_for_measuring,
-            &runs_for_measuring,
-            font,
-            font_size,
-            available_width,
-            soft_wrap,
-            lrc.text_system,
-            is_monospace,
-        )
+        if let Some(ts) = lrc.text_system
+            && let Some(cached) = shape_line_or_cached(
+                &shape_key,
+                &spans,
+                scx_measure,
+                hovered_link_range,
+                font_size,
+                wrap_width,
+                ts,
+                &TextStyle::default(),
+                shaped_rows.as_ref(),
+            )
+        {
+            cached.visual_lines
+        } else {
+            let (line_str_for_measuring, runs_for_measuring) = build_line_runs(
+                &spans,
+                scx_measure,
+                hovered_link_range,
+                &TextStyle::default(),
+            );
+            calculate_visual_lines_with_runs(
+                &line_str_for_measuring,
+                &runs_for_measuring,
+                font,
+                font_size,
+                available_width,
+                soft_wrap,
+                lrc.text_system,
+                is_monospace,
+            )
+        }
     } else {
         1
     };
@@ -1958,27 +2498,47 @@ pub fn render_shaped_line(
 
     canvas(
         move |bounds, window, cx| {
-            let (line_str, runs, cursor_color, selection_color) = {
-                let theme = cx.theme();
-                let scx = LineShapingContext::new(
-                    theme,
-                    override_color,
-                    is_source,
-                    is_active_caret,
-                    disclosure_col,
-                )
-                .with_monospace(is_monospace)
-                .with_selection_disclosure(is_selection_disclosure)
-                .with_heading(is_heading)
-                .with_ime_preedit(ime_preedit_cols);
-                let (line_str, runs) =
-                    build_line_runs(&spans, scx, hovered_link_range, &window.text_style());
-                let cursor_color = theme.cursor.opacity(cursor_opacity);
-                let selection_color = theme.selection;
-                (line_str, runs, cursor_color, selection_color)
+            let theme = cx.theme();
+            let cursor_color = theme.cursor.opacity(cursor_opacity);
+            let selection_color = theme.selection;
+            let math_color = override_color.unwrap_or(theme.text_primary);
+            let scx = LineShapingContext::new(
+                theme,
+                override_color,
+                is_source,
+                is_active_caret,
+                disclosure_col,
+            )
+            .with_monospace(is_monospace)
+            .with_selection_disclosure(is_selection_disclosure)
+            .with_heading(is_heading)
+            .with_ime_preedit(ime_preedit_cols);
+            let prepaint_key = ShapedLineKey::new(
+                buffer_revision,
+                source_line.index(),
+                None,
+                theme,
+                font_size,
+                wrap_width,
+                override_color,
+                &scx,
+                hovered_link_range,
+            );
+            let Some(cached) = shape_line_or_cached(
+                &prepaint_key,
+                &spans,
+                scx,
+                hovered_link_range,
+                font_size,
+                wrap_width,
+                window.text_system(),
+                &window.text_style(),
+                shaped_rows.as_ref(),
+            ) else {
+                return ShapedTextPrepaintState::None;
             };
 
-            if line_str.is_empty() || runs.is_empty() {
+            let Some(wrapped_line) = cached.wrapped_line else {
                 let caret_bounds = if is_active
                     && is_focused
                     && selection.is_empty()
@@ -2011,35 +2571,11 @@ pub fn render_shaped_line(
                     );
                 }
 
-                return LinePrepaintState::Empty {
+                return ShapedTextPrepaintState::Empty {
                     caret_bounds,
                     cursor_color,
                 };
-            }
-
-            let wrap_width = if soft_wrap && available_width > px(0.0) {
-                Some(available_width)
-            } else {
-                None
             };
-
-            let shaped_lines = window.text_system().shape_text(
-                line_str.into(),
-                font_size,
-                &runs,
-                wrap_width,
-                None,
-            );
-
-            let Ok(lines) = shaped_lines else {
-                return LinePrepaintState::None;
-            };
-
-            let mut lines_iter = lines.into_iter();
-            let Some(wrapped_line) = lines_iter.next() else {
-                return LinePrepaintState::None;
-            };
-            let wrapped_line = Arc::new(wrapped_line);
 
             let has_other_content = spans.iter().any(|span| {
                 span.math.is_none()
@@ -2051,7 +2587,6 @@ pub fn render_shaped_line(
                     )
                     && !span.text.trim().is_empty()
             });
-            let math_color = override_color.unwrap_or_else(|| cx.theme().text_primary);
             let math_paints = math_paints_for_row(
                 &math_runs,
                 &wrapped_line,
@@ -2064,71 +2599,40 @@ pub fn render_shaped_line(
                 !has_other_content,
             );
 
-            let to_visible = |raw_col: usize| {
-                raw_col_to_visible_byte_with_selection(
-                    raw_col,
-                    &spans,
-                    is_active_caret,
-                    disclosure_col,
-                    is_source,
-                    is_selection_disclosure,
-                )
-            };
+            let selection_quads = compute_selection_quads(
+                selection,
+                source_line,
+                raw_chars_count,
+                (0, raw_chars_count),
+                false,
+                &spans,
+                is_active_caret,
+                disclosure_col,
+                is_source,
+                is_selection_disclosure,
+                &wrapped_line,
+                bounds.origin,
+                TextAlign::Left,
+                bounds.size.width,
+                line_height,
+            );
 
-            let mut selection_quads = Vec::new();
-            if !selection.is_empty() {
-                let (sel_start, sel_end) = (selection.start(), selection.end());
-                if source_line >= sel_start.line && source_line <= sel_end.line {
-                    let total_raw_len = raw_chars_count;
-
-                    let (start_raw_col, end_raw_col) = if sel_start.line == sel_end.line {
-                        (
-                            sel_start.col.min(total_raw_len),
-                            sel_end.col.min(total_raw_len),
-                        )
-                    } else if source_line == sel_start.line {
-                        (sel_start.col.min(total_raw_len), total_raw_len)
-                    } else if source_line == sel_end.line {
-                        (0, sel_end.col.min(total_raw_len))
-                    } else {
-                        (0, total_raw_len)
-                    };
-
-                    let tail = if source_line < sel_end.line {
-                        RangeTail::Continues
-                    } else if end_raw_col == total_raw_len {
-                        RangeTail::EndOfLine
-                    } else {
-                        RangeTail::Clipped
-                    };
-                    push_visual_row_quads(
-                        &wrapped_line,
-                        to_visible(start_raw_col)..to_visible(end_raw_col),
-                        tail,
-                        bounds.origin,
-                        line_height,
-                        |quad| selection_quads.push(quad),
-                    );
-                }
-            }
-
-            let mut highlight_quads = Vec::new();
-            for highlight in &highlights {
-                let color = highlight.kind.color(cx.theme());
-                let tail = if highlight.continues {
-                    RangeTail::Continues
-                } else {
-                    RangeTail::Clipped
-                };
-                push_visual_row_quads(
-                    &wrapped_line,
-                    to_visible(highlight.cols.start)..to_visible(highlight.cols.end),
-                    tail,
-                    bounds.origin,
-                    line_height,
-                    |quad| highlight_quads.push((quad, color)),
-                );
-            }
+            let highlight_quads = compute_highlight_quads(
+                &highlights,
+                (0, raw_chars_count),
+                false,
+                &spans,
+                is_active_caret,
+                disclosure_col,
+                is_source,
+                is_selection_disclosure,
+                &wrapped_line,
+                bounds.origin,
+                TextAlign::Left,
+                bounds.size.width,
+                line_height,
+                theme,
+            );
 
             let caret_bounds = if is_active
                 && is_focused
@@ -2174,8 +2678,11 @@ pub fn render_shaped_line(
                 );
             }
 
-            LinePrepaintState::Shaped {
+            ShapedTextPrepaintState::Shaped {
                 wrapped_line,
+                origin: bounds.origin,
+                text_align: TextAlign::Left,
+                clip_bounds: None,
                 math_paints,
                 highlight_quads,
                 selection_quads,
@@ -2184,60 +2691,8 @@ pub fn render_shaped_line(
                 cursor_color,
             }
         },
-        move |bounds, prepaint, window, cx| match prepaint {
-            LinePrepaintState::Empty {
-                caret_bounds,
-                cursor_color,
-            } => {
-                if let Some(caret) = caret_bounds {
-                    window.paint_quad(fill(caret, cursor_color));
-                }
-            }
-            LinePrepaintState::Shaped {
-                wrapped_line,
-                math_paints,
-                highlight_quads,
-                selection_quads,
-                selection_color,
-                caret_bounds,
-                cursor_color,
-            } => {
-                for (quad, color) in highlight_quads {
-                    window.paint_quad(fill(quad, color));
-                }
-                for sel_quad in selection_quads {
-                    window.paint_quad(fill(sel_quad, selection_color));
-                }
-                let _ = wrapped_line.paint_background(
-                    bounds.origin,
-                    line_height,
-                    TextAlign::default(),
-                    None,
-                    window,
-                    cx,
-                );
-                let _ = wrapped_line.paint(
-                    bounds.origin,
-                    line_height,
-                    TextAlign::default(),
-                    None,
-                    window,
-                    cx,
-                );
-                for math in math_paints {
-                    let _ = window.paint_svg(
-                        math.bounds,
-                        math.asset_path,
-                        TransformationMatrix::default(),
-                        math.color,
-                        cx,
-                    );
-                }
-                if let Some(caret) = caret_bounds {
-                    window.paint_quad(fill(caret, cursor_color));
-                }
-            }
-            LinePrepaintState::None => {}
+        move |_bounds, prepaint, window, cx| {
+            paint_shaped_text(prepaint, line_height, window, cx);
         },
     )
     .h(total_canvas_h)
@@ -2247,6 +2702,9 @@ pub fn render_shaped_line(
 
 #[derive(Clone)]
 pub struct TableCellRenderContext<'a> {
+    pub source_line: crate::buffer::SourceLine,
+    pub cell_idx: usize,
+    pub col_range: (usize, usize),
     pub theme: &'a Theme,
     pub font_size: Pixels,
     pub line_height: Pixels,
@@ -2255,22 +2713,16 @@ pub struct TableCellRenderContext<'a> {
     pub disclosure_col: usize,
     pub is_selection_disclosure: bool,
     pub ime_preedit_cols: Option<(usize, usize)>,
+    pub selection: crate::buffer::Selection,
+    pub is_dragging: bool,
+    pub is_focused: bool,
     pub cursor_col: usize,
     pub cursor_opacity: f32,
     pub align: crate::markdown::TableAlignment,
     pub hovered_link_range: Option<(usize, usize)>,
-}
-
-enum CellPrepaintState {
-    Shaped {
-        wrapped_line: Box<WrappedLine>,
-        origin: Point<Pixels>,
-        text_align: TextAlign,
-        math_paints: Vec<MathPaint>,
-        caret_bounds: Option<Bounds<Pixels>>,
-        cursor_color: Hsla,
-    },
-    None,
+    pub highlights: &'a [LineHighlight],
+    pub buffer_revision: u64,
+    pub(crate) shaped_rows: Option<&'a Rc<RefCell<ShapedRowCache>>>,
 }
 
 pub fn render_shaped_cell_canvas(
@@ -2278,6 +2730,9 @@ pub fn render_shaped_cell_canvas(
     tcx: TableCellRenderContext,
 ) -> impl IntoElement {
     let spans = spans.to_vec();
+    let source_line = tcx.source_line;
+    let cell_idx = tcx.cell_idx;
+    let col_range = tcx.col_range;
     let font_size = tcx.font_size;
     let line_height = tcx.line_height;
     let is_active_cell = tcx.is_active_cell;
@@ -2285,10 +2740,16 @@ pub fn render_shaped_cell_canvas(
     let disclosure_col = tcx.disclosure_col;
     let is_selection_disclosure = tcx.is_selection_disclosure;
     let ime_preedit_cols = tcx.ime_preedit_cols;
+    let selection = tcx.selection;
+    let is_dragging = tcx.is_dragging;
+    let is_focused = tcx.is_focused;
     let cursor_col = tcx.cursor_col;
     let cursor_opacity = tcx.cursor_opacity;
     let align = tcx.align;
     let hovered_link_range = tcx.hovered_link_range;
+    let highlights = tcx.highlights.to_vec();
+    let buffer_revision = tcx.buffer_revision;
+    let shaped_rows = tcx.shaped_rows.cloned();
     let math_runs = collect_math_runs(
         &spans,
         is_disclosure_cell,
@@ -2299,47 +2760,74 @@ pub fn render_shaped_cell_canvas(
 
     canvas(
         move |bounds, window, cx| {
-            let (line_str, runs, cursor_color) = {
-                let theme = cx.theme();
-                let scx =
-                    LineShapingContext::new(theme, None, false, is_disclosure_cell, disclosure_col)
-                        .with_selection_disclosure(is_selection_disclosure)
-                        .with_ime_preedit(ime_preedit_cols);
-                let (line_str, runs) =
-                    build_line_runs(&spans, scx, hovered_link_range, &window.text_style());
-                let cursor_color = theme.cursor.opacity(cursor_opacity);
-                (line_str, runs, cursor_color)
-            };
-
-            let shaped = window.text_system().shape_text(
-                line_str.into(),
-                font_size,
-                &runs,
-                Some(bounds.size.width),
-                None,
-            );
-
-            let Ok(lines) = shaped else {
-                return CellPrepaintState::None;
-            };
-
-            let mut lines_iter = lines.into_iter();
-            let Some(wrapped_line) = lines_iter.next() else {
-                return CellPrepaintState::None;
-            };
-
+            let theme = cx.theme();
+            let cursor_color = theme.cursor.opacity(cursor_opacity);
+            let selection_color = theme.selection;
             let text_align = match align {
                 crate::markdown::TableAlignment::Center => TextAlign::Center,
                 crate::markdown::TableAlignment::Right => TextAlign::Right,
                 _ => TextAlign::Left,
             };
+            let scx =
+                LineShapingContext::new(theme, None, false, is_disclosure_cell, disclosure_col)
+                    .with_selection_disclosure(is_selection_disclosure)
+                    .with_ime_preedit(ime_preedit_cols);
+            let cell_wrap_width = Some(bounds.size.width);
+            let prepaint_key = ShapedLineKey::new(
+                buffer_revision,
+                source_line.index(),
+                Some(cell_idx),
+                theme,
+                font_size,
+                cell_wrap_width,
+                None,
+                &scx,
+                hovered_link_range,
+            );
+            let Some(cached) = shape_line_or_cached(
+                &prepaint_key,
+                &spans,
+                scx,
+                hovered_link_range,
+                font_size,
+                cell_wrap_width,
+                window.text_system(),
+                &window.text_style(),
+                shaped_rows.as_ref(),
+            ) else {
+                return ShapedTextPrepaintState::None;
+            };
 
-            let num_visual_lines = wrapped_line.wrap_boundaries.len() + 1;
-            let math_height = math_runs
-                .iter()
-                .map(|(math, _)| math_render_size(&math.rendered, font_size).height)
-                .fold(px(0.0), Pixels::max);
-            let total_text_h = (line_height * (num_visual_lines as f32)).max(math_height);
+            let Some(wrapped_line) = cached.wrapped_line else {
+                let caret_bounds = if is_active_cell
+                    && is_focused
+                    && selection.is_empty()
+                    && !is_dragging
+                    && cursor_opacity > 0.01
+                {
+                    let (caret_w, caret_h) = calculate_caret_size(font_size, line_height);
+                    let align_x = table_align_offset(bounds.size.width, px(0.0), align);
+                    let caret_x = (bounds.origin.x + align_x).round();
+                    let caret_y = (bounds.origin.y + (bounds.size.height - caret_h) / 2.0).round();
+                    Some(Bounds::new(
+                        point(caret_x, caret_y),
+                        size(caret_w, caret_h.round()),
+                    ))
+                } else {
+                    None
+                };
+                return ShapedTextPrepaintState::Empty {
+                    caret_bounds,
+                    cursor_color,
+                };
+            };
+
+            let total_text_h = (line_height * (cached.visual_lines as f32)).max(
+                math_runs
+                    .iter()
+                    .map(|(math, _)| math_render_size(&math.rendered, font_size).height)
+                    .fold(px(0.0), Pixels::max),
+            );
             let origin_y = bounds.origin.y + (bounds.size.height - total_text_h).max(px(0.0)) / 2.0;
             let origin = point(bounds.origin.x, origin_y);
             let align_x = table_align_offset(
@@ -2365,11 +2853,52 @@ pub fn render_shaped_cell_canvas(
                 bounds.size.width,
                 font_size,
                 line_height,
-                cx.theme().text_primary,
+                theme.text_primary,
                 !has_other_content,
             );
 
-            let caret_bounds = if is_active_cell && cursor_opacity > 0.01 {
+            let raw_row_end = col_range.1;
+            let selection_quads = compute_selection_quads(
+                selection,
+                source_line,
+                raw_row_end,
+                col_range,
+                true,
+                &spans,
+                is_disclosure_cell,
+                disclosure_col,
+                false,
+                is_selection_disclosure,
+                &wrapped_line,
+                origin,
+                text_align,
+                bounds.size.width,
+                line_height,
+            );
+
+            let highlight_quads = compute_highlight_quads(
+                &highlights,
+                col_range,
+                true,
+                &spans,
+                is_disclosure_cell,
+                disclosure_col,
+                false,
+                is_selection_disclosure,
+                &wrapped_line,
+                origin,
+                text_align,
+                bounds.size.width,
+                line_height,
+                theme,
+            );
+
+            let caret_bounds = if is_active_cell
+                && is_focused
+                && selection.is_empty()
+                && !is_dragging
+                && cursor_opacity > 0.01
+            {
                 let target_byte = raw_col_to_visible_byte_with_selection(
                     cursor_col,
                     &spans,
@@ -2380,7 +2909,25 @@ pub fn render_shaped_cell_canvas(
                 );
                 if let Some(caret_pos) = wrapped_line.position_for_index(target_byte, line_height) {
                     let (caret_w, caret_h) = calculate_caret_size(font_size, line_height);
-                    let caret_x = (origin.x + align_x + caret_pos.x).round();
+                    let row_idx = ((f32::from(caret_pos.y) / f32::from(line_height))
+                        .floor()
+                        .max(0.0) as usize)
+                        .min(wrapped_line.wrap_boundaries.len());
+                    let layout = &wrapped_line.unwrapped_layout;
+                    let row_start = if row_idx == 0 {
+                        0
+                    } else {
+                        let b = wrapped_line.wrap_boundaries[row_idx - 1];
+                        layout.runs[b.run_ix].glyphs[b.glyph_ix].index
+                    };
+                    let row_end = match wrapped_line.wrap_boundaries.get(row_idx) {
+                        Some(b) => layout.runs[b.run_ix].glyphs[b.glyph_ix].index,
+                        None => layout.len,
+                    };
+                    let row_w = layout.x_for_index(row_end) - layout.x_for_index(row_start);
+                    let row_origin_x =
+                        align_quad_origin_x(origin.x, bounds.size.width, row_w, text_align);
+                    let caret_x = (row_origin_x + caret_pos.x).round();
                     let caret_y = (origin.y + caret_pos.y + (line_height - caret_h) / 2.0).round();
                     Some(Bounds::new(
                         point(caret_x, caret_y),
@@ -2393,48 +2940,21 @@ pub fn render_shaped_cell_canvas(
                 None
             };
 
-            CellPrepaintState::Shaped {
-                wrapped_line: Box::new(wrapped_line),
+            ShapedTextPrepaintState::Shaped {
+                wrapped_line,
                 origin,
                 text_align,
+                clip_bounds: Some(bounds),
                 math_paints,
+                highlight_quads,
+                selection_quads,
+                selection_color,
                 caret_bounds,
                 cursor_color,
             }
         },
-        move |bounds, prepaint, window, cx| match prepaint {
-            CellPrepaintState::Shaped {
-                wrapped_line,
-                origin,
-                text_align,
-                math_paints,
-                caret_bounds,
-                cursor_color,
-            } => {
-                let _ = wrapped_line.paint_background(
-                    origin,
-                    line_height,
-                    text_align,
-                    Some(bounds),
-                    window,
-                    cx,
-                );
-                let _ =
-                    wrapped_line.paint(origin, line_height, text_align, Some(bounds), window, cx);
-                for math in math_paints {
-                    let _ = window.paint_svg(
-                        math.bounds,
-                        math.asset_path,
-                        TransformationMatrix::default(),
-                        math.color,
-                        cx,
-                    );
-                }
-                if let Some(caret) = caret_bounds {
-                    window.paint_quad(fill(caret, cursor_color));
-                }
-            }
-            CellPrepaintState::None => {}
+        move |_bounds, prepaint, window, cx| {
+            paint_shaped_text(prepaint, line_height, window, cx);
         },
     )
     .size_full()

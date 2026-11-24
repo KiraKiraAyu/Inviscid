@@ -156,6 +156,7 @@ impl Editor {
                 code_close,
             });
         }
+        let prev_revision = current.buffer_revision;
         let prev_parsed_lines = current.parsed_lines.clone();
         drop(current);
         let next_parsed_lines = if !same_buffer {
@@ -175,8 +176,45 @@ impl Editor {
         } else if theme_changed {
             prev_parsed_lines.update_theme(self.is_dark_theme)
         } else {
-            prev_parsed_lines
+            prev_parsed_lines.clone()
         };
+        if !same_buffer {
+            if incremental
+                && same_view
+                && !theme_changed
+                && let Some(patch) = &edit_patch
+            {
+                let mut dirty_old = patch.dirty_old_range();
+                if patch.is_code_interior {
+                    let close_old_end = patch.code_close.map_or(usize::MAX, |close| {
+                        ((close as isize - patch.line_delta()).max(dirty_old.end as isize) as usize)
+                            .saturating_add(1)
+                    });
+                    dirty_old.end = dirty_old.end.max(close_old_end);
+                }
+                let edit_old = patch.delta.start_line.index()
+                    ..(patch.delta.start_line.index() + patch.delta.old_line_count);
+                self.shaped_rows.borrow_mut().apply_edit(
+                    prev_revision,
+                    self.buffer.revision(),
+                    patch.line_delta(),
+                    dirty_old,
+                    edit_old,
+                    patch.structural,
+                    |old_line, new_line| {
+                        !patch.is_code_interior
+                            && prev_parsed_lines
+                                .cached_row_if_loaded(old_line)
+                                .zip(next_parsed_lines.cached_row_if_loaded(new_line))
+                                .is_some_and(|(old_row, new_row)| *old_row == *new_row)
+                    },
+                );
+            } else {
+                self.shaped_rows.borrow_mut().clear();
+            }
+        } else if !same_view || theme_changed {
+            self.shaped_rows.borrow_mut().clear();
+        }
         let reset_metrics = initial || (!same_buffer && !incremental);
         if !self.is_loading
             && let Some(session) = &self.background_session
@@ -300,6 +338,9 @@ impl Editor {
             cache.image_cache_version != image,
             cache.syntax_cache_version != syntax,
         ) {
+            self.shaped_rows
+                .borrow_mut()
+                .invalidate_range(range.clone());
             cache.metrics.invalidate_measured(range);
         }
         for range in dirty {

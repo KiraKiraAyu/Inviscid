@@ -506,6 +506,17 @@ impl ParsedLineStore {
         self.row(line)
     }
 
+    /// Reads an already-resident parsed row without triggering window scans.
+    pub(crate) fn cached_row_if_loaded(&self, line: usize) -> Option<ParsedRow> {
+        let store = self.windows.as_ref()?;
+        let guard = store.windows.borrow();
+        let window = guard.iter().find(|w| w.range.contains(&line))?;
+        Some(ParsedRow {
+            rows: window.rows.clone(),
+            index: line - window.range.start,
+        })
+    }
+
     pub fn range(&self, range: Range<usize>) -> ParsedSlice {
         self.read_range(range)
     }

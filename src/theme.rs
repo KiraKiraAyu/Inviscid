@@ -88,6 +88,20 @@ macro_rules! define_theme {
                 let rgb = self.bg_editor.to_rgb();
                 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b < 0.5
             }
+
+            /// Returns a deterministic hash of the theme name and all color tokens.
+            pub(crate) fn fingerprint(&self) -> u64 {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                self.name.hash(&mut hasher);
+                for (_, color) in self.color_tokens() {
+                    color.h.to_bits().hash(&mut hasher);
+                    color.s.to_bits().hash(&mut hasher);
+                    color.l.to_bits().hash(&mut hasher);
+                    color.a.to_bits().hash(&mut hasher);
+                }
+                hasher.finish()
+            }
         }
 
         impl ThemeDef {

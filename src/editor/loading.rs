@@ -146,12 +146,15 @@ impl Editor {
                         let max_len = cache.metrics.len();
                         if finishing && self.buffer.line_index().structure().has_unclosed_blocks() {
                             cache.metrics.invalidate_measured(0..max_len);
+                            self.shaped_rows.borrow_mut().clear();
                         } else {
+                            let mut shaped_rows = self.shaped_rows.borrow_mut();
                             for range in &changed_ranges {
                                 let start = range.start.min(max_len);
                                 let end = range.end.min(max_len);
                                 if start < end {
                                     cache.metrics.invalidate_measured(start..end);
+                                    shaped_rows.invalidate_range(start..end);
                                 }
                             }
                         }

@@ -395,7 +395,15 @@ pub fn render_live_line_content(
 
             let num_cells = cells.len();
 
-            let row_h = super::shaping::calculate_table_row_height_with_metrics(
+            let hovered_link_range = lrc.hovered_link.and_then(|hl| {
+                if hl.line == source_line {
+                    Some(hl.col_range)
+                } else {
+                    None
+                }
+            });
+
+            let row_h = super::shaping::calculate_table_row_height_cached(
                 cells,
                 *is_header,
                 lrc.is_disclosure_line,
@@ -406,15 +414,12 @@ pub fn render_live_line_content(
                 lrc.ime_preedit_cols,
                 lrc.font_size,
                 lrc.line_height,
+                Some(source_line),
+                lrc.buffer_revision,
+                theme,
+                hovered_link_range,
+                lrc.shaped_rows,
             );
-
-            let hovered_link_range = lrc.hovered_link.and_then(|hl| {
-                if hl.line == source_line {
-                    Some(hl.col_range)
-                } else {
-                    None
-                }
-            });
 
             let mut row_elem = div()
                 .relative()
@@ -470,6 +475,9 @@ pub fn render_live_line_content(
                 let is_active_cell = active_cell_idx == Some(c_idx);
                 let is_disclosure_cell = disclosure_cell_idx == Some(c_idx);
                 let tcx = super::shaping::TableCellRenderContext {
+                    source_line,
+                    cell_idx: c_idx,
+                    col_range: cell.col_range,
                     theme,
                     font_size,
                     line_height,
@@ -480,10 +488,16 @@ pub fn render_live_line_content(
                     disclosure_col: lrc.disclosure_col,
                     is_selection_disclosure: lrc.is_selection_disclosure,
                     ime_preedit_cols: lrc.ime_preedit_cols,
+                    selection,
+                    is_dragging: lrc.is_dragging,
+                    is_focused,
                     cursor_col: selection.head.col,
                     cursor_opacity: lrc.cursor_opacity,
                     align,
                     hovered_link_range,
+                    highlights: lrc.highlights,
+                    buffer_revision: lrc.buffer_revision,
+                    shaped_rows: lrc.shaped_rows,
                 };
                 row_elem = row_elem.child(render_table_cell(cell, is_last, tcx));
             }

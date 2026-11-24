@@ -5340,7 +5340,9 @@ fn test_nested_list_render_live_content() {
             is_syntactic_separator: false,
             text_system: None,
             highlights: &[],
+            buffer_revision: 0,
             painted_lines: None,
+            shaped_rows: None,
         };
 
         let element =
@@ -6664,4 +6666,357 @@ fn test_single_click_in_expanded_math_block_preserves_column_via_mouse_down(
             );
         });
     }
+}
+
+#[gpui::test]
+fn steady_and_blink_redraws_perform_zero_reshapes(cx: &mut gpui::TestAppContext) {
+    use super::shaping::preparation_metrics;
+    use crate::buffer::{Position, Selection, TextBuffer};
+    use gpui::size;
+
+    let doc = concat!(
+        "# Heading\n\n",
+        "Plain paragraph with **bold**, *italic*, `code`, and trailing words.\n\n",
+        "| col1 | col2 |\n",
+        "| --- | --- |\n",
+        "| one | two |\n",
+    );
+    let (editor, cx) = cx.add_window_view(|_, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(doc, None), cx)
+    });
+    cx.simulate_resize(size(px(800.0), px(500.0)));
+
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, _| {
+            ed.render_mode = super::RenderMode::LivePreview;
+            ed.has_explicit_render_mode = true;
+            ed.buffer_mut().set_selection(Selection {
+                anchor: Position::new(SourceLine::new(2), 0),
+                head: Position::new(SourceLine::new(2), 6),
+            });
+            ed.cursor_opacity = 1.0;
+            window.focus(&ed.focus_handle);
+        });
+        window.refresh();
+        window.draw(cx).clear();
+    });
+
+    cx.read(|cx| {
+        assert!(editor.read(cx).shaped_rows.borrow().len() > 0);
+    });
+
+    // 1. Steady redraw must hit ShapedRowCache without building new text runs.
+    cx.update(|window, cx| {
+        preparation_metrics::reset();
+        window.refresh();
+        window.draw(cx).clear();
+        assert_eq!(
+            preparation_metrics::calls(),
+            0,
+            "steady redraw must perform zero reshapes"
+        );
+    });
+
+    // 2. Cursor blink toggles must hit ShapedRowCache.
+    for opacity in [0.0f32, 1.0f32] {
+        cx.update(|window, cx| {
+            editor.update(cx, |ed, _| {
+                ed.cursor_opacity = opacity;
+            });
+            preparation_metrics::reset();
+            window.refresh();
+            window.draw(cx).clear();
+            assert_eq!(
+                preparation_metrics::calls(),
+                0,
+                "cursor blink redraw (opacity={opacity}) must perform zero reshapes"
+            );
+        });
+    }
+
+    // 3. Advancing selection head while keeping disclosure anchor fixed must hit ShapedRowCache.
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, _| {
+            ed.buffer_mut().set_selection(Selection {
+                anchor: Position::new(SourceLine::new(2), 0),
+                head: Position::new(SourceLine::new(2), 10),
+            });
+        });
+        preparation_metrics::reset();
+        window.refresh();
+        window.draw(cx).clear();
+        assert_eq!(
+            preparation_metrics::calls(),
+            0,
+            "selection quad redraw with unchanged disclosure must perform zero reshapes"
+        );
+    });
+
+    // 4. Changing disclosure column on line 2 must reshape only line 2, not other lines or table cells.
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, _| {
+            ed.buffer_mut().set_selection(Selection {
+                anchor: Position::new(SourceLine::new(2), 2),
+                head: Position::new(SourceLine::new(2), 10),
+            });
+        });
+        preparation_metrics::reset();
+        window.refresh();
+        window.draw(cx).clear();
+        let calls = preparation_metrics::calls();
+        assert!(
+            calls <= 2,
+            "horizontal disclosure change on line 2 reshaped {calls} times instead of <= 2"
+        );
+    });
+}
+
+#[gpui::test]
+fn single_line_edit_evicts_only_edited_line_from_shaped_row_cache(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, TextBuffer};
+    use gpui::size;
+
+    let doc = "Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
+    let (editor, cx) = cx.add_window_view(|_, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str(doc, None), cx)
+    });
+    cx.simulate_resize(size(px(800.0), px(400.0)));
+
+    let rev0 = cx.update(|window, cx| {
+        editor.update(cx, |ed, _| {
+            ed.render_mode = super::RenderMode::LivePreview;
+            ed.has_explicit_render_mode = true;
+            ed.buffer_mut()
+                .set_cursor(Position::new(SourceLine::new(2), 4));
+            window.focus(&ed.focus_handle);
+        });
+        window.refresh();
+        window.draw(cx).clear();
+        let ed = editor.read(cx);
+        let rev0 = ed.buffer().revision();
+        for line in 0..6 {
+            assert!(
+                ed.shaped_rows.borrow().contains_line(line, rev0),
+                "line {line} must be cached after initial draw"
+            );
+        }
+        rev0
+    });
+
+    cx.update(|_window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.perform_edit(cx, |ed| {
+                ed.buffer_mut().insert_text("!");
+            });
+            ed.ensure_layout_cache();
+            let rev1 = ed.buffer().revision();
+            assert_ne!(rev1, rev0);
+            assert!(
+                !ed.shaped_rows.borrow().contains_line(2, rev1),
+                "edited line 2 must be evicted from ShapedRowCache"
+            );
+            for preserved in [0usize, 1, 3, 4, 5] {
+                assert!(
+                    ed.shaped_rows.borrow().contains_line(preserved, rev1),
+                    "unaffected line {preserved} must stay cached across revision bump"
+                );
+            }
+        });
+    });
+}
+
+#[gpui::test]
+fn table_cell_selection_and_highlight_quads_clip_to_cell_col_range(cx: &mut gpui::TestAppContext) {
+    use super::shaping::{
+        LineShapingContext, build_line_runs, compute_highlight_quads, compute_selection_quads,
+    };
+    use super::{HighlightKind, LineHighlight};
+    use crate::buffer::{Position, Selection, TextBuffer};
+    use crate::markdown::{BlockKind, MarkdownScanner};
+    use crate::theme::DEFAULT_THEME;
+    use gpui::{TextAlign, TextStyle, point};
+
+    let lines = vec![
+        "| alpha | beta gamma | omega |".to_string(),
+        "| --- | --- | --- |".to_string(),
+    ];
+    let parsed = MarkdownScanner::scan_document(&lines);
+    let cells = match &parsed[0].kind {
+        BlockKind::Table { cells, .. } => cells.clone(),
+        other => panic!("expected table row, got {other:?}"),
+    };
+    assert_eq!(cells.len(), 3);
+
+    let (_editor, cx) = cx.add_window_view(|_, cx| {
+        super::Editor::new_with_buffer(TextBuffer::from_str("", None), cx)
+    });
+
+    cx.update(|window, _| {
+        let font_size = px(15.0);
+        let line_height = px(24.0);
+        let align_bounds_width = px(240.0);
+        let origin = point(px(20.0), px(10.0));
+        let style = TextStyle::default();
+        let scx = LineShapingContext::new(&DEFAULT_THEME, None, false, false, 0);
+
+        let wrapped_cells: Vec<_> = cells
+            .iter()
+            .map(|cell| {
+                let (line_str, runs) = build_line_runs(&cell.spans, scx, None, &style);
+                window
+                    .text_system()
+                    .shape_text(
+                        line_str.into(),
+                        font_size,
+                        &runs,
+                        Some(align_bounds_width),
+                        None,
+                    )
+                    .unwrap()
+                    .into_iter()
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+
+        // Selection spanning from inside cell 0 ("pha") into cell 1 ("beta"), skipping cell 2.
+        let sel = Selection {
+            anchor: Position::new(SourceLine::new(0), cells[0].col_range.0 + 2),
+            head: Position::new(SourceLine::new(0), cells[1].col_range.0 + 4),
+        };
+
+        let q0 = compute_selection_quads(
+            sel,
+            SourceLine::new(0),
+            cells[0].col_range.1,
+            cells[0].col_range,
+            true,
+            &cells[0].spans,
+            false,
+            0,
+            false,
+            false,
+            &wrapped_cells[0],
+            origin,
+            TextAlign::Left,
+            align_bounds_width,
+            line_height,
+        );
+        assert_eq!(q0.len(), 1);
+        assert!(q0[0].origin.x > origin.x);
+        assert!(q0[0].right() <= origin.x + wrapped_cells[0].width() + px(0.5));
+
+        let q1 = compute_selection_quads(
+            sel,
+            SourceLine::new(0),
+            cells[1].col_range.1,
+            cells[1].col_range,
+            true,
+            &cells[1].spans,
+            false,
+            0,
+            false,
+            false,
+            &wrapped_cells[1],
+            origin,
+            TextAlign::Left,
+            align_bounds_width,
+            line_height,
+        );
+        assert_eq!(q1.len(), 1);
+        assert!((f32::from(q1[0].origin.x) - f32::from(origin.x)).abs() < 0.5);
+        assert!(q1[0].right() < origin.x + wrapped_cells[1].width() - px(1.0));
+
+        let q2 = compute_selection_quads(
+            sel,
+            SourceLine::new(0),
+            cells[2].col_range.1,
+            cells[2].col_range,
+            true,
+            &cells[2].spans,
+            false,
+            0,
+            false,
+            false,
+            &wrapped_cells[2],
+            origin,
+            TextAlign::Left,
+            align_bounds_width,
+            line_height,
+        );
+        assert!(q2.is_empty());
+
+        let highlights = vec![
+            LineHighlight {
+                cols: (cells[0].col_range.0 + 1)..(cells[1].col_range.0 + 2),
+                continues: false,
+                kind: HighlightKind::ActiveSearchMatch,
+            },
+            LineHighlight {
+                cols: (cells[1].col_range.0 + 5)..cells[1].col_range.1,
+                continues: false,
+                kind: HighlightKind::SearchMatch,
+            },
+        ];
+
+        let h0 = compute_highlight_quads(
+            &highlights,
+            cells[0].col_range,
+            true,
+            &cells[0].spans,
+            false,
+            0,
+            false,
+            false,
+            &wrapped_cells[0],
+            origin,
+            TextAlign::Left,
+            align_bounds_width,
+            line_height,
+            &DEFAULT_THEME,
+        );
+        assert_eq!(h0.len(), 1);
+        assert_eq!(h0[0].1, DEFAULT_THEME.search_match_active);
+        assert!(h0[0].0.origin.x > origin.x);
+
+        let h1 = compute_highlight_quads(
+            &highlights,
+            cells[1].col_range,
+            true,
+            &cells[1].spans,
+            false,
+            0,
+            false,
+            false,
+            &wrapped_cells[1],
+            origin,
+            TextAlign::Left,
+            align_bounds_width,
+            line_height,
+            &DEFAULT_THEME,
+        );
+        assert_eq!(h1.len(), 2);
+        assert_eq!(h1[0].1, DEFAULT_THEME.search_match_active);
+        assert_eq!(h1[1].1, DEFAULT_THEME.search_match);
+        assert!((f32::from(h1[0].0.origin.x) - f32::from(origin.x)).abs() < 0.5);
+        assert!(h1[1].0.origin.x > h1[0].0.right());
+
+        let h2 = compute_highlight_quads(
+            &highlights,
+            cells[2].col_range,
+            true,
+            &cells[2].spans,
+            false,
+            0,
+            false,
+            false,
+            &wrapped_cells[2],
+            origin,
+            TextAlign::Left,
+            align_bounds_width,
+            line_height,
+            &DEFAULT_THEME,
+        );
+        assert!(h2.is_empty());
+    });
 }

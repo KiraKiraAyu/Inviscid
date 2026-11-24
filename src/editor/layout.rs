@@ -808,6 +808,7 @@ impl Editor {
     pub(crate) fn invalidate_layout_cache(&mut self) {
         *self.layout_cache.borrow_mut() = Arc::new(DocumentLayoutCache::default());
         self.painted_lines.borrow_mut().clear();
+        self.shaped_rows.borrow_mut().clear();
     }
 
     #[inline]

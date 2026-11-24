@@ -385,7 +385,9 @@ impl Element for EditorElement {
                             is_syntactic_separator: layout.separator(line_idx),
                             text_system: editor.text_system.as_ref(),
                             highlights: &highlights,
+                            buffer_revision: editor.buffer.revision(),
                             painted_lines: Some(&editor.painted_lines),
+                            shaped_rows: Some(&editor.shaped_rows),
                         };
 
                         let line_el = render_line_element(
