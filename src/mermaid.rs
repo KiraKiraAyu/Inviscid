@@ -171,6 +171,7 @@ fn source_from_lines(lines: &[String]) -> Option<String> {
     Some(source)
 }
 
+#[cfg(test)]
 pub(crate) fn get_cached_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
     get_cached_mermaid_lines_for_theme(lines, false)
 }
@@ -195,6 +196,7 @@ pub(crate) fn is_mermaid_cached_for_theme(lines: &[String], is_dark: bool) -> bo
         .is_some_and(|cache| cache.lock().entries.contains_key(&(source, is_dark)))
 }
 
+#[cfg(test)]
 pub(crate) fn prepare_mermaid_lines(lines: &[String]) -> Option<MermaidSvg> {
     prepare_mermaid_lines_for_theme(lines, false)
 }
