@@ -2688,29 +2688,6 @@ fn test_line_ending_detection_and_preservation() {
     assert_eq!(crlf_buf.line_ending(), LineEnding::CrLf);
     assert_eq!(crlf_buf.to_string_content(), "line 1\r\nline 2");
     assert_eq!(crlf_buf.to_string_normalized(), "line 1\nline 2");
-
-    let mut switched_buf = crlf_buf.clone();
-    switched_buf.set_line_ending(LineEnding::Lf);
-    assert_eq!(switched_buf.to_string_content(), "line 1\nline 2");
-}
-
-#[test]
-fn test_chunks_with_line_ending_streaming() {
-    let empty_buf = TextBuffer::new();
-    let empty_chunks: Vec<String> = empty_buf.chunks_with_line_ending().collect();
-    assert!(empty_chunks.is_empty());
-
-    let single_line = TextBuffer::from_str("single line", None);
-    let single_chunks: Vec<String> = single_line.chunks_with_line_ending().collect();
-    assert_eq!(single_chunks, vec!["single line"]);
-
-    let lf_buf = TextBuffer::from_str("line 1\nline 2\nline 3", None);
-    let lf_chunks: Vec<String> = lf_buf.chunks_with_line_ending().collect();
-    assert_eq!(lf_chunks, vec!["line 1", "\n", "line 2", "\n", "line 3"]);
-
-    let crlf_buf = TextBuffer::from_str("a\r\nb", None);
-    let crlf_chunks: Vec<String> = crlf_buf.chunks_with_line_ending().collect();
-    assert_eq!(crlf_chunks, vec!["a", "\r\n", "b"]);
 }
 
 #[test]
@@ -2769,10 +2746,17 @@ fn test_replace_range_multi_line_and_undo() {
 #[test]
 fn test_replace_all_matches_atomic_undo() {
     use crate::search::{SearchOptions, SearchQuery};
+    use std::sync::atomic::AtomicBool;
 
     let mut buf = TextBuffer::from_str("aaa bbb aaa ccc aaa", None);
     let query = SearchQuery::new("aaa", SearchOptions::default()).unwrap();
-    let count = buf.replace_all_matches(&query, "xxx");
+    let cancel = AtomicBool::new(false);
+    let prepared = buf
+        .replace_all_snapshot()
+        .compute_replace(&query, "xxx", &cancel)
+        .unwrap()
+        .unwrap();
+    let count = buf.apply_prepared_replace(prepared);
     assert_eq!(count, 3);
     assert_eq!(buf.to_string_content(), "xxx bbb xxx ccc xxx");
 
@@ -2788,6 +2772,7 @@ fn test_replace_all_matches_atomic_undo() {
 #[test]
 fn test_replace_all_matches_clearing_document_and_zero_materialization() {
     use crate::search::{SearchOptions, SearchQuery};
+    use std::sync::atomic::AtomicBool;
 
     let mut content = String::new();
     for i in 0..5_000 {
@@ -2800,7 +2785,13 @@ fn test_replace_all_matches_clearing_document_and_zero_materialization() {
     let mut buf = TextBuffer::from_str(&content, None);
     let materializations_before = buf.full_line_materializations();
     let query = SearchQuery::new("needle", SearchOptions::default()).unwrap();
-    let count = buf.replace_all_matches(&query, "REPLACED");
+    let cancel = AtomicBool::new(false);
+    let prepared = buf
+        .replace_all_snapshot()
+        .compute_replace(&query, "REPLACED", &cancel)
+        .unwrap()
+        .unwrap();
+    let count = buf.apply_prepared_replace(prepared);
     assert_eq!(count, 2);
     assert_eq!(buf.full_line_materializations(), materializations_before);
     assert_eq!(
@@ -2815,7 +2806,12 @@ fn test_replace_all_matches_clearing_document_and_zero_materialization() {
     // Clearing the entire buffer via replace_all normalizes to empty sentinel lines cleanly.
     let mut clear_buf = TextBuffer::from_str("gone\ngone", None);
     let clear_query = SearchQuery::new("gone", SearchOptions::default()).unwrap();
-    assert_eq!(clear_buf.replace_all_matches(&clear_query, ""), 2);
+    let prepared_clear = clear_buf
+        .replace_all_snapshot()
+        .compute_replace(&clear_query, "", &cancel)
+        .unwrap()
+        .unwrap();
+    assert_eq!(clear_buf.apply_prepared_replace(prepared_clear), 2);
     assert!(clear_buf.is_empty());
     clear_buf.undo();
     assert_eq!(clear_buf.to_string_content(), "gone\ngone");

@@ -12,14 +12,6 @@ const PDF_RENDER_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_CAPTURE_BYTES: usize = 256 * 1024;
 
-/// Locates a Chromium-based browser executable capable of headless `--print-to-pdf`.
-pub fn find_pdf_browser_executable() -> Option<PathBuf> {
-    let override_path = std::env::var_os(BROWSER_OVERRIDE_ENV).map(PathBuf::from);
-    find_pdf_browser_executable_with_override(override_path.as_deref())
-        .ok()
-        .flatten()
-}
-
 /// Locates a Chromium-based browser executable, returning an explicit error when
 /// an explicit override path is invalid, missing, or not executable.
 pub(crate) fn find_pdf_browser_executable_with_override(

@@ -305,14 +305,6 @@ impl TextBuffer {
         );
     }
 
-    /// Indents the selected lines with smart tab size detection:
-    /// - Inside code blocks: auto-detects 2 or 4 spaces (default 4)
-    /// - Outside code blocks: always 4 spaces
-    pub fn indent_lines(&mut self) {
-        let tab_size = self.detect_smart_tab_size();
-        self.indent_lines_with_tab_size(tab_size);
-    }
-
     /// Indents the selected lines (or the cursor line):
     /// list items nest to their parent's content column, other
     /// lines step by `tab_size` spaces. A multi-line selection shifts
@@ -393,14 +385,6 @@ impl TextBuffer {
         );
     }
 
-    /// Outdents the selected lines with smart tab size detection:
-    /// - Inside code blocks: auto-detects 2 or 4 spaces (default 4)
-    /// - Outside code blocks: always 4 spaces
-    pub fn outdent_lines(&mut self) {
-        let tab_size = self.detect_smart_tab_size();
-        self.outdent_lines_with_tab_size(tab_size);
-    }
-
     /// Outdents the selected lines (or the cursor line):
     /// list items step out to the nearest enclosing list level,
     /// other lines remove up to `tab_size` leading spaces.
@@ -448,47 +432,6 @@ impl TextBuffer {
             replacement,
             selection,
         );
-    }
-
-    /// Detects the appropriate tab size based on context:
-    /// - Inside code blocks: analyzes existing indentation (2 or 4 spaces)
-    /// - Outside code blocks: always returns 4
-    fn detect_smart_tab_size(&self) -> usize {
-        let cursor_line = self.selection.head.line;
-        let Some((start, end_opt)) = self.line_index().fence_range(cursor_line) else {
-            return 4;
-        };
-
-        let detect_start = start.index() + 1;
-        let detect_end = end_opt
-            .map_or(self.line_count(), |end| end.index())
-            .min(detect_start + 50);
-        let mut indent_2_count = 0;
-        let mut indent_4_count = 0;
-        for line_idx in detect_start..detect_end {
-            let content = self
-                .line_text(crate::buffer::SourceLine::new(line_idx))
-                .unwrap_or_default();
-            let spaces = crate::markdown::leading_indent_len(&content);
-            if spaces == 0 || content.trim().is_empty() {
-                continue;
-            }
-            if spaces % 2 == 0 && spaces % 4 != 0 {
-                indent_2_count += 1;
-            } else if spaces % 4 == 0 && spaces > 0 {
-                indent_4_count += 1;
-            } else if spaces % 2 == 0 {
-                indent_2_count += 1;
-            }
-        }
-        if indent_2_count + indent_4_count >= 3 {
-            return if indent_2_count > indent_4_count {
-                2
-            } else {
-                4
-            };
-        }
-        4
     }
 
     pub fn toggle_comment(&mut self) {
@@ -551,22 +494,6 @@ impl TextBuffer {
 
     pub fn replace_range(&mut self, (start, end): (Position, Position), text: &str) -> Position {
         self.replace_range_in_rope((start, end), text)
-    }
-
-    pub fn replace_all_matches(
-        &mut self,
-        query: &crate::search::SearchQuery,
-        replacement: &str,
-    ) -> usize {
-        if self.is_empty_doc {
-            return 0;
-        }
-        let snapshot = self.replace_all_snapshot();
-        let cancel = std::sync::atomic::AtomicBool::new(false);
-        let Some(Some(prepared)) = snapshot.compute_replace(query, replacement, &cancel) else {
-            return 0;
-        };
-        self.apply_prepared_replace(prepared)
     }
 
     pub fn insert_newline(&mut self) {

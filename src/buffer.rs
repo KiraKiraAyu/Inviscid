@@ -421,11 +421,6 @@ impl TextBuffer {
     }
 
     #[inline]
-    pub fn set_line_ending(&mut self, line_ending: LineEnding) {
-        self.line_ending = line_ending;
-    }
-
-    #[inline]
     pub fn last_saved_mtime(&self) -> Option<SystemTime> {
         self.last_saved_mtime
     }
@@ -498,36 +493,6 @@ impl TextBuffer {
     /// A cheap, immutable copy-on-write snapshot for background readers.
     pub fn text_snapshot(&self) -> Rope {
         self.rope.clone()
-    }
-
-    /// Yields chunks for each line and line ending lazily without materializing the document.
-    pub fn chunks_with_line_ending(&self) -> impl Iterator<Item = String> + '_ {
-        let ending = self.line_ending.as_str();
-        let mut lines = (!self.is_empty())
-            .then(|| self.rope.lines())
-            .into_iter()
-            .flatten();
-        let mut pending: Option<String> = None;
-        std::iter::from_fn(move || {
-            if let Some(next) = pending.take() {
-                return Some(next);
-            }
-            for line in lines.by_ref() {
-                let mut text = line.to_string();
-                if text.ends_with('\n') {
-                    text.pop();
-                    if text.is_empty() {
-                        return Some(ending.to_owned());
-                    }
-                    pending = Some(ending.to_owned());
-                    return Some(text);
-                }
-                if !text.is_empty() {
-                    return Some(text);
-                }
-            }
-            None
-        })
     }
 
     pub fn prepared_content_hash(&self) -> Option<u64> {

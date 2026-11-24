@@ -13,7 +13,6 @@ use crate::buffer::LineSource;
 use crate::theme::Theme;
 
 pub use html::render_markdown_to_html;
-pub use pdf::find_pdf_browser_executable;
 
 /// Options controlling HTML and PDF export.
 #[derive(Clone, Copy, Debug)]

@@ -260,12 +260,6 @@ impl VersionReceiver {
         self.last_seen_version
     }
 
-    /// Checks whether a newer version has been published without updating `last_seen_version`.
-    #[inline]
-    pub fn has_changed(&self) -> bool {
-        self.state.version.load(Ordering::Acquire) != self.last_seen_version
-    }
-
     /// Checks whether the notifier has closed.
     #[inline]
     pub fn is_closed(&self) -> bool {
