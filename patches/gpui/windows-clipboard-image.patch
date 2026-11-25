@@ -1,0 +1,335 @@
+diff --git a/src/platform/windows/clipboard.rs b/src/platform/windows/clipboard.rs
+index 90d97a8..2aad0f9 100644
+--- a/src/platform/windows/clipboard.rs
++++ b/src/platform/windows/clipboard.rs
+@@ -1,18 +1,16 @@
+ use std::sync::LazyLock;
+ 
+ use anyhow::Result;
+-use collections::{FxHashMap, FxHashSet};
+ use itertools::Itertools;
+ use windows::Win32::{
+     Foundation::{HANDLE, HGLOBAL},
+     System::{
+         DataExchange::{
+-            CloseClipboard, CountClipboardFormats, EmptyClipboard, EnumClipboardFormats,
+-            GetClipboardData, GetClipboardFormatNameW, IsClipboardFormatAvailable, OpenClipboard,
+-            RegisterClipboardFormatW, SetClipboardData,
++            CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
++            OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+         },
+         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
+-        Ole::{CF_HDROP, CF_UNICODETEXT},
++        Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT},
+     },
+     UI::Shell::{DragQueryFileW, HDROP},
+ };
+@@ -37,53 +35,39 @@ static CLIPBOARD_PNG_FORMAT: LazyLock<u32> =
+ static CLIPBOARD_JPG_FORMAT: LazyLock<u32> =
+     LazyLock::new(|| register_clipboard_format(windows::core::w!("JFIF")));
+ 
+-// Helper maps and sets
+-static FORMATS_MAP: LazyLock<FxHashMap<u32, ClipboardFormatType>> = LazyLock::new(|| {
+-    let mut formats_map = FxHashMap::default();
+-    formats_map.insert(CF_UNICODETEXT.0 as u32, ClipboardFormatType::Text);
+-    formats_map.insert(*CLIPBOARD_PNG_FORMAT, ClipboardFormatType::Image);
+-    formats_map.insert(*CLIPBOARD_GIF_FORMAT, ClipboardFormatType::Image);
+-    formats_map.insert(*CLIPBOARD_JPG_FORMAT, ClipboardFormatType::Image);
+-    formats_map.insert(*CLIPBOARD_SVG_FORMAT, ClipboardFormatType::Image);
+-    formats_map.insert(CF_HDROP.0 as u32, ClipboardFormatType::Files);
+-    formats_map
+-});
+-static FORMATS_SET: LazyLock<FxHashSet<u32>> = LazyLock::new(|| {
+-    let mut formats_map = FxHashSet::default();
+-    formats_map.insert(CF_UNICODETEXT.0 as u32);
+-    formats_map.insert(*CLIPBOARD_PNG_FORMAT);
+-    formats_map.insert(*CLIPBOARD_GIF_FORMAT);
+-    formats_map.insert(*CLIPBOARD_JPG_FORMAT);
+-    formats_map.insert(*CLIPBOARD_SVG_FORMAT);
+-    formats_map.insert(CF_HDROP.0 as u32);
+-    formats_map
+-});
+-static IMAGE_FORMATS_MAP: LazyLock<FxHashMap<u32, ImageFormat>> = LazyLock::new(|| {
+-    let mut formats_map = FxHashMap::default();
+-    formats_map.insert(*CLIPBOARD_PNG_FORMAT, ImageFormat::Png);
+-    formats_map.insert(*CLIPBOARD_GIF_FORMAT, ImageFormat::Gif);
+-    formats_map.insert(*CLIPBOARD_JPG_FORMAT, ImageFormat::Jpeg);
+-    formats_map.insert(*CLIPBOARD_SVG_FORMAT, ImageFormat::Svg);
+-    formats_map
+-});
+-
+-#[derive(Debug, Clone, Copy)]
+-enum ClipboardFormatType {
+-    Text,
+-    Image,
+-    Files,
+-}
++const CLIPBOARD_FILES_METADATA: &str = "gpui:file_paths";
+ 
+ pub(crate) fn write_to_clipboard(item: ClipboardItem) {
+     with_clipboard(|| write_to_clipboard_inner(item));
+ }
+ 
++fn is_format_available(format: u32) -> bool {
++    unsafe { IsClipboardFormatAvailable(format).is_ok() }
++}
++
+ pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
+     with_clipboard(|| {
+-        with_best_match_format(|item_format| match format_to_type(item_format) {
+-            ClipboardFormatType::Text => read_string_from_clipboard(),
+-            ClipboardFormatType::Image => read_image_from_clipboard(item_format),
+-            ClipboardFormatType::Files => read_files_from_clipboard(),
++        let entry = if is_format_available(CF_HDROP.0 as u32) {
++            read_files_from_clipboard()
++        } else if is_format_available(CF_UNICODETEXT.0 as u32) {
++            read_string_from_clipboard()
++        } else if is_format_available(*CLIPBOARD_PNG_FORMAT) {
++            read_image_for_type(*CLIPBOARD_PNG_FORMAT, ImageFormat::Png)
++        } else if is_format_available(*CLIPBOARD_GIF_FORMAT) {
++            read_image_for_type(*CLIPBOARD_GIF_FORMAT, ImageFormat::Gif)
++        } else if is_format_available(*CLIPBOARD_JPG_FORMAT) {
++            read_image_for_type(*CLIPBOARD_JPG_FORMAT, ImageFormat::Jpeg)
++        } else if is_format_available(*CLIPBOARD_SVG_FORMAT) {
++            read_image_for_type(*CLIPBOARD_SVG_FORMAT, ImageFormat::Svg)
++        } else if is_format_available(CF_DIBV5.0 as u32) {
++            read_dib_from_clipboard(CF_DIBV5.0 as u32)
++        } else if is_format_available(CF_DIB.0 as u32) {
++            read_dib_from_clipboard(CF_DIB.0 as u32)
++        } else {
++            None
++        }?;
++        Some(ClipboardItem {
++            entries: vec![entry],
+         })
+     })
+     .flatten()
+@@ -141,11 +125,6 @@ fn register_clipboard_format(format: PCWSTR) -> u32 {
+     ret
+ }
+ 
+-#[inline]
+-fn format_to_type(item_format: u32) -> &'static ClipboardFormatType {
+-    FORMATS_MAP.get(&item_format).unwrap()
+-}
+-
+ // Currently, we only write the first item.
+ fn write_to_clipboard_inner(item: ClipboardItem) -> Result<()> {
+     unsafe {
+@@ -239,47 +218,6 @@ fn convert_image_to_png_format(bytes: &[u8], image_format: ImageFormat) -> Resul
+     Ok(output_buf)
+ }
+ 
+-// Here, we enumerate all formats on the clipboard and find the first one that we can process.
+-// The reason we don't use `GetPriorityClipboardFormat` is that it sometimes returns the
+-// wrong format.
+-// For instance, when copying a JPEG image from  Microsoft Word, there may be several formats
+-// on the clipboard: Jpeg, Png, Svg.
+-// If we use `GetPriorityClipboardFormat`, it will return Svg, which is not what we want.
+-fn with_best_match_format<F>(f: F) -> Option<ClipboardItem>
+-where
+-    F: Fn(u32) -> Option<ClipboardEntry>,
+-{
+-    let count = unsafe { CountClipboardFormats() };
+-    let mut clipboard_format = 0;
+-    for _ in 0..count {
+-        clipboard_format = unsafe { EnumClipboardFormats(clipboard_format) };
+-        let Some(item_format) = FORMATS_SET.get(&clipboard_format) else {
+-            continue;
+-        };
+-        if let Some(entry) = f(*item_format) {
+-            return Some(ClipboardItem {
+-                entries: vec![entry],
+-            });
+-        }
+-    }
+-    // log the formats that we don't support yet.
+-    {
+-        clipboard_format = 0;
+-        for _ in 0..count {
+-            clipboard_format = unsafe { EnumClipboardFormats(clipboard_format) };
+-            let mut buffer = [0u16; 64];
+-            unsafe { GetClipboardFormatNameW(clipboard_format, &mut buffer) };
+-            let format_name = String::from_utf16_lossy(&buffer);
+-            log::warn!(
+-                "Try to paste with unsupported clipboard format: {}, {}.",
+-                clipboard_format,
+-                format_name
+-            );
+-        }
+-    }
+-    None
+-}
+-
+ fn read_string_from_clipboard() -> Option<ClipboardEntry> {
+     let text = with_clipboard_data(CF_UNICODETEXT.0 as u32, |data_ptr, _| {
+         let pcwstr = PCWSTR(data_ptr as *const u16);
+@@ -326,16 +264,6 @@ fn read_metadata_from_clipboard() -> Option<String> {
+     })
+ }
+ 
+-fn read_image_from_clipboard(format: u32) -> Option<ClipboardEntry> {
+-    let image_format = format_number_to_image_format(format)?;
+-    read_image_for_type(format, *image_format)
+-}
+-
+-#[inline]
+-fn format_number_to_image_format(format_number: u32) -> Option<&'static ImageFormat> {
+-    IMAGE_FORMATS_MAP.get(&format_number)
+-}
+-
+ fn read_image_for_type(format_number: u32, format: ImageFormat) -> Option<ClipboardEntry> {
+     let (bytes, id) = with_clipboard_data(format_number, |data_ptr, size| {
+         let bytes = unsafe { std::slice::from_raw_parts(data_ptr as *mut u8 as _, size).to_vec() };
+@@ -345,18 +273,90 @@ fn read_image_for_type(format_number: u32, format: ImageFormat) -> Option<Clipbo
+     Some(ClipboardEntry::Image(Image { format, bytes, id }))
+ }
+ 
++fn read_dib_from_clipboard(format_number: u32) -> Option<ClipboardEntry> {
++    let png_bytes = with_clipboard_data(format_number, |data_ptr, size| {
++        let dib = unsafe { std::slice::from_raw_parts(data_ptr as *const u8, size) };
++        dib_bytes_to_png(dib)
++    })??;
++    let id = hash(&png_bytes);
++    Some(ClipboardEntry::Image(Image {
++        format: ImageFormat::Png,
++        bytes: png_bytes,
++        id,
++    }))
++}
++
++fn dib_bytes_to_png(dib: &[u8]) -> Option<Vec<u8>> {
++    if dib.len() < 40 {
++        return None;
++    }
++    let header_size = u32::from_le_bytes(dib[0..4].try_into().ok()?) as usize;
++    if header_size < 40 || header_size > dib.len() {
++        return None;
++    }
++    let bit_count = u16::from_le_bytes(dib[14..16].try_into().ok()?);
++    let compression = u32::from_le_bytes(dib[16..20].try_into().ok()?);
++    let clr_used = u32::from_le_bytes(dib[32..36].try_into().ok()?) as usize;
++
++    let color_table_bytes = if bit_count > 0 && bit_count <= 8 {
++        let entries = if clr_used == 0 {
++            1usize << bit_count
++        } else {
++            clr_used
++        };
++        entries.checked_mul(4)?
++    } else if header_size == 40 && compression == 3 {
++        12
++    } else if header_size == 40 && compression == 6 {
++        16
++    } else {
++        clr_used.checked_mul(4)?
++    };
++
++    let bf_size = 14u32.checked_add(u32::try_from(dib.len()).ok()?)?;
++    let pixel_offset = header_size.checked_add(color_table_bytes)?;
++    let bf_off_bits = 14u32.checked_add(u32::try_from(pixel_offset).ok()?)?;
++
++    let mut bmp = Vec::with_capacity(14 + dib.len());
++    bmp.extend_from_slice(b"BM");
++    bmp.extend_from_slice(&bf_size.to_le_bytes());
++    bmp.extend_from_slice(&0u32.to_le_bytes());
++    bmp.extend_from_slice(&bf_off_bits.to_le_bytes());
++    bmp.extend_from_slice(dib);
++
++    let mut img = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp).ok()?;
++    if bit_count == 32 {
++        let mut rgba = img.to_rgba8();
++        if rgba.pixels().all(|pixel| pixel.0[3] == 0) {
++            for pixel in rgba.pixels_mut() {
++                pixel.0[3] = 255;
++            }
++        }
++        img = image::DynamicImage::ImageRgba8(rgba);
++    }
++
++    let mut png = Vec::new();
++    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
++        .ok()?;
++    Some(png)
++}
++
+ fn read_files_from_clipboard() -> Option<ClipboardEntry> {
+-    let text = with_clipboard_data(CF_HDROP.0 as u32, |data_ptr, _size| {
++    let paths = with_clipboard_data(CF_HDROP.0 as u32, |data_ptr, _size| {
+         let hdrop = HDROP(data_ptr);
+-        let mut filenames = String::new();
++        let mut filenames = Vec::new();
+         with_file_names(hdrop, |file_name| {
+-            filenames.push_str(&file_name);
++            filenames.push(file_name);
+         });
+         filenames
+     })?;
++    if paths.is_empty() {
++        return None;
++    }
+     Some(ClipboardEntry::String(ClipboardString {
+-        text,
+-        metadata: None,
++        text: paths.join("
++"),
++        metadata: Some(CLIPBOARD_FILES_METADATA.to_string()),
+     }))
+ }
+ 
+@@ -386,3 +386,55 @@ impl From<ImageFormat> for image::ImageFormat {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod clipboard_image_tests {
++    use super::*;
++
++    fn make_dib_v3(width: i32, height: i32, bit_count: u16, pixels: &[u8]) -> Vec<u8> {
++        let mut dib = Vec::with_capacity(40 + pixels.len());
++        dib.extend_from_slice(&40u32.to_le_bytes()); // biSize
++        dib.extend_from_slice(&width.to_le_bytes());
++        dib.extend_from_slice(&height.to_le_bytes());
++        dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
++        dib.extend_from_slice(&bit_count.to_le_bytes());
++        dib.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
++        dib.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
++        dib.extend_from_slice(&0i32.to_le_bytes());
++        dib.extend_from_slice(&0i32.to_le_bytes());
++        dib.extend_from_slice(&0u32.to_le_bytes());
++        dib.extend_from_slice(&0u32.to_le_bytes());
++        dib.extend_from_slice(pixels);
++        dib
++    }
++
++    #[test]
++    fn dib_24bit_converts_to_png() {
++        let dib = make_dib_v3(1, 1, 24, &[10, 20, 30, 0]);
++        let png = dib_bytes_to_png(&dib).expect("24-bit DIB should decode");
++        let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
++            .expect("output should be valid PNG")
++            .to_rgba8();
++        assert_eq!(decoded.dimensions(), (1, 1));
++        assert_eq!(decoded.get_pixel(0, 0).0, [30, 20, 10, 255]);
++    }
++
++    #[test]
++    fn dib_32bit_all_zero_alpha_becomes_opaque() {
++        let dib = make_dib_v3(1, 1, 32, &[40, 50, 60, 0]);
++        let png = dib_bytes_to_png(&dib).expect("32-bit DIB should decode");
++        let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
++            .expect("output should be valid PNG")
++            .to_rgba8();
++        assert_eq!(decoded.dimensions(), (1, 1));
++        assert_eq!(decoded.get_pixel(0, 0).0, [60, 50, 40, 255]);
++    }
++
++    #[test]
++    fn truncated_dib_returns_none() {
++        assert!(dib_bytes_to_png(&[1, 2, 3]).is_none());
++        let mut bad_header = vec![0u8; 40];
++        bad_header[0..4].copy_from_slice(&100u32.to_le_bytes());
++        assert!(dib_bytes_to_png(&bad_header).is_none());
++    }
++}

@@ -123,6 +123,7 @@ cargo test --offline --lib ime_ -j 1 --config profile.dev.debug=0 -- --test-thre
 - `windows-text-baseline.patch`: Anchors DirectWrite line-box ascent/descent to the requested font (`src/platform/windows/direct_write.rs`) and stabilizes mixed-font line baseline offsets (`src/text_system/line.rs`) so fallback glyphs do not shift existing text during editing.
 - `windows-atlas-deallocate.patch`: Calls `etagere::BucketedAtlasAllocator::deallocate` inside `DirectXAtlas::remove` (`src/platform/windows/directx_atlas.rs`) to reclaim evicted image tiles while other tiles remain live, and clears `rendered_frame.scene` + calls `refresh()` when `Window::drop_image` runs outside `Window::draw` (`src/window.rs`) so non-dirty `present()` / `reuse_paint` never dereferences a dropped texture slot.
 - `image-cache-prepaint.patch`: Propagates `window.with_image_cache(...)` across `prepaint` in both `ImageCacheElement::prepaint` (`src/elements/image_cache.rs`) and `Div::prepaint` (`src/elements/div.rs`) so virtualized elements calling `prepaint_as_root` during `prepaint` (such as `EditorElement`) route image loads through the scoped `ImageCache` rather than falling back to `App::loading_assets`.
+- `windows-clipboard-image.patch`: Adds `CF_DIB`/`CF_DIBV5` bitmap decoding (transcoded to PNG, preserving opaque 32-bit zero-alpha captures), deterministic clipboard format priority, and newline-separated `CF_HDROP` path extraction (`gpui:file_paths` metadata) in `src/platform/windows/clipboard.rs`.
 
 ## 7. Maintenance & Upstream Strategy
 
