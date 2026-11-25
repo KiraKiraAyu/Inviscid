@@ -99,11 +99,6 @@ impl OutlinePanel {
         self.loading_state == LoadingIndicatorState::Visible
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_loading_pending(&self) -> bool {
-        self.loading_state == LoadingIndicatorState::Pending
-    }
-
     fn clear_loading(&mut self) {
         self.loading_state = LoadingIndicatorState::Idle;
         self.loading_delay_task = None;

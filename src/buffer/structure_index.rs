@@ -320,14 +320,6 @@ impl StructureIndex {
         entries
     }
 
-    #[cfg(test)]
-    pub(crate) fn heading_lines(&self) -> Vec<SourceLine> {
-        self.heading_entries_in_range(0..self.heading_count())
-            .into_iter()
-            .map(|(line, _)| line)
-            .collect()
-    }
-
     /// Splices `old` with `new` and returns whether headings or their line numbers may have changed.
     pub(crate) fn splice(
         &mut self,
@@ -699,7 +691,6 @@ pub(in crate::buffer) mod tests {
     pub(in crate::buffer) fn assert_matches(index: &StructureIndex, lines: &[String]) {
         let oracle = VecIndex::build(lines);
         assert_eq!(index.heading_count(), oracle.headings.len(), "{lines:?}");
-        assert_eq!(index.heading_lines(), oracle.headings, "{lines:?}");
         assert_eq!(
             index.heading_entries_in_range(0..index.heading_count()),
             oracle
@@ -802,16 +793,16 @@ pub(in crate::buffer) mod tests {
             let replacement: Vec<String> = (0..added)
                 .map(|_| fragments[random() % fragments.len()].into())
                 .collect();
-            let before_headings = index.heading_lines();
+            let before_headings = index.heading_entries_in_range(0..index.heading_count());
             lines.splice(start..start + removed, replacement);
             let outline_affected =
                 index.splice(start..start + removed, &lines, start..start + added);
             assert_matches(&index, &lines);
-            if index.heading_lines() != before_headings {
+            let after_headings = index.heading_entries_in_range(0..index.heading_count());
+            if after_headings != before_headings {
                 assert!(
                     outline_affected,
-                    "headings changed from {before_headings:?} to {:?} without outline_affected",
-                    index.heading_lines()
+                    "headings changed from {before_headings:?} to {after_headings:?} without outline_affected"
                 );
             }
         }

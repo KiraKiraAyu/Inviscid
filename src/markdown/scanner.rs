@@ -655,16 +655,6 @@ impl MarkdownScanner {
         (range, rows)
     }
 
-    #[cfg(test)]
-    pub(crate) fn scan_snapshot_window(
-        source: &crate::buffer::SourceSnapshot,
-        index: &crate::buffer::StructureIndex,
-        range: std::ops::Range<usize>,
-    ) -> (std::ops::Range<usize>, Vec<ParsedLine>) {
-        let (range, rows, _) = window::scan(source, index, range, ScanOptions::default());
-        (range, rows)
-    }
-
     pub(crate) fn scan_snapshot_window_with_options(
         source: &crate::buffer::SourceSnapshot,
         index: &crate::buffer::StructureIndex,

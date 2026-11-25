@@ -234,7 +234,12 @@ mod tests {
         let buffer = TextBuffer::from_str(&doc, None);
         let source = buffer.source_snapshot();
         let index = buffer.line_index().structure_snapshot();
-        let (range, rows) = MarkdownScanner::scan_snapshot_window(&source, &index, 5..12);
+        let (range, rows, _) = MarkdownScanner::scan_snapshot_window_with_options(
+            &source,
+            &index,
+            5..12,
+            crate::markdown::ScanOptions::default(),
+        );
 
         let mut resources = Resource::collect(range.start, &rows, None, Some((&source, &index)));
         assert_eq!(resources.len(), 1);

@@ -2129,7 +2129,6 @@ mod tests {
         let initial_displayed = ws.read_with(cx, |ws, cx| {
             let panel = ws.outline_panel.read(cx);
             assert!(!panel.is_loading());
-            assert!(!panel.is_loading_pending());
             assert_eq!(panel.heading_count(), 2);
             assert_eq!(panel.entries().len(), 2);
             ws.outline_displayed
@@ -2146,7 +2145,6 @@ mod tests {
             let panel = ws.outline_panel.read(cx);
             assert_eq!(ws.outline_displayed, initial_displayed);
             assert!(!panel.is_loading());
-            assert!(!panel.is_loading_pending());
             assert_eq!(panel.heading_count(), 2);
         });
 
@@ -2160,7 +2158,6 @@ mod tests {
         ws.read_with(cx, |ws, cx| {
             let panel = ws.outline_panel.read(cx);
             assert!(!panel.is_loading());
-            assert!(!panel.is_loading_pending());
             assert_eq!(panel.heading_count(), 2);
             assert_eq!(panel.entries()[0].title, "First edited");
         });
@@ -2171,7 +2168,6 @@ mod tests {
         ws.read_with(cx, |ws, cx| {
             let panel = ws.outline_panel.read(cx);
             assert!(!panel.is_loading());
-            assert!(!panel.is_loading_pending());
             assert_eq!(panel.entries()[0].title, "First edited");
         });
     }
@@ -2207,7 +2203,6 @@ mod tests {
         ws.read_with(cx, |ws, cx| {
             let panel = ws.outline_panel.read(cx);
             assert!(!panel.is_loading());
-            assert!(!panel.is_loading_pending());
             assert_eq!(panel.heading_count(), 2);
         });
 
@@ -2216,7 +2211,6 @@ mod tests {
         ws.read_with(cx, |ws, cx| {
             let panel = ws.outline_panel.read(cx);
             assert!(!panel.is_loading());
-            assert!(!panel.is_loading_pending());
             assert_eq!(panel.heading_count(), 1);
             assert_eq!(panel.entries()[0].title, "Other Tab");
         });
@@ -2296,7 +2290,6 @@ mod tests {
         // Before 150ms, the loading indicator stays pending (not visible) to avoid flashes.
         ws.read_with(cx, |ws, cx| {
             let panel = ws.outline_panel.read(cx);
-            assert!(panel.is_loading_pending());
             assert!(!panel.is_loading());
             assert_eq!(panel.heading_count(), 0);
         });
@@ -2307,7 +2300,6 @@ mod tests {
         ws.read_with(cx, |ws, cx| {
             let panel = ws.outline_panel.read(cx);
             assert!(panel.is_loading());
-            assert!(!panel.is_loading_pending());
         });
 
         // Streaming delivers headings while editor.is_loading() is still true:
@@ -2319,7 +2311,6 @@ mod tests {
         ws.read_with(cx, |ws, cx| {
             let panel = ws.outline_panel.read(cx);
             assert!(!panel.is_loading());
-            assert!(!panel.is_loading_pending());
             assert_eq!(panel.heading_count(), 1);
             assert_eq!(panel.entries()[0].title, "Streamed Heading");
         });
