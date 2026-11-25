@@ -32,36 +32,68 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
+fn starts_with_ignore_ascii_case(haystack: &str, prefix: &str) -> bool {
+    haystack
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn resolve_local_candidate(raw: &str, doc_path: Option<&Path>) -> PathBuf {
+    let p = PathBuf::from(raw);
+    if p.is_absolute() || p.has_root() {
+        p
+    } else if let Some(doc) = doc_path {
+        let base_dir = doc.parent().unwrap_or(Path::new(""));
+        base_dir.join(p)
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(p)
+    } else {
+        p
+    }
+}
+
 /// Resolves a local `file://` URL or local relative path against an optional document file path,
 /// performing percent-decoding on encoded file paths.
 pub fn parse_file_url_path(url: &str, doc_path: Option<&Path>) -> Option<PathBuf> {
     let clean = url.trim();
-    if clean.starts_with("http://") || clean.starts_with("https://") {
+    if starts_with_ignore_ascii_case(clean, "http://")
+        || starts_with_ignore_ascii_case(clean, "https://")
+    {
         return None;
     }
 
-    let p = if let Some(stripped) = clean.strip_prefix("file://") {
+    if let Some(stripped) = clean
+        .get(..7)
+        .filter(|head| head.eq_ignore_ascii_case("file://"))
+        .map(|_| &clean[7..])
+    {
         let decoded = percent_decode(stripped);
         let path_str = decoded.trim_start_matches('/');
         #[cfg(target_os = "windows")]
-        let path = PathBuf::from(path_str);
+        let p = PathBuf::from(path_str);
         #[cfg(not(target_os = "windows"))]
-        let path = PathBuf::from(format!("/{}", path_str));
-        path
-    } else {
-        PathBuf::from(clean)
-    };
-
-    if p.is_absolute() {
-        Some(p)
-    } else if let Some(doc) = doc_path {
-        let base_dir = doc.parent().unwrap_or(Path::new(""));
-        Some(base_dir.join(p))
-    } else if let Ok(cwd) = std::env::current_dir() {
-        Some(cwd.join(p))
-    } else {
-        Some(p)
+        let p = PathBuf::from(format!("/{path_str}"));
+        return Some(if p.is_absolute() || p.has_root() {
+            p
+        } else if let Some(doc) = doc_path {
+            let base_dir = doc.parent().unwrap_or(Path::new(""));
+            base_dir.join(p)
+        } else if let Ok(cwd) = std::env::current_dir() {
+            cwd.join(p)
+        } else {
+            p
+        });
     }
+
+    let direct = resolve_local_candidate(clean, doc_path);
+    if !direct.exists() && clean.contains('%') {
+        let decoded = percent_decode(clean);
+        let decoded_path = resolve_local_candidate(&decoded, doc_path);
+        if decoded_path.exists() {
+            return Some(decoded_path);
+        }
+    }
+    Some(direct)
 }
 
 /// Returns the `(width, height)` dimensions of an image URL or local file.
@@ -104,4 +136,37 @@ pub(crate) fn image_size_key(url: &str, doc_path: Option<&Path>) -> String {
         || url.trim().to_owned(),
         |path| path.to_string_lossy().into_owned(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_file_url_path_handles_percent_encoded_relative_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("note.md");
+        let assets = dir.path().join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let img = assets.join("my photo (1).png");
+        std::fs::write(&img, b"png").unwrap();
+
+        let resolved = parse_file_url_path("assets/my%20photo%20%281%29.png", Some(&doc)).unwrap();
+        assert_eq!(resolved, img);
+    }
+
+    #[test]
+    fn parse_file_url_path_preserves_rooted_and_drive_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("note.md");
+
+        let rooted = parse_file_url_path("/assets/a.png", Some(&doc)).unwrap();
+        assert_eq!(rooted, PathBuf::from("/assets/a.png"));
+
+        #[cfg(target_os = "windows")]
+        {
+            let drive = parse_file_url_path("D:/assets/a.png", Some(&doc)).unwrap();
+            assert_eq!(drive, PathBuf::from("D:/assets/a.png"));
+        }
+    }
 }
