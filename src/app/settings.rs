@@ -35,6 +35,10 @@ pub(crate) enum ActiveInput {
         input: Entity<TextInput>,
         _subscriptions: [Subscription; 2],
     },
+    EditingAssetDir {
+        input: Entity<TextInput>,
+        _subscriptions: [Subscription; 2],
+    },
 }
 
 pub struct SettingsWindow {
@@ -234,6 +238,11 @@ impl Render for SettingsWindow {
                             this.cancel_editing_grammar_url(cx);
                         }
                     }
+                    Some(ActiveInput::EditingAssetDir { .. }) => {
+                        if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                            this.cancel_editing_asset_dir(cx);
+                        }
+                    }
                     None => {
                         if event.keystroke.key.eq_ignore_ascii_case("escape") {
                             window.remove_window();
@@ -354,6 +363,42 @@ mod tests {
             );
             assert_eq!(s.content_scroll.target_scroll_top, px(100.0));
             assert!(s.content_scroll.is_animating());
+        });
+    }
+
+    #[gpui::test]
+    fn test_settings_asset_dir_edit_commit_cancel_and_reset(cx: &mut gpui::TestAppContext) {
+        init_test_globals(cx);
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            let mut s = SettingsWindow::new(cx);
+            s.set_category(SettingsCategory::Editor, cx);
+            s
+        });
+
+        cx.update(|window, cx| {
+            settings.update(cx, |s, cx| {
+                assert_eq!(cx.global::<AppConfig>().asset_dir, "assets");
+
+                s.start_editing_asset_dir(window, cx);
+                assert!(s.is_editing_asset_dir());
+
+                s.cancel_editing_asset_dir(cx);
+                assert!(!s.is_editing_asset_dir());
+                assert_eq!(cx.global::<AppConfig>().asset_dir, "assets");
+
+                s.start_editing_asset_dir(window, cx);
+                let input = s.asset_dir_input().unwrap().clone();
+                input.update(cx, |ti, cx| {
+                    ti.set_text("D:\\media\\images\\", cx);
+                });
+                s.commit_asset_dir(cx);
+                assert!(!s.is_editing_asset_dir());
+                assert_eq!(cx.global::<AppConfig>().asset_dir, "D:\\media\\images");
+
+                s.reset_asset_dir(cx);
+                assert_eq!(cx.global::<AppConfig>().asset_dir, "assets");
+            });
         });
     }
 }
