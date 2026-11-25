@@ -1,11 +1,18 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::Duration;
+
 use gpui::prelude::*;
 use gpui::*;
 
-use crate::buffer::SourceLine;
-use crate::markdown::{OutlineItem, collect_outline};
+use crate::buffer::{LineSource, SourceLine, SourceSnapshot, StructureIndex};
+use crate::markdown::{OutlineItem, collect_outline_from_source, parse_heading_line};
 use crate::theme::ThemeManager;
 use crate::ui::dock_panel::{self, LIST_VERTICAL_PADDING};
 use crate::ui::tokens::FontSize;
+
+const LOADING_INDICATOR_DELAY: Duration = Duration::from_millis(150);
+const MAX_CACHED_VISIBLE_ROWS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutlinePanelEvent {
@@ -14,10 +21,32 @@ pub enum OutlinePanelEvent {
 
 impl EventEmitter<OutlinePanelEvent> for OutlinePanel {}
 
+struct VirtualOutline {
+    source: SourceSnapshot,
+    index: StructureIndex,
+    heading_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CachedHeadingRow {
+    level: u8,
+    title: String,
+    source_line: SourceLine,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadingIndicatorState {
+    Idle,
+    Pending,
+    Visible,
+}
+
 pub struct OutlinePanel {
     focus_handle: FocusHandle,
-    entries: Vec<OutlineItem>,
-    is_loading: bool,
+    document: Option<VirtualOutline>,
+    row_cache: RefCell<HashMap<usize, CachedHeadingRow>>,
+    loading_state: LoadingIndicatorState,
+    loading_delay_task: Option<Task<()>>,
     active_line: Option<SourceLine>,
     editor_focus_handle: Option<FocusHandle>,
     scroll_handle: UniformListScrollHandle,
@@ -34,8 +63,10 @@ impl OutlinePanel {
     pub fn new(focus_handle: FocusHandle) -> Self {
         Self {
             focus_handle,
-            entries: Vec::new(),
-            is_loading: false,
+            document: None,
+            row_cache: RefCell::new(HashMap::new()),
+            loading_state: LoadingIndicatorState::Idle,
+            loading_delay_task: None,
             active_line: None,
             editor_focus_handle: None,
             scroll_handle: UniformListScrollHandle::default(),
@@ -49,8 +80,15 @@ impl OutlinePanel {
         (&mut self.outline_scroll, handle)
     }
 
-    pub fn entries(&self) -> &[OutlineItem] {
-        &self.entries
+    pub fn heading_count(&self) -> usize {
+        self.document.as_ref().map_or(0, |doc| doc.heading_count)
+    }
+
+    pub fn entries(&self) -> Vec<OutlineItem> {
+        self.document
+            .as_ref()
+            .map(|doc| collect_outline_from_source(&doc.source))
+            .unwrap_or_default()
     }
 
     pub fn active_line(&self) -> Option<SourceLine> {
@@ -58,21 +96,65 @@ impl OutlinePanel {
     }
 
     pub fn is_loading(&self) -> bool {
-        self.is_loading
+        self.loading_state == LoadingIndicatorState::Visible
     }
 
-    pub(crate) fn set_loading(&mut self, cx: &mut Context<Self>) {
-        if self.is_loading
-            && self.entries.is_empty()
+    #[cfg(test)]
+    pub(crate) fn is_loading_pending(&self) -> bool {
+        self.loading_state == LoadingIndicatorState::Pending
+    }
+
+    fn clear_loading(&mut self) {
+        self.loading_state = LoadingIndicatorState::Idle;
+        self.loading_delay_task = None;
+    }
+
+    fn begin_deferred_loading(&mut self, cx: &mut Context<Self>) {
+        if self.loading_state != LoadingIndicatorState::Idle {
+            return;
+        }
+        self.loading_state = LoadingIndicatorState::Pending;
+        self.loading_delay_task = Some(cx.spawn(async move |panel, cx| {
+            cx.background_executor().timer(LOADING_INDICATOR_DELAY).await;
+            let _ = panel.update(cx, |panel, cx| {
+                if panel.loading_state == LoadingIndicatorState::Pending {
+                    panel.loading_state = LoadingIndicatorState::Visible;
+                    panel.loading_delay_task = None;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    pub(crate) fn set_loading_pending(&mut self, cx: &mut Context<Self>) {
+        if self.document.is_none()
+            && self.loading_state != LoadingIndicatorState::Idle
             && self.active_line.is_none()
             && self.editor_focus_handle.is_none()
         {
             return;
         }
-        self.is_loading = true;
-        self.entries.clear();
+        self.document = None;
+        self.row_cache.borrow_mut().clear();
         self.active_line = None;
         self.editor_focus_handle = None;
+        self.begin_deferred_loading(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
+        if self.document.is_none()
+            && self.loading_state == LoadingIndicatorState::Idle
+            && self.active_line.is_none()
+            && self.editor_focus_handle.is_none()
+        {
+            return;
+        }
+        self.document = None;
+        self.row_cache.borrow_mut().clear();
+        self.active_line = None;
+        self.editor_focus_handle = None;
+        self.clear_loading();
         cx.notify();
     }
 
@@ -83,50 +165,105 @@ impl OutlinePanel {
         editor_focus_handle: Option<FocusHandle>,
         cx: &mut Context<Self>,
     ) {
-        let entries = collect_outline(lines);
-        self.set_entries(entries, active_line, editor_focus_handle, cx);
+        self.set_snapshot(
+            lines.source_snapshot(),
+            false,
+            active_line,
+            editor_focus_handle,
+            cx,
+        );
     }
 
-    pub(crate) fn set_entries(
+    pub(crate) fn set_snapshot(
         &mut self,
-        entries: Vec<OutlineItem>,
+        source: SourceSnapshot,
+        is_document_loading: bool,
         active_line: Option<SourceLine>,
         editor_focus_handle: Option<FocusHandle>,
         cx: &mut Context<Self>,
     ) {
-        let active_heading = Self::heading_at_or_before(&entries, active_line);
-        if !self.is_loading
-            && self.entries == entries
-            && self.active_line == active_heading
-            && self.editor_focus_handle == editor_focus_handle
-        {
-            return;
-        }
-        self.is_loading = false;
-        self.entries = entries;
+        let index = source.structure_index();
+        let heading_count = index.heading_count();
+        let active_heading = active_line.and_then(|line| index.heading_at_or_before(line));
+        self.document = Some(VirtualOutline {
+            source,
+            index,
+            heading_count,
+        });
+        self.row_cache.borrow_mut().clear();
         self.active_line = active_heading;
         self.editor_focus_handle = editor_focus_handle;
+        if heading_count == 0 && is_document_loading {
+            self.begin_deferred_loading(cx);
+        } else {
+            self.clear_loading();
+        }
         cx.notify();
     }
 
     pub fn set_active_line(&mut self, line: Option<SourceLine>, cx: &mut Context<Self>) {
-        let active_heading = Self::heading_at_or_before(&self.entries, line);
+        let active_heading = line.and_then(|line| {
+            self.document
+                .as_ref()?
+                .index
+                .heading_at_or_before(line)
+        });
         if self.active_line != active_heading {
             self.active_line = active_heading;
             cx.notify();
         }
     }
 
-    fn heading_at_or_before(
-        entries: &[OutlineItem],
-        line: Option<SourceLine>,
-    ) -> Option<SourceLine> {
-        let line = line?;
-        let index = entries.partition_point(|entry| entry.source_line <= line);
-        index
-            .checked_sub(1)
-            .and_then(|index| entries.get(index))
-            .map(|entry| entry.source_line)
+    fn rows_for_range(&self, range: std::ops::Range<usize>) -> Vec<(usize, CachedHeadingRow)> {
+        let Some(doc) = self.document.as_ref() else {
+            return Vec::new();
+        };
+        let start = range.start.min(doc.heading_count);
+        let end = range.end.min(doc.heading_count);
+        if start >= end {
+            return Vec::new();
+        }
+
+        let needs_populate = {
+            let cache = self.row_cache.borrow();
+            (start..end).any(|ordinal| !cache.contains_key(&ordinal))
+        };
+        if needs_populate {
+            let mut cache = self.row_cache.borrow_mut();
+            if cache.len() + (end - start) > MAX_CACHED_VISIBLE_ROWS {
+                cache.clear();
+            }
+            for (offset, (source_line, quote_prefix)) in
+                doc.index.heading_entries_in_range(start..end).into_iter().enumerate()
+            {
+                let ordinal = start + offset;
+                if cache.contains_key(&ordinal) {
+                    continue;
+                }
+                let raw_line = doc.source.source_line(source_line);
+                let (level, title) = parse_heading_line(&raw_line, quote_prefix).unwrap_or_else(|| {
+                    let fallback = raw_line
+                        .get(quote_prefix..)
+                        .unwrap_or(raw_line.as_ref())
+                        .trim()
+                        .to_string();
+                    (1, fallback)
+                });
+                cache.insert(
+                    ordinal,
+                    CachedHeadingRow {
+                        level,
+                        title,
+                        source_line,
+                    },
+                );
+            }
+        }
+
+        let cache = self.row_cache.borrow();
+        (start..end)
+            .filter_map(|ordinal| cache.get(&ordinal).cloned().map(|row| (ordinal, row)))
+            .collect()
     }
 
     fn select(&mut self, line: SourceLine, cx: &mut Context<Self>) {
@@ -138,56 +275,54 @@ impl OutlinePanel {
         crate::ui::SmoothScrollController::wrap(
             uniform_list(
                 "outline_entries",
-                self.entries.len(),
+                self.heading_count(),
                 move |range, _window, cx| {
                     let Some(panel) = panel.upgrade() else {
                         return Vec::new();
                     };
                     let theme = cx.global::<ThemeManager>().theme();
                     let this = panel.read(cx);
-                    range
-                        .filter_map(|index| {
-                            let entry = this.entries.get(index)?.clone();
-                            let selected = this
-                                .active_line
-                                .is_some_and(|line| line == entry.source_line);
+                    let editor_focus_handle = this.editor_focus_handle.clone();
+                    let active_line = this.active_line;
+                    this.rows_for_range(range)
+                        .into_iter()
+                        .map(|(index, entry)| {
+                            let selected = active_line.is_some_and(|line| line == entry.source_line);
                             let indent = px(10.0 + (entry.level.saturating_sub(1) as f32 * 14.0));
                             let panel_click = panel.downgrade();
-                            let editor_focus_handle = this.editor_focus_handle.clone();
+                            let editor_focus_handle = editor_focus_handle.clone();
                             let label = if entry.title.is_empty() {
                                 "Untitled heading".to_string()
                             } else {
-                                entry.title.clone()
+                                entry.title
                             };
-                            Some(
-                                dock_panel::row(indent, theme)
-                                    .id(("outline_entry", index))
-                                    .on_click(move |_, window, cx| {
-                                        if let Some(focus_handle) = &editor_focus_handle {
-                                            window.focus(focus_handle);
-                                        }
-                                        if let Some(panel) = panel_click.upgrade() {
-                                            panel.update(cx, |this, cx| {
-                                                this.select(entry.source_line, cx);
-                                            });
-                                        }
-                                    })
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_size(FontSize::SM)
-                                            .text_color(if selected {
-                                                theme.text_accent
-                                            } else {
-                                                theme.text_secondary
-                                            })
-                                            .flex_1()
-                                            .child(label),
-                                    )
-                                    .into_any_element(),
-                            )
+                            dock_panel::row(indent, theme)
+                                .id(("outline_entry", index))
+                                .on_click(move |_, window, cx| {
+                                    if let Some(focus_handle) = &editor_focus_handle {
+                                        window.focus(focus_handle);
+                                    }
+                                    if let Some(panel) = panel_click.upgrade() {
+                                        panel.update(cx, |this, cx| {
+                                            this.select(entry.source_line, cx);
+                                        });
+                                    }
+                                })
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_size(FontSize::SM)
+                                        .text_color(if selected {
+                                            theme.text_accent
+                                        } else {
+                                            theme.text_secondary
+                                        })
+                                        .flex_1()
+                                        .child(label),
+                                )
+                                .into_any_element()
                         })
                         .collect()
                 },
@@ -212,12 +347,18 @@ impl Render for OutlinePanel {
             Self::scroll_access,
         );
         let theme = cx.global::<ThemeManager>().theme().clone();
-        let entries = if self.is_loading {
-            dock_panel::loading_state("outline_loading_metaball", &theme).into_any_element()
-        } else if self.entries.is_empty() {
-            dock_panel::empty_state("No headings", &theme).into_any_element()
-        } else {
+        let entries = if self.heading_count() > 0 {
             self.render_entries(cx).into_any_element()
+        } else {
+            match self.loading_state {
+                LoadingIndicatorState::Visible => {
+                    dock_panel::loading_state("outline_loading_metaball", &theme).into_any_element()
+                }
+                LoadingIndicatorState::Pending => div().w_full().h_full().into_any_element(),
+                LoadingIndicatorState::Idle => {
+                    dock_panel::empty_state("No headings", &theme).into_any_element()
+                }
+            }
         };
 
         div()
