@@ -50,3 +50,18 @@ pub fn empty_state(message: &'static str, theme: &Theme) -> impl IntoElement {
                 .child(message),
         )
 }
+
+pub fn loading_state(id: impl Into<ElementId>, theme: &Theme) -> impl IntoElement {
+    div()
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .child(crate::ui::render_loading_metaball_animation(
+            id,
+            theme.text_accent,
+            px(32.0),
+        ))
+}
