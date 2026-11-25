@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::app::menu::ActiveMenu;
 use crate::buffer::Position;
+use crate::config::WorkspaceState;
 use crate::editor::RenderMode;
 use gpui::Action;
 use gpui::actions;
@@ -85,3 +86,17 @@ pub struct OpenWorkspaceMatch {
     pub path: PathBuf,
     pub position: Position,
 }
+
+/// Opens a saved workspace state in a new window.
+///
+/// Carries runtime workspace state and is never bound to a key.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = inviscid, no_json)]
+pub struct OpenWorkspaceInNewWindow(pub WorkspaceState);
+
+/// Removes a single workspace directory from the recent-workspaces list.
+///
+/// Carries runtime path data and is never bound to a key.
+#[derive(Clone, PartialEq, Eq, Debug, Action)]
+#[action(namespace = inviscid, no_json)]
+pub struct RemoveRecentWorkspace(pub PathBuf);

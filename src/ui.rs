@@ -1,6 +1,7 @@
 mod context_menu;
 pub(crate) mod dock_panel;
 pub(crate) mod icon;
+mod icon_button;
 mod keystroke;
 pub(crate) mod loading;
 mod menu_item;
@@ -13,11 +14,13 @@ mod switch;
 pub(crate) mod text_input;
 pub(crate) mod title_bar;
 pub mod tokens;
+mod tooltip;
 mod window_controls;
 
 pub(crate) use context_menu::ContextMenuBuilder;
 pub use context_menu::{calculate_menu_height, compute_context_menu_coords};
 pub use icon::{Icon, IconName, IconSize};
+pub use icon_button::IconButton;
 pub use keystroke::format_keystroke_for_display;
 pub(crate) use keystroke::{context as key_context, keystroke_from_gpui};
 pub use loading::render_loading_metaball_animation;
@@ -37,3 +40,4 @@ pub use text_input::TextInput;
 pub(crate) use text_input::{TextInputBg, TextInputEvent};
 pub(crate) use title_bar::WindowTitleBar;
 pub use tokens::{ControlHeight, FontSize, LineHeight, Radius, Spacing, SwitchMetrics};
+pub use tooltip::Tooltip;

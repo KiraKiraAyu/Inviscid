@@ -117,6 +117,23 @@ pub fn clear_recent_workspaces(cx: &mut App) {
     }
 }
 
+/// Removes a single workspace directory from the recent-workspaces list without closing any window.
+///
+/// Unlike workspace-mutating commands, this does not call `sync_workspace_to_global`, so removing
+/// the currently open workspace will not immediately re-add it.
+pub fn remove_recent_workspace(root_dir: &Path, cx: &mut App) {
+    let mut config_to_save = None;
+    cx.update_global::<AppConfig, _>(|config, _cx| {
+        if config.remove_recent_workspace(root_dir) {
+            config_to_save = Some(config.clone());
+        }
+    });
+    if let Some(cfg) = config_to_save {
+        cfg.persist_session_async(cx.background_executor());
+        cx.refresh_windows();
+    }
+}
+
 pub fn next_tab(app: &mut InviscidWindow, window: &mut Window, cx: &mut Context<InviscidWindow>) {
     app.close_menu(cx);
     app.workspace().update(cx, |ws, cx| {
@@ -489,6 +506,31 @@ pub fn new_window(cx: &mut App) {
                 .workspace()
                 .read(cx)
                 .focus_active_editor(window, cx);
+            window.activate_window();
+            app
+        },
+    )
+    .ok();
+}
+
+pub fn open_workspace_in_new_window(state: crate::config::WorkspaceState, cx: &mut App) {
+    let (display_id, window_bounds) = cx
+        .try_global::<AppConfig>()
+        .cloned()
+        .map(|cfg| cfg.resolve_new_window_bounds(cx))
+        .unwrap_or_else(|| WindowLayoutState::default_window_bounds(cx));
+
+    cx.open_window(
+        main_window_options(display_id, window_bounds),
+        |window, cx| {
+            let app = cx.new(|cx| InviscidWindow::new_from_workspace(&state, cx));
+            let workspace = app.read(cx).workspace().clone();
+            let wb = WindowLayoutState::from_window(window, cx);
+            if sync_workspace_state_to_config(&workspace, wb, cx) {
+                cx.global::<AppConfig>()
+                    .persist_session_async(cx.background_executor());
+            }
+            workspace.read(cx).focus_active_editor(window, cx);
             window.activate_window();
             app
         },

@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::app::actions::{
     CloseTab, CloseWorkspace, ExportHtml, ExportPdf, FindInDocument, FindInWorkspace, FindNext,
-    FindPrevious, NewTab, NewWindow, OpenFile, OpenFolder, OpenMenu, Quit, ReplaceInDocument,
-    SaveFile, SaveFileAs, display_keystroke_for,
+    FindPrevious, NewTab, NewWindow, OpenFile, OpenFolder, OpenMenu, OpenWorkspaceInNewWindow,
+    Quit, RemoveRecentWorkspace, ReplaceInDocument, SaveFile, SaveFileAs, display_keystroke_for,
 };
 use crate::config::{AppConfig, WorkspaceState};
 use crate::editor::RenderMode;
@@ -12,7 +12,9 @@ use crate::editor::actions::{
     CopyAction, CutAction, PasteAction, RedoAction, SelectAll, UndoAction,
 };
 use crate::theme::ThemeManager;
-use crate::ui::{ControlHeight, FontSize, Icon, IconName, IconSize, MenuItem, Radius, Spacing};
+use crate::ui::{
+    ControlHeight, FontSize, Icon, IconButton, IconName, IconSize, MenuItem, Radius, Spacing,
+};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
@@ -540,6 +542,7 @@ pub fn render_workspace_dropdown(
     if valid_recent.is_empty() {
         items.push(
             div()
+                .debug_selector(|| "recent_ws_empty".into())
                 .px(Spacing::MDS)
                 .py(Spacing::SMD)
                 .text_size(FontSize::SM)
@@ -576,19 +579,25 @@ pub fn render_workspace_dropdown(
                 .or(ws_state.open_files.first())
                 .and_then(|p| p.to_str());
 
+            let Some(root_dir) = ws_state.root_dir.clone() else {
+                continue;
+            };
             let is_active =
                 current_root_dir.is_some() && ws_state.root_dir.as_deref() == current_root_dir;
-            let ws_clone = ws_state.clone();
+            let ws_for_select = ws_state.clone();
+            let ws_for_item = ws_state.clone();
             let on_select = on_select.clone();
 
             items.push(
                 render_workspace_item(
-                    &format!("recent_ws_{}", i),
+                    i,
+                    &root_dir,
+                    ws_for_item,
                     &ws_name,
                     subtitle,
                     is_active,
                     move |_, window, cx| {
-                        on_select(&ws_clone, window, cx);
+                        on_select(&ws_for_select, window, cx);
                     },
                     cx,
                 )
@@ -630,11 +639,14 @@ pub fn render_workspace_dropdown(
         .into_any_element(),
     );
 
-    render_menu_dropdown(260.0, items, cx)
+    render_menu_dropdown(300.0, items, cx)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_workspace_item(
-    id_str: &str,
+    index: usize,
+    root_dir: &Path,
+    ws_state: WorkspaceState,
     title: &str,
     subtitle: Option<&str>,
     is_active: bool,
@@ -644,9 +656,17 @@ fn render_workspace_item(
     let theme = cx.global::<ThemeManager>().theme();
     let title_str = title.to_string();
     let subtitle_str = subtitle.map(|s| s.to_string());
+    let root_key = root_dir.to_string_lossy();
+    let row_id = SharedString::from(format!("recent_ws_{root_key}"));
+    let open_btn_id = SharedString::from(format!("recent_ws_open_new_window_{root_key}"));
+    let remove_btn_id = SharedString::from(format!("recent_ws_remove_{root_key}"));
+    let group_name = SharedString::from(format!("recent_ws_row_{index}"));
+    let root_dir_for_remove = root_dir.to_path_buf();
 
     div()
-        .id(ElementId::Name(id_str.to_string().into()))
+        .id(ElementId::Name(row_id))
+        .debug_selector(move || format!("recent_ws_{index}"))
+        .group(group_name.clone())
         .w_full()
         .px(Spacing::MDS)
         .py(px(5.0))
@@ -654,6 +674,7 @@ fn render_workspace_item(
         .flex_row()
         .items_center()
         .justify_between()
+        .gap(Spacing::SM)
         .rounded(Radius::SM)
         .cursor_pointer()
         .hover(|s| s.bg(theme.btn_hover))
@@ -661,6 +682,8 @@ fn render_workspace_item(
         .on_click(on_click)
         .child(
             div()
+                .flex_1()
+                .min_w_0()
                 .flex()
                 .flex_row()
                 .items_center()
@@ -676,10 +699,13 @@ fn render_workspace_item(
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .flex()
                         .flex_col()
                         .child(
                             div()
+                                .truncate()
                                 .text_size(FontSize::SM)
                                 .text_color(if is_active {
                                     theme.text_accent
@@ -695,6 +721,7 @@ fn render_workspace_item(
                         )
                         .children(subtitle_str.map(|sub| {
                             div()
+                                .truncate()
                                 .text_size(FontSize::CAPTION)
                                 .text_color(theme.text_muted)
                                 .child(sub)
@@ -703,8 +730,72 @@ fn render_workspace_item(
         )
         .child(
             div()
-                .text_color(theme.text_accent)
-                .text_size(FontSize::SM)
-                .child(if is_active { "✓" } else { "" }),
+                .relative()
+                .flex_none()
+                .w(px(46.0))
+                .h(px(22.0))
+                .flex()
+                .items_center()
+                .justify_end()
+                .when(is_active, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .group_hover(group_name.clone(), |s| s.opacity(0.0))
+                            .child(
+                                Icon::new(IconName::Check)
+                                    .size(IconSize::Small)
+                                    .color(theme.text_accent),
+                            ),
+                    )
+                })
+                .child(
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(Spacing::XXS)
+                        .opacity(0.0)
+                        .group_hover(group_name, |s| s.opacity(1.0))
+                        .child(
+                            IconButton::new(open_btn_id, IconName::ExternalLink)
+                                .size(px(22.0))
+                                .icon_size(IconSize::XSmall)
+                                .hover_bg(theme.text_primary.opacity(0.12))
+                                .active_bg(theme.text_primary.opacity(0.18))
+                                .tooltip("Open in New Window")
+                                .debug_selector(format!("recent_ws_open_new_window_{index}"))
+                                .stop_propagation(true)
+                                .on_click(move |_, window, cx| {
+                                    window.dispatch_action(
+                                        OpenWorkspaceInNewWindow(ws_state.clone()).boxed_clone(),
+                                        cx,
+                                    );
+                                }),
+                        )
+                        .child(
+                            IconButton::new(remove_btn_id, IconName::Close)
+                                .size(px(22.0))
+                                .icon_size(IconSize::Indicator)
+                                .hover_color(theme.text_danger)
+                                .hover_bg(theme.text_danger.opacity(0.15))
+                                .active_bg(theme.text_danger.opacity(0.24))
+                                .tooltip("Remove from recent workspaces")
+                                .debug_selector(format!("recent_ws_remove_{index}"))
+                                .stop_propagation(true)
+                                .on_click(move |_, window, cx| {
+                                    window.dispatch_action(
+                                        RemoveRecentWorkspace(root_dir_for_remove.clone())
+                                            .boxed_clone(),
+                                        cx,
+                                    );
+                                }),
+                        ),
+                ),
         )
 }

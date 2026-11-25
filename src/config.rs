@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::ops::{Deref, DerefMut};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicU64, Ordering},
@@ -670,6 +670,14 @@ impl AppConfig {
         self.session.recent_workspaces.clear();
     }
 
+    pub fn remove_recent_workspace(&mut self, root_dir: &Path) -> bool {
+        let before = self.session.recent_workspaces.len();
+        self.session
+            .recent_workspaces
+            .retain(|w| w.root_dir.as_deref() != Some(root_dir));
+        self.session.recent_workspaces.len() != before
+    }
+
     /// Persists session state to `state.toml` atomically when `state_file_path` is set.
     pub fn save_session(&self) {
         write_atomic_toml_sync(self.state_file_path.as_ref(), &self.session);
@@ -1264,5 +1272,35 @@ mod tests {
                 gpui::size(gpui::px(960.0), gpui::px(680.0))
             );
         });
+    }
+
+    #[test]
+    fn test_remove_recent_workspace() {
+        let mut config = AppConfig::default();
+        let ws1 = WorkspaceState {
+            root_dir: Some(PathBuf::from("/proj_1")),
+            ..WorkspaceState::default()
+        };
+        let ws2 = WorkspaceState {
+            root_dir: Some(PathBuf::from("/proj_2")),
+            ..WorkspaceState::default()
+        };
+        let ws3 = WorkspaceState {
+            root_dir: Some(PathBuf::from("/proj_3")),
+            ..WorkspaceState::default()
+        };
+        config.session.last_workspace = Some(ws1.clone());
+        config.session.recent_workspaces = vec![ws1.clone(), ws2.clone(), ws3.clone()];
+
+        assert!(config.remove_recent_workspace(Path::new("/proj_2")));
+        assert_eq!(config.recent_workspaces(), &[ws1.clone(), ws3.clone()]);
+        assert_eq!(config.last_workspace(), Some(&ws1));
+
+        assert!(!config.remove_recent_workspace(Path::new("/nonexistent")));
+        assert_eq!(config.recent_workspaces(), &[ws1.clone(), ws3.clone()]);
+
+        assert!(config.remove_recent_workspace(Path::new("/proj_1")));
+        assert_eq!(config.recent_workspaces(), &[ws3]);
+        assert_eq!(config.last_workspace(), Some(&ws1));
     }
 }

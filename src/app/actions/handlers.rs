@@ -20,6 +20,12 @@ fn attach_window_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
     div.on_action(cx.listener(|this, _: &NewWindow, _, cx| {
         this.defer_after_menu_close(cx, |_this, cx| commands::new_window(cx));
     }))
+    .on_action(cx.listener(|this, action: &OpenWorkspaceInNewWindow, _, cx| {
+        let state = action.0.clone();
+        this.defer_after_menu_close(cx, move |_this, cx| {
+            commands::open_workspace_in_new_window(state, cx);
+        });
+    }))
     .on_action(cx.listener(|this, _: &OpenAbout, _, cx| {
         this.defer_after_menu_close(cx, |_this, cx| commands::open_about_window(cx));
     }))
@@ -58,6 +64,9 @@ fn attach_workspace_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
     .on_action(cx.listener(|this, _: &ClearRecentWorkspaces, _, cx| {
         this.close_menu(cx);
         commands::clear_recent_workspaces(cx);
+    }))
+    .on_action(cx.listener(|_this, action: &RemoveRecentWorkspace, _, cx| {
+        commands::remove_recent_workspace(&action.0, cx);
     }))
     .on_action(cx.listener(|this, _: &FindInWorkspace, window, cx| {
         commands::open_workspace_search(this, window, cx);

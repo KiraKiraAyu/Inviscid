@@ -22,6 +22,7 @@ pub enum IconName {
     Lock,
     Pin,
     Search,
+    ExternalLink,
 }
 
 impl IconName {
@@ -47,6 +48,7 @@ impl IconName {
             Self::Lock => "icons/lock.svg",
             Self::Pin => "icons/pin.svg",
             Self::Search => "icons/search.svg",
+            Self::ExternalLink => "icons/external_link.svg",
         }
     }
 
@@ -72,6 +74,7 @@ impl IconName {
             Self::Lock,
             Self::Pin,
             Self::Search,
+            Self::ExternalLink,
         ]
     }
 

@@ -845,6 +845,213 @@ fn test_restore_recent_workspace_closes_dropdown_menu() {
 }
 
 #[test]
+fn test_recent_workspace_remove_button_keeps_menu_open_and_preserves_current_workspace() {
+    let mut cx = TestAppContext::single();
+    init_test_globals(&mut cx);
+
+    let ws1_dir = create_temp_workspace_dir("recent_remove_1");
+    let ws2_dir = create_temp_workspace_dir("recent_remove_2");
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        app.update(cx, |app, cx| {
+            inviscid::app::commands::open_folder(app, ws1_dir.clone(), cx);
+        });
+        let mut config = cx.global::<AppConfig>().clone();
+        config.session.recent_workspaces = vec![
+            WorkspaceState {
+                root_dir: Some(ws1_dir.clone()),
+                ..WorkspaceState::default()
+            },
+            WorkspaceState {
+                root_dir: Some(ws2_dir.clone()),
+                ..WorkspaceState::default()
+            },
+        ];
+        cx.set_global(config);
+
+        app.update(cx, |app, cx| {
+            app.set_active_menu(Some(inviscid::app::ActiveMenu::Workspace), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    let remove_0 = cx
+        .debug_bounds("recent_ws_remove_0")
+        .expect("first recent workspace remove button should exist")
+        .center();
+    cx.simulate_click(remove_0, gpui::Modifiers::default());
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        assert_eq!(
+            app.read(cx).active_menu(),
+            Some(inviscid::app::ActiveMenu::Workspace),
+            "Removing a recent workspace must keep the dropdown menu open"
+        );
+        assert_eq!(
+            app.read(cx).workspace().read(cx).root_dir(),
+            Some(ws1_dir.as_path()),
+            "Removing the currently open workspace from recents must not close or switch it"
+        );
+        let recent = cx.global::<AppConfig>().recent_workspaces();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].root_dir.as_ref(), Some(&ws2_dir));
+    });
+    assert!(cx.debug_bounds("recent_ws_empty").is_none());
+
+    let remove_remaining = cx
+        .debug_bounds("recent_ws_remove_0")
+        .expect("remaining recent workspace remove button should exist")
+        .center();
+    cx.simulate_click(remove_remaining, gpui::Modifiers::default());
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        assert_eq!(
+            app.read(cx).active_menu(),
+            Some(inviscid::app::ActiveMenu::Workspace),
+            "Removing the last recent workspace must still keep the dropdown open"
+        );
+        assert!(cx.global::<AppConfig>().recent_workspaces().is_empty());
+    });
+    // Assert empty-state rendering rather than `recent_ws_0.is_none()`, because GPUI's
+    // `Frame::clear` retains previously recorded `debug_bounds` keys across swapped frames.
+    assert!(cx.debug_bounds("recent_ws_empty").is_some());
+
+    let _ = fs::remove_dir_all(&ws1_dir);
+    let _ = fs::remove_dir_all(&ws2_dir);
+}
+
+#[test]
+fn test_recent_workspace_open_in_new_window_button() {
+    let mut cx = TestAppContext::single();
+    init_test_globals(&mut cx);
+
+    let ws1_dir = create_temp_workspace_dir("recent_new_win_1");
+    let ws2_dir = create_temp_workspace_dir("recent_new_win_2");
+    let ws2_doc = ws2_dir.join("docs/intro.md");
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    let ws1_state = WorkspaceState {
+        root_dir: Some(ws1_dir.clone()),
+        active_file: Some(ws1_dir.join("README.md")),
+        open_files: vec![ws1_dir.join("README.md")],
+        ..WorkspaceState::default()
+    };
+    let ws2_state = WorkspaceState {
+        root_dir: Some(ws2_dir.clone()),
+        active_file: Some(ws2_doc.clone()),
+        open_files: vec![ws2_doc.clone()],
+        ..WorkspaceState::default()
+    };
+
+    let (initial_window_count, primary_window_id) = cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            inviscid::app::commands::open_folder(app, ws1_dir.clone(), cx);
+        });
+        let mut config = cx.global::<AppConfig>().clone();
+        config.session.recent_workspaces = vec![ws1_state.clone(), ws2_state.clone()];
+        cx.set_global(config);
+
+        app.update(cx, |app, cx| {
+            app.set_active_menu(Some(inviscid::app::ActiveMenu::Workspace), cx);
+        });
+        (cx.windows().len(), window.window_handle().window_id())
+    });
+    cx.run_until_parked();
+
+    let open_ws2_btn = cx
+        .debug_bounds("recent_ws_open_new_window_1")
+        .expect("second recent workspace open-in-new-window button should exist")
+        .center();
+    cx.simulate_click(open_ws2_btn, gpui::Modifiers::default());
+    cx.background_executor
+        .advance_clock(std::time::Duration::from_millis(25));
+    cx.background_executor.run_until_parked();
+    cx.run_until_parked();
+
+    let second_window_id = cx.update(|_window, cx| {
+        assert_eq!(
+            app.read(cx).active_menu(),
+            None,
+            "Open in New Window should close the workspace dropdown"
+        );
+        assert_eq!(
+            app.read(cx).workspace().read(cx).root_dir(),
+            Some(ws1_dir.as_path()),
+            "Clicking Open in New Window must not switch the current window's workspace"
+        );
+
+        let windows = cx.windows();
+        assert_eq!(windows.len(), initial_window_count + 1);
+        let new_handle = windows
+            .into_iter()
+            .find(|h| h.window_id() != primary_window_id)
+            .expect("a new window should have been created");
+        let new_win_id = new_handle.window_id();
+        new_handle
+            .downcast::<InviscidWindow>()
+            .expect("new window should be InviscidWindow")
+            .update(cx, |new_app, _win, cx| {
+                let ws = new_app.workspace().read(cx);
+                assert_eq!(ws.root_dir(), Some(ws2_dir.as_path()));
+                assert_eq!(ws.active_file_path(cx), Some(ws2_doc.as_path()));
+            })
+            .unwrap();
+        new_win_id
+    });
+
+    // Opening the already-open workspace (now at index 1 after ws2 synced to top) still opens a new window.
+    cx.update(|_window, cx| {
+        let recent = cx.global::<AppConfig>().recent_workspaces();
+        assert_eq!(recent[0].root_dir.as_ref(), Some(&ws2_dir));
+        assert_eq!(recent[1].root_dir.as_ref(), Some(&ws1_dir));
+
+        app.update(cx, |app, cx| {
+            app.set_active_menu(Some(inviscid::app::ActiveMenu::Workspace), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    let open_ws1_btn = cx
+        .debug_bounds("recent_ws_open_new_window_1")
+        .expect("ws1 open-in-new-window button should exist")
+        .center();
+    cx.simulate_click(open_ws1_btn, gpui::Modifiers::default());
+    cx.background_executor
+        .advance_clock(std::time::Duration::from_millis(25));
+    cx.background_executor.run_until_parked();
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let windows = cx.windows();
+        assert_eq!(windows.len(), initial_window_count + 2);
+        let third_handle = windows
+            .into_iter()
+            .find(|h| h.window_id() != primary_window_id && h.window_id() != second_window_id)
+            .expect("a third window should have been created");
+        third_handle
+            .downcast::<InviscidWindow>()
+            .expect("third window should be InviscidWindow")
+            .update(cx, |third_app, _win, cx| {
+                assert_eq!(
+                    third_app.workspace().read(cx).root_dir(),
+                    Some(ws1_dir.as_path())
+                );
+            })
+            .unwrap();
+    });
+
+    let _ = fs::remove_dir_all(&ws1_dir);
+    let _ = fs::remove_dir_all(&ws2_dir);
+}
+
+#[test]
 fn test_project_panel_context_menu_open_and_close() {
     let mut cx = TestAppContext::single();
     init_test_globals(&mut cx);

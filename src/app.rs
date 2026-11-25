@@ -106,7 +106,7 @@ impl InviscidWindow {
         Self::init(Some(path), None, cx)
     }
 
-    fn new_from_workspace(ws: &WorkspaceState, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new_from_workspace(ws: &WorkspaceState, cx: &mut Context<Self>) -> Self {
         Self::init(None, Some(ws), cx)
     }
 
