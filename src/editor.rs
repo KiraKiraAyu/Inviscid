@@ -36,6 +36,7 @@ pub(crate) mod keymap;
 pub(crate) mod layout;
 pub(crate) mod line_metrics;
 pub(crate) mod loading;
+mod media;
 pub(crate) mod mouse;
 pub(crate) mod navigation;
 pub(crate) mod parsed_line_store;
@@ -177,6 +178,12 @@ pub enum ExternalChangeState {
     Deleted,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EditorNotice {
+    pub(crate) message: String,
+    pub(crate) is_error: bool,
+}
+
 pub struct Editor {
     background_session: Option<Arc<loading::DocumentSession>>,
     prepared_document: Option<Arc<loading::PreparedSnapshot>>,
@@ -248,6 +255,10 @@ pub struct Editor {
     /// `Some` while the find bar is open.
     pub(crate) find_bar: Option<find::FindBarHandle>,
     pub(crate) needs_focus_after_find: bool,
+    pub(crate) external_drop_target: Option<usize>,
+    pub(crate) notice: Option<EditorNotice>,
+    notice_epoch: usize,
+    notice_task: Option<Task<()>>,
 }
 
 impl Focusable for Editor {
@@ -656,6 +667,10 @@ impl Editor {
             find_search: find::FindSearch::default(),
             find_bar: None,
             needs_focus_after_find: false,
+            external_drop_target: None,
+            notice: None,
+            notice_epoch: 0,
+            notice_task: None,
         };
         let (session, worker_task) = loading::spawn_editor_worker(doc_path, cx);
         editor.background_session = Some(session);
@@ -1059,9 +1074,22 @@ impl Editor {
         if !self.can_edit() {
             return;
         }
-        if let Some(item) = cx.read_from_clipboard()
-            && let Some(text) = item.text()
-        {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        if let Some(payload) = crate::media::extract_clipboard_images(&item) {
+            let target = crate::markdown::resolve_paste_image_target(&self.buffer);
+            match payload {
+                crate::media::ClipboardImagePayload::Files(paths) => {
+                    self.insert_external_image_files(paths, target, cx);
+                }
+                crate::media::ClipboardImagePayload::Bytes { bytes, format } => {
+                    self.insert_clipboard_image_bytes(bytes, format, target, cx);
+                }
+            }
+            return;
+        }
+        if let Some(text) = item.text() {
             self.perform_edit(cx, |this| this.buffer.insert_text(&text));
         }
     }
@@ -1628,6 +1656,68 @@ impl Render for Editor {
                                 .w(px(500.0))
                                 .max_w(relative(0.92))
                                 .child(bar.clone()),
+                        )
+                    })
+                    .when_some(self.notice.as_ref(), |this, notice| {
+                        let accent = if notice.is_error {
+                            theme.text_danger
+                        } else {
+                            theme.text_accent
+                        };
+                        this.child(
+                            div()
+                                .absolute()
+                                .bottom(Spacing::LG)
+                                .left_0()
+                                .right_0()
+                                .flex()
+                                .justify_center()
+                                .px(Spacing::LG)
+                                .child(
+                                    div()
+                                        .id("editor_notice_banner")
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(Spacing::SM)
+                                        .px(Spacing::MD)
+                                        .py(Spacing::XS)
+                                        .rounded(crate::ui::Radius::MD)
+                                        .bg(theme.bg_elevated)
+                                        .border_1()
+                                        .border_color(accent.opacity(0.6))
+                                        .shadow_md()
+                                        .child(
+                                            div()
+                                                .w(px(6.0))
+                                                .h(px(6.0))
+                                                .rounded_full()
+                                                .bg(accent)
+                                                .flex_none(),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(crate::ui::FontSize::SM)
+                                                .text_color(theme.text_primary)
+                                                .child(notice.message.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("editor_notice_close")
+                                                .px(Spacing::XS)
+                                                .cursor_pointer()
+                                                .text_size(crate::ui::FontSize::SM)
+                                                .text_color(theme.text_muted)
+                                                .hover(|s| s.text_color(theme.text_primary))
+                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                    cx.stop_propagation();
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.dismiss_notice(cx);
+                                                }))
+                                                .child("×"),
+                                        ),
+                                ),
                         )
                     }),
             )

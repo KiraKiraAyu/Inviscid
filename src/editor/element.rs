@@ -53,10 +53,18 @@ pub struct ScrollbarDrawInfo {
     pub thumb_color: Hsla,
 }
 
+pub struct DropIndicatorDrawInfo {
+    pub y: Pixels,
+    pub left: Pixels,
+    pub width: Pixels,
+    pub color: Hsla,
+}
+
 pub struct EditorPrepaintState {
     pub hitbox: Option<Hitbox>,
     pub lines: Vec<AnyElement>,
     pub scrollbar: Option<ScrollbarDrawInfo>,
+    pub drop_indicator: Option<DropIndicatorDrawInfo>,
 }
 
 impl Element for EditorElement {
@@ -100,10 +108,14 @@ impl Element for EditorElement {
         let is_focused = self.editor.read(cx).focus_handle.is_focused(window);
 
         // Synchronously commit exact Taffy layout bounds to Editor and cancel ghost blink task if unfocused
+        let has_active_drag = cx.has_active_drag();
         self.editor.update(cx, |editor, cx| {
             editor.viewport_bounds = bounds;
             editor.sync_theme(cx);
             editor.prepare_viewport_layout();
+            if !has_active_drag && editor.external_drop_target.is_some() {
+                editor.external_drop_target = None;
+            }
             if !is_focused && editor.blink_task.is_some() {
                 editor.cursor_opacity = 0.0;
                 editor.blink_task = None;
@@ -123,7 +135,7 @@ impl Element for EditorElement {
             window,
             cx,
             |_style, _scroll_offset, hitbox, window, cx| {
-                let (lines_to_prepaint, scrollbar) = {
+                let (lines_to_prepaint, scrollbar, drop_indicator) = {
                     let editor = editor_entity.read(cx);
                     editor
                         .painted_lines
@@ -456,7 +468,29 @@ impl Element for EditorElement {
                         None
                     };
 
-                    (lines_to_prepaint, scrollbar)
+                    let drop_indicator = if cx.has_active_drag() {
+                        editor.external_drop_target.map(|before_line| {
+                            let y = editor.drop_indicator_screen_y(before_line, bounds);
+                            let (left, width) = match mode {
+                                RenderMode::LivePreview => (container_x, content_width),
+                                RenderMode::Source => (
+                                    container_x + crate::editor::layout::SOURCE_GUTTER_WIDTH,
+                                    (content_width - crate::editor::layout::SOURCE_GUTTER_WIDTH)
+                                        .max(px(0.0)),
+                                ),
+                            };
+                            DropIndicatorDrawInfo {
+                                y,
+                                left,
+                                width,
+                                color: theme.text_accent,
+                            }
+                        })
+                    } else {
+                        None
+                    };
+
+                    (lines_to_prepaint, scrollbar, drop_indicator)
                 };
 
                 let mut lines = Vec::with_capacity(lines_to_prepaint.len());
@@ -469,6 +503,7 @@ impl Element for EditorElement {
                     hitbox,
                     lines,
                     scrollbar,
+                    drop_indicator,
                 }
             },
         )
@@ -485,10 +520,31 @@ impl Element for EditorElement {
         cx: &mut App,
     ) {
         // Register window-level mouse capture listeners during drag operations
-        let (is_dragging, is_scrollbar_dragging) = {
+        let (is_dragging, is_scrollbar_dragging, has_external_drop_target) = {
             let ed = self.editor.read(cx);
-            (ed.is_dragging, ed.scroll.is_scrollbar_dragging)
+            (
+                ed.is_dragging,
+                ed.scroll.is_scrollbar_dragging,
+                ed.external_drop_target.is_some(),
+            )
         };
+        if has_external_drop_target {
+            let entity_drop_exit = self.editor.clone();
+            window.on_mouse_event(
+                move |event: &FileDropEvent,
+                      phase: DispatchPhase,
+                      _window: &mut Window,
+                      cx: &mut App| {
+                    if phase == DispatchPhase::Capture
+                        && matches!(event, FileDropEvent::Exited)
+                    {
+                        entity_drop_exit.update(cx, |this, cx| {
+                            this.clear_external_drop_target(cx);
+                        });
+                    }
+                },
+            );
+        }
         if is_dragging || is_scrollbar_dragging {
             let entity_move = self.editor.clone();
             window.on_mouse_event(
@@ -562,6 +618,40 @@ impl Element for EditorElement {
                 window.with_content_mask(Some(ContentMask { bounds }), |window| {
                     for line in &mut prepaint.lines {
                         line.paint(window, cx);
+                    }
+                    if let Some(ind) = &prepaint.drop_indicator {
+                        let line_bounds = Bounds::new(
+                            point(ind.left, ind.y - px(1.5)),
+                            size(ind.width, px(3.0)),
+                        );
+                        let glow_bounds = Bounds::new(
+                            point(ind.left, ind.y - px(3.5)),
+                            size(ind.width, px(7.0)),
+                        );
+                        window.paint_quad(
+                            fill(glow_bounds, ind.color.opacity(0.22)).corner_radii(px(3.5)),
+                        );
+                        window.paint_quad(fill(line_bounds, ind.color).corner_radii(px(1.5)));
+                        if ind.width >= px(7.0) {
+                            let dot_size = size(px(7.0), px(7.0));
+                            window.paint_quad(
+                                fill(
+                                    Bounds::new(point(ind.left, ind.y - px(3.5)), dot_size),
+                                    ind.color,
+                                )
+                                .corner_radii(px(3.5)),
+                            );
+                            window.paint_quad(
+                                fill(
+                                    Bounds::new(
+                                        point(ind.left + ind.width - px(7.0), ind.y - px(3.5)),
+                                        dot_size,
+                                    ),
+                                    ind.color,
+                                )
+                                .corner_radii(px(3.5)),
+                            );
+                        }
                     }
                 });
 

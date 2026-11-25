@@ -461,7 +461,7 @@ impl Editor {
         }
     }
 
-    fn apply_drag_edge_scroll(&mut self, mouse_y: Pixels) -> bool {
+    pub(crate) fn apply_drag_edge_scroll(&mut self, mouse_y: Pixels) -> bool {
         let viewport = self.viewport_bounds_val();
         let top_edge = viewport.top() + px(40.0);
         let bottom_edge = viewport.bottom() - px(40.0);
@@ -715,6 +715,16 @@ impl Editor {
                     this.handle_mouse_up(cx);
                 }),
             )
+            .on_drag_move::<ExternalPaths>(cx.listener(
+                |this, event: &DragMoveEvent<ExternalPaths>, _window, cx| {
+                    this.handle_external_drag_move(event, cx);
+                },
+            ))
+            .on_drop::<ExternalPaths>(cx.listener(
+                |this, paths: &ExternalPaths, window, cx| {
+                    this.handle_external_drop(paths, window, cx);
+                },
+            ))
     }
 
     pub fn handle_scroll_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -852,7 +862,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         // When dragging, all mouse tracking is handled globally by Window Capture listener.
-        if self.is_dragging || self.scroll.is_scrollbar_dragging {
+        if self.is_dragging || self.scroll.is_scrollbar_dragging || cx.has_active_drag() {
             return;
         }
         // Track link hover for PointingHand cursor and hover highlight

@@ -7116,3 +7116,236 @@ fn table_cell_selection_and_highlight_quads_clip_to_cell_col_range(cx: &mut gpui
         assert!(h2.is_empty());
     });
 }
+
+#[gpui::test]
+fn test_external_image_drag_drop_indicator_and_insertion(cx: &mut gpui::TestAppContext) {
+    use crate::buffer::{Position, SourceLine, TextBuffer};
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::theme::ThemeManager;
+    use gpui::{ExternalPaths, FileDropEvent, Image, ImageFormat, point};
+
+    let dir = tempfile::tempdir().unwrap();
+    let doc_path = dir.path().join("note.md");
+    let src_dir = tempfile::tempdir().unwrap();
+    let img_path = src_dir.path().join("diagram.png");
+    let non_img_path = src_dir.path().join("readme.txt");
+
+    let mut png_bytes = Vec::new();
+    image::DynamicImage::new_rgba8(6, 4)
+        .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .unwrap();
+    std::fs::write(&img_path, &png_bytes).unwrap();
+    std::fs::write(&non_img_path, b"hello").unwrap();
+
+    cx.update(|cx| {
+        let cfg = AppConfig::default();
+        cx.set_global(ThemeManager::from_config(&cfg));
+        cx.set_global(cfg);
+    });
+
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        let content = "Paragraph one\n\n```rust\nlet a = 1;\nlet b = 2;\n```\n\nParagraph two";
+        let buf = TextBuffer::from_str(content, Some(doc_path.clone()));
+        let ed = Editor::new_with_buffer(buf, cx);
+        window.focus(&ed.focus_handle);
+        ed
+    });
+    cx.run_until_parked();
+
+    let (vp, code_mid_y, top_y, bottom_y) = editor.read_with(cx, |ed, _| {
+        let vp = ed.viewport_bounds_val();
+        let top_y = ed.drop_indicator_screen_y(0, vp);
+        let code_start_y = ed.drop_indicator_screen_y(2, vp);
+        let code_end_y = ed.drop_indicator_screen_y(6, vp);
+        let bottom_y = ed.drop_indicator_screen_y(ed.buffer().line_count(), vp);
+        (vp, (code_start_y + code_end_y) / 2.0, top_y, bottom_y)
+    });
+    let center_x = vp.origin.x + vp.size.width / 2.0;
+
+    // 1. Non-image external drag should NOT show drop indicator
+    editor.update(cx, |ed, cx| {
+        ed.handle_external_drag_paths_move(
+            std::slice::from_ref(&non_img_path),
+            point(center_x, top_y),
+            vp,
+            cx,
+        );
+        assert_eq!(ed.external_drop_target, None);
+    });
+
+    // 2. Image external drag shows indicator and snaps to atomic code block boundaries
+    editor.update(cx, |ed, cx| {
+        ed.handle_external_drag_paths_move(
+            std::slice::from_ref(&img_path),
+            point(center_x, code_mid_y - px(10.0)),
+            vp,
+            cx,
+        );
+        assert_eq!(ed.external_drop_target, Some(2));
+
+        ed.handle_external_drag_paths_move(
+            std::slice::from_ref(&img_path),
+            point(center_x, code_mid_y + px(10.0)),
+            vp,
+            cx,
+        );
+        assert_eq!(ed.external_drop_target, Some(6));
+
+        // Moving outside editor bounds clears the drop indicator
+        ed.handle_external_drag_paths_move(
+            std::slice::from_ref(&img_path),
+            point(vp.origin.x - px(20.0), code_mid_y),
+            vp,
+            cx,
+        );
+        assert_eq!(ed.external_drop_target, None);
+    });
+
+    // GPUI FileDropEvent::Exited also clears any pending drop indicator without modifying buffer
+    editor.update(cx, |ed, cx| {
+        ed.handle_external_drag_paths_move(
+            std::slice::from_ref(&img_path),
+            point(center_x, bottom_y + px(20.0)),
+            vp,
+            cx,
+        );
+        assert_eq!(ed.external_drop_target, Some(8));
+    });
+    cx.simulate_event(FileDropEvent::Entered {
+        position: point(center_x, bottom_y + px(20.0)),
+        paths: ExternalPaths::default(),
+    });
+    cx.simulate_event(FileDropEvent::Exited);
+    editor.read_with(cx, |ed, _| {
+        assert_eq!(ed.external_drop_target, None);
+    });
+
+    // 3. Hover at bottom and drop image
+    cx.update(|window, cx| {
+        editor.update(cx, |ed, cx| {
+            ed.handle_external_drag_paths_move(
+                std::slice::from_ref(&img_path),
+                point(center_x, bottom_y + px(20.0)),
+                vp,
+                cx,
+            );
+            ed.handle_external_drop_paths(std::slice::from_ref(&img_path), window, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    editor.read_with(cx, |ed, _| {
+        assert_eq!(ed.external_drop_target, None);
+        let text = ed.buffer().to_string_normalized();
+        assert!(
+            text.ends_with("Paragraph two\n\n![diagram](assets/diagram.png)"),
+            "unexpected buffer after drop: {text}"
+        );
+        assert!(dir.path().join("assets").join("diagram.png").is_file());
+    });
+
+    // 4. Paste image bytes while cursor is mid-paragraph inserts independent block below without splitting
+    cx.update(|_window, cx| {
+        let item = gpui::ClipboardItem::new_image(&Image::from_bytes(
+            ImageFormat::Png,
+            png_bytes.clone(),
+        ));
+        cx.write_to_clipboard(item);
+    });
+    editor.update(cx, |ed, cx| {
+        ed.buffer_mut()
+            .set_cursor(Position::new(SourceLine::new(0), 4));
+        ed.paste(cx);
+    });
+    cx.run_until_parked();
+
+    editor.read_with(cx, |ed, _| {
+        let lines: Vec<String> = (0..ed.buffer().line_count())
+            .map(|i| ed.buffer().line_text(SourceLine::new(i)).unwrap())
+            .collect();
+        assert_eq!(lines[0], "Paragraph one");
+        assert!(lines[2].starts_with("![image-") && lines[2].ends_with(".png)"));
+    });
+
+    // 5. Plain text paste still works normally
+    cx.update(|_window, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("!!".to_string()));
+    });
+    editor.update(cx, |ed, cx| {
+        ed.buffer_mut()
+            .set_cursor(Position::new(SourceLine::new(0), 0));
+        ed.paste(cx);
+    });
+    cx.run_until_parked();
+    editor.read_with(cx, |ed, _| {
+        assert_eq!(
+            ed.buffer().line_text(SourceLine::new(0)).as_deref(),
+            Some("!!Paragraph one")
+        );
+    });
+}
+
+#[gpui::test]
+fn test_unsaved_doc_blocks_relative_asset_dir_and_allows_absolute(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::buffer::TextBuffer;
+    use crate::config::AppConfig;
+    use crate::editor::Editor;
+    use crate::theme::ThemeManager;
+    use gpui::{Image, ImageFormat};
+
+    let abs_dir = tempfile::tempdir().unwrap();
+    let mut png_bytes = Vec::new();
+    image::DynamicImage::new_rgba8(2, 2)
+        .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .unwrap();
+
+    cx.update(|cx| {
+        let cfg = AppConfig::default();
+        cx.set_global(ThemeManager::from_config(&cfg));
+        cx.set_global(cfg);
+    });
+
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        let buf = TextBuffer::from_str("Draft text", None);
+        let ed = Editor::new_with_buffer(buf, cx);
+        window.focus(&ed.focus_handle);
+        ed
+    });
+    cx.run_until_parked();
+
+    // Relative "assets" on unsaved document triggers error notice and leaves buffer unchanged
+    cx.update(|_window, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_image(&Image::from_bytes(
+            ImageFormat::Png,
+            png_bytes.clone(),
+        )));
+    });
+    editor.update(cx, |ed, cx| ed.paste(cx));
+    cx.run_until_parked();
+
+    editor.read_with(cx, |ed, _| {
+        assert_eq!(ed.buffer().to_string_normalized(), "Draft text");
+        assert!(ed.notice.as_ref().is_some_and(|n| n.is_error));
+    });
+
+    // Absolute asset_dir works even on unsaved document
+    cx.update(|_window, cx| {
+        let mut cfg = cx.global::<AppConfig>().clone();
+        cfg.asset_dir = abs_dir.path().to_string_lossy().into_owned();
+        cx.set_global(cfg);
+    });
+    editor.update(cx, |ed, cx| ed.paste(cx));
+    cx.run_until_parked();
+
+    editor.read_with(cx, |ed, _| {
+        let text = ed.buffer().to_string_normalized();
+        let expected_prefix = abs_dir.path().to_string_lossy().replace('\\', "/");
+        assert!(
+            text.contains(&expected_prefix),
+            "expected absolute forward-slash path in {text}"
+        );
+    });
+}
