@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::app::actions::{
@@ -508,7 +509,7 @@ fn render_theme_dropdown(cx: &mut App) -> impl IntoElement {
 }
 
 pub fn render_workspace_dropdown(
-    current_ws_name: &str,
+    current_root_dir: Option<&Path>,
     on_select: impl Fn(&WorkspaceState, &mut Window, &mut App) + 'static,
     cx: &mut App,
 ) -> impl IntoElement {
@@ -575,7 +576,8 @@ pub fn render_workspace_dropdown(
                 .or(ws_state.open_files.first())
                 .and_then(|p| p.to_str());
 
-            let is_active = ws_name == current_ws_name;
+            let is_active =
+                current_root_dir.is_some() && ws_state.root_dir.as_deref() == current_root_dir;
             let ws_clone = ws_state.clone();
             let on_select = on_select.clone();
 

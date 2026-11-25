@@ -189,9 +189,10 @@ impl Render for TitleBar {
                             .when(is_workspace_menu_active, |this| {
                                 let titlebar = cx.entity().clone();
                                 let workspace = self.workspace.clone();
-                                let ws_name = workspace_name.clone();
+                                let current_root_dir =
+                                    workspace.read(cx).root_dir().map(|p| p.to_path_buf());
                                 this.child(deferred(crate::app::menu::render_workspace_dropdown(
-                                    &ws_name,
+                                    current_root_dir.as_deref(),
                                     move |ws_state, window, cx| {
                                         titlebar.update(cx, |tb, cx| tb.close_menu(cx));
                                         let wb = crate::config::WindowLayoutState::from_window(
