@@ -647,6 +647,77 @@ fn test_close_workspace_action_and_lifecycle() {
 }
 
 #[test]
+fn test_open_file_without_workspace_does_not_add_recent_workspace() {
+    let mut cx = TestAppContext::single();
+    init_test_globals(&mut cx);
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let loose_file = temp_dir.path().join("loose.md");
+    let another_loose_file = temp_dir.path().join("another.md");
+    let workspace_dir = temp_dir.path().join("my_workspace");
+    fs::create_dir_all(&workspace_dir).unwrap();
+    fs::write(&loose_file, "# Loose\n").unwrap();
+    fs::write(&another_loose_file, "# Another\n").unwrap();
+
+    let (app, cx) = cx.add_window_view(|_window, cx| InviscidWindow::new(cx));
+    cx.run_until_parked();
+
+    // 1. Opening a loose file without a loaded workspace must not record a recent workspace.
+    cx.update(|_window, cx| {
+        app.update(cx, |app, cx| {
+            inviscid::app::commands::open_file(app, loose_file.clone(), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = app.read(cx).workspace().read(cx);
+        assert!(ws.root_dir().is_none());
+        assert_eq!(ws.active_file_path(cx), Some(loose_file.as_path()));
+        let config = cx.global::<AppConfig>();
+        assert!(config.recent_workspaces().is_empty());
+    });
+
+    // 2. Opening a folder records that workspace in recent_workspaces.
+    cx.update(|_window, cx| {
+        app.update(cx, |app, cx| {
+            inviscid::app::commands::open_folder(app, workspace_dir.clone(), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let config = cx.global::<AppConfig>();
+        assert_eq!(config.recent_workspaces().len(), 1);
+        assert_eq!(
+            config.recent_workspaces()[0].root_dir,
+            Some(workspace_dir.clone())
+        );
+    });
+
+    // 3. Closing the workspace and opening another loose file keeps only the real workspace.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            inviscid::app::commands::close_workspace(app, window, cx);
+            inviscid::app::commands::open_file(app, another_loose_file.clone(), cx);
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|_window, cx| {
+        let ws = app.read(cx).workspace().read(cx);
+        assert!(ws.root_dir().is_none());
+        assert_eq!(ws.active_file_path(cx), Some(another_loose_file.as_path()));
+        let config = cx.global::<AppConfig>();
+        assert_eq!(config.recent_workspaces().len(), 1);
+        assert_eq!(
+            config.recent_workspaces()[0].root_dir,
+            Some(workspace_dir.clone())
+        );
+    });
+}
+
+#[test]
 fn test_clear_recent_workspaces_action() {
     let mut cx = TestAppContext::single();
     init_test_globals(&mut cx);

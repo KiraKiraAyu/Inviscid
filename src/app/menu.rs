@@ -533,17 +533,7 @@ pub fn render_workspace_dropdown(
 
     let valid_recent: Vec<_> = recent_workspaces
         .into_iter()
-        .filter(|ws_state| {
-            if let Some(root) = &ws_state.root_dir {
-                root.exists()
-            } else if let Some(active) = &ws_state.active_file {
-                active.exists()
-            } else if let Some(first) = ws_state.open_files.first() {
-                first.exists()
-            } else {
-                false
-            }
-        })
+        .filter(|ws_state| ws_state.has_existing_workspace_root())
         .collect();
 
     if valid_recent.is_empty() {

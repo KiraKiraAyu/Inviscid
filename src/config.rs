@@ -323,6 +323,14 @@ impl WorkspaceState {
         self.root_dir.is_none() && self.active_file.is_none() && self.open_files.is_empty()
     }
 
+    pub fn has_workspace_root(&self) -> bool {
+        self.root_dir.is_some()
+    }
+
+    pub fn has_existing_workspace_root(&self) -> bool {
+        self.root_dir.as_ref().is_some_and(|root| root.exists())
+    }
+
     pub fn has_existing_path(&self) -> bool {
         if let Some(ref root) = self.root_dir {
             root.exists()
@@ -522,12 +530,9 @@ impl AppConfig {
     }
 
     fn same_workspace_identity(a: &WorkspaceState, b: &WorkspaceState) -> bool {
-        if let (Some(dir_a), Some(dir_b)) = (&a.root_dir, &b.root_dir) {
-            dir_a == dir_b
-        } else if a.root_dir.is_none() && b.root_dir.is_none() && b.active_file.is_some() {
-            a.active_file == b.active_file
-        } else {
-            a == b
+        match (&a.root_dir, &b.root_dir) {
+            (Some(dir_a), Some(dir_b)) => dir_a == dir_b,
+            _ => false,
         }
     }
 }
@@ -616,7 +621,7 @@ impl AppConfig {
         config
             .session
             .recent_workspaces
-            .retain(|ws| ws.has_existing_path());
+            .retain(|ws| ws.has_existing_workspace_root());
 
         if let Some(ref ws) = config.session.last_workspace {
             if !ws.has_existing_path() {
@@ -681,7 +686,7 @@ impl AppConfig {
             UiLayoutState::from_workspace_and_fallback(&state, self.session.last_layout.as_ref());
         self.session.last_layout = Some(layout);
 
-        if !state.is_empty() {
+        if state.has_workspace_root() {
             self.session
                 .recent_workspaces
                 .retain(|w| !Self::same_workspace_identity(w, &state));
@@ -689,6 +694,9 @@ impl AppConfig {
             if self.session.recent_workspaces.len() > 10 {
                 self.session.recent_workspaces.truncate(10);
             }
+        }
+
+        if !state.is_empty() {
             self.session.last_workspace = Some(state);
         } else {
             self.session.last_workspace = None;
@@ -801,21 +809,10 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_single_file_deduplication() {
+    fn test_single_file_without_workspace_does_not_record_recent_workspace() {
         let mut config = AppConfig::default();
 
-        let state_file_a = WorkspaceState {
-            root_dir: None,
-            active_file: Some(PathBuf::from("/notes/today.md")),
-            open_files: vec![PathBuf::from("/notes/today.md")],
-            sidebar_visible: true,
-            sidebar_width: None,
-            outline_width: None,
-            ..WorkspaceState::default()
-        };
-        config.update_last_workspace(state_file_a);
-
-        let state_file_a_updated = WorkspaceState {
+        let loose_file_state = WorkspaceState {
             root_dir: None,
             active_file: Some(PathBuf::from("/notes/today.md")),
             open_files: vec![PathBuf::from("/notes/today.md")],
@@ -824,10 +821,31 @@ mod tests {
             outline_width: None,
             ..WorkspaceState::default()
         };
-        config.update_last_workspace(state_file_a_updated.clone());
+        config.update_last_workspace(loose_file_state.clone());
 
-        assert_eq!(config.recent_workspaces().len(), 1);
-        assert_eq!(config.recent_workspaces()[0], state_file_a_updated);
+        assert!(config.recent_workspaces().is_empty());
+        assert_eq!(config.last_workspace(), Some(&loose_file_state));
+        assert!(config.last_layout().is_some());
+
+        let workspace_state = WorkspaceState {
+            root_dir: Some(PathBuf::from("/project")),
+            active_file: Some(PathBuf::from("/project/README.md")),
+            open_files: vec![PathBuf::from("/project/README.md")],
+            ..WorkspaceState::default()
+        };
+        config.update_last_workspace(workspace_state.clone());
+        assert_eq!(config.recent_workspaces(), std::slice::from_ref(&workspace_state));
+
+        let another_loose_file_state = WorkspaceState {
+            root_dir: None,
+            active_file: Some(PathBuf::from("/scratch/other.md")),
+            open_files: vec![PathBuf::from("/scratch/other.md")],
+            ..WorkspaceState::default()
+        };
+        config.update_last_workspace(another_loose_file_state.clone());
+
+        assert_eq!(config.recent_workspaces(), std::slice::from_ref(&workspace_state));
+        assert_eq!(config.last_workspace(), Some(&another_loose_file_state));
     }
 
     #[test]
