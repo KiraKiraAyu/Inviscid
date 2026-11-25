@@ -1741,3 +1741,68 @@ fn indented_code_fence_preserves_full_source_char_columns() {
     assert_eq!(parsed[0].spans[0].span_range, (0, 5));
     assert_eq!(parsed[0].spans[1].span_range, (5, 9));
 }
+
+#[test]
+fn insert_image_blocks_inserts_independent_paragraphs_and_supports_undo() {
+    use crate::buffer::{Position, SourceLine, TextBuffer};
+    use crate::markdown::{
+        ImageInsertionTarget, insert_image_blocks, resolve_paste_image_target,
+    };
+
+    // 1. Empty document
+    let mut empty = TextBuffer::from_str("", None);
+    let img1 = "![a](assets/a.png)".to_string();
+    let target = resolve_paste_image_target(&empty);
+    insert_image_blocks(&mut empty, target, &[img1.clone()]);
+    assert_eq!(empty.to_string_normalized(), "![a](assets/a.png)");
+    assert_eq!(empty.cursor_pos(), Position::new(SourceLine::new(0), img1.chars().count()));
+
+    // 2. Cursor in the middle of a paragraph places image below without splitting text
+    let mut mid_para = TextBuffer::from_str("Hello world\nNext line", None);
+    mid_para.set_cursor(Position::new(SourceLine::new(0), 5));
+    let target = resolve_paste_image_target(&mid_para);
+    insert_image_blocks(&mut mid_para, target, &[img1.clone()]);
+    assert_eq!(
+        mid_para.to_string_normalized(),
+        "Hello world\n\n![a](assets/a.png)\n\nNext line"
+    );
+    assert_eq!(
+        mid_para.cursor_pos(),
+        Position::new(SourceLine::new(2), img1.chars().count())
+    );
+    mid_para.undo();
+    assert_eq!(mid_para.to_string_normalized(), "Hello world\nNext line");
+
+    // 3. Cursor inside code block escapes below the closing fence
+    let mut code = TextBuffer::from_str("```rust\nlet x = 1;\n```\nAfter", None);
+    code.set_cursor(Position::new(SourceLine::new(1), 4));
+    let target = resolve_paste_image_target(&code);
+    insert_image_blocks(&mut code, target, &[img1.clone()]);
+    assert_eq!(
+        code.to_string_normalized(),
+        "```rust\nlet x = 1;\n```\n\n![a](assets/a.png)\n\nAfter"
+    );
+
+    // 4. Multiple images inserted at top boundary are separated by blank lines
+    let mut top = TextBuffer::from_str("First", None);
+    let img2 = "![b](assets/b.png)".to_string();
+    insert_image_blocks(
+        &mut top,
+        ImageInsertionTarget::AtBoundary(0),
+        &[img1.clone(), img2.clone()],
+    );
+    assert_eq!(
+        top.to_string_normalized(),
+        "![a](assets/a.png)\n\n![b](assets/b.png)\n\nFirst"
+    );
+
+    // 5. Replacing an empty editable paragraph line
+    let mut blank_mid = TextBuffer::from_str("Above\n\n\nBelow", None);
+    blank_mid.set_cursor(Position::new(SourceLine::new(2), 0));
+    let target = resolve_paste_image_target(&blank_mid);
+    insert_image_blocks(&mut blank_mid, target, &[img1]);
+    assert_eq!(
+        blank_mid.to_string_normalized(),
+        "Above\n\n![a](assets/a.png)\n\nBelow"
+    );
+}

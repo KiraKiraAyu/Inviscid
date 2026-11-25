@@ -1313,3 +1313,145 @@ fn appended_block(lines: &(impl LineSource + ?Sized), line: SourceLine) -> Newli
         cursor: Position::new(line + 2, 0),
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageInsertionTarget {
+    /// Insert before source line `0..=buffer.line_count()`.
+    AtBoundary(usize),
+    /// Replace an already-empty editable paragraph line with the image block(s).
+    ReplaceEmptyLine(SourceLine),
+}
+
+/// Resolves where pasted images should be inserted relative to the current cursor,
+/// placing them as an independent block below the current block rather than splitting prose.
+pub fn resolve_paste_image_target(buffer: &TextBuffer) -> ImageInsertionTarget {
+    let line = buffer.cursor_pos().line;
+    let is_blank_line = buffer
+        .line_text(line)
+        .is_some_and(|text| text.trim().is_empty());
+    let block = block_at_buffer(buffer, line);
+
+    if is_blank_line
+        && block
+            .as_ref()
+            .is_some_and(|b| matches!(b.kind, ProjectedBlockKind::Paragraph))
+    {
+        return ImageInsertionTarget::ReplaceEmptyLine(line);
+    }
+
+    match block {
+        Some(b) => ImageInsertionTarget::AtBoundary(b.source_range.end.index()),
+        None => ImageInsertionTarget::AtBoundary(buffer.line_count()),
+    }
+}
+
+/// Inserts one or more standalone Markdown image lines as independent paragraph block(s).
+pub fn insert_image_blocks(
+    buffer: &mut TextBuffer,
+    target: ImageInsertionTarget,
+    image_lines: &[String],
+) {
+    if image_lines.is_empty() {
+        return;
+    }
+
+    let mut block_body = Vec::with_capacity(image_lines.len() * 2 - 1);
+    for (idx, line) in image_lines.iter().enumerate() {
+        if idx > 0 {
+            block_body.push(String::new());
+        }
+        block_body.push(line.clone());
+    }
+    let last_body_offset = block_body.len() - 1;
+    let last_img_col = image_lines
+        .last()
+        .map_or(0, |line| line.chars().count());
+
+    let line_count = buffer.line_count();
+    let is_blank = |idx: usize| -> bool {
+        buffer
+            .line_text(SourceLine::new(idx))
+            .is_some_and(|l| l.trim().is_empty())
+    };
+
+    if buffer.is_empty() || (line_count == 1 && is_blank(0)) {
+        let last_line = SourceLine::new(last_body_offset);
+        buffer.replace_line_range(
+            SourceLine::new(0),
+            line_count,
+            block_body,
+            Selection::cursor(Position::new(last_line, last_img_col)),
+        );
+        return;
+    }
+
+    match target {
+        ImageInsertionTarget::ReplaceEmptyLine(line) if line.index() < line_count => {
+            let line_idx = line.index();
+            let need_leading_blank = line_idx > 0 && !is_blank(line_idx - 1);
+            let need_trailing_blank = line_idx + 1 < line_count && !is_blank(line_idx + 1);
+
+            let mut inserted = Vec::with_capacity(block_body.len() + 2);
+            if need_leading_blank {
+                inserted.push(String::new());
+            }
+            let first_body_offset = inserted.len();
+            inserted.extend(block_body);
+            if need_trailing_blank {
+                inserted.push(String::new());
+            }
+
+            let last_line = SourceLine::new(line_idx + first_body_offset + last_body_offset);
+            buffer.replace_line_range(
+                line,
+                1,
+                inserted,
+                Selection::cursor(Position::new(last_line, last_img_col)),
+            );
+        }
+        ImageInsertionTarget::ReplaceEmptyLine(line) => {
+            let before = line.index().min(line_count);
+            let need_leading_blank = before > 0 && !is_blank(before - 1);
+            let mut inserted = Vec::with_capacity(block_body.len() + 1);
+            if need_leading_blank {
+                inserted.push(String::new());
+            }
+            let first_body_offset = inserted.len();
+            inserted.extend(block_body);
+            let last_line = SourceLine::new(before + first_body_offset + last_body_offset);
+            buffer.replace_line_range(
+                SourceLine::new(before),
+                0,
+                inserted,
+                Selection::cursor(Position::new(last_line, last_img_col)),
+            );
+        }
+        ImageInsertionTarget::AtBoundary(before_line) => {
+            let before = before_line.min(line_count);
+            let replace_extra_blank =
+                before < line_count && is_blank(before) && before > 0 && is_blank(before - 1);
+            let remove_count = usize::from(replace_extra_blank);
+            let need_leading_blank = !replace_extra_blank && before > 0 && !is_blank(before - 1);
+            let need_trailing_blank =
+                !replace_extra_blank && before < line_count && !is_blank(before);
+
+            let mut inserted = Vec::with_capacity(block_body.len() + 2);
+            if need_leading_blank {
+                inserted.push(String::new());
+            }
+            let first_body_offset = inserted.len();
+            inserted.extend(block_body);
+            if need_trailing_blank {
+                inserted.push(String::new());
+            }
+
+            let last_line = SourceLine::new(before + first_body_offset + last_body_offset);
+            buffer.replace_line_range(
+                SourceLine::new(before),
+                remove_count,
+                inserted,
+                Selection::cursor(Position::new(last_line, last_img_col)),
+            );
+        }
+    }
+}

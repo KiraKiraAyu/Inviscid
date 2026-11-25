@@ -12,7 +12,9 @@ pub(crate) mod types;
 #[cfg(test)]
 mod tests;
 
-pub use editing::LiveBuffer;
+pub use editing::{
+    ImageInsertionTarget, LiveBuffer, insert_image_blocks, resolve_paste_image_target,
+};
 
 pub(crate) use indent::*;
 pub use inline::parse_inline_spans;
