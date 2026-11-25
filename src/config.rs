@@ -365,6 +365,7 @@ pub struct UserPreferences {
     pub default_render_mode: RenderMode,
     pub show_fps: bool,
     pub grammar_base_url: String,
+    pub asset_dir: String,
     pub custom_keybindings: std::collections::HashMap<String, String>,
 }
 
@@ -374,6 +375,7 @@ impl UserPreferences {
     pub const DEFAULT_UI_FONT_SIZE: f32 = 13.0;
     pub const DEFAULT_EDITOR_FONT_SIZE: f32 = 15.0;
     pub const DEFAULT_LINE_HEIGHT: f32 = 1.6;
+    pub const DEFAULT_ASSET_DIR: &'static str = "assets";
 }
 
 impl Default for UserPreferences {
@@ -392,6 +394,7 @@ impl Default for UserPreferences {
             default_render_mode: RenderMode::default(),
             show_fps: false,
             grammar_base_url: crate::syntax::GrammarCdnPreset::DEFAULT_URL.to_string(),
+            asset_dir: Self::DEFAULT_ASSET_DIR.to_string(),
             custom_keybindings: std::collections::HashMap::new(),
         }
     }
@@ -576,8 +579,12 @@ impl AppConfig {
                     Ok(mut parsed) => {
                         let normalized_url =
                             crate::syntax::normalize_grammar_base_url(&parsed.grammar_base_url);
-                        let changed = normalized_url != parsed.grammar_base_url;
+                        let normalized_asset_dir =
+                            crate::media::normalize_asset_dir(&parsed.asset_dir);
+                        let changed = normalized_url != parsed.grammar_base_url
+                            || normalized_asset_dir != parsed.asset_dir;
                         parsed.grammar_base_url = normalized_url;
+                        parsed.asset_dir = normalized_asset_dir;
                         config.preferences = parsed;
                         if changed {
                             config.save_preferences();
@@ -1302,5 +1309,32 @@ mod tests {
         assert!(config.remove_recent_workspace(Path::new("/proj_1")));
         assert_eq!(config.recent_workspaces(), &[ws3]);
         assert_eq!(config.last_workspace(), Some(&ws1));
+    }
+
+    #[test]
+    fn test_asset_dir_default_round_trip_and_normalization() {
+        let default_cfg = AppConfig::default();
+        assert_eq!(default_cfg.asset_dir, "assets");
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        let state_path = dir.path().join("state.toml");
+
+        // Missing asset_dir falls back to default "assets".
+        fs::write(&cfg_path, "theme = \"Dracula\"\n").unwrap();
+        let loaded = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
+        assert_eq!(loaded.asset_dir, "assets");
+
+        // Trailing slash / whitespace gets normalized and persisted.
+        fs::write(&cfg_path, "asset_dir = \"  images/  \"\n").unwrap();
+        let normalized = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
+        assert_eq!(normalized.asset_dir, "images");
+
+        // Round-trip absolute Windows drive path.
+        let mut custom = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
+        custom.asset_dir = "D:\\Notes\\Assets".to_string();
+        custom.save_preferences();
+        let reloaded = AppConfig::load_from_paths(cfg_path, state_path);
+        assert_eq!(reloaded.asset_dir, "D:\\Notes\\Assets");
     }
 }

@@ -12,6 +12,7 @@ pub(crate) mod fs;
 pub mod http;
 pub mod markdown;
 pub(crate) mod math;
+pub mod media;
 pub(crate) mod mermaid;
 pub(crate) mod platform;
 pub mod search;

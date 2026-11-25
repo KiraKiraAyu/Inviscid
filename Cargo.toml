@@ -43,6 +43,7 @@ memchr = "2.7"
 ignore = "0.4"
 notify = "8.2"
 ropey = "1.6"
+image = { version = "0.25.10", default-features = false, features = ["png", "bmp"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = [
@@ -51,6 +52,7 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
 
