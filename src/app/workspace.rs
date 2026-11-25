@@ -1265,25 +1265,20 @@ impl Workspace {
         }
     }
 
-    pub fn workspace_name(&self, cx: &App) -> String {
-        if let Some(ref root) = self.root_dir
-            && let Some(name) = root.file_name().and_then(|n| n.to_str())
-            && !name.is_empty()
-        {
-            return name.to_string();
+    pub fn workspace_name(&self, _cx: &App) -> String {
+        match &self.root_dir {
+            Some(root) => root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| root.to_string_lossy().into_owned()),
+            None => "Open Workspace".to_string(),
         }
-
-        let active_path = self.active_editor().and_then(|ed| ed.read(cx).file_path());
-        let other_paths = self.tabs.iter().map(|t| t.editor.read(cx).file_path());
-
-        fs::extract_workspace_name_from_paths(
-            std::iter::once(active_path).chain(other_paths),
-            self.collocated_mode,
-        )
     }
 
-    pub fn has_workspace(&self, cx: &App) -> bool {
-        self.workspace_name(cx) != "Open Workspace"
+    pub fn has_workspace(&self, _cx: &App) -> bool {
+        self.root_dir.is_some()
     }
 
     pub fn open_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
