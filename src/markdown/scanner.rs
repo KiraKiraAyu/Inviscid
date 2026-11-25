@@ -655,6 +655,7 @@ impl MarkdownScanner {
         (range, rows)
     }
 
+    #[cfg(test)]
     pub(crate) fn scan_snapshot_window(
         source: &crate::buffer::SourceSnapshot,
         index: &crate::buffer::StructureIndex,

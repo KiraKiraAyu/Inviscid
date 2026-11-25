@@ -15,7 +15,11 @@ struct StructureLine {
 impl StructureLine {
     fn new(line: &str) -> Self {
         let raw = classify(line);
-        let projected = classify(&line[raw.quote_prefix..]);
+        let projected = if raw.quote_prefix == 0 {
+            raw
+        } else {
+            classify(&line[raw.quote_prefix..])
+        };
         let is_boundary = raw.is_fence || projected.is_fence || projected.is_math_delim;
         Self {
             count: 1,
@@ -279,14 +283,30 @@ impl StructureIndex {
         self.active_tree().summary().parser.0[BlockState::Outside as usize].headings
     }
 
-    pub(crate) fn heading_lines(&self) -> Vec<SourceLine> {
-        let total = self.heading_count();
-        let mut lines = Vec::with_capacity(total);
-        if total == 0 {
-            return lines;
+    pub(crate) fn heading_at_or_before(&self, line: SourceLine) -> Option<SourceLine> {
+        if self.len() == 0 {
+            return None;
         }
+        let target = line.index().min(self.len() - 1);
         let mut cursor = self.active_tree().cursor::<StructureSummary>(());
-        for ordinal in 0..total {
+        cursor.seek(&Lines(target), Bias::Right);
+        let count_through_line = cursor.end().parser.0[BlockState::Outside as usize].headings;
+        if count_through_line == 0 {
+            return None;
+        }
+        Some(self.seek_counter(PrefixCounter::Heading, count_through_line - 1))
+    }
+
+    pub(crate) fn heading_entries_in_range(&self, range: Range<usize>) -> Vec<(SourceLine, usize)> {
+        let total = self.heading_count();
+        let start = range.start.min(total);
+        let end = range.end.min(total);
+        if start >= end {
+            return Vec::new();
+        }
+        let mut entries = Vec::with_capacity(end - start);
+        let mut cursor = self.active_tree().cursor::<StructureSummary>(());
+        for ordinal in start..end {
             cursor.seek_forward(
                 &PrefixSeek {
                     kind: PrefixCounter::Heading,
@@ -294,9 +314,18 @@ impl StructureIndex {
                 },
                 Bias::Right,
             );
-            lines.push(SourceLine::new(cursor.start().lines));
+            let quote_prefix = cursor.item().map_or(0, |item| item.raw.quote_prefix);
+            entries.push((SourceLine::new(cursor.start().lines), quote_prefix));
         }
-        lines
+        entries
+    }
+
+    #[cfg(test)]
+    pub(crate) fn heading_lines(&self) -> Vec<SourceLine> {
+        self.heading_entries_in_range(0..self.heading_count())
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect()
     }
 
     /// Splices `old` with `new` and returns whether headings or their line numbers may have changed.
@@ -660,14 +689,33 @@ pub(in crate::buffer) mod tests {
             }
             Some(start..end)
         }
+
+        fn heading_at_or_before(&self, line: SourceLine) -> Option<SourceLine> {
+            let idx = self.headings.partition_point(|&h| h <= line);
+            idx.checked_sub(1).map(|i| self.headings[i])
+        }
     }
 
     pub(in crate::buffer) fn assert_matches(index: &StructureIndex, lines: &[String]) {
         let oracle = VecIndex::build(lines);
         assert_eq!(index.heading_count(), oracle.headings.len(), "{lines:?}");
         assert_eq!(index.heading_lines(), oracle.headings, "{lines:?}");
+        assert_eq!(
+            index.heading_entries_in_range(0..index.heading_count()),
+            oracle
+                .headings
+                .iter()
+                .map(|&h| (h, oracle.quote_prefix(h)))
+                .collect::<Vec<_>>(),
+            "{lines:?}"
+        );
         for row in 0..=lines.len() + 1 {
             let line = SourceLine::new(row);
+            assert_eq!(
+                index.heading_at_or_before(line),
+                oracle.heading_at_or_before(line),
+                "heading_at_or_before at {row}: {lines:?}"
+            );
             assert_eq!(
                 index.fence_range(line),
                 oracle.fence_range(line),
@@ -795,6 +843,31 @@ pub(in crate::buffer) mod tests {
         let mut no_heading_index = StructureIndex::new(&no_heading_lines);
         no_heading_lines.splice(1..2, ["beta 1".into(), "beta 2".into()]);
         assert!(!no_heading_index.splice(1..2, &no_heading_lines, 1..3));
+    }
+
+    #[test]
+    fn heading_entries_in_range_returns_requested_slice_and_clamps_bounds() {
+        let lines: Vec<String> = vec![
+            "# H0".into(),
+            "body".into(),
+            "> ## H1".into(),
+            "### H2".into(),
+            "#### H3".into(),
+        ];
+        let index = StructureIndex::new(&lines);
+        assert_eq!(
+            index.heading_entries_in_range(1..3),
+            vec![(SourceLine::new(2), 2), (SourceLine::new(3), 0)]
+        );
+        assert_eq!(
+            index.heading_entries_in_range(2..10),
+            vec![(SourceLine::new(3), 0), (SourceLine::new(4), 0)]
+        );
+        assert!(index.heading_entries_in_range(4..10).is_empty());
+        assert!(index.heading_entries_in_range(3..3).is_empty());
+        #[allow(clippy::reversed_empty_ranges)]
+        let inverted = index.heading_entries_in_range(3..2);
+        assert!(inverted.is_empty());
     }
 
     #[test]
