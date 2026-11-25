@@ -80,6 +80,12 @@ impl PanelLayoutValues {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutlineActiveLineSource {
+    Cursor,
+    Viewport,
+}
+
 impl EventEmitter<WorkspaceEvent> for Workspace {}
 
 pub struct Workspace {
@@ -98,7 +104,9 @@ pub struct Workspace {
     sidebar_width: Pixels,
     sidebar_view: SidebarView,
     outline_visible: bool,
-    outline_source: Option<(EntityId, u64)>,
+    outline_displayed: Option<(EntityId, u64)>,
+    outline_in_flight: Option<(EntityId, u64)>,
+    outline_active_line_source: OutlineActiveLineSource,
     outline_task: Option<Task<()>>,
     outline_width: Pixels,
     search_panel: Entity<SearchPanel>,
@@ -305,7 +313,9 @@ impl Workspace {
             sidebar_width: layout.sidebar_width,
             sidebar_view: layout.sidebar_view,
             outline_visible: layout.outline_visible,
-            outline_source: None,
+            outline_displayed: None,
+            outline_in_flight: None,
+            outline_active_line_source: OutlineActiveLineSource::Cursor,
             outline_task: None,
             outline_width: layout.outline_width,
             search_panel,
@@ -474,7 +484,7 @@ impl Workspace {
             None => Editor::new(cx),
         });
         let tab_editor = editor.clone();
-        let mut last_status_version = tab_editor.read(cx).buffer_version();
+        let mut last_status_revision = tab_editor.read(cx).buffer().revision();
         let subscription = cx.subscribe(
             &editor,
             move |this, _emitter, event: &crate::editor::EditorEvent, cx| match event {
@@ -506,7 +516,8 @@ impl Workspace {
                     }
                     if this.active_editor() == Some(&tab_editor) {
                         let meta = tab_editor.read(cx).status_meta();
-                        last_status_version = tab_editor.read(cx).buffer_version();
+                        last_status_revision = tab_editor.read(cx).buffer().revision();
+                        this.outline_active_line_source = OutlineActiveLineSource::Cursor;
                         this.status_bar.update(cx, |sb, cx| sb.set_meta(meta, cx));
                         this.sync_outline_panel(cx);
                         cx.emit(WorkspaceEvent::TitleChanged);
@@ -514,8 +525,9 @@ impl Workspace {
                 }
                 crate::editor::EditorEvent::CursorMoved => {
                     if this.active_editor() == Some(&tab_editor) {
-                        let current_version = tab_editor.read(cx).buffer_version();
-                        if current_version == last_status_version {
+                        this.outline_active_line_source = OutlineActiveLineSource::Cursor;
+                        let current_revision = tab_editor.read(cx).buffer().revision();
+                        if current_revision == last_status_revision {
                             let pos = tab_editor.read(cx).cursor_pos();
                             this.status_bar
                                 .update(cx, |sb, cx| sb.set_cursor_pos(pos, cx));
@@ -525,7 +537,7 @@ impl Workspace {
                                 });
                             }
                         } else {
-                            last_status_version = current_version;
+                            last_status_revision = current_revision;
                             let meta = tab_editor.read(cx).status_meta();
                             this.status_bar.update(cx, |sb, cx| sb.set_meta(meta, cx));
                             this.sync_outline_panel(cx);
@@ -533,7 +545,8 @@ impl Workspace {
                     }
                 }
                 crate::editor::EditorEvent::ScrollChanged => {
-                    if this.active_editor() == Some(&tab_editor) {
+                    if this.active_editor() == Some(&tab_editor) && this.outline_visible {
+                        this.outline_active_line_source = OutlineActiveLineSource::Viewport;
                         let visible_line = {
                             let editor = tab_editor.read(cx);
                             editor.first_visible_source_line()
@@ -1603,77 +1616,148 @@ impl Workspace {
         &self.outline_panel
     }
 
+    fn resolve_outline_active_line(&self, editor: &Editor) -> Option<SourceLine> {
+        match self.outline_active_line_source {
+            OutlineActiveLineSource::Cursor => Some(editor.cursor_pos().line),
+            OutlineActiveLineSource::Viewport => editor
+                .first_visible_source_line()
+                .or_else(|| Some(editor.cursor_pos().line)),
+        }
+    }
+
     fn sync_outline_panel(&mut self, cx: &mut Context<Self>) {
         // Hidden outlines catch up when opened; input events should not parse
         // an invisible panel's document on the UI thread.
         if !self.outline_visible {
             self.outline_task = None;
-            self.outline_source = None;
+            self.outline_in_flight = None;
             return;
         }
-        if let Some(entity) = self.active_editor() {
-            let editor = entity.read(cx);
-            use crate::buffer::LineSource;
-            if editor.is_loading() {
-                self.outline_task = None;
-                if self.outline_source.take().is_some() {
-                    self.outline_panel.update(cx, |panel, cx| {
-                        panel.set_entries(Vec::new(), None, None, cx)
-                    });
-                }
-                return;
-            }
-            let key = (entity.entity_id(), editor.buffer().revision());
-            let active = Some(editor.cursor_pos().line);
-            if self.outline_source == Some(key) {
-                self.outline_panel
-                    .update(cx, |panel, cx| panel.set_active_line(active, cx));
-                return;
-            }
-            let source = editor.buffer().source_snapshot();
-            let focus = Some(editor.focus_handle(cx));
-            self.outline_source = Some(key);
+        let Some(entity) = self.active_editor().cloned() else {
+            self.outline_displayed = None;
+            self.outline_in_flight = None;
+            self.outline_task = None;
             self.outline_panel.update(cx, |panel, cx| {
-                panel.set_entries(Vec::new(), active, focus, cx)
+                panel.set_entries(Vec::new(), None, None, cx)
             });
-            let job = cx
-                .background_executor()
-                .spawn(async move { crate::markdown::collect_outline_from_source(&source) });
-            self.outline_task = Some(cx.spawn(async move |workspace, cx| {
-                let entries = job.await;
-                let _ = workspace.update(cx, |workspace, cx| {
-                    if workspace.outline_source != Some(key) {
-                        return;
-                    }
-                    let Some(entity) = workspace
-                        .active_editor()
-                        .filter(|entity| entity.entity_id() == key.0)
-                    else {
-                        return;
-                    };
-                    let editor = entity.read(cx);
-                    if editor.buffer().revision() != key.1 {
-                        return;
-                    }
-                    let active = Some(editor.cursor_pos().line);
-                    let focus = Some(editor.focus_handle(cx));
-                    workspace.outline_panel.update(cx, |panel, cx| {
-                        panel.set_entries(entries, active, focus, cx)
-                    });
-                    workspace.outline_task = None;
-                });
-            }));
+            return;
+        };
+
+        let (is_loading, key, active, same_document) = {
+            let editor = entity.read(cx);
+            if editor.is_loading() {
+                (true, None, None, false)
+            } else {
+                let entity_id = entity.entity_id();
+                let same_document = self
+                    .outline_displayed
+                    .is_some_and(|(id, _)| id == entity_id);
+                let key = (entity_id, editor.buffer().outline_revision());
+                let active = if same_document {
+                    self.resolve_outline_active_line(editor)
+                } else {
+                    Some(editor.cursor_pos().line)
+                };
+                (false, Some(key), active, same_document)
+            }
+        };
+
+        if is_loading {
+            self.outline_displayed = None;
+            self.outline_in_flight = None;
+            self.outline_task = None;
+            self.outline_panel
+                .update(cx, |panel, cx| panel.set_loading(cx));
             return;
         }
-        self.outline_source = None;
-        self.outline_task = None;
-        self.outline_panel.update(cx, |panel, cx| {
-            panel.set_entries(Vec::new(), None, None, cx)
-        });
+
+        let key = key.unwrap();
+        if !same_document {
+            self.outline_active_line_source = OutlineActiveLineSource::Cursor;
+        }
+        if self.outline_displayed == Some(key) {
+            self.outline_in_flight = None;
+            self.outline_task = None;
+            self.outline_panel
+                .update(cx, |panel, cx| panel.set_active_line(active, cx));
+            return;
+        }
+
+        if !same_document {
+            self.outline_displayed = None;
+            self.outline_panel
+                .update(cx, |panel, cx| panel.set_loading(cx));
+        } else {
+            self.outline_panel
+                .update(cx, |panel, cx| panel.set_active_line(active, cx));
+        }
+
+        if self.outline_in_flight.is_some_and(|(id, _)| id == key.0)
+            && self.outline_task.is_some()
+        {
+            return;
+        }
+
+        self.spawn_outline_job(entity, key, cx);
+    }
+
+    fn spawn_outline_job(
+        &mut self,
+        entity: Entity<Editor>,
+        key: (EntityId, u64),
+        cx: &mut Context<Self>,
+    ) {
+        use crate::buffer::LineSource;
+        let source = entity.read(cx).buffer().source_snapshot();
+        self.outline_in_flight = Some(key);
+        let job = cx
+            .background_executor()
+            .spawn(async move { crate::markdown::collect_outline_from_source(&source) });
+        self.outline_task = Some(cx.spawn(async move |workspace, cx| {
+            let entries = job.await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                if !workspace.outline_visible || workspace.outline_in_flight != Some(key) {
+                    return;
+                }
+                workspace.outline_in_flight = None;
+                workspace.outline_task = None;
+                let Some(entity) = workspace
+                    .active_editor()
+                    .filter(|entity| entity.entity_id() == key.0)
+                    .cloned()
+                else {
+                    return;
+                };
+                let (is_loading, active, focus, latest_key) = {
+                    let editor = entity.read(cx);
+                    if editor.is_loading() {
+                        (true, None, None, key)
+                    } else {
+                        (
+                            false,
+                            workspace.resolve_outline_active_line(editor),
+                            Some(editor.focus_handle(cx)),
+                            (key.0, editor.buffer().outline_revision()),
+                        )
+                    }
+                };
+                if is_loading {
+                    return;
+                }
+                workspace.outline_displayed = Some(key);
+                workspace.outline_panel.update(cx, |panel, cx| {
+                    panel.set_entries(entries, active, focus, cx)
+                });
+                if latest_key != key {
+                    workspace.sync_outline_panel(cx);
+                }
+            });
+        }));
     }
 
     pub fn jump_to_outline(&mut self, line: SourceLine, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor() {
+        if let Some(editor) = self.active_editor().cloned() {
+            self.outline_active_line_source = OutlineActiveLineSource::Cursor;
             editor.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(Position::new(line, 0));
                 editor.scroll_to_cursor();
@@ -1892,10 +1976,10 @@ impl Render for Workspace {
 mod tests {
     use super::Workspace;
     use crate::app::SidebarView;
-    use crate::buffer::Position;
+    use crate::buffer::{Position, SourceLine};
     use crate::config::AppConfig;
     use crate::theme::ThemeManager;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, px};
 
     fn init_globals(cx: &mut TestAppContext) {
         let config = AppConfig::default().with_theme("Dracula");
@@ -2050,6 +2134,195 @@ mod tests {
             editor.read_with(cx, |editor, _| editor.buffer().full_line_materializations()),
             before
         );
+    }
+
+    #[gpui::test]
+    fn outline_skips_body_edits_and_keeps_stale_entries_without_flicker(cx: &mut TestAppContext) {
+        init_globals(cx);
+        let (ws, cx) = cx.add_window_view(|_, cx| Workspace::new(None, cx));
+        ws.update(cx, |ws, cx| ws.new_tab(cx));
+        let editor = ws.read_with(cx, |ws, _| ws.active_editor().unwrap().clone());
+        editor.update(cx, |editor, _| {
+            editor
+                .buffer_mut()
+                .insert_text("# First\nbody\n## Second");
+            editor.ensure_layout_cache();
+        });
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.toggle_outline_panel(window, cx)));
+        cx.run_until_parked();
+
+        ws.read_with(cx, |ws, cx| {
+            let panel = ws.outline_panel.read(cx);
+            assert!(!panel.is_loading());
+            assert_eq!(panel.entries().len(), 2);
+        });
+
+        // Single-line body edit does not bump outline_revision or spawn a background task.
+        editor.update(cx, |editor, cx| {
+            editor
+                .buffer_mut()
+                .record_single_line_edit(SourceLine::new(1), |line, _| *line = "body edited".into());
+            cx.emit(crate::editor::EditorEvent::CursorMoved);
+        });
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.outline_task.is_none());
+            assert!(ws.outline_in_flight.is_none());
+            assert!(!ws.outline_panel.read(cx).is_loading());
+            assert_eq!(ws.outline_panel.read(cx).entries().len(), 2);
+        });
+
+        // Heading edit spawns background work WITHOUT clearing existing entries or showing loading.
+        editor.update(cx, |editor, cx| {
+            editor
+                .buffer_mut()
+                .record_single_line_edit(SourceLine::new(0), |line, _| *line = "# First edited".into());
+            cx.emit(crate::editor::EditorEvent::CursorMoved);
+        });
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.outline_task.is_some());
+            assert!(ws.outline_in_flight.is_some());
+            let panel = ws.outline_panel.read(cx);
+            assert!(!panel.is_loading());
+            assert_eq!(panel.entries().len(), 2);
+            assert_eq!(panel.entries()[0].title, "First");
+        });
+
+        // Rapid second heading edit while first is in flight converges via single-flight.
+        editor.update(cx, |editor, cx| {
+            editor
+                .buffer_mut()
+                .record_single_line_edit(SourceLine::new(0), |line, _| {
+                    *line = "# First final".into()
+                });
+            cx.emit(crate::editor::EditorEvent::CursorMoved);
+        });
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, cx| {
+            let panel = ws.outline_panel.read(cx);
+            assert!(!panel.is_loading());
+            assert_eq!(panel.entries()[0].title, "First final");
+            assert!(ws.outline_task.is_none());
+            assert!(ws.outline_in_flight.is_none());
+        });
+
+        // Toggling outline off and back on without heading edits preserves entries immediately.
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.toggle_outline_panel(window, cx)));
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.toggle_outline_panel(window, cx)));
+        ws.read_with(cx, |ws, cx| {
+            let panel = ws.outline_panel.read(cx);
+            assert!(!panel.is_loading());
+            assert_eq!(panel.entries()[0].title, "First final");
+            assert!(ws.outline_task.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn outline_shows_loading_on_tab_switch_and_preserves_viewport_highlight_and_undo_branch(
+        cx: &mut TestAppContext,
+    ) {
+        init_globals(cx);
+        let (ws, cx) = cx.add_window_view(|_, cx| Workspace::new(None, cx));
+        ws.update(cx, |ws, cx| {
+            ws.new_tab(cx);
+            ws.new_tab(cx);
+        });
+        let (ed0, ed1) = ws.read_with(cx, |ws, _| {
+            (ws.tabs[0].editor.clone(), ws.tabs[1].editor.clone())
+        });
+        ed0.update(cx, |ed, _| {
+            ed.buffer_mut().insert_text(&format!(
+                "# Top\n{}\n## Lower\n{}",
+                "line\n".repeat(40),
+                "tail\n".repeat(60)
+            ));
+            ed.ensure_layout_cache();
+        });
+        ed1.update(cx, |ed, _| {
+            ed.buffer_mut().insert_text("# Other Tab");
+            ed.ensure_layout_cache();
+        });
+
+        ws.update(cx, |ws, cx| ws.switch_tab(0, cx));
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.toggle_outline_panel(window, cx)));
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.outline_panel.read(cx).is_loading());
+        });
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, cx| {
+            assert!(!ws.outline_panel.read(cx).is_loading());
+            assert_eq!(ws.outline_panel.read(cx).entries().len(), 2);
+        });
+
+        // Switching to another tab enters loading until parsed.
+        ws.update(cx, |ws, cx| ws.switch_tab(1, cx));
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.outline_panel.read(cx).is_loading());
+        });
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, cx| {
+            let panel = ws.outline_panel.read(cx);
+            assert!(!panel.is_loading());
+            assert_eq!(panel.entries().len(), 1);
+            assert_eq!(panel.entries()[0].title, "Other Tab");
+        });
+
+        // Switch back to tab 0, start a heading edit, then scroll while in flight:
+        // viewport highlight must win over cursor line when background parse completes.
+        ws.update(cx, |ws, cx| ws.switch_tab(0, cx));
+        cx.run_until_parked();
+        let lower_y = ed0.read_with(cx, |ed, _| ed.layout_snapshot().metrics.top(42).unwrap());
+        ed0.update(cx, |ed, cx| {
+            ed.buffer_mut().set_cursor(Position::new(SourceLine::new(0), 0));
+            ed.buffer_mut()
+                .record_single_line_edit(SourceLine::new(0), |line, _| *line = "# Top v2".into());
+            cx.emit(crate::editor::EditorEvent::CursorMoved);
+        });
+        let wheel_event = gpui::ScrollWheelEvent {
+            delta: gpui::ScrollDelta::Pixels(gpui::Point::new(px(0.0), -lower_y)),
+            ..Default::default()
+        };
+        ed0.update(cx, |ed, cx| ed.handle_scroll_wheel(&wheel_event, cx));
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, cx| {
+            let panel = ws.outline_panel.read(cx);
+            assert_eq!(panel.entries()[0].title, "Top v2");
+            assert_eq!(panel.active_line(), Some(SourceLine::new(42)));
+        });
+
+        // ScrollChanged while outline is hidden must not update outline_panel.
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.toggle_outline_panel(window, cx)));
+        let top_scroll = gpui::ScrollWheelEvent {
+            delta: gpui::ScrollDelta::Pixels(gpui::Point::new(px(0.0), lower_y)),
+            ..Default::default()
+        };
+        ed0.update(cx, |ed, cx| ed.handle_scroll_wheel(&top_scroll, cx));
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(
+                ws.outline_panel.read(cx).active_line(),
+                Some(SourceLine::new(42))
+            );
+        });
+
+        // Undo + new branch edit reusing buffer_version() still refreshes outline via revision().
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.toggle_outline_panel(window, cx)));
+        cx.run_until_parked();
+        let cached_version = ed0.read_with(cx, |ed, _| ed.buffer_version());
+        ed0.update(cx, |ed, cx| {
+            ed.buffer_mut().undo();
+            ed.buffer_mut()
+                .record_single_line_edit(SourceLine::new(0), |line, _| {
+                    *line = "# Top branched".into()
+                });
+            assert_eq!(ed.buffer_version(), cached_version);
+            cx.emit(crate::editor::EditorEvent::CursorMoved);
+        });
+        cx.run_until_parked();
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(
+                ws.outline_panel.read(cx).entries()[0].title,
+                "Top branched"
+            );
+        });
     }
 
     #[gpui::test]

@@ -17,6 +17,7 @@ impl EventEmitter<OutlinePanelEvent> for OutlinePanel {}
 pub struct OutlinePanel {
     focus_handle: FocusHandle,
     entries: Vec<OutlineItem>,
+    is_loading: bool,
     active_line: Option<SourceLine>,
     editor_focus_handle: Option<FocusHandle>,
     scroll_handle: UniformListScrollHandle,
@@ -34,6 +35,7 @@ impl OutlinePanel {
         Self {
             focus_handle,
             entries: Vec::new(),
+            is_loading: false,
             active_line: None,
             editor_focus_handle: None,
             scroll_handle: UniformListScrollHandle::default(),
@@ -55,6 +57,25 @@ impl OutlinePanel {
         self.active_line
     }
 
+    pub fn is_loading(&self) -> bool {
+        self.is_loading
+    }
+
+    pub(crate) fn set_loading(&mut self, cx: &mut Context<Self>) {
+        if self.is_loading
+            && self.entries.is_empty()
+            && self.active_line.is_none()
+            && self.editor_focus_handle.is_none()
+        {
+            return;
+        }
+        self.is_loading = true;
+        self.entries.clear();
+        self.active_line = None;
+        self.editor_focus_handle = None;
+        cx.notify();
+    }
+
     pub fn set_document(
         &mut self,
         lines: &[String],
@@ -74,12 +95,14 @@ impl OutlinePanel {
         cx: &mut Context<Self>,
     ) {
         let active_heading = Self::heading_at_or_before(&entries, active_line);
-        if self.entries == entries
+        if !self.is_loading
+            && self.entries == entries
             && self.active_line == active_heading
             && self.editor_focus_handle == editor_focus_handle
         {
             return;
         }
+        self.is_loading = false;
         self.entries = entries;
         self.active_line = active_heading;
         self.editor_focus_handle = editor_focus_handle;
@@ -189,7 +212,9 @@ impl Render for OutlinePanel {
             Self::scroll_access,
         );
         let theme = cx.global::<ThemeManager>().theme().clone();
-        let entries = if self.entries.is_empty() {
+        let entries = if self.is_loading {
+            dock_panel::loading_state("outline_loading_metaball", &theme).into_any_element()
+        } else if self.entries.is_empty() {
             dock_panel::empty_state("No headings", &theme).into_any_element()
         } else {
             self.render_entries(cx).into_any_element()
