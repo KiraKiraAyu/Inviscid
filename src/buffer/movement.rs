@@ -22,6 +22,7 @@ fn char_kind(c: char) -> CharKind {
 #[derive(Clone, Debug)]
 pub(crate) struct LineIndex {
     pub(in crate::buffer) revision: u64,
+    pub(in crate::buffer) outline_revision: u64,
     structure: super::structure_index::StructureIndex,
 }
 
@@ -40,6 +41,7 @@ impl LineIndex {
     ) -> Self {
         Self {
             revision,
+            outline_revision: revision,
             structure,
         }
     }
@@ -47,6 +49,7 @@ impl LineIndex {
     fn build(buffer: &TextBuffer) -> Self {
         Self {
             revision: buffer.revision,
+            outline_revision: buffer.revision,
             structure: super::structure_index::StructureIndex::new(buffer),
         }
     }
@@ -59,12 +62,15 @@ impl LineIndex {
                 == buffer.line_count()
         {
             let start = delta.start_line.index();
-            self.structure.splice(
+            let outline_affected = self.structure.splice(
                 start..start + delta.old_line_count,
                 buffer,
                 start..start + delta.new_line_count,
             );
             self.revision = buffer.revision;
+            if outline_affected {
+                self.outline_revision = buffer.revision;
+            }
         } else {
             *self = Self::build(buffer);
         }
@@ -184,6 +190,27 @@ mod structure_cache_tests {
         assert!(buffer.is_in_code_fence(SourceLine::new(1500)));
         assert_matches_full_scan(&buffer);
     }
+
+    #[test]
+    fn outline_revision_skips_single_line_body_edits_and_tracks_heading_edits() {
+        let mut buffer = TextBuffer::from_str("# First\nbody\n## Second", None);
+        let rev0 = buffer.outline_revision();
+
+        // Single-line body edit keeps outline_revision unchanged.
+        buffer.record_single_line_edit(SourceLine::new(1), |line, _| *line = "body edited".into());
+        assert_eq!(buffer.outline_revision(), rev0);
+
+        // Inserting a body line shifts heading 1 -> 2, bumping outline_revision.
+        buffer.set_cursor(Position::new(SourceLine::new(1), 4));
+        buffer.insert_text("\nmore body");
+        let rev1 = buffer.outline_revision();
+        assert_ne!(rev1, rev0);
+
+        // Editing a heading line bumps outline_revision.
+        buffer.record_single_line_edit(SourceLine::new(0), |line, _| *line = "# First edited".into());
+        let rev2 = buffer.outline_revision();
+        assert_ne!(rev2, rev1);
+    }
 }
 
 impl TextBuffer {
@@ -208,6 +235,10 @@ impl TextBuffer {
 
         let cache = self.line_index_cache.borrow();
         Ref::map(cache, |c| c.as_ref().unwrap())
+    }
+
+    pub fn outline_revision(&self) -> u64 {
+        self.line_index().outline_revision
     }
 
     pub fn is_closing_code_fence(&self, source_line: crate::buffer::SourceLine) -> bool {

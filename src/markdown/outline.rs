@@ -20,22 +20,11 @@ pub fn collect_outline(lines: &[String]) -> Vec<OutlineItem> {
 pub(crate) fn collect_outline_from_source(
     source: &(impl crate::buffer::LineSource + ?Sized),
 ) -> Vec<OutlineItem> {
-    use crate::buffer::LineSource;
     let source = source.source_snapshot();
     let index = source.structure_index();
-    let mut headings = Vec::new();
-    for (row, text) in source.source_lines().enumerate() {
-        let source_line = SourceLine::new(row);
-        if index.fence_range(source_line).is_some() || index.math_range(source_line).is_some() {
-            continue;
-        }
-        let prefix = index.quote_prefix(source_line);
-        if !matches!(
-            super::prefix::parse_block_prefix(&text[prefix..]).map(|prefix| prefix.kind),
-            Some(super::prefix::BlockPrefix::Heading { .. })
-        ) {
-            continue;
-        }
+    let mut headings = Vec::with_capacity(index.heading_count());
+    for source_line in index.heading_lines() {
+        let row = source_line.index();
         let (range, parsed) =
             super::scanner::MarkdownScanner::scan_snapshot_window(&source, &index, row..row + 1);
         let parsed = parsed.into_iter().nth(row - range.start).unwrap();

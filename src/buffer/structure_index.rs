@@ -30,8 +30,10 @@ impl StructureLine {
         std::iter::from_fn(move || {
             let mut run = lines.next()?;
             while !run.is_boundary
+                && !run.projected.is_heading
                 && lines.peek().is_some_and(|next| {
                     !next.is_boundary
+                        && !next.projected.is_heading
                         && next.raw.is_blank == run.raw.is_blank
                         && next.projected.is_blank == run.projected.is_blank
                         && next.raw.quote_prefix == run.raw.quote_prefix
@@ -49,13 +51,15 @@ struct StructureSummary {
     lines: usize,
     parser: PrefixSummary,
     last_non_blank: [usize; BlockState::COUNT],
+    outline_markers: usize,
 }
 
 impl Item for StructureLine {
     type Summary = StructureSummary;
 
     fn summary(&self, (): ()) -> StructureSummary {
-        let parser = if self.is_boundary {
+        let is_outline_marker = self.is_boundary || self.projected.is_heading;
+        let parser = if is_outline_marker {
             PrefixSummary::line(self.raw, self.projected)
         } else {
             PrefixSummary::neutral()
@@ -72,6 +76,7 @@ impl Item for StructureLine {
             lines: self.count,
             parser,
             last_non_blank,
+            outline_markers: usize::from(is_outline_marker),
         }
     }
 }
@@ -91,6 +96,7 @@ impl ContextLessSummary for StructureSummary {
         }
         self.lines += other.lines;
         self.parser.append(&other.parser);
+        self.outline_markers += other.outline_markers;
     }
 }
 
@@ -116,6 +122,7 @@ enum PrefixCounter {
     CodeClose,
     MathOpen,
     MathClose,
+    Heading,
 }
 
 struct PrefixSeek {
@@ -131,6 +138,7 @@ impl<'a> SeekTarget<'a, StructureSummary, StructureSummary> for PrefixSeek {
             PrefixCounter::CodeClose => transition.code_closes,
             PrefixCounter::MathOpen => transition.math_opens,
             PrefixCounter::MathClose => transition.math_closes,
+            PrefixCounter::Heading => transition.headings,
         };
         Ord::cmp(&self.target, &count)
     }
@@ -267,14 +275,40 @@ impl StructureIndex {
         self.effective_tree.as_ref().unwrap_or(&self.tree)
     }
 
+    pub(crate) fn heading_count(&self) -> usize {
+        self.active_tree().summary().parser.0[BlockState::Outside as usize].headings
+    }
+
+    pub(crate) fn heading_lines(&self) -> Vec<SourceLine> {
+        let total = self.heading_count();
+        let mut lines = Vec::with_capacity(total);
+        if total == 0 {
+            return lines;
+        }
+        let mut cursor = self.active_tree().cursor::<StructureSummary>(());
+        for ordinal in 0..total {
+            cursor.seek_forward(
+                &PrefixSeek {
+                    kind: PrefixCounter::Heading,
+                    target: ordinal,
+                },
+                Bias::Right,
+            );
+            lines.push(SourceLine::new(cursor.start().lines));
+        }
+        lines
+    }
+
+    /// Splices `old` with `new` and returns whether headings or their line numbers may have changed.
     pub(crate) fn splice(
         &mut self,
         old: Range<usize>,
         source: &(impl LineSource + ?Sized),
         new: Range<usize>,
-    ) {
+    ) -> bool {
         let mut cursor = self.tree.cursor::<StructureSummary>(());
         let mut tree = cursor.slice(&Lines(old.start), Bias::Right);
+        let markers_before_old_start = cursor.start().outline_markers;
         if let Some(item) = cursor.item() {
             let count = old.start - cursor.start().lines;
             if count > 0 {
@@ -282,6 +316,7 @@ impl StructureIndex {
             }
         }
         cursor.seek_forward(&Lines(old.end), Bias::Right);
+        let removed_markers = cursor.start().outline_markers - markers_before_old_start;
         let tail = cursor.item().and_then(|item| {
             let skipped = old.end - cursor.start().lines;
             (skipped > 0).then(|| StructureLine {
@@ -292,11 +327,14 @@ impl StructureIndex {
         if tail.is_some() {
             cursor.next();
         }
+        let mut new_has_marker = false;
         tree.extend(
-            StructureLine::runs(
-                new.clone()
-                    .map(|line| StructureLine::new(&source.source_line(SourceLine::new(line)))),
-            ),
+            StructureLine::runs(new.clone().map(|line| {
+                let structure_line =
+                    StructureLine::new(&source.source_line(SourceLine::new(line)));
+                new_has_marker |= structure_line.is_boundary || structure_line.projected.is_heading;
+                structure_line
+            })),
             (),
         );
         tree.extend(tail, ());
@@ -308,6 +346,9 @@ impl StructureIndex {
         {
             self.classified_lines += new.len();
         }
+        removed_markers > 0
+            || new_has_marker
+            || (old.len() != new.len() && self.heading_count() > 0)
     }
 
     fn seek_counter(&self, kind: PrefixCounter, ordinal: usize) -> SourceLine {
@@ -477,6 +518,7 @@ pub(in crate::buffer) mod tests {
         fences: Vec<Option<(SourceLine, Option<SourceLine>)>>,
         maths: Vec<Option<(SourceLine, Option<SourceLine>)>>,
         quote_prefixes: Vec<usize>,
+        headings: Vec<SourceLine>,
     }
 
     impl<'a> VecIndex<'a> {
@@ -485,11 +527,13 @@ pub(in crate::buffer) mod tests {
             let mut fences = vec![None; lines.len()];
             let mut maths = vec![None; lines.len()];
             let mut quote_prefixes = vec![0; lines.len()];
+            let mut headings = Vec::new();
 
             loop {
                 fences.fill(None);
                 maths.fill(None);
                 quote_prefixes.fill(0);
+                headings.clear();
                 let mut state = BlockState::Outside;
                 let mut active_open: Option<usize> = None;
 
@@ -520,6 +564,8 @@ pub(in crate::buffer) mod tests {
                             } else if projected.is_math_delim {
                                 state = BlockState::Math;
                                 active_open = Some(i);
+                            } else if projected.is_heading {
+                                headings.push(SourceLine::new(i));
                             }
                         }
                         BlockState::RawCode => {
@@ -567,6 +613,7 @@ pub(in crate::buffer) mod tests {
                 fences,
                 maths,
                 quote_prefixes,
+                headings,
             }
         }
 
@@ -617,6 +664,8 @@ pub(in crate::buffer) mod tests {
 
     pub(in crate::buffer) fn assert_matches(index: &StructureIndex, lines: &[String]) {
         let oracle = VecIndex::build(lines);
+        assert_eq!(index.heading_count(), oracle.headings.len(), "{lines:?}");
+        assert_eq!(index.heading_lines(), oracle.headings, "{lines:?}");
         for row in 0..=lines.len() + 1 {
             let line = SourceLine::new(row);
             assert_eq!(
@@ -673,6 +722,10 @@ pub(in crate::buffer) mod tests {
             "",
             " ",
             "text",
+            "# h",
+            "  ## h2",
+            "> ### q",
+            "# ",
             "```",
             "  ```rust",
             "> ```",
@@ -701,10 +754,47 @@ pub(in crate::buffer) mod tests {
             let replacement: Vec<String> = (0..added)
                 .map(|_| fragments[random() % fragments.len()].into())
                 .collect();
+            let before_headings = index.heading_lines();
             lines.splice(start..start + removed, replacement);
-            index.splice(start..start + removed, &lines, start..start + added);
+            let outline_affected =
+                index.splice(start..start + removed, &lines, start..start + added);
             assert_matches(&index, &lines);
+            if index.heading_lines() != before_headings {
+                assert!(
+                    outline_affected,
+                    "headings changed from {before_headings:?} to {:?} without outline_affected",
+                    index.heading_lines()
+                );
+            }
         }
+    }
+
+    #[test]
+    fn splice_reports_outline_affected_only_for_heading_boundary_or_line_shifts() {
+        let mut lines: Vec<String> = vec!["# First".into(), "body".into(), "## Second".into()];
+        let mut index = StructureIndex::new(&lines);
+
+        // Single-line body edit: unaffected.
+        lines[1] = "edited body".into();
+        assert!(!index.splice(1..2, &lines, 1..2));
+
+        // Body edit inserting a line while headings exist: affects line numbers.
+        lines.splice(1..2, ["line a".into(), "line b".into()]);
+        assert!(index.splice(1..2, &lines, 1..3));
+
+        // Heading text edit: affected.
+        lines[0] = "# First edited".into();
+        assert!(index.splice(0..1, &lines, 0..1));
+
+        // Fence insertion: affected.
+        lines.splice(1..1, ["```".into()]);
+        assert!(index.splice(1..1, &lines, 1..2));
+
+        // Document without headings: inserting a body newline stays unaffected.
+        let mut no_heading_lines: Vec<String> = vec!["alpha".into(), "beta".into()];
+        let mut no_heading_index = StructureIndex::new(&no_heading_lines);
+        no_heading_lines.splice(1..2, ["beta 1".into(), "beta 2".into()]);
+        assert!(!no_heading_index.splice(1..2, &no_heading_lines, 1..3));
     }
 
     #[test]

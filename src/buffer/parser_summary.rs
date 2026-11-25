@@ -49,6 +49,7 @@ pub(crate) struct PrefixTransition {
     pub code_closes: usize,
     pub math_opens: usize,
     pub math_closes: usize,
+    pub headings: usize,
 }
 
 /// Pure prefix-only block-state monoid over a line segment (zero lookahead).
@@ -70,6 +71,7 @@ impl PrefixSummary {
                 code_closes: 0,
                 math_opens: 0,
                 math_closes: 0,
+                headings: 0,
             },
             PrefixTransition {
                 exit: BlockState::RawCode,
@@ -77,6 +79,7 @@ impl PrefixSummary {
                 code_closes: 0,
                 math_opens: 0,
                 math_closes: 0,
+                headings: 0,
             },
             PrefixTransition {
                 exit: BlockState::QuotedCode,
@@ -84,6 +87,7 @@ impl PrefixSummary {
                 code_closes: 0,
                 math_opens: 0,
                 math_closes: 0,
+                headings: 0,
             },
             PrefixTransition {
                 exit: BlockState::Math,
@@ -91,6 +95,7 @@ impl PrefixSummary {
                 code_closes: 0,
                 math_opens: 0,
                 math_closes: 0,
+                headings: 0,
             },
         ])
     }
@@ -121,6 +126,7 @@ impl PrefixSummary {
                     } else {
                         PrefixTransition {
                             exit: BlockState::Outside,
+                            headings: usize::from(projected.is_heading),
                             ..Default::default()
                         }
                     }
@@ -179,6 +185,7 @@ impl PrefixSummary {
             left.code_closes += right.code_closes;
             left.math_opens += right.math_opens;
             left.math_closes += right.math_closes;
+            left.headings += right.headings;
         }
     }
 }
