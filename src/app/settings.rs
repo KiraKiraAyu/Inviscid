@@ -18,11 +18,12 @@ pub(crate) mod persistence;
 
 pub use category::SettingsCategory;
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, UserPreferences};
+use crate::syntax::normalize_grammar_base_url;
 use crate::theme::ThemeManager;
 use crate::ui::{
-    ControlHeight, FontSize, Icon, IconName, IconSize, LineHeight, Radius, Spacing, TextInput,
-    WindowTitleBar, keystroke_from_gpui,
+    ControlHeight, FontSize, Icon, IconName, IconSize, LineHeight, Radius, SettingTextField,
+    SettingTextFieldEvent, Spacing, WindowTitleBar, keystroke_from_gpui,
 };
 
 /// Width of the left category navigation sidebar.
@@ -31,20 +32,16 @@ const SIDEBAR_WIDTH: Pixels = px(190.0);
 /// Mutually exclusive transient input state within the settings window.
 pub(crate) enum ActiveInput {
     RecordingKeybinding(&'static str),
-    EditingGrammarUrl {
-        input: Entity<TextInput>,
-        _subscriptions: [Subscription; 2],
-    },
-    EditingAssetDir {
-        input: Entity<TextInput>,
-        _subscriptions: [Subscription; 2],
-    },
 }
 
 pub struct SettingsWindow {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) active_category: SettingsCategory,
     pub(crate) active_input: Option<ActiveInput>,
+    pub(crate) grammar_url_field: Entity<SettingTextField>,
+    pub(crate) custom_grammar_selected: bool,
+    pub(crate) asset_dir_field: Entity<SettingTextField>,
+    _field_subscriptions: Vec<Subscription>,
     scroll_handle: ScrollHandle,
     content_scroll: crate::ui::SmoothScrollController,
 }
@@ -57,13 +54,86 @@ impl Focusable for SettingsWindow {
 
 impl SettingsWindow {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        let (initial_grammar_url, initial_asset_dir) = cx
+            .try_global::<AppConfig>()
+            .map(|cfg| (cfg.grammar_base_url.clone(), cfg.asset_dir.clone()))
+            .unwrap_or_else(|| {
+                (
+                    crate::syntax::GrammarCdnPreset::DEFAULT_URL.to_string(),
+                    UserPreferences::DEFAULT_ASSET_DIR.to_string(),
+                )
+            });
+
+        let grammar_url_field = cx.new(|cx| {
+            SettingTextField::new("grammar_url_field", initial_grammar_url.clone(), cx)
+                .placeholder("https://... (leave empty for offline)", cx)
+                .return_focus_to(focus_handle.clone())
+                .on_commit(|draft, cx| {
+                    let normalized = normalize_grammar_base_url(&draft);
+                    crate::syntax::set_global_grammar_base_url(normalized.clone());
+                    persistence::update_config_app(cx, {
+                        let normalized = normalized.clone();
+                        move |cfg| cfg.grammar_base_url = normalized
+                    });
+                    normalized
+                })
+        });
+
+        let asset_dir_field = cx.new(|cx| {
+            SettingTextField::new("asset_dir_field", initial_asset_dir, cx)
+                .placeholder(UserPreferences::DEFAULT_ASSET_DIR, cx)
+                .return_focus_to(focus_handle.clone())
+                .on_commit(|draft, cx| {
+                    let normalized = crate::media::normalize_asset_dir(&draft);
+                    persistence::update_config_app(cx, {
+                        let normalized = normalized.clone();
+                        move |cfg| cfg.asset_dir = normalized
+                    });
+                    normalized
+                })
+        });
+
+        let grammar_sub = cx.subscribe(
+            &grammar_url_field,
+            |this, _emitter, event: &SettingTextFieldEvent, cx| match event {
+                SettingTextFieldEvent::Commit(url) => {
+                    this.custom_grammar_selected = general::is_custom_grammar_url(url);
+                    cx.notify();
+                }
+                SettingTextFieldEvent::Cancel => {
+                    let current = cx.global::<AppConfig>().grammar_base_url.clone();
+                    this.custom_grammar_selected = general::is_custom_grammar_url(&current);
+                    cx.notify();
+                }
+            },
+        );
+
+        let asset_sub = cx.subscribe(
+            &asset_dir_field,
+            |_this, _emitter, _event: &SettingTextFieldEvent, cx| {
+                cx.notify();
+            },
+        );
+
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             active_category: SettingsCategory::General,
             active_input: None,
+            grammar_url_field,
+            custom_grammar_selected: general::is_custom_grammar_url(&initial_grammar_url),
+            asset_dir_field,
+            _field_subscriptions: vec![grammar_sub, asset_sub],
             scroll_handle: ScrollHandle::new(),
             content_scroll: crate::ui::SmoothScrollController::vertical(),
         }
+    }
+
+    pub(crate) fn flush_setting_inputs(&mut self, cx: &mut Context<Self>) {
+        self.grammar_url_field
+            .update(cx, |field, cx| field.commit_if_changed(cx));
+        self.asset_dir_field
+            .update(cx, |field, cx| field.commit_if_changed(cx));
     }
 
     #[inline]
@@ -77,6 +147,7 @@ impl SettingsWindow {
     }
 
     pub fn set_category(&mut self, category: SettingsCategory, cx: &mut Context<Self>) {
+        self.flush_setting_inputs(cx);
         self.active_category = category;
         self.active_input = None;
         self.scroll_handle.set_offset(Point::default());
@@ -233,18 +304,9 @@ impl Render for SettingsWindow {
                             this.commit_keybindings(cfg, cx);
                         }
                     }
-                    Some(ActiveInput::EditingGrammarUrl { .. }) => {
-                        if event.keystroke.key.eq_ignore_ascii_case("escape") {
-                            this.cancel_editing_grammar_url(cx);
-                        }
-                    }
-                    Some(ActiveInput::EditingAssetDir { .. }) => {
-                        if event.keystroke.key.eq_ignore_ascii_case("escape") {
-                            this.cancel_editing_asset_dir(cx);
-                        }
-                    }
                     None => {
                         if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                            this.flush_setting_inputs(cx);
                             window.remove_window();
                         }
                     }
@@ -316,14 +378,13 @@ mod tests {
                 s.toggle_recording("SaveFile", cx);
                 assert_eq!(s.recording_action_id(), Some("SaveFile"));
 
-                // Starting URL editing interrupts and drops keybinding recording
-                s.start_editing_grammar_url(window, cx);
+                // Entering Custom grammar URL mode interrupts and drops keybinding recording
+                s.select_custom_grammar_mode(window, cx);
                 assert_eq!(s.recording_action_id(), None);
-                assert!(s.is_editing_grammar_url());
+                assert!(s.is_custom_grammar_mode(cx));
 
                 // 2. Switching categories drops any active input
                 s.set_category(SettingsCategory::Appearance, cx);
-                assert!(!s.is_editing_grammar_url());
                 assert_eq!(s.recording_action_id(), None);
             });
         });
@@ -367,7 +428,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_settings_asset_dir_edit_commit_cancel_and_reset(cx: &mut gpui::TestAppContext) {
+    fn test_settings_asset_dir_auto_saves_on_blur_and_close(cx: &mut gpui::TestAppContext) {
         init_test_globals(cx);
         let (settings, cx) = cx.add_window_view(|window, cx| {
             window.activate_window();
@@ -375,30 +436,53 @@ mod tests {
             s.set_category(SettingsCategory::Editor, cx);
             s
         });
+        cx.run_until_parked();
 
+        // Focus field, type custom path, and blur -> auto-saves normalized path
         cx.update(|window, cx| {
             settings.update(cx, |s, cx| {
                 assert_eq!(cx.global::<AppConfig>().asset_dir, "assets");
-
-                s.start_editing_asset_dir(window, cx);
-                assert!(s.is_editing_asset_dir());
-
-                s.cancel_editing_asset_dir(cx);
-                assert!(!s.is_editing_asset_dir());
-                assert_eq!(cx.global::<AppConfig>().asset_dir, "assets");
-
-                s.start_editing_asset_dir(window, cx);
-                let input = s.asset_dir_input().unwrap().clone();
-                input.update(cx, |ti, cx| {
-                    ti.set_text("D:\\media\\images\\", cx);
+                s.asset_dir_field.update(cx, |f, cx| {
+                    f.focus(window, cx);
+                    f.input()
+                        .update(cx, |ti, cx| ti.set_text("  D:\\media\\images\\  ", cx));
                 });
-                s.commit_asset_dir(cx);
-                assert!(!s.is_editing_asset_dir());
-                assert_eq!(cx.global::<AppConfig>().asset_dir, "D:\\media\\images");
-
-                s.reset_asset_dir(cx);
-                assert_eq!(cx.global::<AppConfig>().asset_dir, "assets");
             });
         });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            let focus = settings.read(cx).focus_handle.clone();
+            window.focus(&focus);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.read(|cx| cx.global::<AppConfig>().asset_dir.clone()),
+            "D:\\media\\images"
+        );
+        assert_eq!(
+            settings.read_with(cx, |s, cx| s.asset_dir_field.read(cx).text(cx)),
+            "D:\\media\\images"
+        );
+
+        // Clearing field and closing window auto-saves default "assets"
+        cx.update(|window, cx| {
+            settings.update(cx, |s, cx| {
+                s.asset_dir_field.update(cx, |f, cx| {
+                    f.focus(window, cx);
+                    f.input().update(cx, |ti, cx| ti.set_text("", cx));
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, _cx| window.remove_window());
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.read(|cx| cx.global::<AppConfig>().asset_dir.clone()),
+            "assets"
+        );
     }
 }

@@ -5,10 +5,22 @@
 //! only the settings window itself (for non-visual or deferred settings) or all open windows
 //! (for visual settings such as themes, font sizes, and render modes).
 
-use gpui::Context;
+use gpui::{App, Context};
 
 use super::SettingsWindow;
 use crate::config::AppConfig;
+
+/// Persists a preference change directly from an `App` context without requiring a view context.
+pub(crate) fn update_config_app(cx: &mut App, change: impl FnOnce(&mut AppConfig)) {
+    let mut cfg = cx.global::<AppConfig>().clone();
+    let before = cfg.clone();
+    change(&mut cfg);
+    if cfg == before {
+        return;
+    }
+    cfg.persist_preferences_async(cx.background_executor());
+    cx.set_global(cfg);
+}
 
 /// Persists a preference change and repaints only the settings window.
 ///

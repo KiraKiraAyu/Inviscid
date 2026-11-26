@@ -9,15 +9,12 @@ use gpui::prelude::*;
 use gpui::*;
 
 use super::persistence::{update_config, update_config_all_windows};
-use super::{ActiveInput, SettingsWindow};
+use super::SettingsWindow;
 use crate::config::AppConfig;
 use crate::editor::RenderMode;
 use crate::syntax::{GrammarCdnPreset, normalize_grammar_base_url};
 use crate::theme::ThemeManager;
-use crate::ui::{
-    ControlHeight, FontSize, OptionPill, Radius, SettingRow, Spacing, Switch, TextInput,
-    TextInputEvent,
-};
+use crate::ui::{ControlHeight, FontSize, OptionPill, SettingRow, Spacing, Switch};
 
 pub(crate) fn is_custom_grammar_url(url: &str) -> bool {
     let normalized = normalize_grammar_base_url(url);
@@ -129,14 +126,8 @@ impl SettingsWindow {
         let is_unpkg = preset == Some(GrammarCdnPreset::Unpkg);
         let is_offline = preset == Some(GrammarCdnPreset::Offline);
 
-        let url_bar = if let Some(input) = self.grammar_url_input() {
-            div()
-                .id("grammar_url_editor")
-                .flex()
-                .flex_row()
-                .items_center()
-                .child(input.clone())
-                .into_any_element()
+        let url_bar = if is_custom {
+            self.grammar_url_field.clone().into_any_element()
         } else {
             let display_text = if current_url.is_empty() {
                 "Offline — local grammars only".to_string()
@@ -167,28 +158,6 @@ impl SettingsWindow {
                         .text_color(text_color)
                         .child(display_text),
                 )
-                .when(is_custom, |this| {
-                    this.child(
-                        div()
-                            .id("grammar_url_edit_btn")
-                            .flex_none()
-                            .px(Spacing::SM)
-                            .py(Spacing::XXS)
-                            .rounded(Radius::XS)
-                            .bg(theme.bg_editor)
-                            .border_1()
-                            .border_color(theme.border_subtle)
-                            .hover(|s| s.bg(theme.btn_hover).border_color(theme.border))
-                            .cursor_pointer()
-                            .text_size(FontSize::CAPTION)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_accent)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.start_editing_grammar_url(window, cx);
-                            }))
-                            .child("Edit"),
-                    )
-                })
                 .into_any_element()
         };
 
@@ -227,7 +196,7 @@ impl SettingsWindow {
                         .child(
                             OptionPill::new("grammar_cdn_custom", "Custom", is_custom).on_click(
                                 cx.listener(|this, _, window, cx| {
-                                    this.start_editing_grammar_url(window, cx);
+                                    this.select_custom_grammar_mode(window, cx);
                                 }),
                             ),
                         ),
@@ -240,7 +209,7 @@ impl SettingsWindow {
     }
 
     pub(crate) fn is_custom_grammar_mode(&self, cx: &App) -> bool {
-        self.is_editing_grammar_url()
+        self.custom_grammar_selected
             || is_custom_grammar_url(&cx.global::<AppConfig>().grammar_base_url)
     }
 
@@ -249,88 +218,30 @@ impl SettingsWindow {
         preset: GrammarCdnPreset,
         cx: &mut Context<Self>,
     ) {
-        self.set_grammar_base_url(preset.url(), cx);
-    }
-
-    pub(crate) fn is_editing_grammar_url(&self) -> bool {
-        matches!(
-            self.active_input,
-            Some(ActiveInput::EditingGrammarUrl { .. })
-        )
-    }
-
-    pub(crate) fn grammar_url_input(&self) -> Option<&Entity<TextInput>> {
-        match &self.active_input {
-            Some(ActiveInput::EditingGrammarUrl { input, .. }) => Some(input),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn start_editing_grammar_url(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let current = cx.global::<AppConfig>().grammar_base_url.clone();
-        let input = cx.new(|cx| {
-            let mut input = TextInput::new(&current, cx)
-                .placeholder("https://... (leave empty for offline)")
-                .height(ControlHeight::MD)
-                .radius(Radius::MD)
-                .padding_x(Spacing::MDS)
-                .bg(crate::ui::TextInputBg::Surface);
-            input.buffer_mut().select_all();
-            input
-        });
-        let focus_handle = input.read(cx).focus_handle(cx);
-        let event_sub = cx.subscribe_in(
-            &input,
-            window,
-            |this, _emitter, event: &TextInputEvent, window, cx| match event {
-                TextInputEvent::Commit(text) => {
-                    this.set_grammar_base_url(text.clone(), cx);
-                    window.focus(&this.focus_handle);
-                }
-                TextInputEvent::Cancel => {
-                    this.cancel_editing_grammar_url(cx);
-                    window.focus(&this.focus_handle);
-                }
-                TextInputEvent::Changed(_) => {}
-            },
-        );
-        let blur_sub = cx.on_blur(&focus_handle, window, |this, _window, cx| {
-            this.commit_grammar_url(cx);
-        });
-        window.focus(&focus_handle);
-        self.active_input = Some(ActiveInput::EditingGrammarUrl {
-            input,
-            _subscriptions: [event_sub, blur_sub],
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn cancel_editing_grammar_url(&mut self, cx: &mut Context<Self>) {
-        if self.is_editing_grammar_url() {
-            self.active_input = None;
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn set_grammar_base_url(&mut self, url: impl Into<String>, cx: &mut Context<Self>) {
-        let normalized = normalize_grammar_base_url(&url.into());
+        let normalized = normalize_grammar_base_url(preset.url());
+        self.custom_grammar_selected = false;
         self.active_input = None;
         crate::syntax::set_global_grammar_base_url(normalized.clone());
+        self.grammar_url_field.update(cx, |field, cx| {
+            field.sync_value(normalized.clone(), cx);
+        });
         update_config(cx, move |cfg| {
             cfg.grammar_base_url = normalized;
         });
         cx.notify();
     }
 
-    pub(crate) fn commit_grammar_url(&mut self, cx: &mut Context<Self>) {
-        if let Some(input) = self.grammar_url_input() {
-            let draft = input.read(cx).text();
-            self.set_grammar_base_url(draft, cx);
-        }
+    pub(crate) fn select_custom_grammar_mode(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.active_input = None;
+        self.custom_grammar_selected = true;
+        self.grammar_url_field.update(cx, |field, cx| {
+            field.focus_and_select_all(window, cx);
+        });
+        cx.notify();
     }
 }
 
@@ -390,11 +301,11 @@ mod tests {
             window.activate_window();
             SettingsWindow::new(cx)
         });
+        cx.run_until_parked();
 
         // Initial presets switching
         cx.update(|_window, cx| {
             settings.update(cx, |s, cx| {
-                assert!(!s.is_editing_grammar_url());
                 assert!(!s.is_custom_grammar_mode(cx));
                 assert_eq!(
                     cx.global::<AppConfig>().grammar_base_url,
@@ -416,38 +327,38 @@ mod tests {
             });
         });
 
-        // Custom mode starts editing URL directly
-        let input = cx.update(|window, cx| {
+        // Custom mode reveals and focuses the standalone SettingTextField
+        let field = cx.update(|window, cx| {
             settings.update(cx, |s, cx| {
-                s.start_editing_grammar_url(window, cx);
-                assert!(s.is_editing_grammar_url());
+                s.select_custom_grammar_mode(window, cx);
                 assert!(s.is_custom_grammar_mode(cx));
-                s.grammar_url_input().unwrap().clone()
+                s.grammar_url_field.clone()
             })
         });
+        cx.run_until_parked();
 
-        // Typing custom URL and blurring/committing normalizes and saves
+        // Typing custom URL and blurring auto-saves normalized URL
         cx.update(|_window, cx| {
-            input.update(cx, |inp, _cx| {
-                inp.buffer_mut()
-                    .insert_text("https://mirror.example.com/npm/");
+            let input = field.read(cx).input().clone();
+            input.update(cx, |inp, cx| {
+                inp.set_text("https://mirror.example.com/npm/", cx);
             });
         });
 
-        // Blur event commits input
-        cx.update(|_window, cx| {
-            settings.update(cx, |s, cx| {
-                s.commit_grammar_url(cx);
-            });
+        cx.update(|window, cx| {
+            settings.read(cx).focus(window);
         });
         cx.run_until_parked();
 
         cx.update(|_window, cx| {
             settings.update(cx, |s, cx| {
-                assert!(!s.is_editing_grammar_url());
                 assert!(s.is_custom_grammar_mode(cx));
                 assert_eq!(
                     cx.global::<AppConfig>().grammar_base_url,
+                    "https://mirror.example.com/npm"
+                );
+                assert_eq!(
+                    s.grammar_url_field.read(cx).text(cx),
                     "https://mirror.example.com/npm"
                 );
             });
@@ -462,32 +373,31 @@ mod tests {
             window.activate_window();
             SettingsWindow::new(cx)
         });
+        cx.run_until_parked();
 
-        let input = cx.update(|window, cx| {
+        let field = cx.update(|window, cx| {
             settings.update(cx, |s, cx| {
                 s.select_grammar_preset(GrammarCdnPreset::Offline, cx);
-                s.start_editing_grammar_url(window, cx);
-                assert!(s.is_editing_grammar_url());
-                s.grammar_url_input().unwrap().clone()
+                s.select_custom_grammar_mode(window, cx);
+                s.grammar_url_field.clone()
             })
         });
+        cx.run_until_parked();
 
-        // Typing but cancelling discards draft without mutating config
+        // Typing then cancelling reverts draft without mutating config
         cx.update(|_window, cx| {
-            assert_eq!(input.read(cx).text(), "");
+            assert_eq!(field.read(cx).text(cx), "");
+            let input = field.read(cx).input().clone();
             input.update(cx, |inp, cx| {
-                inp.buffer_mut()
-                    .insert_text("https://discarded.example.com");
+                inp.set_text("https://discarded.example.com", cx);
                 inp.cancel(cx);
             });
         });
         cx.run_until_parked();
 
         cx.update(|_window, cx| {
-            settings.update(cx, |s, cx| {
-                assert!(!s.is_editing_grammar_url());
-                assert_eq!(cx.global::<AppConfig>().grammar_base_url, "");
-            });
+            assert_eq!(cx.global::<AppConfig>().grammar_base_url, "");
+            assert_eq!(field.read(cx).text(cx), "");
         });
     }
 

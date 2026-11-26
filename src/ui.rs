@@ -9,6 +9,7 @@ pub(crate) mod motion;
 mod option_pill;
 mod selectable_row;
 mod setting_row;
+mod setting_text_field;
 mod stepper;
 mod switch;
 pub(crate) mod text_input;
@@ -34,6 +35,7 @@ pub(crate) use motion::{
 pub use option_pill::OptionPill;
 pub(crate) use selectable_row::SelectableRow;
 pub use setting_row::SettingRow;
+pub use setting_text_field::{SettingTextField, SettingTextFieldEvent};
 pub use stepper::Stepper;
 pub use switch::Switch;
 pub use text_input::TextInput;
