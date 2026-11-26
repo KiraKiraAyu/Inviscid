@@ -7,6 +7,7 @@ pub const UPDATE_EXPLANATION_ENV: &str = "INVISCID_UPDATE_EXPLANATION";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManualUpdateReason {
     CompileTimeDisabled,
+    MinUpdaterVersion,
     ExternalExplanation(String),
     DevBuild,
     PackageManager(String),

@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 
 use gpui::{App, Entity, Task, WindowHandle};
 
@@ -7,6 +8,8 @@ use crate::app::InviscidWindow;
 use crate::app::workspace::TabKind;
 use crate::config::AppConfig;
 use crate::editor::Editor;
+use crate::i18n::catalog::format_template;
+use crate::i18n::{ActiveLocale, TextKey};
 
 #[derive(Clone)]
 pub struct UnsavedDocument {
@@ -211,30 +214,33 @@ where
     })
 }
 
-/// Runs the standard unsaved-changes guard with a native confirmation dialog before executing
-/// `on_confirmed`.
-pub fn request_graceful_quit(cx: &mut App, on_confirmed: impl FnOnce(&mut App) + 'static) {
-    request_graceful_quit_with_prompt(
-        cx,
-        |titles| async move {
+pub(crate) fn build_unsaved_prompt(
+    cx: &App,
+) -> impl FnOnce(Vec<String>) -> Pin<Box<dyn Future<Output = UnsavedChangesChoice>>> + use<> {
+    let title = cx.t(TextKey::QuitUnsavedTitle).to_string();
+    let msg_template = cx.t(TextKey::QuitUnsavedMessage).to_string();
+    let save_all = cx.t(TextKey::QuitUnsavedSaveAll).to_string();
+    let discard = cx.t(TextKey::QuitUnsavedDiscard).to_string();
+    let cancel = cx.t(TextKey::CommonCancel).to_string();
+
+    move |titles| {
+        Box::pin(async move {
             let list = titles
                 .iter()
                 .map(|t| format!("• {t}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let description = format!(
-                "You have {} unsaved document(s):\n\n{}\n\nDo you want to save your changes before continuing?",
-                titles.len(),
-                list
-            );
+            let count_str = titles.len().to_string();
+            let description =
+                format_template(&msg_template, &[("count", &count_str), ("files", &list)]);
             let result = rfd::AsyncMessageDialog::new()
                 .set_level(rfd::MessageLevel::Warning)
-                .set_title("Unsaved Changes")
+                .set_title(&title)
                 .set_description(description)
                 .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
-                    "Save All".to_string(),
-                    "Discard".to_string(),
-                    "Cancel".to_string(),
+                    save_all.clone(),
+                    discard.clone(),
+                    cancel,
                 ))
                 .show()
                 .await;
@@ -242,18 +248,23 @@ pub fn request_graceful_quit(cx: &mut App, on_confirmed: impl FnOnce(&mut App) +
             match result {
                 rfd::MessageDialogResult::Yes => UnsavedChangesChoice::SaveAll,
                 rfd::MessageDialogResult::No => UnsavedChangesChoice::DiscardAll,
-                rfd::MessageDialogResult::Custom(label) if label == "Save All" => {
+                rfd::MessageDialogResult::Custom(label) if label == save_all => {
                     UnsavedChangesChoice::SaveAll
                 }
-                rfd::MessageDialogResult::Custom(label) if label == "Discard" => {
+                rfd::MessageDialogResult::Custom(label) if label == discard => {
                     UnsavedChangesChoice::DiscardAll
                 }
                 _ => UnsavedChangesChoice::Cancel,
             }
-        },
-        on_confirmed,
-    )
-    .detach();
+        })
+    }
+}
+
+/// Runs the standard unsaved-changes guard with a native confirmation dialog before executing
+/// `on_confirmed`.
+pub fn request_graceful_quit(cx: &mut App, on_confirmed: impl FnOnce(&mut App) + 'static) {
+    let prompt = build_unsaved_prompt(cx);
+    request_graceful_quit_with_prompt(cx, prompt, on_confirmed).detach();
 }
 
 #[cfg(test)]

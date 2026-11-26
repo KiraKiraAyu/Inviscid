@@ -277,6 +277,10 @@ define_messages! {
     UpdateManualPackageManager => "update_manual_package_manager",
     UpdateManualReadOnly => "update_manual_read_only",
     UpdateManualDevBuild => "update_manual_dev_build",
+    UpdateManualCompileDisabled => "update_manual_compile_disabled",
+    UpdateManualMinVersion => "update_manual_min_version",
+    UpdateManualTranslocated => "update_manual_translocated",
+    UpdateSourceDisabledError => "update_source_disabled_error",
     UpdateDownloading => "update_downloading",
     UpdateVerifying => "update_verifying",
     UpdateExtracting => "update_extracting",
@@ -291,6 +295,12 @@ define_messages! {
     UpdateStatusBadgeAvailable => "update_status_badge_available",
     UpdateStatusBadgeDownloading => "update_status_badge_downloading",
     UpdateStatusBadgeReady => "update_status_badge_ready",
+
+    // Quit / Unsaved Changes Guard
+    QuitUnsavedTitle => "quit_unsaved_title",
+    QuitUnsavedMessage => "quit_unsaved_message",
+    QuitUnsavedSaveAll => "quit_unsaved_save_all",
+    QuitUnsavedDiscard => "quit_unsaved_discard",
 
     // File Dialogs
     DialogFilterMarkdown => "dialog_filter_markdown",

@@ -387,6 +387,14 @@ impl UpdateManager {
         });
     }
 
+    /// Marks a manual update check as failed with a localized message before background fetch.
+    pub fn mark_manual_failure(&self, message: String) {
+        self.set_status(UpdateStatus::Failed {
+            message,
+            manual: true,
+        });
+    }
+
     #[cfg(test)]
     pub(crate) fn set_test_status(&self, status: UpdateStatus) {
         let mut inner = self.inner.lock();
@@ -524,9 +532,7 @@ pub fn check_for_updates_sync(
     if requires_manual_upgrade {
         return UpdateStatus::ManualUpdateOnly {
             release,
-            reason: ManualUpdateReason::ExternalExplanation(
-                "Current version requires a manual upgrade to the latest release.".to_string(),
-            ),
+            reason: ManualUpdateReason::MinUpdaterVersion,
         };
     }
 

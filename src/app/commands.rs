@@ -838,6 +838,11 @@ pub fn check_for_updates(cx: &mut App) {
             )
         })
         .unwrap_or_default();
+    if source == crate::updater::UpdateSource::Disabled {
+        mgr.mark_manual_failure(cx.t(TextKey::UpdateSourceDisabledError).to_string());
+        cx.refresh_windows();
+        return;
+    }
     mgr.start_check(source, custom_url, channel, skipped_version, true);
 }
 

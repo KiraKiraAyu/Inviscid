@@ -266,7 +266,10 @@ impl InviscidWindow {
     fn format_manual_reason(reason: &ManualUpdateReason, cx: &App) -> String {
         match reason {
             ManualUpdateReason::CompileTimeDisabled => {
-                "Self-update is disabled in this build.".to_string()
+                cx.t(TextKey::UpdateManualCompileDisabled).to_string()
+            }
+            ManualUpdateReason::MinUpdaterVersion => {
+                cx.t(TextKey::UpdateManualMinVersion).to_string()
             }
             ManualUpdateReason::ExternalExplanation(msg) => msg.clone(),
             ManualUpdateReason::DevBuild => cx.t(TextKey::UpdateManualDevBuild).to_string(),
@@ -274,7 +277,10 @@ impl InviscidWindow {
                 TextKey::UpdateManualPackageManager,
                 &[("manager", mgr.as_str())],
             ),
-            ManualUpdateReason::TranslocatedOrReadOnly(desc) => desc.clone(),
+            ManualUpdateReason::TranslocatedOrReadOnly(desc) => cx.tf(
+                TextKey::UpdateManualTranslocated,
+                &[("reason", desc.as_str())],
+            ),
             ManualUpdateReason::ReadOnlyLocation => cx.t(TextKey::UpdateManualReadOnly).to_string(),
         }
     }
