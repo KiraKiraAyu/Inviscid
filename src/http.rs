@@ -1,11 +1,16 @@
 pub(crate) mod cache;
 pub(crate) mod client;
 pub(crate) mod dimensions;
+pub mod download;
 pub(crate) mod path;
 
 pub(crate) use cache::*;
 pub use client::UreqClient;
 pub(crate) use client::*;
+pub use download::{
+    DownloadError, DownloadOptions, DownloadProgress, DownloadResult, download_to_file_streaming,
+    stream_to_file_with_sha256,
+};
 pub(crate) use path::*;
 
 #[cfg(test)]

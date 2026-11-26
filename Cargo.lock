@@ -3144,6 +3144,7 @@ dependencies = [
  "regex",
  "resvg 0.49.0",
  "rfd",
+ "ring",
  "ropey",
  "rust-embed",
  "serde",
