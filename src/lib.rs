@@ -21,6 +21,7 @@ pub(crate) mod sync;
 pub mod syntax;
 pub mod theme;
 pub mod ui;
+pub mod updater;
 pub(crate) mod wasm;
 
 pub use app::InviscidWindow;

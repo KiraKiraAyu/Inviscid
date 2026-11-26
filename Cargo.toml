@@ -5,6 +5,11 @@ edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0"
 
+[features]
+default = []
+# Allows distribution/package-manager builds to disable in-place self-updates at compile time.
+disable-self-update = []
+
 [lib]
 name = "inviscid"
 path = "src/lib.rs"
@@ -30,6 +35,10 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "1.1.6"
 ureq = { version = "3.4.2", features = ["rustls"] }
 ring = "0.17"
+minisign-verify = "0.3.0"
+self-replace = "1.5.1"
+semver = "1.0"
+serde_json = "1.0"
 rust-embed = { version = "8", features = ["include-exclude"] }
 trash = { version = "5.2.9", default-features = false, features = [
     "coinit_apartmentthreaded",
@@ -47,6 +56,7 @@ ropey = "1.6"
 image = { version = "0.25.10", default-features = false, features = ["png", "bmp"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2"] }
 windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",
@@ -58,8 +68,15 @@ windows = { version = "0.62.2", features = [
     "Win32_Globalization",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+flate2 = "1.1"
+tar = { version = "0.4.46", default-features = false }
+
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
+flate2 = "1.1"
+tar = { version = "0.4.46", default-features = false }
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2"] }
 
 [patch.crates-io]
 # Run python patches/gpui/prepare.py first; see patches/gpui/README.md.
@@ -169,6 +186,18 @@ opt-level = "z"
 [profile.release.package.toml_parser]
 opt-level = "z"
 [profile.release.package.serde_json]
+opt-level = "z"
+[profile.release.package.minisign-verify]
+opt-level = "z"
+[profile.release.package.self-replace]
+opt-level = "z"
+[profile.release.package.semver]
+opt-level = "z"
+[profile.release.package.tar]
+opt-level = "z"
+[profile.release.package.zip]
+opt-level = "z"
+[profile.release.package.flate2]
 opt-level = "z"
 [profile.release.package.zstd]
 opt-level = "z"
