@@ -31,6 +31,7 @@ actions!(
         ToggleOutlineSidebar,
         DismissOverlay,
         OpenAbout,
+        CheckForUpdates,
         OpenSettings,
         Quit,
         CloseMenu,

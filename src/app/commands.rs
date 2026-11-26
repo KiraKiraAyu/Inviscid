@@ -633,12 +633,12 @@ pub fn open_about_window(cx: &mut App) {
     open_singleton_window::<AboutWindowState, crate::app::about::AboutWindow>(
         cx,
         |state| &mut state.handle,
-        size(px(360.0), px(320.0)),
+        size(px(360.0), px(360.0)),
         |bounds| WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: None,
             window_decorations: Some(WindowDecorations::Client),
-            window_min_size: Some(size(px(340.0), px(300.0))),
+            window_min_size: Some(size(px(340.0), px(320.0))),
             is_movable: true,
             focus: false,
             show: false,
@@ -821,6 +821,178 @@ pub fn cancel_theme_preview_global(cx: &mut App) {
 
 pub fn quit(cx: &mut App) {
     crate::app::lifecycle::request_graceful_quit(cx, |cx| cx.quit());
+}
+
+pub fn check_for_updates(cx: &mut App) {
+    let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>().cloned() else {
+        return;
+    };
+    let (source, custom_url, channel, skipped_version) = cx
+        .try_global::<AppConfig>()
+        .map(|cfg| {
+            (
+                cfg.update_source,
+                cfg.custom_update_url.clone(),
+                cfg.update_channel,
+                cfg.session.skipped_update_version.clone(),
+            )
+        })
+        .unwrap_or_default();
+    mgr.start_check(source, custom_url, channel, skipped_version, true);
+}
+
+pub fn download_available_update(cx: &mut App) {
+    if let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>() {
+        mgr.start_download();
+    }
+}
+
+pub fn cancel_update_download(cx: &mut App) {
+    if let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>() {
+        mgr.cancel_download();
+    }
+}
+
+pub fn skip_available_update(cx: &mut App) {
+    let skipped = cx
+        .try_global::<crate::updater::UpdateManager>()
+        .and_then(|mgr| mgr.skip_version());
+    if let Some(version) = skipped
+        && cx.has_global::<AppConfig>()
+    {
+        let mut cfg_to_save = None;
+        cx.update_global::<AppConfig, _>(|cfg, _| {
+            cfg.session.skipped_update_version = Some(version);
+            cfg_to_save = Some(cfg.clone());
+        });
+        if let Some(cfg) = cfg_to_save {
+            cfg.persist_session_async(cx.background_executor());
+        }
+        cx.refresh_windows();
+    }
+}
+
+pub fn dismiss_update_banner(cx: &mut App) {
+    if let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>() {
+        mgr.dismiss_banner();
+        cx.refresh_windows();
+    }
+}
+
+pub fn restore_update_banner(cx: &mut App) {
+    if let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>() {
+        mgr.restore_banner();
+        cx.refresh_windows();
+    }
+}
+
+pub fn open_update_release_notes(url: &str) {
+    crate::platform::open_url_in_browser(url);
+}
+
+pub fn install_staged_update(cx: &mut App) {
+    crate::app::lifecycle::request_graceful_quit(cx, |cx| {
+        let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>().cloned() else {
+            return;
+        };
+        let Some(staged) = mgr.take_staged_for_apply() else {
+            return;
+        };
+        match crate::updater::apply_staged_update(&staged) {
+            Ok(outcome) => match crate::updater::relaunch_updated_app(&outcome.relaunch_path) {
+                Ok(()) => cx.quit(),
+                Err(err) => {
+                    mgr.mark_apply_failed(format!("Failed to relaunch updated app: {err}"));
+                    cx.refresh_windows();
+                }
+            },
+            Err(err) => {
+                mgr.mark_apply_failed(err.to_string());
+                cx.refresh_windows();
+            }
+        }
+    });
+}
+
+pub fn start_update_event_pump(cx: &mut App) {
+    use futures::StreamExt;
+    let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>().cloned() else {
+        return;
+    };
+    let mut rx = mgr.subscribe();
+    let mut last_recorded_epoch: Option<u64> = None;
+
+    cx.spawn(async move |cx| {
+        while rx.next().await.is_some() {
+            let status = mgr.status();
+            let completed_epoch = match &status {
+                crate::updater::UpdateStatus::UpToDate {
+                    checked_at_epoch, ..
+                } => Some(*checked_at_epoch),
+                crate::updater::UpdateStatus::Available(_)
+                | crate::updater::UpdateStatus::ManualUpdateOnly { .. } => {
+                    Some(crate::updater::UpdateManager::current_unix_epoch_secs())
+                }
+                _ => None,
+            };
+
+            let _ = cx.update(|cx| {
+                if let Some(epoch) = completed_epoch
+                    && last_recorded_epoch != Some(epoch)
+                    && cx.has_global::<AppConfig>()
+                {
+                    last_recorded_epoch = Some(epoch);
+                    let mut cfg_to_save = None;
+                    cx.update_global::<AppConfig, _>(|cfg, _| {
+                        cfg.session.last_update_check_epoch = Some(epoch);
+                        cfg_to_save = Some(cfg.clone());
+                    });
+                    if let Some(cfg) = cfg_to_save {
+                        cfg.persist_session_async(cx.background_executor());
+                    }
+                }
+                cx.refresh_windows();
+            });
+        }
+    })
+    .detach();
+}
+
+pub fn schedule_startup_update_check(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_secs(4))
+            .await;
+
+        let _ = cx.update(|cx| {
+            let Some(cfg) = cx.try_global::<AppConfig>() else {
+                return;
+            };
+            if !cfg.auto_check_updates
+                || cfg.update_source == crate::updater::UpdateSource::Disabled
+            {
+                return;
+            }
+            let now = crate::updater::UpdateManager::current_unix_epoch_secs();
+            if !crate::updater::UpdateManager::should_auto_check(
+                cfg.session.last_update_check_epoch,
+                now,
+            ) {
+                return;
+            }
+            let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>() else {
+                return;
+            };
+            mgr.start_check(
+                cfg.update_source,
+                cfg.custom_update_url.clone(),
+                cfg.update_channel,
+                cfg.session.skipped_update_version.clone(),
+                false,
+            );
+        });
+    })
+    .detach();
 }
 
 #[cfg(test)]

@@ -386,6 +386,14 @@ impl UpdateManager {
             manual: true,
         });
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_status(&self, status: UpdateStatus) {
+        let mut inner = self.inner.lock();
+        inner.banner_dismissed = false;
+        inner.status = status;
+        Self::notify_locked(&mut inner, &self.version);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

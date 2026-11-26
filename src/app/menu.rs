@@ -275,6 +275,7 @@ pub fn render_menu_dropdown(
 
 fn render_inviscid_dropdown(cx: &mut App) -> impl IntoElement {
     let about_label = cx.t(TextKey::MenuAboutInviscid).to_string();
+    let check_updates_label = cx.t(TextKey::MenuCheckForUpdates).to_string();
     let settings_label = cx.t(TextKey::MenuSettings).to_string();
     render_menu_dropdown(
         210.0,
@@ -286,6 +287,16 @@ fn render_inviscid_dropdown(cx: &mut App) -> impl IntoElement {
                 "",
                 |_, window, cx| {
                     window.dispatch_action(crate::app::actions::OpenAbout.boxed_clone(), cx);
+                },
+            )
+            .into_any_element(),
+            render_menu_item(
+                "menu_check_for_updates",
+                "menu_item_Check for Updates",
+                check_updates_label,
+                "",
+                |_, window, cx| {
+                    window.dispatch_action(crate::app::actions::CheckForUpdates.boxed_clone(), cx);
                 },
             )
             .into_any_element(),

@@ -1,10 +1,12 @@
 use gpui::prelude::*;
 use gpui::*;
 
+use crate::app::commands;
 use crate::config::AppConfig;
 use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
 use crate::ui::{ControlHeight, FontSize, Radius, Spacing};
+use crate::updater::{UpdateManager, UpdateStatus};
 
 pub struct AboutWindow {
     focus_handle: FocusHandle,
@@ -37,6 +39,95 @@ impl Render for AboutWindow {
         let version_label = cx.t(TextKey::AboutVersion).to_string();
         let license_label = cx.t(TextKey::AboutLicense).to_string();
         let ok_label = cx.t(TextKey::CommonOk).to_string();
+
+        let update_status = cx
+            .try_global::<UpdateManager>()
+            .map(UpdateManager::status)
+            .unwrap_or(UpdateStatus::Idle);
+        let (update_summary, update_action_label, update_action_enabled, notes_url_opt) =
+            match &update_status {
+                UpdateStatus::Checking { .. } => (
+                    Some(cx.t(TextKey::UpdateChecking).to_string()),
+                    cx.t(TextKey::UpdateChecking).to_string(),
+                    false,
+                    None,
+                ),
+                UpdateStatus::UpToDate { .. } => (
+                    Some(cx.t(TextKey::UpdateUpToDate).to_string()),
+                    cx.t(TextKey::AboutCheckForUpdates).to_string(),
+                    true,
+                    None,
+                ),
+                UpdateStatus::Available(rel) => (
+                    Some(cx.tf(
+                        TextKey::UpdateAvailableTitle,
+                        &[("version", rel.version.as_str())],
+                    )),
+                    cx.t(TextKey::UpdateActionDownload).to_string(),
+                    true,
+                    None,
+                ),
+                UpdateStatus::ManualUpdateOnly { release, .. } => (
+                    Some(cx.tf(
+                        TextKey::UpdateManualTitle,
+                        &[("version", release.version.as_str())],
+                    )),
+                    cx.t(TextKey::UpdateActionReleaseNotes).to_string(),
+                    true,
+                    Some(release.release_notes_url.clone()),
+                ),
+                UpdateStatus::Downloading { release, .. } => (
+                    Some(cx.tf(
+                        TextKey::UpdateDownloading,
+                        &[("version", release.version.as_str())],
+                    )),
+                    cx.t(TextKey::UpdateDownloading)
+                        .replace("{version}", release.version.as_str()),
+                    false,
+                    None,
+                ),
+                UpdateStatus::Verifying { release } | UpdateStatus::Extracting { release } => (
+                    Some(cx.tf(
+                        TextKey::UpdateVerifying,
+                        &[("version", release.version.as_str())],
+                    )),
+                    cx.t(TextKey::UpdateVerifying)
+                        .replace("{version}", release.version.as_str()),
+                    false,
+                    None,
+                ),
+                UpdateStatus::ReadyToInstall(staged) => (
+                    Some(cx.tf(
+                        TextKey::UpdateReadyTitle,
+                        &[("version", staged.release.version.as_str())],
+                    )),
+                    cx.t(TextKey::UpdateActionRestart).to_string(),
+                    true,
+                    None,
+                ),
+                UpdateStatus::Applying { version } => (
+                    Some(cx.tf(TextKey::UpdateApplying, &[("version", version.as_str())])),
+                    cx.t(TextKey::UpdateApplying)
+                        .replace("{version}", version.as_str()),
+                    false,
+                    None,
+                ),
+                UpdateStatus::Failed { message, .. } => (
+                    Some(cx.tf(TextKey::UpdateFailed, &[("error", message.as_str())])),
+                    cx.t(TextKey::UpdateActionRetry).to_string(),
+                    true,
+                    None,
+                ),
+                UpdateStatus::Idle => (
+                    None,
+                    cx.t(TextKey::AboutCheckForUpdates).to_string(),
+                    true,
+                    None,
+                ),
+            };
+        let is_ready_to_install = matches!(update_status, UpdateStatus::ReadyToInstall(_));
+        let is_available = matches!(update_status, UpdateStatus::Available(_));
+        let is_manual = matches!(update_status, UpdateStatus::ManualUpdateOnly { .. });
 
         div()
             .id("about_window")
@@ -109,7 +200,16 @@ impl Render for AboutWindow {
                                     .text_color(theme.text_secondary)
                                     .font_weight(FontWeight::MEDIUM)
                                     .child("GPL-3.0"),
-                            ),
+                            )
+                            .when_some(update_summary, |this, summary| {
+                                this.child(
+                                    div()
+                                        .mt(Spacing::MDS)
+                                        .text_size(FontSize::CAPTION)
+                                        .text_color(theme.text_accent)
+                                        .child(summary),
+                                )
+                            }),
                     ),
             )
             .child(
@@ -122,6 +222,46 @@ impl Render for AboutWindow {
                     .flex_row()
                     .items_center()
                     .gap(Spacing::MD)
+                    .child(
+                        div()
+                            .id("about_update_btn")
+                            .flex_1()
+                            .h(ControlHeight::LG)
+                            .bg(theme.btn_bg)
+                            .when(update_action_enabled, |s| {
+                                s.hover(|h| h.bg(theme.btn_hover))
+                                    .active(|a| a.bg(theme.btn_active))
+                                    .cursor_pointer()
+                            })
+                            .text_color(if update_action_enabled {
+                                theme.btn_text
+                            } else {
+                                theme.text_muted
+                            })
+                            .text_size(FontSize::SM)
+                            .font_weight(FontWeight::MEDIUM)
+                            .rounded(Radius::MD)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(update_action_label)
+                            .on_click(move |_, _, cx| {
+                                if !update_action_enabled {
+                                    return;
+                                }
+                                if is_ready_to_install {
+                                    commands::install_staged_update(cx);
+                                } else if is_available {
+                                    commands::download_available_update(cx);
+                                } else if is_manual {
+                                    if let Some(ref url) = notes_url_opt {
+                                        commands::open_update_release_notes(url);
+                                    }
+                                } else {
+                                    commands::check_for_updates(cx);
+                                }
+                            }),
+                    )
                     .child(
                         div()
                             .id("about_ok_btn")

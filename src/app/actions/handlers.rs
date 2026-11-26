@@ -29,6 +29,9 @@ fn attach_window_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
     .on_action(cx.listener(|this, _: &OpenAbout, _, cx| {
         this.defer_after_menu_close(cx, |_this, cx| commands::open_about_window(cx));
     }))
+    .on_action(cx.listener(|this, _: &CheckForUpdates, _, cx| {
+        this.defer_after_menu_close(cx, |_this, cx| commands::check_for_updates(cx));
+    }))
     .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
         this.defer_after_menu_close(cx, |_this, cx| commands::open_settings_window(cx));
     }))

@@ -15,7 +15,10 @@ use crate::editor::RenderMode;
 use crate::i18n::{ActiveLocale, LanguagePreference, LocaleId, LocaleManager, TextKey};
 use crate::syntax::GrammarSource;
 use crate::theme::ThemeManager;
-use crate::ui::{ControlHeight, FontSize, LineHeight, OptionPill, SettingRow, Spacing, Switch};
+use crate::ui::{
+    ControlHeight, FontSize, LineHeight, OptionPill, Radius, SettingRow, Spacing, Switch,
+};
+use crate::updater::{UpdateChannel, UpdateManager, UpdateSource, UpdateStatus};
 
 impl SettingsWindow {
     pub(crate) fn render_general_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -36,7 +39,11 @@ impl SettingsWindow {
                     .child(self.render_mode_row(cx))
                     .child(self.restore_workspace_row(cx))
                     .child(self.collocated_mode_row(cx))
-                    .child(self.grammar_base_url_row(cx)),
+                    .child(self.grammar_base_url_row(cx))
+                    .child(self.auto_check_updates_row(cx))
+                    .child(self.update_channel_row(cx))
+                    .child(self.update_source_row(cx))
+                    .child(self.check_updates_now_row(cx)),
             )
     }
 
@@ -324,6 +331,258 @@ impl SettingsWindow {
         self.grammar_url_field.update(cx, |field, cx| {
             field.focus_and_select_all(window, cx);
         });
+    }
+
+    fn auto_check_updates_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let auto_check = cx.global::<AppConfig>().auto_check_updates;
+
+        SettingRow::new(
+            cx.t(TextKey::SettingsAutoCheckUpdates).to_string(),
+            Switch::new("toggle_auto_check_updates", auto_check).on_click(cx.listener(
+                |_, _, _, cx| {
+                    update_config(cx, |cfg| cfg.auto_check_updates = !cfg.auto_check_updates);
+                },
+            )),
+        )
+        .description(cx.t(TextKey::SettingsAutoCheckUpdatesDesc).to_string())
+    }
+
+    fn update_channel_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let channel = cx.global::<AppConfig>().update_channel;
+        let is_stable = channel == UpdateChannel::Stable;
+        let is_beta = channel == UpdateChannel::Beta;
+
+        SettingRow::new(
+            cx.t(TextKey::SettingsUpdateChannel).to_string(),
+            div()
+                .flex()
+                .flex_row()
+                .gap(Spacing::SMD)
+                .child(
+                    OptionPill::new(
+                        "update_channel_stable",
+                        cx.t(TextKey::SettingsUpdateChannelStable).to_string(),
+                        is_stable,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.select_update_channel(UpdateChannel::Stable, cx);
+                        this.focus(window);
+                    })),
+                )
+                .child(
+                    OptionPill::new(
+                        "update_channel_beta",
+                        cx.t(TextKey::SettingsUpdateChannelBeta).to_string(),
+                        is_beta,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.select_update_channel(UpdateChannel::Beta, cx);
+                        this.focus(window);
+                    })),
+                ),
+        )
+        .description(cx.t(TextKey::SettingsUpdateChannelDesc).to_string())
+    }
+
+    pub(crate) fn select_update_channel(
+        &mut self,
+        channel: UpdateChannel,
+        cx: &mut Context<Self>,
+    ) {
+        update_config(cx, move |cfg| cfg.update_channel = channel);
+    }
+
+    fn update_source_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<ThemeManager>().theme().clone();
+        let cfg = cx.global::<AppConfig>();
+        let source = cfg.update_source;
+        let effective_url = cfg.effective_update_base_url().to_string();
+        let is_github = source == UpdateSource::GitHub;
+        let is_disabled = source == UpdateSource::Disabled;
+        let is_custom = source == UpdateSource::Custom;
+
+        let url_bar = if is_custom {
+            self.update_url_field.clone().into_any_element()
+        } else {
+            let display_text = if effective_url.is_empty() {
+                cx.t(TextKey::SettingsUpdateDisabledStatus).to_string()
+            } else {
+                effective_url
+            };
+            let text_color = if is_disabled {
+                theme.text_muted
+            } else {
+                theme.text_secondary
+            };
+
+            div()
+                .id("update_url_display")
+                .h(ControlHeight::MD)
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(FontSize::CAPTION)
+                        .text_color(text_color)
+                        .child(display_text),
+                )
+                .into_any_element()
+        };
+
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(Spacing::XS)
+            .child(
+                SettingRow::new(
+                    cx.t(TextKey::SettingsUpdateSource).to_string(),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(Spacing::XS)
+                        .child(
+                            OptionPill::new(
+                                "update_source_github",
+                                cx.t(TextKey::SettingsUpdateSourceGitHub).to_string(),
+                                is_github,
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.select_update_source(UpdateSource::GitHub, cx);
+                                this.focus(window);
+                            })),
+                        )
+                        .child(
+                            OptionPill::new(
+                                "update_source_disabled",
+                                cx.t(TextKey::SettingsUpdateSourceDisabled).to_string(),
+                                is_disabled,
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.select_update_source(UpdateSource::Disabled, cx);
+                                this.focus(window);
+                            })),
+                        )
+                        .child(
+                            OptionPill::new(
+                                "update_source_custom",
+                                cx.t(TextKey::SettingsUpdateSourceCustom).to_string(),
+                                is_custom,
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.select_custom_update_mode(window, cx);
+                            })),
+                        ),
+                )
+                .description(cx.t(TextKey::SettingsUpdateSourceDesc).to_string()),
+            )
+            .child(url_bar)
+    }
+
+    pub(crate) fn select_update_source(
+        &mut self,
+        source: UpdateSource,
+        cx: &mut Context<Self>,
+    ) {
+        self.active_input = None;
+        update_config(cx, move |cfg| cfg.update_source = source);
+        self.update_url_field
+            .update(cx, |field, cx| field.commit_if_changed(cx));
+        cx.notify();
+    }
+
+    pub(crate) fn select_custom_update_mode(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_update_source(UpdateSource::Custom, cx);
+        self.update_url_field.update(cx, |field, cx| {
+            field.focus_and_select_all(window, cx);
+        });
+    }
+
+    fn check_updates_now_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<ThemeManager>().theme().clone();
+        let disabled = cx.global::<AppConfig>().update_source == UpdateSource::Disabled;
+        let status = cx
+            .try_global::<UpdateManager>()
+            .map(UpdateManager::status)
+            .unwrap_or(UpdateStatus::Idle);
+        let is_busy = matches!(
+            status,
+            UpdateStatus::Checking { .. }
+                | UpdateStatus::Downloading { .. }
+                | UpdateStatus::Verifying { .. }
+                | UpdateStatus::Extracting { .. }
+                | UpdateStatus::Applying { .. }
+        );
+        let can_click = !disabled && !is_busy;
+
+        let desc = match &status {
+            UpdateStatus::Checking { .. } => cx.t(TextKey::UpdateChecking).to_string(),
+            UpdateStatus::UpToDate { .. } => cx.t(TextKey::UpdateUpToDate).to_string(),
+            UpdateStatus::Available(rel) => cx.tf(
+                TextKey::UpdateAvailableTitle,
+                &[("version", rel.version.as_str())],
+            ),
+            UpdateStatus::ManualUpdateOnly { release, .. } => cx.tf(
+                TextKey::UpdateManualTitle,
+                &[("version", release.version.as_str())],
+            ),
+            UpdateStatus::ReadyToInstall(staged) => cx.tf(
+                TextKey::UpdateReadyTitle,
+                &[("version", staged.release.version.as_str())],
+            ),
+            UpdateStatus::Failed { message, .. } => {
+                cx.tf(TextKey::UpdateFailed, &[("error", message.as_str())])
+            }
+            _ => format!("v{}", env!("CARGO_PKG_VERSION")),
+        };
+
+        let btn_label = cx.t(TextKey::SettingsCheckUpdatesNow).to_string();
+
+        SettingRow::new(
+            cx.t(TextKey::MenuCheckForUpdates).to_string(),
+            div()
+                .id("settings_check_updates_btn")
+                .debug_selector(|| "settings_check_updates_btn".to_string())
+                .h(ControlHeight::MD)
+                .px(Spacing::MD)
+                .rounded(Radius::MD)
+                .bg(if can_click {
+                    theme.btn_bg
+                } else {
+                    theme.bg_surface
+                })
+                .when(can_click, |s| {
+                    s.hover(|h| h.bg(theme.btn_hover))
+                        .active(|a| a.bg(theme.btn_active))
+                        .cursor_pointer()
+                })
+                .text_color(if can_click {
+                    theme.btn_text
+                } else {
+                    theme.text_muted
+                })
+                .text_size(FontSize::SM)
+                .font_weight(FontWeight::MEDIUM)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(btn_label)
+                .on_click(move |_, _, cx| {
+                    if can_click {
+                        crate::app::commands::check_for_updates(cx);
+                    }
+                }),
+        )
+        .description(desc)
     }
 }
 
@@ -665,5 +924,66 @@ mod tests {
             assert_eq!(cx.locale(), LocaleId::En);
         });
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn test_settings_update_channel_and_source_isolation(cx: &mut gpui::TestAppContext) {
+        init_test_globals(cx);
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            SettingsWindow::new(cx)
+        });
+        cx.run_until_parked();
+
+        let field = cx.update(|window, cx| {
+            settings.update(cx, |s, cx| {
+                assert_eq!(cx.global::<AppConfig>().update_channel, UpdateChannel::Stable);
+                assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::GitHub);
+
+                s.select_update_channel(UpdateChannel::Beta, cx);
+                assert_eq!(cx.global::<AppConfig>().update_channel, UpdateChannel::Beta);
+
+                s.select_custom_update_mode(window, cx);
+                assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::Custom);
+                s.update_url_field.clone()
+            })
+        });
+        cx.run_until_parked();
+
+        cx.update(|_window, cx| {
+            let input = field.read(cx).input().clone();
+            input.update(cx, |inp, cx| {
+                inp.set_text("https://mirror.example.com/inviscid/", cx);
+            });
+        });
+        cx.update(|window, cx| {
+            settings.read(cx).focus(window);
+        });
+        cx.run_until_parked();
+
+        cx.update(|_window, cx| {
+            settings.update(cx, |s, cx| {
+                assert_eq!(
+                    cx.global::<AppConfig>().custom_update_url,
+                    "https://mirror.example.com/inviscid"
+                );
+                s.select_update_source(UpdateSource::GitHub, cx);
+                assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::GitHub);
+                assert_eq!(
+                    cx.global::<AppConfig>().effective_update_base_url(),
+                    UpdateSource::GITHUB_BASE_URL
+                );
+                assert_eq!(
+                    cx.global::<AppConfig>().custom_update_url,
+                    "https://mirror.example.com/inviscid"
+                );
+                s.select_update_source(UpdateSource::Disabled, cx);
+                assert_eq!(cx.global::<AppConfig>().effective_update_base_url(), "");
+                assert_eq!(
+                    cx.global::<AppConfig>().custom_update_url,
+                    "https://mirror.example.com/inviscid"
+                );
+            });
+        });
     }
 }

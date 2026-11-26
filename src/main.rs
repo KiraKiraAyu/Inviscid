@@ -9,6 +9,7 @@ use inviscid::config::AppConfig;
 use inviscid::http::UreqClient;
 use inviscid::i18n::LocaleManager;
 use inviscid::theme::ThemeManager;
+use inviscid::updater::UpdateManager;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -39,6 +40,9 @@ fn main() {
             let (display_id, window_bounds) =
                 config.resolve_initial_window_bounds(initial_file.is_some(), cx);
             cx.set_global(config);
+            cx.set_global(UpdateManager::new(AppConfig::updates_cache_dir()));
+            app::commands::start_update_event_pump(cx);
+            app::commands::schedule_startup_update_check(cx);
 
             cx.on_window_closed(|cx| {
                 if let Some(config) = cx.try_global::<AppConfig>() {
