@@ -106,12 +106,21 @@ impl RenderOnce for CaptionButton {
             .text_color(theme.text_primary)
             .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
             .active(move |s| s.bg(active_bg).text_color(active_fg))
-            .on_click(move |_, window, _| match self.kind {
+            .on_click(move |_, window, cx| match self.kind {
                 CaptionButtonKind::Minimize => minimize_window(window),
                 CaptionButtonKind::Restore | CaptionButtonKind::Maximize => {
                     toggle_maximize_window(window)
                 }
-                CaptionButtonKind::Close => window.remove_window(),
+                CaptionButtonKind::Close => {
+                    let should_close = window
+                        .root::<crate::app::InviscidWindow>()
+                        .flatten()
+                        .map(|app| app.update(cx, |this, cx| this.request_close(window, cx)))
+                        .unwrap_or(true);
+                    if should_close {
+                        window.remove_window();
+                    }
+                }
             })
             .child(
                 div()

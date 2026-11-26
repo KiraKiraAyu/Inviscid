@@ -4,8 +4,8 @@ use std::pin::Pin;
 
 use gpui::{App, Entity, Task, WindowHandle};
 
-use crate::app::InviscidWindow;
 use crate::app::workspace::TabKind;
+use crate::app::{InviscidWindow, Workspace};
 use crate::config::AppConfig;
 use crate::editor::Editor;
 use crate::i18n::catalog::format_template;
@@ -33,6 +33,38 @@ pub enum QuitOutcome {
     SaveFailed(String),
 }
 
+/// Returns `true` when `workspace` has at least one dirty editor tab.
+pub fn has_unsaved_documents(workspace: &Entity<Workspace>, cx: &App) -> bool {
+    workspace.read(cx).tabs().iter().any(|tab| {
+        tab.kind == TabKind::Editor && tab.editor.read(cx).is_dirty()
+    })
+}
+
+/// Collects every dirty editor tab inside `workspace` owned by `window_handle`.
+pub fn collect_window_unsaved_documents(
+    window_handle: WindowHandle<InviscidWindow>,
+    workspace: &Entity<Workspace>,
+    cx: &App,
+) -> Vec<UnsavedDocument> {
+    let mut unsaved = Vec::new();
+    let ws = workspace.read(cx);
+    for tab in ws.tabs() {
+        if tab.kind != TabKind::Editor {
+            continue;
+        }
+        let editor = tab.editor.read(cx);
+        if editor.is_dirty() {
+            unsaved.push(UnsavedDocument {
+                window_handle,
+                editor: tab.editor.clone(),
+                title: editor.title(),
+                has_file_path: editor.file_path().is_some(),
+            });
+        }
+    }
+    unsaved
+}
+
 /// Collects every dirty editor tab across all open [`InviscidWindow`] instances.
 pub fn collect_unsaved_documents(cx: &App) -> Vec<UnsavedDocument> {
     let mut unsaved = Vec::new();
@@ -43,21 +75,11 @@ pub fn collect_unsaved_documents(cx: &App) -> Vec<UnsavedDocument> {
         let Ok(app) = window_handle.read(cx) else {
             continue;
         };
-        let workspace = app.workspace().read(cx);
-        for tab in workspace.tabs() {
-            if tab.kind != TabKind::Editor {
-                continue;
-            }
-            let editor = tab.editor.read(cx);
-            if editor.is_dirty() {
-                unsaved.push(UnsavedDocument {
-                    window_handle,
-                    editor: tab.editor.clone(),
-                    title: editor.title(),
-                    has_file_path: editor.file_path().is_some(),
-                });
-            }
-        }
+        unsaved.extend(collect_window_unsaved_documents(
+            window_handle,
+            app.workspace(),
+            cx,
+        ));
     }
     unsaved
 }
@@ -104,6 +126,82 @@ fn any_inviscid_window_borrowed(cx: &App) -> bool {
         .any(|window_handle| window_handle.read(cx).is_err())
 }
 
+async fn resolve_unsaved_documents<F, Fut, C>(
+    unsaved: Vec<UnsavedDocument>,
+    prompt: F,
+    on_proceed: C,
+    cx: &mut gpui::AsyncApp,
+) -> QuitOutcome
+where
+    F: FnOnce(Vec<String>) -> Fut,
+    Fut: Future<Output = UnsavedChangesChoice>,
+    C: FnOnce(&mut App),
+{
+    let titles: Vec<String> = unsaved.iter().map(|doc| doc.title.clone()).collect();
+    let choice = prompt(titles).await;
+    match choice {
+        UnsavedChangesChoice::Cancel => QuitOutcome::Cancelled,
+        UnsavedChangesChoice::DiscardAll => {
+            let _ = cx.update(on_proceed);
+            QuitOutcome::Proceeded
+        }
+        UnsavedChangesChoice::SaveAll => {
+            for doc in unsaved {
+                if doc.has_file_path {
+                    let task_res = doc.editor.update(cx, |ed, cx| ed.save_file_async(cx));
+                    match task_res {
+                        Ok(Ok(task)) => {
+                            if let Err(err) = task.await {
+                                return QuitOutcome::SaveFailed(err.to_string());
+                            }
+                        }
+                        Ok(Err(err)) => return QuitOutcome::SaveFailed(err.to_string()),
+                        Err(err) => return QuitOutcome::SaveFailed(err.to_string()),
+                    }
+                } else {
+                    let default_name = if doc.title.is_empty() {
+                        "document.md".to_string()
+                    } else {
+                        doc.title.clone()
+                    };
+                    let Some(file) = rfd::AsyncFileDialog::new()
+                        .set_file_name(&default_name)
+                        .save_file()
+                        .await
+                    else {
+                        return QuitOutcome::Cancelled;
+                    };
+                    let collocated_mode = cx
+                        .update(|cx| {
+                            cx.try_global::<AppConfig>()
+                                .is_some_and(|cfg| cfg.collocated_mode)
+                        })
+                        .unwrap_or(false);
+                    let target_path =
+                        match resolve_save_as_target(file.path().to_path_buf(), collocated_mode) {
+                            Ok(path) => path,
+                            Err(err) => return QuitOutcome::SaveFailed(err),
+                        };
+                    let task_res = doc
+                        .editor
+                        .update(cx, |ed, cx| ed.save_file_as_async(target_path, cx));
+                    match task_res {
+                        Ok(task) => {
+                            if let Err(err) = task.await {
+                                return QuitOutcome::SaveFailed(err.to_string());
+                            }
+                        }
+                        Err(err) => return QuitOutcome::SaveFailed(err.to_string()),
+                    }
+                }
+            }
+
+            let _ = cx.update(on_proceed);
+            QuitOutcome::Proceeded
+        }
+    }
+}
+
 /// Checks for unsaved documents across all windows before running `on_confirmed`.
 ///
 /// When no documents are dirty and no window is currently borrowed, persists window state and
@@ -140,78 +238,84 @@ where
             return QuitOutcome::Proceeded;
         }
 
-        let titles: Vec<String> = unsaved.iter().map(|doc| doc.title.clone()).collect();
-        let choice = prompt(titles).await;
-        match choice {
-            UnsavedChangesChoice::Cancel => QuitOutcome::Cancelled,
-            UnsavedChangesChoice::DiscardAll => {
-                let _ = cx.update(|cx| {
-                    persist_all_windows_state_sync(cx);
-                    on_confirmed(cx);
-                });
-                QuitOutcome::Proceeded
-            }
-            UnsavedChangesChoice::SaveAll => {
-                for doc in unsaved {
-                    if doc.has_file_path {
-                        let task_res = doc.editor.update(cx, |ed, cx| ed.save_file_async(cx));
-                        match task_res {
-                            Ok(Ok(task)) => {
-                                if let Err(err) = task.await {
-                                    return QuitOutcome::SaveFailed(err.to_string());
-                                }
-                            }
-                            Ok(Err(err)) => return QuitOutcome::SaveFailed(err.to_string()),
-                            Err(err) => return QuitOutcome::SaveFailed(err.to_string()),
-                        }
-                    } else {
-                        let default_name = if doc.title.is_empty() {
-                            "document.md".to_string()
-                        } else {
-                            doc.title.clone()
-                        };
-                        let Some(file) = rfd::AsyncFileDialog::new()
-                            .set_file_name(&default_name)
-                            .save_file()
-                            .await
-                        else {
-                            return QuitOutcome::Cancelled;
-                        };
-                        let collocated_mode = cx
-                            .update(|cx| {
-                                cx.try_global::<AppConfig>()
-                                    .is_some_and(|cfg| cfg.collocated_mode)
-                            })
-                            .unwrap_or(false);
-                        let target_path = match resolve_save_as_target(
-                            file.path().to_path_buf(),
-                            collocated_mode,
-                        ) {
-                            Ok(path) => path,
-                            Err(err) => return QuitOutcome::SaveFailed(err),
-                        };
-                        let task_res = doc
-                            .editor
-                            .update(cx, |ed, cx| ed.save_file_as_async(target_path, cx));
-                        match task_res {
-                            Ok(task) => {
-                                if let Err(err) = task.await {
-                                    return QuitOutcome::SaveFailed(err.to_string());
-                                }
-                            }
-                            Err(err) => return QuitOutcome::SaveFailed(err.to_string()),
-                        }
-                    }
-                }
-
-                let _ = cx.update(|cx| {
-                    persist_all_windows_state_sync(cx);
-                    on_confirmed(cx);
-                });
-                QuitOutcome::Proceeded
-            }
-        }
+        resolve_unsaved_documents(
+            unsaved,
+            prompt,
+            |cx| {
+                persist_all_windows_state_sync(cx);
+                on_confirmed(cx);
+            },
+            cx,
+        )
+        .await
     })
+}
+
+/// Checks for unsaved documents inside `window_handle` before persisting its state and closing it.
+///
+/// When `window_handle` is not currently borrowed and contains no dirty documents, persists state
+/// and removes the window synchronously. Otherwise runs on a foreground task and clears the
+/// window's `close_prompt_active` flag upon completion.
+pub fn request_window_close_with_prompt<F, Fut>(
+    window_handle: WindowHandle<InviscidWindow>,
+    cx: &mut App,
+    prompt: F,
+) -> Task<QuitOutcome>
+where
+    F: FnOnce(Vec<String>) -> Fut + 'static,
+    Fut: Future<Output = UnsavedChangesChoice> + 'static,
+{
+    if let Ok(app) = window_handle.read(cx) {
+        let unsaved = collect_window_unsaved_documents(window_handle, app.workspace(), cx);
+        if unsaved.is_empty() {
+            let _ = window_handle.update(cx, |app, window, cx| {
+                app.set_close_prompt_active(false);
+                app.persist_window_state_sync(window, cx);
+                window.remove_window();
+            });
+            return Task::ready(QuitOutcome::Proceeded);
+        }
+    }
+
+    cx.spawn(async move |cx| {
+        let unsaved = cx
+            .update(|cx| {
+                window_handle
+                    .read(cx)
+                    .ok()
+                    .map(|app| collect_window_unsaved_documents(window_handle, app.workspace(), cx))
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
+        let close_window = move |cx: &mut App| {
+            let _ = window_handle.update(cx, |app, window, cx| {
+                app.set_close_prompt_active(false);
+                app.persist_window_state_sync(window, cx);
+                window.remove_window();
+            });
+        };
+
+        let outcome = if unsaved.is_empty() {
+            let _ = cx.update(close_window);
+            QuitOutcome::Proceeded
+        } else {
+            resolve_unsaved_documents(unsaved, prompt, close_window, cx).await
+        };
+
+        if outcome != QuitOutcome::Proceeded {
+            let _ = window_handle.update(cx, |app, _, _| {
+                app.set_close_prompt_active(false);
+            });
+        }
+        outcome
+    })
+}
+
+/// Runs the per-window unsaved-changes guard with the localized native confirmation dialog.
+pub fn request_window_close(window_handle: WindowHandle<InviscidWindow>, cx: &mut App) {
+    let prompt = build_unsaved_prompt(cx);
+    request_window_close_with_prompt(window_handle, cx, prompt).detach();
 }
 
 pub(crate) fn build_unsaved_prompt(
@@ -273,7 +377,7 @@ mod tests {
     use crate::app::actions;
     use crate::theme::ThemeManager;
     use core::prelude::v1::test;
-    use gpui::EntityInputHandler;
+    use gpui::{AppContext, EntityInputHandler};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -434,5 +538,79 @@ mod tests {
         let saved_disk = std::fs::read_to_string(&file_path).unwrap();
         assert!(saved_disk.contains("updated"), "disk content was: {saved_disk:?}");
         cx.read(|cx| assert!(!editor.read(cx).is_dirty()));
+    }
+
+    #[gpui::test]
+    fn test_window_close_dirty_cancel_keeps_window_open_and_save_all_closes_window(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test_globals(cx);
+        let (app1, cx) = cx.add_window_view(|_, cx| InviscidWindow::new(cx));
+        cx.run_until_parked();
+        let (_dir1, file_path1, _editor1) = open_and_dirty_temp_file(&app1, cx);
+        let win1_handle = cx
+            .update(|window, _| window.window_handle().downcast::<InviscidWindow>())
+            .unwrap();
+
+        let dir2 = tempfile::tempdir().unwrap();
+        let file_path2 = dir2.path().join("other_window.md");
+        std::fs::write(&file_path2, "other").unwrap();
+        let (win2_handle, editor2) = cx.cx.update(|cx| {
+            let win2_handle = cx
+                .open_window(gpui::WindowOptions::default(), |_, cx| {
+                    cx.new(InviscidWindow::new)
+                })
+                .unwrap();
+            let editor2 = win2_handle
+                .update(cx, |app2, _window2, cx| {
+                    let ws = app2.workspace().clone();
+                    ws.update(cx, |ws, cx| ws.open_file(file_path2.clone(), cx));
+                    ws.read(cx).active_editor().unwrap().clone()
+                })
+                .unwrap();
+            (win2_handle, editor2)
+        });
+        cx.cx.run_until_parked();
+        cx.cx.update(|cx| {
+            win2_handle
+                .update(cx, |_, window2, cx| {
+                    editor2.update(cx, |ed, cx| {
+                        ed.replace_text_in_range(None, " edited", window2, cx);
+                    });
+                    assert!(editor2.read(cx).is_dirty());
+                })
+                .unwrap();
+        });
+        cx.cx.run_until_parked();
+
+        // Cancel on window 1 only lists window 1's dirty document and keeps window 1 open.
+        let cancel_task = cx.cx.update(|cx| {
+            request_window_close_with_prompt(win1_handle, cx, |titles| async move {
+                assert_eq!(titles, vec!["note.md".to_string()]);
+                UnsavedChangesChoice::Cancel
+            })
+        });
+        cx.cx.run_until_parked();
+        assert_eq!(cx.executor().block(cancel_task), QuitOutcome::Cancelled);
+        assert!(cx.cx.read(|cx| win1_handle.read(cx).is_ok()));
+        assert_eq!(std::fs::read_to_string(&file_path1).unwrap(), "initial");
+
+        // SaveAll on window 1 saves file 1, closes window 1, and leaves window 2 open & dirty.
+        let save_task = cx.cx.update(|cx| {
+            request_window_close_with_prompt(win1_handle, cx, |titles| async move {
+                assert_eq!(titles, vec!["note.md".to_string()]);
+                UnsavedChangesChoice::SaveAll
+            })
+        });
+        cx.cx.run_until_parked();
+        assert_eq!(cx.executor().block(save_task), QuitOutcome::Proceeded);
+        assert!(cx.cx.read(|cx| win1_handle.read(cx).is_err()));
+        assert!(cx.cx.read(|cx| win2_handle.read(cx).is_ok()));
+        assert!(
+            std::fs::read_to_string(&file_path1)
+                .unwrap()
+                .contains("updated")
+        );
+        cx.cx.read(|cx| assert!(editor2.read(cx).is_dirty()));
     }
 }

@@ -43,6 +43,7 @@ pub struct InviscidWindow {
     active_menu: Option<ActiveMenu>,
     cached_window_bounds: Option<WindowLayoutState>,
     window_persistence_attached: bool,
+    close_prompt_active: bool,
     _workspace_subscription: Subscription,
     _titlebar_subscription: Subscription,
     _window_subscriptions: Vec<Subscription>,
@@ -95,6 +96,7 @@ impl InviscidWindow {
             active_menu: None,
             cached_window_bounds: None,
             window_persistence_attached: false,
+            close_prompt_active: false,
             _workspace_subscription,
             _titlebar_subscription,
             _window_subscriptions: Vec::new(),
@@ -170,11 +172,31 @@ impl InviscidWindow {
 
         let weak = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
-            let _ = weak.update(cx, |this, cx| {
-                this.persist_window_state_sync(window, cx);
-            });
-            true
+            weak.update(cx, |this, cx| this.request_close(window, cx))
+                .unwrap_or(true)
         });
+    }
+
+    pub(crate) fn set_close_prompt_active(&mut self, active: bool) {
+        self.close_prompt_active = active;
+    }
+
+    /// Checks this window's workspace for unsaved documents before closing.
+    ///
+    /// Returns `true` when clean (and persists window state), or `false` after scheduling the
+    /// unsaved-changes prompt for this window.
+    pub(crate) fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !lifecycle::has_unsaved_documents(&self.workspace, cx) {
+            self.persist_window_state_sync(window, cx);
+            return true;
+        }
+        if !self.close_prompt_active
+            && let Some(window_handle) = window.window_handle().downcast::<InviscidWindow>()
+        {
+            self.close_prompt_active = true;
+            lifecycle::request_window_close(window_handle, cx);
+        }
+        false
     }
 
     fn handle_window_bounds_changed(&mut self, window: &Window, cx: &mut Context<Self>) {
