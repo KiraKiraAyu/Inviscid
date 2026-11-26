@@ -1,0 +1,279 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (e.g. v0.1.0-beta.1)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Skip Minisign signing and GitHub Release publishing'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      dry_run: ${{ steps.meta.outputs.dry_run }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate tag matches Cargo.toml
+        id: meta
+        shell: python3 {0}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          import os
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          event = os.environ["EVENT_NAME"]
+          tag = os.environ["INPUT_TAG"].strip() if event == "workflow_dispatch" else os.environ["REF_NAME"].strip()
+          if not tag.startswith("v") or len(tag) < 2:
+              sys.exit(f"Invalid release tag {tag!r}: must start with 'v'")
+
+          version = tag[1:]
+          cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))
+          cargo_version = cargo["package"]["version"]
+          if cargo_version != version:
+              sys.exit(f"Cargo.toml version ({cargo_version!r}) != tag version ({version!r})")
+
+          is_prerelease = "-" in version
+          channel = "beta" if is_prerelease else "stable"
+          dry_run = os.environ.get("INPUT_DRY_RUN", "false").lower() == "true"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"tag={tag}\n")
+              fh.write(f"version={version}\n")
+              fh.write(f"channel={channel}\n")
+              fh.write(f"prerelease={'true' if is_prerelease else 'false'}\n")
+              fh.write(f"dry_run={'true' if dry_run else 'false'}\n")
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_suffix: windows-x86_64
+            ext: zip
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset_suffix: macos-aarch64
+            ext: tar.gz
+          - os: macos-14
+            target: x86_64-apple-darwin
+            asset_suffix: macos-x86_64
+            ext: tar.gz
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset_suffix: linux-x86_64
+            ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libvulkan-dev \
+            libxcb1-dev \
+            libwayland-dev \
+            libfontconfig1-dev \
+            libgtk-3-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Prepare patched GPUI vendor tree (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python patches/gpui/prepare.py
+
+      - name: Prepare patched GPUI vendor tree (Unix)
+        if: runner.os != 'Windows'
+        run: python3 patches/gpui/prepare.py
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $outZip = "dist/inviscid-${{ needs.validate.outputs.tag }}-${{ matrix.asset_suffix }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/inviscid.exe" -DestinationPath $outZip -Force
+
+      - name: Package macOS bundle archive
+        if: runner.os == 'macOS'
+        run: |
+          chmod +x scripts/package-macos.sh
+          bash scripts/package-macos.sh \
+            "target/${{ matrix.target }}/release/inviscid" \
+            "${{ needs.validate.outputs.version }}" \
+            "dist/inviscid-${{ needs.validate.outputs.tag }}-${{ matrix.asset_suffix }}.tar.gz" \
+            "assets/images/Inviscid.svg"
+
+      - name: Package Linux archive
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          tar -C "target/${{ matrix.target }}/release" -czf \
+            "dist/inviscid-${{ needs.validate.outputs.tag }}-${{ matrix.asset_suffix }}.tar.gz" \
+            inviscid
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset_suffix }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish-and-sign:
+    needs: [validate, build]
+    runs-on: ubuntu-22.04
+    environment: release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Generate update manifest and SHA256SUMS
+        run: |
+          python3 scripts/generate-manifest.py \
+            --version "${{ needs.validate.outputs.version }}" \
+            --tag "${{ needs.validate.outputs.tag }}" \
+            --channel "${{ needs.validate.outputs.channel }}" \
+            --artifacts-dir dist \
+            --output "dist/update-${{ needs.validate.outputs.channel }}.json" \
+            --sha256sums-out dist/SHA256SUMS.txt
+
+      - name: Install minisign CLI
+        if: needs.validate.outputs.dry_run != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign || {
+            MINISIGN_VER="0.11"
+            curl -fsSL "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VER}/minisign-${MINISIGN_VER}-linux.tar.gz" -o /tmp/minisign.tar.gz
+            tar -xzf /tmp/minisign.tar.gz -C /tmp
+            sudo install -m 755 /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
+          }
+
+      - name: Sign and self-verify update manifest
+        if: needs.validate.outputs.dry_run != 'true'
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MINISIGN_SECRET_KEY:-}" || -z "${MINISIGN_PASSWORD:-}" ]]; then
+            echo "error: MINISIGN_SECRET_KEY and MINISIGN_PASSWORD secrets must be configured in the 'release' environment." >&2
+            exit 1
+          fi
+
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key_file"
+
+          manifest="dist/update-${CHANNEL}.json"
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -Sm "$manifest" -s "$key_file" -t "inviscid ${{ needs.validate.outputs.tag }}"
+
+          # Self-verify against TRUSTED_MINISIGN_PUBLIC_KEYS embedded in src/updater/manifest.rs.
+          trusted_keys=$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+          src = Path("src/updater/manifest.rs").read_text(encoding="utf-8")
+          m = re.search(r"TRUSTED_MINISIGN_PUBLIC_KEYS:\s*&\[&str\]\s*=\s*&\[(.*?)\];", src, re.S)
+          if not m:
+              raise SystemExit("Could not locate TRUSTED_MINISIGN_PUBLIC_KEYS")
+          for key in re.findall(r'"(RW[^"]+)"', m.group(1)):
+              print(key)
+          PY
+          )
+
+          verified=0
+          for pubkey in $trusted_keys; do
+            if minisign -Vm "$manifest" -P "$pubkey"; then
+              verified=1
+              break
+            fi
+          done
+          if [[ "$verified" -ne 1 ]]; then
+            echo "error: signed manifest failed verification against TRUSTED_MINISIGN_PUBLIC_KEYS in src/updater/manifest.rs" >&2
+            exit 1
+          fi
+
+      - name: Publish versioned GitHub Release
+        if: needs.validate.outputs.dry_run != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          name: Inviscid ${{ needs.validate.outputs.tag }}
+          prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            dist/inviscid-*
+            dist/SHA256SUMS.txt
+
+      - name: Update rolling channel pointer tag
+        if: needs.validate.outputs.dry_run != 'true'
+        run: |
+          channel_tag="channel-${{ needs.validate.outputs.channel }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$channel_tag" "${{ github.sha }}"
+          git push -f origin "refs/tags/${channel_tag}"
+
+      - name: Publish signed manifest to rolling channel release
+        if: needs.validate.outputs.dry_run != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: channel-${{ needs.validate.outputs.channel }}
+          name: Update Channel (${{ needs.validate.outputs.channel }})
+          prerelease: ${{ needs.validate.outputs.channel == 'beta' }}
+          body: Rolling update manifest pointer for the `${{ needs.validate.outputs.channel }}` channel (latest version `${{ needs.validate.outputs.version }}`).
+          files: |
+            dist/update-${{ needs.validate.outputs.channel }}.json
+            dist/update-${{ needs.validate.outputs.channel }}.json.minisig
