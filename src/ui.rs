@@ -1,3 +1,4 @@
+mod banner;
 mod context_menu;
 pub(crate) mod dock_panel;
 pub(crate) mod icon;
@@ -18,6 +19,7 @@ pub mod tokens;
 mod tooltip;
 mod window_controls;
 
+pub use banner::{AppBanner, BannerAction, BannerTone};
 pub(crate) use context_menu::ContextMenuBuilder;
 pub use context_menu::{calculate_menu_height, compute_context_menu_coords};
 pub use icon::{Icon, IconName, IconSize};
