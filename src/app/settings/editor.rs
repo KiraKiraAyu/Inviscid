@@ -183,7 +183,7 @@ impl SettingsWindow {
                             .text_size(FontSize::SM)
                             .text_color(theme.text_muted)
                             .line_height(LineHeight::SM)
-                            .child("Where pasted or dropped images are saved. Relative paths (default: assets) resolve next to the document; paths starting with / or a drive letter (e.g. D:\\assets) are absolute."),
+                            .child("Where pasted or dropped images are saved. Relative paths (default: assets) resolve next to the document; leave empty to save in the same directory as the document; paths starting with / or a drive letter (e.g. D:\\assets) are absolute."),
                     ),
             )
             .child(self.asset_dir_field.clone())

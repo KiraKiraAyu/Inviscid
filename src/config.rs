@@ -1330,6 +1330,11 @@ mod tests {
         let normalized = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
         assert_eq!(normalized.asset_dir, "images");
 
+        // Empty asset_dir round-trips as "" (same directory as document).
+        fs::write(&cfg_path, "asset_dir = \"\"\n").unwrap();
+        let empty = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
+        assert_eq!(empty.asset_dir, "");
+
         // Round-trip absolute Windows drive path.
         let mut custom = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
         custom.asset_dir = "D:\\Notes\\Assets".to_string();

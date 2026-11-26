@@ -33,12 +33,12 @@ fn is_windows_drive_path(s: &str) -> bool {
         && bytes.get(2).is_none_or(|&b| b == b'/' || b == b'\\')
 }
 
-/// Normalizes a configured asset directory string, falling back to `"assets"` when blank
-/// and trimming redundant trailing separators while preserving root paths (`/` or `C:/`).
+/// Normalizes a configured asset directory string, trimming surrounding whitespace
+/// and redundant trailing separators while preserving root paths (`/` or `C:/`) and empty string.
 pub fn normalize_asset_dir(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return crate::config::UserPreferences::DEFAULT_ASSET_DIR.to_string();
+        return String::new();
     }
     if trimmed.len() == 2 && trimmed.as_bytes()[0].is_ascii_alphabetic() && trimmed.as_bytes()[1] == b':'
     {
@@ -128,7 +128,11 @@ pub fn resolve_asset_dir(
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or(AssetResolutionError::InvalidDocumentDirectory)?;
 
-    let disk_dir = doc_dir.join(&norm);
+    let disk_dir = if norm.is_empty() {
+        doc_dir.to_path_buf()
+    } else {
+        doc_dir.join(&norm)
+    };
     let link_prefix = format_link_prefix(&norm, false);
     Ok(ResolvedAssetDir {
         disk_dir,
@@ -430,7 +434,8 @@ mod tests {
 
     #[test]
     fn normalize_and_absolute_detection_handle_slashes_and_drive_letters() {
-        assert_eq!(normalize_asset_dir(""), "assets");
+        assert_eq!(normalize_asset_dir(""), "");
+        assert_eq!(normalize_asset_dir("   "), "");
         assert_eq!(normalize_asset_dir("  assets/  "), "assets");
         assert_eq!(normalize_asset_dir("/"), "/");
         assert_eq!(normalize_asset_dir("\\"), "\\");
@@ -469,6 +474,12 @@ mod tests {
         assert!(!rel.is_absolute);
         assert_eq!(rel.disk_dir, dir.path().join("./assets/img"));
         assert_eq!(rel.link_prefix, "assets/img");
+
+        let same_dir = resolve_asset_dir("", Some(&doc)).unwrap();
+        assert!(!same_dir.is_absolute);
+        assert_eq!(same_dir.disk_dir, dir.path());
+        assert_eq!(same_dir.link_prefix, "");
+        assert_eq!(build_markdown_url(&same_dir.link_prefix, "pic (1).png"), "pic%20%281%29.png");
     }
 
     #[test]

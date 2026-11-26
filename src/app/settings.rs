@@ -82,7 +82,6 @@ impl SettingsWindow {
 
         let asset_dir_field = cx.new(|cx| {
             SettingTextField::new("asset_dir_field", initial_asset_dir, cx)
-                .placeholder(UserPreferences::DEFAULT_ASSET_DIR, cx)
                 .return_focus_to(focus_handle.clone())
                 .on_commit(|draft, cx| {
                     let normalized = crate::media::normalize_asset_dir(&draft);
@@ -466,7 +465,7 @@ mod tests {
             "D:\\media\\images"
         );
 
-        // Clearing field and closing window auto-saves default "assets"
+        // Clearing field and closing window auto-saves empty string (same directory as md file)
         cx.update(|window, cx| {
             settings.update(cx, |s, cx| {
                 s.asset_dir_field.update(cx, |f, cx| {
@@ -482,7 +481,7 @@ mod tests {
 
         assert_eq!(
             cx.read(|cx| cx.global::<AppConfig>().asset_dir.clone()),
-            "assets"
+            ""
         );
     }
 }

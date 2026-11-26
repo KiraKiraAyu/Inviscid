@@ -1,6 +1,5 @@
 use std::rc::Rc;
 
-use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled, Subscription,
