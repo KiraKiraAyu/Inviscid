@@ -506,8 +506,12 @@ mod tests {
             Err(ManifestError::InvalidSignature(_))
         ));
 
-        // Tampered signature must fail
-        let tampered_sig = sig.replace('A', "B");
+        // Tampered signature must fail (deterministically mutate a byte in the signature line)
+        let mut sig_lines: Vec<String> = sig.lines().map(str::to_string).collect();
+        let mut sig_bytes = sig_lines[1].as_bytes().to_vec();
+        sig_bytes[20] = if sig_bytes[20] == b'A' { b'B' } else { b'A' };
+        sig_lines[1] = String::from_utf8(sig_bytes).unwrap();
+        let tampered_sig = format!("{}\n", sig_lines.join("\n"));
         assert!(matches!(
             verify_and_parse_manifest(
                 &raw,
