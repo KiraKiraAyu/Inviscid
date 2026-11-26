@@ -4,7 +4,8 @@ pub(crate) mod queries;
 pub(crate) mod registry;
 pub(crate) mod token;
 
-pub(crate) use loader::{GrammarCdnPreset, normalize_grammar_base_url};
+pub use loader::GrammarSource;
+pub(crate) use loader::normalize_grammar_base_url;
 pub(crate) use queries::*;
 pub use registry::set_global_grammar_base_url;
 pub(crate) use registry::{
@@ -219,14 +220,14 @@ mod tests {
 
     #[test]
     fn test_build_grammar_download_url() {
-        assert_eq!(GrammarCdnPreset::default(), GrammarCdnPreset::JsDelivr);
+        assert_eq!(GrammarSource::default(), GrammarSource::JsDelivr);
         assert_eq!(
-            GrammarCdnPreset::default().url(),
-            GrammarCdnPreset::DEFAULT_URL
+            GrammarSource::default().resolve_url("https://unused.example.com"),
+            GrammarSource::DEFAULT_URL
         );
 
         let js_spec = resolve_grammar_spec("javascript").unwrap();
-        let url = build_grammar_download_url(GrammarCdnPreset::default().url(), js_spec);
+        let url = build_grammar_download_url(GrammarSource::DEFAULT_URL, js_spec);
         assert_eq!(
             url.as_deref(),
             Some(

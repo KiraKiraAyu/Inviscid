@@ -12,14 +12,9 @@ use super::persistence::{update_config, update_config_all_windows};
 use super::SettingsWindow;
 use crate::config::AppConfig;
 use crate::editor::RenderMode;
-use crate::syntax::{GrammarCdnPreset, normalize_grammar_base_url};
+use crate::syntax::GrammarSource;
 use crate::theme::ThemeManager;
 use crate::ui::{ControlHeight, FontSize, OptionPill, SettingRow, Spacing, Switch};
-
-pub(crate) fn is_custom_grammar_url(url: &str) -> bool {
-    let normalized = normalize_grammar_base_url(url);
-    !normalized.is_empty() && GrammarCdnPreset::from_url(&normalized).is_none()
-}
 
 impl SettingsWindow {
     pub(crate) fn render_general_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -115,26 +110,23 @@ impl SettingsWindow {
 
     fn grammar_base_url_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<ThemeManager>().theme().clone();
-        let current_url = cx.global::<AppConfig>().grammar_base_url.clone();
-        let is_custom = self.is_custom_grammar_mode(cx);
-        let preset = if is_custom {
-            None
-        } else {
-            GrammarCdnPreset::from_url(&current_url)
-        };
-        let is_jsdelivr = preset == Some(GrammarCdnPreset::JsDelivr);
-        let is_unpkg = preset == Some(GrammarCdnPreset::Unpkg);
-        let is_offline = preset == Some(GrammarCdnPreset::Offline);
+        let cfg = cx.global::<AppConfig>();
+        let source = cfg.grammar_source;
+        let effective_url = cfg.effective_grammar_base_url().to_string();
+        let is_jsdelivr = source == GrammarSource::JsDelivr;
+        let is_unpkg = source == GrammarSource::Unpkg;
+        let is_offline = source == GrammarSource::Offline;
+        let is_custom = source == GrammarSource::Custom;
 
         let url_bar = if is_custom {
             self.grammar_url_field.clone().into_any_element()
         } else {
-            let display_text = if current_url.is_empty() {
+            let display_text = if effective_url.is_empty() {
                 "Offline — local grammars only".to_string()
             } else {
-                current_url.clone()
+                effective_url
             };
-            let text_color = if current_url.is_empty() {
+            let text_color = if is_offline {
                 theme.text_muted
             } else {
                 theme.text_secondary
@@ -175,21 +167,24 @@ impl SettingsWindow {
                         .gap(Spacing::XS)
                         .child(
                             OptionPill::new("grammar_cdn_jsdelivr", "jsDelivr", is_jsdelivr)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.select_grammar_preset(GrammarCdnPreset::JsDelivr, cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.select_grammar_source(GrammarSource::JsDelivr, cx);
+                                    this.focus(window);
                                 })),
                         )
                         .child(
                             OptionPill::new("grammar_cdn_unpkg", "unpkg", is_unpkg).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.select_grammar_preset(GrammarCdnPreset::Unpkg, cx);
+                                cx.listener(|this, _, window, cx| {
+                                    this.select_grammar_source(GrammarSource::Unpkg, cx);
+                                    this.focus(window);
                                 }),
                             ),
                         )
                         .child(
                             OptionPill::new("grammar_cdn_offline", "Offline", is_offline).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.select_grammar_preset(GrammarCdnPreset::Offline, cx);
+                                cx.listener(|this, _, window, cx| {
+                                    this.select_grammar_source(GrammarSource::Offline, cx);
+                                    this.focus(window);
                                 }),
                             ),
                         )
@@ -208,26 +203,22 @@ impl SettingsWindow {
             .child(url_bar)
     }
 
-    pub(crate) fn is_custom_grammar_mode(&self, cx: &App) -> bool {
-        self.custom_grammar_selected
-            || is_custom_grammar_url(&cx.global::<AppConfig>().grammar_base_url)
-    }
-
-    pub(crate) fn select_grammar_preset(
+    pub(crate) fn select_grammar_source(
         &mut self,
-        preset: GrammarCdnPreset,
+        source: GrammarSource,
         cx: &mut Context<Self>,
     ) {
-        let normalized = normalize_grammar_base_url(preset.url());
-        self.custom_grammar_selected = false;
         self.active_input = None;
-        crate::syntax::set_global_grammar_base_url(normalized.clone());
-        self.grammar_url_field.update(cx, |field, cx| {
-            field.sync_value(normalized.clone(), cx);
-        });
         update_config(cx, move |cfg| {
-            cfg.grammar_base_url = normalized;
+            cfg.grammar_source = source;
         });
+        self.grammar_url_field
+            .update(cx, |field, cx| field.commit_if_changed(cx));
+        let effective = cx
+            .global::<AppConfig>()
+            .effective_grammar_base_url()
+            .to_string();
+        crate::syntax::set_global_grammar_base_url(effective);
         cx.notify();
     }
 
@@ -236,12 +227,10 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.active_input = None;
-        self.custom_grammar_selected = true;
+        self.select_grammar_source(GrammarSource::Custom, cx);
         self.grammar_url_field.update(cx, |field, cx| {
             field.focus_and_select_all(window, cx);
         });
-        cx.notify();
     }
 }
 
@@ -268,14 +257,32 @@ mod tests {
     }
 
     #[test]
-    fn test_is_custom_grammar_url_classification() {
-        assert!(!is_custom_grammar_url(""));
-        assert!(!is_custom_grammar_url("   "));
-        assert!(!is_custom_grammar_url(GrammarCdnPreset::JsDelivr.url()));
-        assert!(!is_custom_grammar_url("https://cdn.jsdelivr.net/npm/"));
-        assert!(!is_custom_grammar_url(GrammarCdnPreset::Unpkg.url()));
-        assert!(!is_custom_grammar_url("https://unpkg.com/"));
-        assert!(is_custom_grammar_url("https://mirror.example.com/npm"));
+    fn test_grammar_source_from_legacy_url() {
+        assert_eq!(GrammarSource::from_legacy_url(""), GrammarSource::Offline);
+        assert_eq!(
+            GrammarSource::from_legacy_url("   "),
+            GrammarSource::Offline
+        );
+        assert_eq!(
+            GrammarSource::from_legacy_url(GrammarSource::JSDELIVR_URL),
+            GrammarSource::JsDelivr
+        );
+        assert_eq!(
+            GrammarSource::from_legacy_url("https://cdn.jsdelivr.net/npm/"),
+            GrammarSource::JsDelivr
+        );
+        assert_eq!(
+            GrammarSource::from_legacy_url(GrammarSource::UNPKG_URL),
+            GrammarSource::Unpkg
+        );
+        assert_eq!(
+            GrammarSource::from_legacy_url("https://unpkg.com/"),
+            GrammarSource::Unpkg
+        );
+        assert_eq!(
+            GrammarSource::from_legacy_url("https://mirror.example.com/npm"),
+            GrammarSource::Custom
+        );
     }
 
     struct ResetGlobalGrammarUrlOnDrop;
@@ -303,41 +310,42 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // Initial presets switching
+        // Initial source switching
         cx.update(|_window, cx| {
             settings.update(cx, |s, cx| {
-                assert!(!s.is_custom_grammar_mode(cx));
+                assert_eq!(cx.global::<AppConfig>().grammar_source, GrammarSource::JsDelivr);
                 assert_eq!(
-                    cx.global::<AppConfig>().grammar_base_url,
-                    GrammarCdnPreset::default().url()
+                    cx.global::<AppConfig>().effective_grammar_base_url(),
+                    GrammarSource::JSDELIVR_URL
                 );
 
-                // Switch to unpkg preset
-                s.select_grammar_preset(GrammarCdnPreset::Unpkg, cx);
-                assert!(!s.is_custom_grammar_mode(cx));
+                // Switch to Unpkg
+                s.select_grammar_source(GrammarSource::Unpkg, cx);
+                assert_eq!(cx.global::<AppConfig>().grammar_source, GrammarSource::Unpkg);
                 assert_eq!(
-                    cx.global::<AppConfig>().grammar_base_url,
-                    GrammarCdnPreset::Unpkg.url()
+                    cx.global::<AppConfig>().effective_grammar_base_url(),
+                    GrammarSource::UNPKG_URL
                 );
 
-                // Switch to offline preset
-                s.select_grammar_preset(GrammarCdnPreset::Offline, cx);
-                assert!(!s.is_custom_grammar_mode(cx));
-                assert_eq!(cx.global::<AppConfig>().grammar_base_url, "");
+                // Switch to Offline
+                s.select_grammar_source(GrammarSource::Offline, cx);
+                assert_eq!(cx.global::<AppConfig>().grammar_source, GrammarSource::Offline);
+                assert_eq!(cx.global::<AppConfig>().effective_grammar_base_url(), "");
             });
         });
 
-        // Custom mode reveals and focuses the standalone SettingTextField
+        // Custom mode reveals and focuses the standalone SettingTextField (initially empty, NOT polluted by preset)
         let field = cx.update(|window, cx| {
             settings.update(cx, |s, cx| {
                 s.select_custom_grammar_mode(window, cx);
-                assert!(s.is_custom_grammar_mode(cx));
+                assert_eq!(cx.global::<AppConfig>().grammar_source, GrammarSource::Custom);
+                assert_eq!(s.grammar_url_field.read(cx).text(cx), "");
                 s.grammar_url_field.clone()
             })
         });
         cx.run_until_parked();
 
-        // Typing custom URL and blurring auto-saves normalized URL
+        // Typing custom URL and blurring auto-saves normalized URL to custom_grammar_url
         cx.update(|_window, cx| {
             let input = field.read(cx).input().clone();
             input.update(cx, |inp, cx| {
@@ -352,9 +360,11 @@ mod tests {
 
         cx.update(|_window, cx| {
             settings.update(cx, |s, cx| {
-                assert!(s.is_custom_grammar_mode(cx));
+                let cfg = cx.global::<AppConfig>();
+                assert_eq!(cfg.grammar_source, GrammarSource::Custom);
+                assert_eq!(cfg.custom_grammar_url, "https://mirror.example.com/npm");
                 assert_eq!(
-                    cx.global::<AppConfig>().grammar_base_url,
+                    cfg.effective_grammar_base_url(),
                     "https://mirror.example.com/npm"
                 );
                 assert_eq!(
@@ -363,6 +373,68 @@ mod tests {
                 );
             });
         });
+
+        // Switching across all other presets must NEVER overwrite/pollute custom_grammar_url
+        cx.update(|window, cx| {
+            settings.update(cx, |s, cx| {
+                for (source, expected_url) in [
+                    (GrammarSource::JsDelivr, GrammarSource::JSDELIVR_URL),
+                    (GrammarSource::Unpkg, GrammarSource::UNPKG_URL),
+                    (GrammarSource::Offline, ""),
+                ] {
+                    s.select_grammar_source(source, cx);
+                    let cfg = cx.global::<AppConfig>();
+                    assert_eq!(cfg.grammar_source, source);
+                    assert_eq!(cfg.effective_grammar_base_url(), expected_url);
+                    assert_eq!(cfg.custom_grammar_url, "https://mirror.example.com/npm");
+                    assert_eq!(
+                        s.grammar_url_field.read(cx).text(cx),
+                        "https://mirror.example.com/npm"
+                    );
+                }
+
+                // Switching back to Custom restores saved custom URL cleanly
+                s.select_custom_grammar_mode(window, cx);
+                let cfg = cx.global::<AppConfig>();
+                assert_eq!(cfg.grammar_source, GrammarSource::Custom);
+                assert_eq!(
+                    cfg.effective_grammar_base_url(),
+                    "https://mirror.example.com/npm"
+                );
+            });
+        });
+
+        // Editing draft in Custom then switching directly to a preset preserves custom draft without overwriting preset
+        cx.update(|_window, cx| {
+            let input = field.read(cx).input().clone();
+            input.update(cx, |inp, cx| {
+                inp.set_text("https://edited.example.com/npm/", cx);
+            });
+            settings.update(cx, |s, cx| {
+                s.select_grammar_source(GrammarSource::Unpkg, cx);
+                let cfg = cx.global::<AppConfig>();
+                assert_eq!(cfg.grammar_source, GrammarSource::Unpkg);
+                assert_eq!(cfg.effective_grammar_base_url(), GrammarSource::UNPKG_URL);
+                assert_eq!(cfg.custom_grammar_url, "https://edited.example.com/npm");
+            });
+        });
+
+        // Closing settings window must not flush Custom field back over active Unpkg preset
+        cx.update(|window, _cx| window.remove_window());
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.read(|cx| cx.global::<AppConfig>().grammar_source),
+            GrammarSource::Unpkg
+        );
+        assert_eq!(
+            cx.read(|cx| cx.global::<AppConfig>().effective_grammar_base_url().to_string()),
+            GrammarSource::UNPKG_URL
+        );
+        assert_eq!(
+            cx.read(|cx| cx.global::<AppConfig>().custom_grammar_url.clone()),
+            "https://edited.example.com/npm"
+        );
     }
 
     #[gpui::test]
@@ -377,14 +449,14 @@ mod tests {
 
         let field = cx.update(|window, cx| {
             settings.update(cx, |s, cx| {
-                s.select_grammar_preset(GrammarCdnPreset::Offline, cx);
+                s.select_grammar_source(GrammarSource::Offline, cx);
                 s.select_custom_grammar_mode(window, cx);
                 s.grammar_url_field.clone()
             })
         });
         cx.run_until_parked();
 
-        // Typing then cancelling reverts draft without mutating config
+        // Typing then cancelling reverts draft while keeping GrammarSource::Custom distinct from Offline
         cx.update(|_window, cx| {
             assert_eq!(field.read(cx).text(cx), "");
             let input = field.read(cx).input().clone();
@@ -396,7 +468,10 @@ mod tests {
         cx.run_until_parked();
 
         cx.update(|_window, cx| {
-            assert_eq!(cx.global::<AppConfig>().grammar_base_url, "");
+            let cfg = cx.global::<AppConfig>();
+            assert_eq!(cfg.grammar_source, GrammarSource::Custom);
+            assert_eq!(cfg.custom_grammar_url, "");
+            assert_eq!(cfg.effective_grammar_base_url(), "");
             assert_eq!(field.read(cx).text(cx), "");
         });
     }

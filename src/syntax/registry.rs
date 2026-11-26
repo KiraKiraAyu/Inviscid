@@ -12,7 +12,7 @@ use crate::wasm::WasmHost;
 
 use super::builtins::{GrammarSpec, resolve_grammar_spec};
 use super::loader::{
-    DebouncedGrammarLoader, GrammarCdnPreset, has_grammar_in_dirs_by_id,
+    DebouncedGrammarLoader, GrammarSource, has_grammar_in_dirs_by_id,
     normalize_grammar_base_url, spawn_local_grammar_loader,
 };
 use super::queries::{compile_resilient_query, normalize_language_id, synthesize_highlights_scm};
@@ -184,7 +184,7 @@ impl SyntaxRegistry {
             (String::new(), None)
         } else {
             (
-                GrammarCdnPreset::DEFAULT_URL.to_string(),
+                GrammarSource::DEFAULT_URL.to_string(),
                 AppConfig::grammars_cache_dir(),
             )
         };

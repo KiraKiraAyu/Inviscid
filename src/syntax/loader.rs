@@ -21,41 +21,45 @@ const MAX_WASM_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB safety cap
 const MAX_SCM_SIZE: u64 = 512 * 1024; // 512 KiB safety cap
 const TYPING_PREFIX_MIN_GAP: Duration = Duration::from_millis(10);
 
-/// Predefined CDN mirror presets for remote Tree-sitter grammar packages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GrammarCdnPreset {
+/// Configured CDN source for remote Tree-sitter grammar packages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GrammarSource {
     #[default]
     JsDelivr,
     Unpkg,
     Offline,
+    Custom,
 }
 
-impl GrammarCdnPreset {
-    pub const JSDELIVR: &'static str = "https://cdn.jsdelivr.net/npm";
-    pub const UNPKG: &'static str = "https://unpkg.com";
-    pub const OFFLINE: &'static str = "";
-    pub const DEFAULT_URL: &'static str = Self::JSDELIVR;
+impl GrammarSource {
+    pub const JSDELIVR_URL: &'static str = "https://cdn.jsdelivr.net/npm";
+    pub const UNPKG_URL: &'static str = "https://unpkg.com";
+    pub const OFFLINE_URL: &'static str = "";
+    pub const DEFAULT_URL: &'static str = Self::JSDELIVR_URL;
 
+    /// Resolves the effective grammar base URL for this source and custom URL.
     #[inline]
-    pub const fn url(self) -> &'static str {
+    pub fn resolve_url<'a>(self, custom_url: &'a str) -> &'a str {
         match self {
-            Self::JsDelivr => Self::JSDELIVR,
-            Self::Unpkg => Self::UNPKG,
-            Self::Offline => Self::OFFLINE,
+            Self::JsDelivr => Self::JSDELIVR_URL,
+            Self::Unpkg => Self::UNPKG_URL,
+            Self::Offline => Self::OFFLINE_URL,
+            Self::Custom => custom_url,
         }
     }
 
-    /// Matches `url` against known presets after normalization.
-    pub fn from_url(url: &str) -> Option<Self> {
+    /// Infers the matching source from a legacy `grammar_base_url` string.
+    pub fn from_legacy_url(url: &str) -> Self {
         let normalized = normalize_grammar_base_url(url);
-        if normalized == Self::JSDELIVR {
-            Some(Self::JsDelivr)
-        } else if normalized == Self::UNPKG {
-            Some(Self::Unpkg)
+        if normalized == Self::JSDELIVR_URL {
+            Self::JsDelivr
+        } else if normalized == Self::UNPKG_URL {
+            Self::Unpkg
         } else if normalized.is_empty() {
-            Some(Self::Offline)
+            Self::Offline
         } else {
-            None
+            Self::Custom
         }
     }
 }

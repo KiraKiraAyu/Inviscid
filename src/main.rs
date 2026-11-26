@@ -27,7 +27,7 @@ fn main() {
 
             // Initialize process-level Globals
             let config = AppConfig::load();
-            inviscid::syntax::set_global_grammar_base_url(config.grammar_base_url.clone());
+            inviscid::syntax::set_global_grammar_base_url(config.effective_grammar_base_url());
             let theme_manager = ThemeManager::from_config(&config);
             cx.set_global(theme_manager);
 

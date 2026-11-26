@@ -364,7 +364,8 @@ pub struct UserPreferences {
     pub cursor_breathing: bool,
     pub default_render_mode: RenderMode,
     pub show_fps: bool,
-    pub grammar_base_url: String,
+    pub grammar_source: crate::syntax::GrammarSource,
+    pub custom_grammar_url: String,
     pub asset_dir: String,
     pub custom_keybindings: std::collections::HashMap<String, String>,
 }
@@ -376,6 +377,11 @@ impl UserPreferences {
     pub const DEFAULT_EDITOR_FONT_SIZE: f32 = 15.0;
     pub const DEFAULT_LINE_HEIGHT: f32 = 1.6;
     pub const DEFAULT_ASSET_DIR: &'static str = "assets";
+
+    #[inline]
+    pub fn effective_grammar_base_url(&self) -> &str {
+        self.grammar_source.resolve_url(&self.custom_grammar_url)
+    }
 }
 
 impl Default for UserPreferences {
@@ -393,7 +399,8 @@ impl Default for UserPreferences {
             cursor_breathing: true,
             default_render_mode: RenderMode::default(),
             show_fps: false,
-            grammar_base_url: crate::syntax::GrammarCdnPreset::DEFAULT_URL.to_string(),
+            grammar_source: crate::syntax::GrammarSource::default(),
+            custom_grammar_url: String::new(),
             asset_dir: Self::DEFAULT_ASSET_DIR.to_string(),
             custom_keybindings: std::collections::HashMap::new(),
         }
@@ -577,13 +584,36 @@ impl AppConfig {
             match fs::read_to_string(&config_path) {
                 Ok(content) => match toml::from_str::<UserPreferences>(&content) {
                     Ok(mut parsed) => {
-                        let normalized_url =
-                            crate::syntax::normalize_grammar_base_url(&parsed.grammar_base_url);
+                        #[derive(Deserialize)]
+                        struct LegacyGrammarFields {
+                            grammar_source: Option<crate::syntax::GrammarSource>,
+                            grammar_base_url: Option<String>,
+                        }
+
+                        let mut changed = false;
+                        if let Ok(legacy) = toml::from_str::<LegacyGrammarFields>(&content)
+                            && legacy.grammar_source.is_none()
+                            && let Some(legacy_url) = legacy.grammar_base_url
+                        {
+                            let normalized_legacy =
+                                crate::syntax::normalize_grammar_base_url(&legacy_url);
+                            parsed.grammar_source =
+                                crate::syntax::GrammarSource::from_legacy_url(&normalized_legacy);
+                            if parsed.grammar_source == crate::syntax::GrammarSource::Custom
+                                && parsed.custom_grammar_url.is_empty()
+                            {
+                                parsed.custom_grammar_url = normalized_legacy;
+                            }
+                            changed = true;
+                        }
+
+                        let normalized_custom_url =
+                            crate::syntax::normalize_grammar_base_url(&parsed.custom_grammar_url);
                         let normalized_asset_dir =
                             crate::media::normalize_asset_dir(&parsed.asset_dir);
-                        let changed = normalized_url != parsed.grammar_base_url
+                        changed |= normalized_custom_url != parsed.custom_grammar_url
                             || normalized_asset_dir != parsed.asset_dir;
-                        parsed.grammar_base_url = normalized_url;
+                        parsed.custom_grammar_url = normalized_custom_url;
                         parsed.asset_dir = normalized_asset_dir;
                         config.preferences = parsed;
                         if changed {
@@ -1063,18 +1093,77 @@ mod tests {
         let config_path = temp_dir.path().join("config.toml");
         let state_path = temp_dir.path().join("state.toml");
 
+        // Legacy unpkg URL migrates cleanly to grammar_source = "unpkg".
         fs::write(&config_path, "grammar_base_url = \"https://unpkg.com/\"\n").unwrap();
         let config = AppConfig::load_from_paths(config_path.clone(), state_path.clone());
+        assert_eq!(config.grammar_source, crate::syntax::GrammarSource::Unpkg);
         assert_eq!(
-            config.grammar_base_url,
-            crate::syntax::GrammarCdnPreset::Unpkg.url()
+            config.effective_grammar_base_url(),
+            crate::syntax::GrammarSource::UNPKG_URL
         );
         let saved_toml = fs::read_to_string(&config_path).unwrap();
-        assert!(saved_toml.contains("grammar_base_url = \"https://unpkg.com\""));
+        assert!(saved_toml.contains("grammar_source = \"unpkg\""));
 
+        // Legacy empty URL migrates to Offline.
         fs::write(&config_path, "grammar_base_url = \"\"\n").unwrap();
-        let offline_config = AppConfig::load_from_paths(config_path.clone(), state_path);
-        assert_eq!(offline_config.grammar_base_url, "");
+        let offline_config = AppConfig::load_from_paths(config_path.clone(), state_path.clone());
+        assert_eq!(
+            offline_config.grammar_source,
+            crate::syntax::GrammarSource::Offline
+        );
+        assert_eq!(offline_config.effective_grammar_base_url(), "");
+        assert_eq!(offline_config.custom_grammar_url, "");
+
+        // Legacy custom grammar_base_url migrates to Custom and populates custom_grammar_url.
+        fs::write(
+            &config_path,
+            "grammar_base_url = \"https://mirror.example.com/npm/\"\n",
+        )
+        .unwrap();
+        let legacy_custom = AppConfig::load_from_paths(config_path.clone(), state_path.clone());
+        assert_eq!(
+            legacy_custom.grammar_source,
+            crate::syntax::GrammarSource::Custom
+        );
+        assert_eq!(
+            legacy_custom.custom_grammar_url,
+            "https://mirror.example.com/npm"
+        );
+        assert_eq!(
+            legacy_custom.effective_grammar_base_url(),
+            "https://mirror.example.com/npm"
+        );
+
+        // Modern unpkg source preserves separate custom_grammar_url independently.
+        fs::write(
+            &config_path,
+            "grammar_source = \"unpkg\"\ncustom_grammar_url = \"https://mirror.example.com/npm/\"\n",
+        )
+        .unwrap();
+        let separated = AppConfig::load_from_paths(config_path.clone(), state_path.clone());
+        assert_eq!(separated.grammar_source, crate::syntax::GrammarSource::Unpkg);
+        assert_eq!(
+            separated.effective_grammar_base_url(),
+            crate::syntax::GrammarSource::UNPKG_URL
+        );
+        assert_eq!(
+            separated.custom_grammar_url,
+            "https://mirror.example.com/npm"
+        );
+
+        // Modern custom source with empty custom URL stays Custom (distinct from Offline).
+        fs::write(
+            &config_path,
+            "grammar_source = \"custom\"\ncustom_grammar_url = \"\"\n",
+        )
+        .unwrap();
+        let empty_custom = AppConfig::load_from_paths(config_path, state_path);
+        assert_eq!(
+            empty_custom.grammar_source,
+            crate::syntax::GrammarSource::Custom
+        );
+        assert_eq!(empty_custom.custom_grammar_url, "");
+        assert_eq!(empty_custom.effective_grammar_base_url(), "");
     }
 
     #[gpui::test]
