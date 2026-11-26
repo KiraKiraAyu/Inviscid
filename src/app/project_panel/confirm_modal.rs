@@ -3,6 +3,7 @@ use gpui::*;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crate::i18n::{ActiveLocale, DEFAULT_CATALOG, LocaleManager, TextKey, catalog::MessageCatalog};
 use crate::theme::Theme;
 use crate::ui::{ControlHeight, FontSize, Radius, Spacing};
 
@@ -43,48 +44,54 @@ impl ConfirmModalState {
     }
 
     pub fn message(&self) -> String {
+        self.message_with_catalog(&DEFAULT_CATALOG)
+    }
+
+    pub fn message_localized(&self, cx: &App) -> String {
+        let catalog = cx
+            .try_global::<LocaleManager>()
+            .map(|m| m.catalog())
+            .unwrap_or(&DEFAULT_CATALOG);
+        self.message_with_catalog(catalog)
+    }
+
+    fn message_with_catalog(&self, catalog: &MessageCatalog) -> String {
         match (self.kind, self.is_collocated_doc, self.is_dir, self.item_name()) {
             (ConfirmModalKind::Trash, true, _, Some(name)) => {
-                format!("Do you want to trash the document \"{name}\" and its co-located assets?")
+                catalog.format(TextKey::ConfirmTrashCollocatedNamed, &[("name", &name)])
             }
             (ConfirmModalKind::Trash, true, _, None) => {
-                "Do you want to trash this document and its co-located assets?".to_string()
+                catalog.get(TextKey::ConfirmTrashCollocated).to_string()
             }
             (ConfirmModalKind::Delete, true, _, Some(name)) => {
-                format!(
-                    "Are you sure you want to permanently delete the document \"{name}\" and its co-located assets?"
-                )
+                catalog.format(TextKey::ConfirmDeleteCollocatedNamed, &[("name", &name)])
             }
             (ConfirmModalKind::Delete, true, _, None) => {
-                "Are you sure you want to permanently delete this document and its co-located assets?"
-                    .to_string()
+                catalog.get(TextKey::ConfirmDeleteCollocated).to_string()
             }
             (ConfirmModalKind::Trash, false, false, Some(name)) => {
-                format!("Do you want to trash \"{name}\"?")
+                catalog.format(TextKey::ConfirmTrashFileNamed, &[("name", &name)])
             }
             (ConfirmModalKind::Trash, false, false, None) => {
-                "Do you want to trash this file?".to_string()
+                catalog.get(TextKey::ConfirmTrashFile).to_string()
             }
             (ConfirmModalKind::Trash, false, true, Some(name)) => {
-                format!("Do you want to trash the folder \"{name}\" and its contents?")
+                catalog.format(TextKey::ConfirmTrashFolderNamed, &[("name", &name)])
             }
             (ConfirmModalKind::Trash, false, true, None) => {
-                "Do you want to trash this folder and its contents?".to_string()
+                catalog.get(TextKey::ConfirmTrashFolder).to_string()
             }
             (ConfirmModalKind::Delete, false, false, Some(name)) => {
-                format!("Are you sure you want to permanently delete \"{name}\"?")
+                catalog.format(TextKey::ConfirmDeleteFileNamed, &[("name", &name)])
             }
             (ConfirmModalKind::Delete, false, false, None) => {
-                "Are you sure you want to permanently delete this file?".to_string()
+                catalog.get(TextKey::ConfirmDeleteFile).to_string()
             }
             (ConfirmModalKind::Delete, false, true, Some(name)) => {
-                format!(
-                    "Are you sure you want to permanently delete the folder \"{name}\" and its contents?"
-                )
+                catalog.format(TextKey::ConfirmDeleteFolderNamed, &[("name", &name)])
             }
             (ConfirmModalKind::Delete, false, true, None) => {
-                "Are you sure you want to permanently delete this folder and its contents?"
-                    .to_string()
+                catalog.get(TextKey::ConfirmDeleteFolder).to_string()
             }
         }
     }
@@ -96,10 +103,24 @@ impl ConfirmModalState {
         }
     }
 
+    pub fn detail_localized(&self, cx: &App) -> Option<String> {
+        match self.kind {
+            ConfirmModalKind::Trash => None,
+            ConfirmModalKind::Delete => Some(cx.t(TextKey::ConfirmCannotBeUndone).to_string()),
+        }
+    }
+
     pub fn confirm_button_label(&self) -> &'static str {
         match self.kind {
             ConfirmModalKind::Trash => "Trash",
             ConfirmModalKind::Delete => "Delete",
+        }
+    }
+
+    pub fn confirm_button_label_localized(&self, cx: &App) -> String {
+        match self.kind {
+            ConfirmModalKind::Trash => cx.t(TextKey::ProjectCmTrash).to_string(),
+            ConfirmModalKind::Delete => cx.t(TextKey::ProjectCmDelete).to_string(),
         }
     }
 
@@ -128,13 +149,15 @@ pub fn render_confirm_modal(
     on_confirm: impl Fn(&mut Window, &mut App) + 'static,
     on_cancel: impl Fn(&mut Window, &mut App) + 'static,
     theme: &Theme,
+    cx: &App,
 ) -> impl IntoElement {
     let on_confirm = Rc::new(on_confirm);
     let on_cancel = Rc::new(on_cancel);
 
-    let message = state.message();
-    let detail = state.detail();
-    let confirm_label = state.confirm_button_label();
+    let message = state.message_localized(cx);
+    let detail = state.detail_localized(cx);
+    let cancel_label = cx.t(TextKey::CommonCancel).to_string();
+    let confirm_label = state.confirm_button_label_localized(cx);
     let (action_bg, action_hover, action_active, action_text) = state.action_colors(theme);
 
     let on_confirm_click = on_confirm.clone();
@@ -221,7 +244,7 @@ pub fn render_confirm_modal(
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()
-                                .child("Cancel")
+                                .child(cancel_label)
                                 .on_click(move |_, window, cx| {
                                     (on_cancel_click)(window, cx);
                                 }),

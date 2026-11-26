@@ -2,6 +2,8 @@ use gpui::{AsyncApp, Hsla, Pixels, Window, px};
 use std::path::Path;
 
 #[cfg(target_os = "windows")]
+use windows::Win32::Globalization::GetUserDefaultLocaleName;
+#[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -376,6 +378,84 @@ pub fn window_control_close_hover_bg() -> Hsla {
     }
 }
 
+/// Detects the current OS UI locale as a BCP-47-like tag (e.g. `"zh-CN"`, `"en-US"`, `"ja-JP"`).
+/// Returns `None` if detection fails or only `"C"` / `"POSIX"` is configured.
+pub fn detect_system_locale() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        // LOCALE_NAME_MAX_LENGTH is 85 UTF-16 code units including NUL terminator.
+        let mut buf = [0u16; 85];
+        let len = unsafe { GetUserDefaultLocaleName(&mut buf) };
+        if len > 1 {
+            let tag = String::from_utf16_lossy(&buf[..(len as usize - 1)]);
+            let trimmed = tag.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(tag) = detect_unix_env_locale() {
+            return Some(tag);
+        }
+        if let Ok(output) = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleLanguages"])
+            .output()
+            && output.status.success()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let candidate = line.trim().trim_matches(|c| c == '"' || c == ',' || c == '(' || c == ')');
+                if !candidate.is_empty() && candidate.chars().any(|c| c.is_ascii_alphabetic()) {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        detect_unix_env_locale()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn detect_unix_env_locale() -> Option<String> {
+    for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(raw) = std::env::var(var)
+            && let Some(normalized) = normalize_posix_locale(&raw)
+        {
+            return Some(normalized);
+        }
+    }
+    None
+}
+
+#[cfg(any(not(target_os = "windows"), test))]
+fn normalize_posix_locale(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_encoding = trimmed.split('.').next().unwrap_or(trimmed);
+    let without_modifier = without_encoding
+        .split('@')
+        .next()
+        .unwrap_or(without_encoding)
+        .trim();
+    if without_modifier.is_empty()
+        || without_modifier.eq_ignore_ascii_case("C")
+        || without_modifier.eq_ignore_ascii_case("POSIX")
+    {
+        return None;
+    }
+    Some(without_modifier.replace('_', "-"))
+}
+
 /// Returns the glyph symbol for the given caption button kind.
 pub fn caption_button_icon(kind: CaptionButtonKind) -> &'static str {
     #[cfg(target_os = "windows")]
@@ -558,5 +638,24 @@ mod tests {
             !temp_file.exists(),
             "File should no longer exist at original path after being moved to trash"
         );
+    }
+
+    #[test]
+    fn test_normalize_posix_locale() {
+        assert_eq!(
+            normalize_posix_locale("zh_CN.UTF-8").as_deref(),
+            Some("zh-CN")
+        );
+        assert_eq!(
+            normalize_posix_locale("zh_TW@euro").as_deref(),
+            Some("zh-TW")
+        );
+        assert_eq!(
+            normalize_posix_locale("fr_FR.utf8").as_deref(),
+            Some("fr-FR")
+        );
+        assert_eq!(normalize_posix_locale("C"), None);
+        assert_eq!(normalize_posix_locale("POSIX.UTF-8"), None);
+        assert_eq!(normalize_posix_locale("   "), None);
     }
 }

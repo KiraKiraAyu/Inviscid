@@ -175,6 +175,10 @@ impl Element for EditorElement {
                     let active_math_block = layout.active_math_block;
                     let active_mermaid_block = layout.active_mermaid_block;
                     let theme = cx.theme();
+                    let catalog = cx
+                        .try_global::<crate::i18n::LocaleManager>()
+                        .map(|m| m.catalog())
+                        .unwrap_or(&crate::i18n::DEFAULT_CATALOG);
                     let content_width = compute_content_width(bounds.size.width, mode);
                     let container_x =
                         bounds.origin.x + (bounds.size.width - content_width).max(px(0.0)) / 2.0;
@@ -380,6 +384,7 @@ impl Element for EditorElement {
                             selection,
                             is_dragging,
                             theme,
+                            catalog,
                             mode,
                             cursor_opacity,
                             hovered_link: editor.hovered_link.as_ref(),

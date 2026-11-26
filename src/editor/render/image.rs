@@ -47,6 +47,7 @@ pub(super) fn render_image_line(
         url,
         lrc.doc_path,
         lrc.theme,
+        lrc.catalog,
         lrc.content_width,
     );
 
@@ -89,6 +90,7 @@ fn render_image_preview_card(
     url: &str,
     doc_path: Option<&std::path::Path>,
     theme: &Theme,
+    catalog: &crate::i18n::MessageCatalog,
     content_width: Pixels,
 ) -> impl IntoElement {
     let line_idx = source_line.index();
@@ -100,6 +102,9 @@ fn render_image_preview_card(
     let image_source = resolve_image_source(url, doc_path);
     let accent_color = theme.text_accent;
     let muted_color = theme.text_muted;
+    let failed_text: SharedString = catalog
+        .format(crate::i18n::TextKey::EditorImageLoadFailed, &[("alt", &alt_string)])
+        .into();
 
     let img_element = img(image_source)
         .id(ElementId::NamedInteger(
@@ -138,7 +143,7 @@ fn render_image_preview_card(
                         .size(IconSize::Small)
                         .color(muted_color),
                 )
-                .child(format!("Image failed to load: {}", alt_string))
+                .child(failed_text.clone())
                 .into_any_element()
         });
 

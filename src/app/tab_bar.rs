@@ -1,4 +1,5 @@
 use crate::app::project_panel::DraggedProjectEntry;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::{DEFAULT_THEME, ThemeManager};
 use crate::ui::{FontSize, Icon, IconName, IconSize, Radius, Spacing};
 use gpui::prelude::*;
@@ -569,10 +570,19 @@ impl Render for TabBar {
                     .children(self.tabs_meta.iter().enumerate().map(|(tab_idx, meta)| {
                         let is_active = tab_idx == active_tab_idx;
                         let is_pinned = meta.is_pinned;
-                        let fname = meta.title.clone();
+                        let is_search_tab = !meta.has_file_path && !meta.supports_editing;
+                        let fname = if is_search_tab {
+                            cx.t(TextKey::TabSearch).to_string()
+                        } else if !meta.has_file_path
+                            && meta.supports_editing
+                            && meta.title == "Untitled.md"
+                        {
+                            cx.t(TextKey::TabUntitled).to_string()
+                        } else {
+                            meta.title.clone()
+                        };
                         let is_d = meta.is_dirty;
-                        let is_search_tab =
-                            meta.title == "Search" && !meta.has_file_path && !meta.supports_editing;
+                        let loading_label = cx.t(TextKey::CommonLoading).to_string();
                         let has_duplicate_title = duplicate_titles.contains(&meta.title);
                         let dir_hint = if has_duplicate_title {
                             meta.dir_hint.clone()
@@ -761,7 +771,7 @@ impl Render for TabBar {
                                     div()
                                         .text_size(FontSize::CAPTION)
                                         .text_color(theme.text_muted)
-                                        .child("Loading..."),
+                                        .child(loading_label),
                                 )
                             })
                             .children(dir_hint.map(|hint| {

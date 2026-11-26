@@ -186,7 +186,11 @@ impl Editor {
                 emit_document_events = true;
                 eprintln!("Failed to load file {:?}: {error}", self.buffer.file_path());
                 self.is_loading = false;
-                self.load_error = Some(format!("Could not open file: {error}"));
+                let err_str = error.to_string();
+                self.load_error = Some({
+                    use crate::i18n::{ActiveLocale, TextKey};
+                    cx.tf(TextKey::EditorLoadError, &[("error", &err_str)])
+                });
                 session.cancel();
             }
         }

@@ -360,7 +360,11 @@ impl super::Editor {
                     target,
                     cx,
                 ),
-                Err(err) => editor.show_notice(format!("Failed to save image: {err}"), true, cx),
+                Err(err) => {
+                    use crate::i18n::{ActiveLocale, TextKey};
+                    let msg = cx.tf(TextKey::EditorSaveImageError, &[("error", &err)]);
+                    editor.show_notice(msg, true, cx);
+                }
             });
         })
         .detach();
@@ -396,7 +400,9 @@ impl super::Editor {
         }
 
         if let Some(err) = first_error {
-            self.show_notice(format!("Failed to save image: {err}"), true, cx);
+            use crate::i18n::{ActiveLocale, TextKey};
+            let msg = cx.tf(TextKey::EditorSaveImageError, &[("error", &err)]);
+            self.show_notice(msg, true, cx);
         }
     }
 }

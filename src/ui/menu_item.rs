@@ -16,6 +16,7 @@ type OnHoverCallback = Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>;
 pub struct MenuItem {
     id: ElementId,
     label: SharedString,
+    debug_selector: Option<SharedString>,
     shortcut: Option<SharedString>,
     selected: bool,
     disabled: bool,
@@ -28,6 +29,7 @@ impl MenuItem {
         Self {
             id: id.into(),
             label: label.into(),
+            debug_selector: None,
             shortcut: None,
             selected: false,
             disabled: false,
@@ -46,6 +48,11 @@ impl MenuItem {
         if !sc.trim().is_empty() {
             self.shortcut = Some(sc);
         }
+        self
+    }
+
+    pub fn debug_selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.debug_selector = Some(selector.into());
         self
     }
 
@@ -87,8 +94,12 @@ impl RenderOnce for MenuItem {
             theme.text_primary
         };
 
+        let debug_selector = self
+            .debug_selector
+            .unwrap_or_else(|| format!("menu_item_{}", self.label).into());
+
         div()
-            .debug_selector(|| format!("menu_item_{}", self.label))
+            .debug_selector(move || debug_selector.to_string())
             .id(self.id)
             .w_full()
             .h(ControlHeight::MD)

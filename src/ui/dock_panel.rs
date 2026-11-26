@@ -6,7 +6,7 @@ use crate::ui::tokens::{FontSize, Radius, Spacing};
 
 pub const LIST_VERTICAL_PADDING: Pixels = px(4.0);
 
-pub fn section_header(title: &'static str, theme: &Theme) -> impl IntoElement {
+pub fn section_header(title: impl Into<SharedString>, theme: &Theme) -> impl IntoElement {
     div()
         .w_full()
         .flex_none()
@@ -16,7 +16,7 @@ pub fn section_header(title: &'static str, theme: &Theme) -> impl IntoElement {
         .text_size(FontSize::CAPTION)
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.text_muted)
-        .child(title)
+        .child(title.into())
 }
 
 pub fn row(indent: Pixels, theme: &Theme) -> Div {
@@ -35,7 +35,7 @@ pub fn row(indent: Pixels, theme: &Theme) -> Div {
         .hover(|this| this.bg(theme.btn_hover.opacity(0.55)))
 }
 
-pub fn empty_state(message: &'static str, theme: &Theme) -> impl IntoElement {
+pub fn empty_state(message: impl Into<SharedString>, theme: &Theme) -> impl IntoElement {
     div()
         .w_full()
         .h_full()
@@ -47,7 +47,7 @@ pub fn empty_state(message: &'static str, theme: &Theme) -> impl IntoElement {
             div()
                 .text_size(FontSize::SM)
                 .text_color(theme.text_muted)
-                .child(message),
+                .child(message.into()),
         )
 }
 

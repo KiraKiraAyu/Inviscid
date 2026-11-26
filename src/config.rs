@@ -352,6 +352,7 @@ impl WorkspaceState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct UserPreferences {
+    pub language: crate::i18n::LanguagePreference,
     pub theme: String,
     pub ui_font_size: f32,
     pub restore_workspace: bool,
@@ -387,6 +388,7 @@ impl UserPreferences {
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
+            language: crate::i18n::LanguagePreference::default(),
             theme: Self::DEFAULT_THEME.to_string(),
             ui_font_size: Self::DEFAULT_UI_FONT_SIZE,
             restore_workspace: true,
@@ -1430,5 +1432,42 @@ mod tests {
         custom.save_preferences();
         let reloaded = AppConfig::load_from_paths(cfg_path, state_path);
         assert_eq!(reloaded.asset_dir, "D:\\Notes\\Assets");
+    }
+
+    #[test]
+    fn test_language_preference_default_roundtrip_and_unknown_fallback() {
+        use crate::i18n::{LanguagePreference, LocaleId};
+
+        let default_cfg = AppConfig::default();
+        assert_eq!(default_cfg.language, LanguagePreference::System);
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        let state_path = dir.path().join("state.toml");
+
+        for (code, expected) in [
+            ("zh-Hans", LanguagePreference::Locale(LocaleId::ZhHans)),
+            ("zh-Hant", LanguagePreference::Locale(LocaleId::ZhHant)),
+            ("pt-BR", LanguagePreference::Locale(LocaleId::PtBr)),
+            ("ja", LanguagePreference::Locale(LocaleId::Ja)),
+            ("system", LanguagePreference::System),
+        ] {
+            let mut cfg = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
+            cfg.language = expected;
+            cfg.save_preferences();
+            let raw = fs::read_to_string(&cfg_path).unwrap();
+            assert!(
+                raw.contains(&format!("language = \"{code}\"")),
+                "expected serialized language = \"{code}\", got:\n{raw}"
+            );
+            let reloaded = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
+            assert_eq!(reloaded.language, expected);
+        }
+
+        // Unknown / malformed language string falls back safely to System without failing config load
+        fs::write(&cfg_path, "language = \"xx-Unknown\"\ntheme = \"Nord\"\n").unwrap();
+        let fallback_cfg = AppConfig::load_from_paths(cfg_path, state_path);
+        assert_eq!(fallback_cfg.language, LanguagePreference::System);
+        assert_eq!(fallback_cfg.theme, "Nord");
     }
 }

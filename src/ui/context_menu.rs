@@ -69,7 +69,7 @@ impl ContextMenuBuilder {
     pub fn action_item<A: Copy + 'static>(
         self,
         id: &'static str,
-        label: &'static str,
+        label: impl Into<SharedString>,
         shortcut: String,
         action: A,
         disabled: bool,
@@ -78,6 +78,30 @@ impl ContextMenuBuilder {
         let on_act = on_action.clone();
         self.item(
             MenuItem::new(id, label)
+                .shortcut(shortcut)
+                .disabled(disabled)
+                .on_click(move |_, window, cx| {
+                    if !disabled {
+                        (on_act)(action, window, cx);
+                    }
+                }),
+        )
+    }
+
+    pub fn action_item_with_selector<A: Copy + 'static>(
+        self,
+        id: &'static str,
+        label: impl Into<SharedString>,
+        debug_selector: impl Into<SharedString>,
+        shortcut: String,
+        action: A,
+        disabled: bool,
+        on_action: &Rc<dyn Fn(A, &mut Window, &mut App)>,
+    ) -> Self {
+        let on_act = on_action.clone();
+        self.item(
+            MenuItem::new(id, label)
+                .debug_selector(debug_selector)
                 .shortcut(shortcut)
                 .disabled(disabled)
                 .on_click(move |_, window, cx| {

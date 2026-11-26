@@ -82,19 +82,28 @@ pub fn workspace_safe_bounds(window_bounds: Bounds<Pixels>) -> Bounds<Pixels> {
     }
 }
 
-pub fn extract_workspace_name_from_paths<'a>(
+pub fn try_extract_workspace_name_from_paths<'a>(
     paths: impl IntoIterator<Item = Option<&'a Path>>,
     collocated_mode: bool,
-) -> String {
+) -> Option<String> {
     for path in paths.into_iter().flatten() {
         if let Some(parent) = resolve_document_parent_dir(path, collocated_mode, None)
             && let Some(name) = parent.file_name().and_then(|n| n.to_str())
             && !name.is_empty()
         {
-            return name.to_string();
+            return Some(name.to_string());
         }
     }
-    "Open Workspace".to_string()
+    None
+}
+
+#[cfg(test)]
+pub fn extract_workspace_name_from_paths<'a>(
+    paths: impl IntoIterator<Item = Option<&'a Path>>,
+    collocated_mode: bool,
+) -> String {
+    try_extract_workspace_name_from_paths(paths, collocated_mode)
+        .unwrap_or_else(|| "Open Workspace".to_string())
 }
 
 #[cfg(test)]

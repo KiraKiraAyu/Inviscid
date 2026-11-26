@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::app::actions::display_keystroke_for;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
 use crate::ui::ContextMenuBuilder;
 
@@ -58,29 +59,33 @@ pub fn render_context_menu(
     let on_action: Rc<dyn Fn(ContextMenuAction, &mut Window, &mut App)> = Rc::new(on_action);
 
     let is_root = state.is_root;
-    let (new_file_label, new_folder_label, paste_label) =
+    let (new_file_sel, new_folder_sel, _) =
         contextual_action_labels(state.is_dir, state.collocated_mode);
+    let (new_file_key, new_folder_key, paste_key) =
+        contextual_action_keys(state.is_dir, state.collocated_mode);
     let border_subtle = theme.border_subtle;
     let shortcut = |action_id: &str| display_keystroke_for(action_id, cx);
 
     let reveal_label = if cfg!(target_os = "macos") {
-        "Reveal in Finder"
+        cx.t(TextKey::TabCmRevealFinder).to_string()
     } else {
-        "Reveal in File Explorer"
+        cx.t(TextKey::TabCmRevealExplorer).to_string()
     };
 
     ContextMenuBuilder::new()
-        .action_item(
+        .action_item_with_selector(
             "cm_new_file",
-            new_file_label,
+            cx.t(new_file_key).to_string(),
+            format!("menu_item_{new_file_sel}"),
             String::new(),
             ContextMenuAction::NewFile,
             false,
             &on_action,
         )
-        .action_item(
+        .action_item_with_selector(
             "cm_new_folder",
-            new_folder_label,
+            cx.t(new_folder_key).to_string(),
+            format!("menu_item_{new_folder_sel}"),
             String::new(),
             ContextMenuAction::NewFolder,
             false,
@@ -98,7 +103,7 @@ pub fn render_context_menu(
         .separator(border_subtle)
         .action_item(
             "cm_cut",
-            "Cut",
+            cx.t(TextKey::ProjectCmCut).to_string(),
             shortcut("CutEntry"),
             ContextMenuAction::Cut,
             is_root,
@@ -106,7 +111,7 @@ pub fn render_context_menu(
         )
         .action_item(
             "cm_copy",
-            "Copy",
+            cx.t(TextKey::ProjectCmCopy).to_string(),
             shortcut("CopyEntry"),
             ContextMenuAction::Copy,
             is_root,
@@ -114,7 +119,7 @@ pub fn render_context_menu(
         )
         .action_item(
             "cm_duplicate",
-            "Duplicate",
+            cx.t(TextKey::ProjectCmDuplicate).to_string(),
             String::new(),
             ContextMenuAction::Duplicate,
             is_root,
@@ -122,7 +127,7 @@ pub fn render_context_menu(
         )
         .action_item(
             "cm_paste",
-            paste_label,
+            cx.t(paste_key).to_string(),
             shortcut("PasteEntry"),
             ContextMenuAction::Paste,
             !can_paste,
@@ -131,7 +136,7 @@ pub fn render_context_menu(
         .separator(border_subtle)
         .action_item(
             "cm_copy_path",
-            "Copy Path",
+            cx.t(TextKey::TabCmCopyPath).to_string(),
             String::new(),
             ContextMenuAction::CopyPath,
             false,
@@ -139,7 +144,7 @@ pub fn render_context_menu(
         )
         .action_item(
             "cm_copy_rel_path",
-            "Copy Relative Path",
+            cx.t(TextKey::TabCmCopyRelativePath).to_string(),
             String::new(),
             ContextMenuAction::CopyRelativePath,
             false,
@@ -148,7 +153,7 @@ pub fn render_context_menu(
         .separator(border_subtle)
         .action_item(
             "cm_rename",
-            "Rename",
+            cx.t(TextKey::ProjectCmRename).to_string(),
             shortcut("RenameEntry"),
             ContextMenuAction::Rename,
             is_root,
@@ -156,7 +161,7 @@ pub fn render_context_menu(
         )
         .action_item(
             "cm_trash",
-            "Trash",
+            cx.t(TextKey::ProjectCmTrash).to_string(),
             shortcut("TrashEntry"),
             ContextMenuAction::Trash,
             is_root,
@@ -164,7 +169,7 @@ pub fn render_context_menu(
         )
         .action_item(
             "cm_delete",
-            "Delete",
+            cx.t(TextKey::ProjectCmDelete).to_string(),
             shortcut("DeleteEntry"),
             ContextMenuAction::Delete,
             is_root,
@@ -178,6 +183,34 @@ pub fn render_context_menu(
             theme,
             on_close,
         )
+}
+
+pub fn contextual_action_keys(
+    is_dir: bool,
+    collocated_mode: bool,
+) -> (TextKey, TextKey, TextKey) {
+    match (is_dir, collocated_mode) {
+        (true, false) => (
+            TextKey::ProjectCmNewFile,
+            TextKey::ProjectCmNewFolder,
+            TextKey::ProjectCmPaste,
+        ),
+        (false, false) => (
+            TextKey::ProjectCmNewFileInFolder,
+            TextKey::ProjectCmNewFolderInFolder,
+            TextKey::ProjectCmPasteIntoFolder,
+        ),
+        (true, true) => (
+            TextKey::ProjectCmNewDocument,
+            TextKey::ProjectCmNewFolder,
+            TextKey::ProjectCmPaste,
+        ),
+        (false, true) => (
+            TextKey::ProjectCmNewDocumentInFolder,
+            TextKey::ProjectCmNewFolderInFolder,
+            TextKey::ProjectCmPasteIntoFolder,
+        ),
+    }
 }
 
 /// Returns contextual labels for (New File/Document, New Folder, Paste) based on target type

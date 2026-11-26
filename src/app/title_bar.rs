@@ -2,6 +2,7 @@ use crate::app::actions::{OpenMenu, ToggleMenu};
 use crate::app::menu::{ActiveMenu, MenuTrigger, TextMenu, ViewMenuState};
 use crate::app::workspace::Workspace;
 use crate::config::AppConfig;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
 use crate::ui::{Icon, IconName, IconSize, WindowTitleBar};
@@ -93,16 +94,32 @@ impl Render for TitleBar {
                         "Inviscid",
                         self.active_menu,
                     ))
-                    .child(MenuTrigger::new(TextMenu::File, "File", self.active_menu))
+                    .child(MenuTrigger::new(
+                        TextMenu::File,
+                        cx.t(TextKey::MenuFile).to_string(),
+                        self.active_menu,
+                    ))
                     .child(
-                        MenuTrigger::new(TextMenu::Edit, "Edit", self.active_menu)
-                            .edit_target(edit_target),
+                        MenuTrigger::new(
+                            TextMenu::Edit,
+                            cx.t(TextKey::MenuEdit).to_string(),
+                            self.active_menu,
+                        )
+                        .edit_target(edit_target),
                     )
                     .child(
-                        MenuTrigger::new(TextMenu::View, "View", self.active_menu)
-                            .view_state(view_menu_state),
+                        MenuTrigger::new(
+                            TextMenu::View,
+                            cx.t(TextKey::MenuView).to_string(),
+                            self.active_menu,
+                        )
+                        .view_state(view_menu_state),
                     )
-                    .child(MenuTrigger::new(TextMenu::Theme, "Theme", self.active_menu))
+                    .child(MenuTrigger::new(
+                        TextMenu::Theme,
+                        cx.t(TextKey::MenuTheme).to_string(),
+                        self.active_menu,
+                    ))
                     .into_any_element()
             } else {
                 div()

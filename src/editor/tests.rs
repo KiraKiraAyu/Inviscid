@@ -5418,6 +5418,7 @@ fn test_nested_list_render_live_content() {
             )),
             is_dragging: false,
             theme: &DEFAULT_THEME,
+            catalog: &crate::i18n::DEFAULT_CATALOG,
             mode: RenderMode::LivePreview,
             cursor_opacity: 1.0,
             hovered_link: None,

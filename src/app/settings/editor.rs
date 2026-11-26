@@ -13,6 +13,7 @@ use super::bounds::{EDITOR_FONT_SIZE_BOUNDS, LINE_HEIGHT_BOUNDS};
 use super::persistence::{update_config, update_config_all_windows};
 use super::SettingsWindow;
 use crate::config::AppConfig;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
 use crate::ui::{FontSize, LineHeight, OptionPill, SettingRow, Spacing, Stepper, Switch};
 
@@ -47,9 +48,10 @@ impl SettingsWindow {
 
     fn editor_font_size_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let value = cx.global::<AppConfig>().editor_font_size;
+        let bounds = EDITOR_FONT_SIZE_BOUNDS.describe_px();
 
         SettingRow::new(
-            "Font Size",
+            cx.t(TextKey::SettingsEditorFontSize).to_string(),
             Stepper::new("editor_font_size", format!("{:.0} px", value))
                 .on_decrement(cx.listener(|_, _, _, cx| {
                     update_config_all_windows(cx, |cfg| {
@@ -64,17 +66,15 @@ impl SettingsWindow {
                     })
                 })),
         )
-        .description(format!(
-            "Font size in pixels for editor content and markdown documents ({}).",
-            EDITOR_FONT_SIZE_BOUNDS.describe_px()
-        ))
+        .description(cx.tf(TextKey::SettingsEditorFontSizeDesc, &[("bounds", &bounds)]))
     }
 
     fn line_height_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let value = cx.global::<AppConfig>().line_height;
+        let bounds = LINE_HEIGHT_BOUNDS.describe_ratio();
 
         SettingRow::new(
-            "Line Height",
+            cx.t(TextKey::SettingsLineHeight).to_string(),
             Stepper::new("editor_line_height", format!("{:.1}", value))
                 .on_decrement(cx.listener(|_, _, _, cx| {
                     update_config_all_windows(cx, |cfg| {
@@ -87,77 +87,84 @@ impl SettingsWindow {
                     })
                 })),
         )
-        .description(format!(
-            "Vertical line height multiplier for editor text ({}).",
-            LINE_HEIGHT_BOUNDS.describe_ratio()
-        ))
+        .description(cx.tf(TextKey::SettingsLineHeightDesc, &[("bounds", &bounds)]))
     }
 
     fn auto_save_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let auto_save = cx.global::<AppConfig>().auto_save;
 
         SettingRow::new(
-            "Auto Save",
+            cx.t(TextKey::SettingsAutoSave).to_string(),
             Switch::new("toggle_auto_save", auto_save).on_click(
                 cx.listener(|_, _, _, cx| update_config(cx, |cfg| cfg.auto_save = !cfg.auto_save)),
             ),
         )
-        .description("Automatically save modified files after editing with a debounce delay.")
+        .description(cx.t(TextKey::SettingsAutoSaveDesc).to_string())
     }
 
     fn soft_wrap_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let soft_wrap = cx.global::<AppConfig>().soft_wrap;
 
         SettingRow::new(
-            "Soft Wrap",
+            cx.t(TextKey::SettingsSoftWrap).to_string(),
             Switch::new("toggle_soft_wrap", soft_wrap).on_click(cx.listener(|_, _, _, cx| {
                 update_config_all_windows(cx, |cfg| cfg.soft_wrap = !cfg.soft_wrap)
             })),
         )
-        .description("Wrap long lines to fit the visible editor width.")
+        .description(cx.t(TextKey::SettingsSoftWrapDesc).to_string())
     }
 
     fn cursor_blink_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let cursor_blink = cx.global::<AppConfig>().cursor_blink;
 
         SettingRow::new(
-            "Cursor Blink",
+            cx.t(TextKey::SettingsCursorBlink).to_string(),
             Switch::new("toggle_cursor_blink", cursor_blink).on_click(cx.listener(
                 |_, _, _, cx| {
                     update_config_all_windows(cx, |cfg| cfg.cursor_blink = !cfg.cursor_blink)
                 },
             )),
         )
-        .description("Animate editor cursor blinking when active.")
+        .description(cx.t(TextKey::SettingsCursorBlinkDesc).to_string())
     }
 
     fn cursor_animation_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let cursor_breathing = cx.global::<AppConfig>().cursor_breathing;
 
         SettingRow::new(
-            "Cursor Animation",
+            cx.t(TextKey::SettingsCursorAnimation).to_string(),
             div()
                 .flex()
                 .flex_row()
                 .gap(Spacing::XS)
                 .child(
-                    OptionPill::new("cursor_style_breathing", "Breathing", cursor_breathing)
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            update_config_all_windows(cx, |cfg| cfg.cursor_breathing = true)
-                        })),
+                    OptionPill::new(
+                        "cursor_style_breathing",
+                        cx.t(TextKey::SettingsCursorBreathing).to_string(),
+                        cursor_breathing,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        update_config_all_windows(cx, |cfg| cfg.cursor_breathing = true)
+                    })),
                 )
                 .child(
-                    OptionPill::new("cursor_style_classic", "Classic Blink", !cursor_breathing)
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            update_config_all_windows(cx, |cfg| cfg.cursor_breathing = false)
-                        })),
+                    OptionPill::new(
+                        "cursor_style_classic",
+                        cx.t(TextKey::SettingsCursorClassicBlink).to_string(),
+                        !cursor_breathing,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        update_config_all_windows(cx, |cfg| cfg.cursor_breathing = false)
+                    })),
                 ),
         )
-        .description("Choose between smooth cosine breathing and classic step blinking.")
+        .description(cx.t(TextKey::SettingsCursorAnimationDesc).to_string())
     }
 
     fn asset_dir_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<ThemeManager>().theme();
+        let title = cx.t(TextKey::SettingsAssetDir).to_string();
+        let desc = cx.t(TextKey::SettingsAssetDirDesc).to_string();
 
         div()
             .w_full()
@@ -176,14 +183,14 @@ impl SettingsWindow {
                             .text_size(FontSize::BODY)
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_primary)
-                            .child("Image Assets Directory"),
+                            .child(title),
                     )
                     .child(
                         div()
                             .text_size(FontSize::SM)
                             .text_color(theme.text_muted)
                             .line_height(LineHeight::SM)
-                            .child("Where pasted or dropped images are saved. Relative paths (default: assets) resolve next to the document; leave empty to save in the same directory as the document; paths starting with / or a drive letter (e.g. D:\\assets) are absolute."),
+                            .child(desc),
                     ),
             )
             .child(self.asset_dir_field.clone())

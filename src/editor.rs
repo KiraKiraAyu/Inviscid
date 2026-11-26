@@ -1741,6 +1741,7 @@ pub struct LineRenderContext<'a> {
     pub selection: Selection,
     pub is_dragging: bool,
     pub theme: &'a Theme,
+    pub(crate) catalog: &'a crate::i18n::MessageCatalog,
     pub mode: RenderMode,
     pub cursor_opacity: f32,
     pub hovered_link: Option<&'a HoveredLink>,

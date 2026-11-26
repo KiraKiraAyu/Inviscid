@@ -1,18 +1,19 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::search::{SearchOptions, SearchQuery, SearchToggle};
 use crate::theme::ActiveTheme;
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
 use crate::ui::{Icon, IconName, IconSize, TextInput, TextInputEvent};
 
 const BUTTON_SIZE: Pixels = ControlHeight::SM;
-const STATUS_MIN_WIDTH: Pixels = px(76.0);
+const STATUS_MIN_WIDTH: Pixels = px(92.0);
 /// Total width of the right controls container on both rows, ensuring both
 /// Find and Replace inputs have identical width and alignment.
-/// Calculated as: status (76px) + 3 dividers (3*9px) + 3 toggles (3*24px)
-/// + 2 nav buttons (2*24px) + close button (24px) = 271px.
-const RIGHT_SECTION_WIDTH: Pixels = px(271.0);
+/// Calculated as: status (92px) + 3 dividers (3*9px) + 3 toggles (3*24px)
+/// + 2 nav buttons (2*24px) + close button (24px) = 287px.
+const RIGHT_SECTION_WIDTH: Pixels = px(287.0);
 
 #[derive(Clone, Debug)]
 pub enum FindBarEvent {
@@ -58,7 +59,7 @@ impl FindBar {
         let input = cx.new(|cx| {
             TextInput::new("", cx)
                 .id("find_bar_input")
-                .placeholder("Find")
+                .placeholder_key(TextKey::FindPlaceholder)
                 .height(ControlHeight::SM)
                 .radius(Radius::MD)
                 .padding_x(Spacing::SM)
@@ -67,7 +68,7 @@ impl FindBar {
         let replace_input = cx.new(|cx| {
             TextInput::new("", cx)
                 .id("find_bar_replace_input")
-                .placeholder("Replace")
+                .placeholder_key(TextKey::FindReplacePlaceholder)
                 .height(ControlHeight::SM)
                 .radius(Radius::MD)
                 .padding_x(Spacing::SM)
@@ -193,7 +194,7 @@ impl FindBar {
         cx.notify();
     }
 
-    fn status(&self) -> (SharedString, bool) {
+    fn status(&self, cx: &App) -> (SharedString, bool) {
         let cap = |n: usize| {
             if self.matches.is_capped {
                 format!("{n}+")
@@ -203,7 +204,7 @@ impl FindBar {
         };
         match self.query_state {
             QueryState::Empty => ("0/0".into(), false),
-            QueryState::Invalid => ("Invalid regex".into(), true),
+            QueryState::Invalid => (cx.t(TextKey::FindInvalidRegex).to_string().into(), true),
             QueryState::Valid if self.matches.total == 0 => ("0/0".into(), false),
             QueryState::Valid => {
                 let current = self.matches.current.map_or("0".into(), |n| n.to_string());
@@ -321,7 +322,7 @@ impl FindBar {
     fn render_text_button(
         &self,
         id: &'static str,
-        label: &'static str,
+        label: impl Into<SharedString>,
         enabled: bool,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
@@ -352,7 +353,7 @@ impl FindBar {
                     .active(move |s| s.bg(active))
                     .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
             })
-            .child(label)
+            .child(label.into())
     }
 }
 
@@ -370,7 +371,9 @@ impl Render for FindBar {
             theme.text_danger,
         );
         let has_matches = self.matches.total > 0;
-        let (status_text, is_error) = self.status();
+        let (status_text, is_error) = self.status(cx);
+        let replace_label = cx.t(TextKey::SearchReplaceOne).to_string();
+        let replace_all_label = cx.t(TextKey::SearchReplaceAll).to_string();
 
         div()
             .id("find_bar")
@@ -450,8 +453,9 @@ impl Render for FindBar {
                             .gap(Spacing::XS)
                             .child(
                                 div()
-                                    .w(STATUS_MIN_WIDTH)
-                                    .flex_none()
+                                    .min_w(STATUS_MIN_WIDTH)
+                                    .flex_1()
+                                    .overflow_hidden()
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -513,7 +517,7 @@ impl Render for FindBar {
                                 .gap(Spacing::XS)
                                 .child(self.render_text_button(
                                     "find_replace_btn",
-                                    "Replace",
+                                    replace_label,
                                     has_matches,
                                     |this, cx| {
                                         let rep = this.replace_text(cx);
@@ -523,7 +527,7 @@ impl Render for FindBar {
                                 ))
                                 .child(self.render_text_button(
                                     "find_replace_all_btn",
-                                    "Replace All",
+                                    replace_all_label,
                                     has_matches,
                                     |this, cx| {
                                         let rep = this.replace_text(cx);
@@ -597,8 +601,8 @@ mod tests {
         });
 
         assert_eq!(seen.borrow().last(), Some(&None));
-        bar.read_with(cx, |bar, _| {
-            assert_eq!(bar.status(), ("Invalid regex".into(), true));
+        bar.read_with(cx, |bar, cx| {
+            assert_eq!(bar.status(cx), ("Invalid regex".into(), true));
         });
     }
 
@@ -624,9 +628,9 @@ mod tests {
     #[gpui::test]
     fn test_status_text(cx: &mut TestAppContext) {
         let (bar, cx) = cx.add_window_view(|_window, cx| FindBar::new(cx));
-        bar.read_with(cx, |bar, _| {
+        bar.read_with(cx, |bar, cx| {
             assert_eq!(
-                bar.status(),
+                bar.status(cx),
                 ("0/0".into(), false),
                 "default to 0/0 when empty"
             );
@@ -635,8 +639,8 @@ mod tests {
         cx.update(|window, cx| {
             bar.update(cx, |bar, cx| bar.focus_query(Some("foo"), window, cx));
         });
-        bar.read_with(cx, |bar, _| {
-            assert_eq!(bar.status(), ("0/0".into(), false));
+        bar.read_with(cx, |bar, cx| {
+            assert_eq!(bar.status(cx), ("0/0".into(), false));
         });
 
         cx.update(|_window, cx| {
@@ -649,7 +653,7 @@ mod tests {
                     },
                     cx,
                 );
-                assert_eq!(bar.status(), ("3/12".into(), false));
+                assert_eq!(bar.status(cx), ("3/12".into(), false));
 
                 bar.set_matches(
                     FindBarMatches {
@@ -659,7 +663,7 @@ mod tests {
                     },
                     cx,
                 );
-                assert_eq!(bar.status(), ("1/10000+".into(), false));
+                assert_eq!(bar.status(cx), ("1/10000+".into(), false));
             });
         });
     }

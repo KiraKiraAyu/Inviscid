@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use crate::config::AppConfig;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
 use crate::ui::{ControlHeight, FontSize, Radius, Spacing};
 
@@ -33,6 +34,9 @@ impl Render for AboutWindow {
         let config = cx.global::<AppConfig>();
         window.set_rem_size(px(config.ui_font_size));
         let version = env!("CARGO_PKG_VERSION");
+        let version_label = cx.t(TextKey::AboutVersion).to_string();
+        let license_label = cx.t(TextKey::AboutLicense).to_string();
+        let ok_label = cx.t(TextKey::CommonOk).to_string();
 
         div()
             .id("about_window")
@@ -83,7 +87,7 @@ impl Render for AboutWindow {
                                 div()
                                     .text_size(FontSize::CAPTION)
                                     .text_color(theme.text_muted)
-                                    .child("Version"),
+                                    .child(version_label),
                             )
                             .child(
                                 div()
@@ -97,7 +101,7 @@ impl Render for AboutWindow {
                                     .mt(Spacing::MDS)
                                     .text_size(FontSize::CAPTION)
                                     .text_color(theme.text_muted)
-                                    .child("License"),
+                                    .child(license_label),
                             )
                             .child(
                                 div()
@@ -134,7 +138,7 @@ impl Render for AboutWindow {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .child("OK")
+                            .child(ok_label)
                             .on_click(|_, window, _| {
                                 window.remove_window();
                             }),

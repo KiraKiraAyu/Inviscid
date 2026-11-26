@@ -16,6 +16,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use crate::fs::WorkspaceFileIndex;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::search::{
     FileSearchResult, ScanLimits, SearchOptions, SearchQuery, SearchToggle, WorkspaceMatch,
     WorkspaceScan, WorkspaceSearchResults, replace_all_in_file, replace_match_in_file,
@@ -91,7 +92,7 @@ impl SearchPanel {
         let input = cx.new(|cx| {
             TextInput::new("", cx)
                 .id("workspace_search_input")
-                .placeholder("Search in files")
+                .placeholder_key(TextKey::SearchPlaceholder)
                 .height(ControlHeight::SM)
                 .radius(Radius::MD)
                 .padding_x(Spacing::SM)
@@ -100,7 +101,7 @@ impl SearchPanel {
         let replace_input = cx.new(|cx| {
             TextInput::new("", cx)
                 .id("workspace_search_replace_input")
-                .placeholder("Replace")
+                .placeholder_key(TextKey::SearchReplacePlaceholder)
                 .height(ControlHeight::SM)
                 .radius(Radius::MD)
                 .padding_x(Spacing::SM)
@@ -637,15 +638,16 @@ impl Render for SearchPanel {
 }
 
 impl SearchPanel {
-    fn empty_message(&self, cx: &App) -> &'static str {
-        match self.status {
-            SearchStatus::Idle => "Search in workspace files",
-            SearchStatus::NoWorkspace => "Open a folder to search its files",
-            SearchStatus::InvalidQuery => "Invalid regular expression",
-            SearchStatus::Searching => "Searching files...",
-            SearchStatus::Done if self.query_text(cx).is_empty() => "Search in workspace files",
-            SearchStatus::Done => "No matches found",
-        }
+    fn empty_message(&self, cx: &App) -> String {
+        let key = match self.status {
+            SearchStatus::Idle => TextKey::SearchEmptyIdle,
+            SearchStatus::NoWorkspace => TextKey::SearchEmptyNoWorkspace,
+            SearchStatus::InvalidQuery => TextKey::SearchEmptyInvalidQuery,
+            SearchStatus::Searching => TextKey::SearchEmptySearching,
+            SearchStatus::Done if self.query_text(cx).is_empty() => TextKey::SearchEmptyIdle,
+            SearchStatus::Done => TextKey::SearchEmptyNoMatches,
+        };
+        cx.t(key).to_string()
     }
 }
 

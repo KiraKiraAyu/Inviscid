@@ -12,9 +12,10 @@ use super::persistence::{update_config, update_config_all_windows};
 use super::SettingsWindow;
 use crate::config::AppConfig;
 use crate::editor::RenderMode;
+use crate::i18n::{ActiveLocale, LanguagePreference, LocaleId, LocaleManager, TextKey};
 use crate::syntax::GrammarSource;
 use crate::theme::ThemeManager;
-use crate::ui::{ControlHeight, FontSize, OptionPill, SettingRow, Spacing, Switch};
+use crate::ui::{ControlHeight, FontSize, LineHeight, OptionPill, SettingRow, Spacing, Switch};
 
 impl SettingsWindow {
     pub(crate) fn render_general_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -31,6 +32,7 @@ impl SettingsWindow {
                     .flex()
                     .flex_col()
                     .gap(Spacing::MDS)
+                    .child(self.language_row(cx))
                     .child(self.render_mode_row(cx))
                     .child(self.restore_workspace_row(cx))
                     .child(self.collocated_mode_row(cx))
@@ -38,12 +40,101 @@ impl SettingsWindow {
             )
     }
 
+    fn language_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<ThemeManager>().theme().clone();
+        let current_pref = cx.global::<AppConfig>().language;
+        let system_locale = cx
+            .try_global::<LocaleManager>()
+            .map(|m| m.system_locale())
+            .unwrap_or(LocaleId::En);
+
+        let system_label = cx.tf(
+            TextKey::LanguageSystemDefault,
+            &[("language", system_locale.native_name())],
+        );
+        let title = cx.t(TextKey::SettingsLanguage).to_string();
+        let desc = cx.t(TextKey::SettingsLanguageDesc).to_string();
+
+        div()
+            .w_full()
+            .py(Spacing::SMD)
+            .flex()
+            .flex_col()
+            .gap(Spacing::SM)
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(Spacing::XXS)
+                    .child(
+                        div()
+                            .text_size(FontSize::BODY)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(FontSize::SM)
+                            .text_color(theme.text_muted)
+                            .line_height(LineHeight::SM)
+                            .child(desc),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(Spacing::XS)
+                    .child(
+                        OptionPill::new(
+                            "lang_system",
+                            system_label,
+                            current_pref == LanguagePreference::System,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.select_language(LanguagePreference::System, cx);
+                        })),
+                    )
+                    .children(LocaleId::ALL.iter().copied().map(|locale| {
+                        let id = SharedString::from(format!("lang_{}", locale.code()));
+                        OptionPill::new(
+                            id,
+                            locale.native_name(),
+                            current_pref == LanguagePreference::Locale(locale),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_language(LanguagePreference::Locale(locale), cx);
+                        }))
+                    })),
+            )
+    }
+
+    pub(crate) fn select_language(
+        &mut self,
+        preference: LanguagePreference,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(lm) = cx.try_global::<LocaleManager>() {
+            let mut next = lm.clone();
+            next.set_preference(preference);
+            cx.set_global(next);
+        } else {
+            let detected = crate::platform::detect_system_locale();
+            cx.set_global(LocaleManager::new(preference, detected.as_deref()));
+        }
+        update_config_all_windows(cx, |cfg| cfg.language = preference);
+    }
+
     fn render_mode_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_live_preview =
             cx.global::<AppConfig>().default_render_mode == RenderMode::LivePreview;
 
         SettingRow::new(
-            "Default Render Mode",
+            cx.t(TextKey::SettingsRenderMode).to_string(),
             div()
                 .flex()
                 .flex_row()
@@ -51,7 +142,7 @@ impl SettingsWindow {
                 .child(
                     OptionPill::new(
                         "render_mode_live",
-                        RenderMode::LivePreview.label(),
+                        cx.t(TextKey::SettingsRenderModeLivePreview).to_string(),
                         is_live_preview,
                     )
                     .on_click(cx.listener(|_, _, _, cx| {
@@ -63,7 +154,7 @@ impl SettingsWindow {
                 .child(
                     OptionPill::new(
                         "render_mode_source",
-                        RenderMode::Source.label(),
+                        cx.t(TextKey::SettingsRenderModeSource).to_string(),
                         !is_live_preview,
                     )
                     .on_click(cx.listener(|_, _, _, cx| {
@@ -73,35 +164,33 @@ impl SettingsWindow {
                     })),
                 ),
         )
-        .description("Preferred mode when opening or creating Markdown documents.")
+        .description(cx.t(TextKey::SettingsRenderModeDesc).to_string())
     }
 
     fn restore_workspace_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let restore_ws = cx.global::<AppConfig>().restore_workspace;
 
         SettingRow::new(
-            "Restore Workspace on Startup",
+            cx.t(TextKey::SettingsRestoreWorkspace).to_string(),
             Switch::new("toggle_restore_ws", restore_ws).on_click(cx.listener(|_, _, _, cx| {
                 update_config(cx, |cfg| cfg.restore_workspace = !cfg.restore_workspace)
             })),
         )
-        .description("Automatically restore previous open folder and documents on launch.")
+        .description(cx.t(TextKey::SettingsRestoreWorkspaceDesc).to_string())
     }
 
     fn collocated_mode_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let collocated = cx.global::<AppConfig>().collocated_mode;
 
         SettingRow::new(
-            "Collocated Mode",
+            cx.t(TextKey::SettingsCollocatedMode).to_string(),
             Switch::new("toggle_collocated_mode", collocated).on_click(cx.listener(
                 |this, _, _, cx| {
                     this.toggle_collocated_mode(cx);
                 },
             )),
         )
-        .description(
-            "Treat folders containing index.md as self-contained documents with co-located assets.",
-        )
+        .description(cx.t(TextKey::SettingsCollocatedModeDesc).to_string())
     }
 
     pub(crate) fn toggle_collocated_mode(&mut self, cx: &mut Context<Self>) {
@@ -122,7 +211,7 @@ impl SettingsWindow {
             self.grammar_url_field.clone().into_any_element()
         } else {
             let display_text = if effective_url.is_empty() {
-                "Offline — local grammars only".to_string()
+                cx.t(TextKey::SettingsGrammarOfflineStatus).to_string()
             } else {
                 effective_url
             };
@@ -160,7 +249,7 @@ impl SettingsWindow {
             .gap(Spacing::XS)
             .child(
                 SettingRow::new(
-                    "Grammar Download Source",
+                    cx.t(TextKey::SettingsGrammarSource).to_string(),
                     div()
                         .flex()
                         .flex_row()
@@ -181,24 +270,28 @@ impl SettingsWindow {
                             ),
                         )
                         .child(
-                            OptionPill::new("grammar_cdn_offline", "Offline", is_offline).on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.select_grammar_source(GrammarSource::Offline, cx);
-                                    this.focus(window);
-                                }),
-                            ),
+                            OptionPill::new(
+                                "grammar_cdn_offline",
+                                cx.t(TextKey::SettingsGrammarOffline).to_string(),
+                                is_offline,
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.select_grammar_source(GrammarSource::Offline, cx);
+                                this.focus(window);
+                            })),
                         )
                         .child(
-                            OptionPill::new("grammar_cdn_custom", "Custom", is_custom).on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.select_custom_grammar_mode(window, cx);
-                                }),
-                            ),
+                            OptionPill::new(
+                                "grammar_cdn_custom",
+                                cx.t(TextKey::SettingsGrammarCustom).to_string(),
+                                is_custom,
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.select_custom_grammar_mode(window, cx);
+                            })),
                         ),
                 )
-                .description(
-                    "CDN base URL for on-demand Tree-sitter WASM syntax grammars, or Offline to use local grammars only.",
-                ),
+                .description(cx.t(TextKey::SettingsGrammarSourceDesc).to_string()),
             )
             .child(url_bar)
     }
@@ -519,5 +612,58 @@ mod tests {
 
         let reloaded_off = AppConfig::load_from_paths(cfg_path, state_path);
         assert!(!reloaded_off.collocated_mode);
+    }
+
+    #[gpui::test]
+    fn test_settings_language_selection_updates_config_and_live_locale(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cfg_path = temp_dir.path().join("config.toml");
+        let state_path = temp_dir.path().join("state.toml");
+        cx.update(|cx| {
+            let cfg = AppConfig {
+                config_file_path: Some(cfg_path.clone()),
+                state_file_path: Some(state_path.clone()),
+                ..AppConfig::default()
+            };
+            cx.set_global(LocaleManager::new(cfg.language, Some("en-US")));
+            cx.set_global(ThemeManager::from_config(&cfg));
+            cx.set_global(cfg);
+        });
+
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            SettingsWindow::new(cx)
+        });
+        cx.run_until_parked();
+
+        cx.update(|_window, cx| {
+            assert_eq!(cx.locale(), LocaleId::En);
+            assert_eq!(cx.t(TextKey::SettingsTitle), "Settings");
+
+            settings.update(cx, |s, cx| {
+                s.select_language(LanguagePreference::Locale(LocaleId::ZhHans), cx);
+            });
+
+            assert_eq!(
+                cx.global::<AppConfig>().language,
+                LanguagePreference::Locale(LocaleId::ZhHans)
+            );
+            assert_eq!(cx.locale(), LocaleId::ZhHans);
+            assert_eq!(cx.t(TextKey::SettingsTitle), "设置");
+
+            settings.update(cx, |s, cx| {
+                s.select_language(LanguagePreference::Locale(LocaleId::Ja), cx);
+            });
+            assert_eq!(cx.locale(), LocaleId::Ja);
+            assert_eq!(cx.t(TextKey::SettingsTitle), "設定");
+
+            settings.update(cx, |s, cx| {
+                s.select_language(LanguagePreference::System, cx);
+            });
+            assert_eq!(cx.locale(), LocaleId::En);
+        });
+        cx.run_until_parked();
     }
 }

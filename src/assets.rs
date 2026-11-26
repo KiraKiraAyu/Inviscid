@@ -7,6 +7,7 @@ use std::borrow::Cow;
 #[include = "fonts/**/*"]
 #[include = "icons/**/*"]
 #[include = "images/**/*"]
+#[include = "locales/**/*"]
 #[include = "themes/**/*"]
 #[exclude = "*.DS_Store"]
 pub struct Assets;
@@ -102,6 +103,34 @@ mod tests {
     }
 
     #[test]
+    fn test_all_declared_locales_exist_and_no_dangling_locales() {
+        use crate::i18n::LocaleId;
+
+        for &locale in LocaleId::ALL {
+            assert!(
+                Assets::get(locale.asset_path()).is_some(),
+                "Locale {:?} at path {} not found in Assets bundle",
+                locale,
+                locale.asset_path()
+            );
+        }
+
+        for path in Assets::iter() {
+            if path.starts_with("locales/") && path.ends_with(".toml") {
+                let code = path
+                    .strip_prefix("locales/")
+                    .and_then(|s| s.strip_suffix(".toml"))
+                    .unwrap_or("");
+                assert!(
+                    LocaleId::from_code(code).is_some(),
+                    "Dangling locale file found in assets bundle: {}",
+                    path
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_assets_load_all_icons() {
         let assets = Assets;
         let icon_list = assets.list("icons").unwrap();
@@ -173,6 +202,10 @@ mod tests {
 
         let themes = assets.list("themes").unwrap();
         assert_eq!(themes.len(), 5);
+
+        let locales = assets.list("locales").unwrap();
+        assert_eq!(locales.len(), crate::i18n::LocaleId::ALL.len());
+        assert!(assets.list("locale").unwrap().is_empty());
 
         assert!(assets.list("fonts").unwrap().is_empty());
         assert!(assets.list("nonexistent").unwrap().is_empty());

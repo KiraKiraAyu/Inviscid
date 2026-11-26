@@ -2,7 +2,22 @@ use crate::app::SidebarView;
 use crate::app::actions::{ToggleOutlineSidebar, ToggleSearchSidebar, ToggleSidebar};
 use crate::config::AppConfig;
 use crate::editor::{EditorStatusMeta, ExternalChangeState};
+use crate::i18n::{ActiveLocale, PluralKeys, TextKey};
 use crate::theme::{DEFAULT_THEME, Theme, ThemeManager};
+
+const WORD_PLURALS: PluralKeys = PluralKeys {
+    one: TextKey::StatusWordsOne,
+    few: TextKey::StatusWordsFew,
+    many: TextKey::StatusWordsMany,
+    other: TextKey::StatusWordsOther,
+};
+
+const CHAR_PLURALS: PluralKeys = PluralKeys {
+    one: TextKey::StatusCharsOne,
+    few: TextKey::StatusCharsFew,
+    many: TextKey::StatusCharsMany,
+    other: TextKey::StatusCharsOther,
+};
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
 use crate::ui::{Icon, IconName, IconSize};
 use gpui::prelude::*;
@@ -174,6 +189,13 @@ impl Render for StatusBar {
             .gap(Spacing::LG)
             .when_some(self.meta.as_ref(), |this, meta| {
                 let is_dirty = meta.is_dirty;
+                let status_label = if meta.is_loading {
+                    cx.t(TextKey::CommonLoading).to_string()
+                } else if is_dirty {
+                    cx.t(TextKey::StatusUnsaved).to_string()
+                } else {
+                    cx.t(TextKey::StatusSaved).to_string()
+                };
                 this.child(
                     div()
                         .flex()
@@ -193,30 +215,30 @@ impl Render for StatusBar {
                                 .color(theme.text_accent)
                                 .into_any_element()
                         })
-                        .child(if meta.is_loading {
-                            "Loading..."
-                        } else if is_dirty {
-                            "Unsaved"
-                        } else {
-                            "Saved"
-                        }),
+                        .child(status_label),
                 )
                 .when_some(meta.load_error.as_ref(), |this, error| {
                     this.child(div().child(error.clone()))
                 })
                 .when(meta.external_change != ExternalChangeState::None, |this| {
                     let message = match meta.external_change {
-                        ExternalChangeState::Deleted => "File deleted",
-                        ExternalChangeState::Pending => "Changed on disk",
-                        ExternalChangeState::None => "",
+                        ExternalChangeState::Deleted => {
+                            cx.t(TextKey::StatusFileDeleted).to_string()
+                        }
+                        ExternalChangeState::Pending => {
+                            cx.t(TextKey::StatusChangedOnDisk).to_string()
+                        }
+                        ExternalChangeState::None => String::new(),
                     };
+                    let reload_label = cx.t(TextKey::StatusReload).to_string();
+                    let keep_local_label = cx.t(TextKey::StatusKeepLocal).to_string();
                     this.child(div().child(message))
                         .when(
                             meta.external_change == ExternalChangeState::Pending,
                             |this| {
                                 this.child(external_change_button(
                                     "reload_external_file",
-                                    "Reload",
+                                    reload_label,
                                     crate::app::actions::ReloadFile.boxed_clone(),
                                     theme,
                                 ))
@@ -224,7 +246,7 @@ impl Render for StatusBar {
                         )
                         .child(external_change_button(
                             "keep_local_external_file",
-                            "Keep Local",
+                            keep_local_label,
                             crate::app::actions::KeepLocalChanges.boxed_clone(),
                             theme,
                         ))
@@ -300,13 +322,15 @@ impl Render for StatusBar {
                             )),
                     )
                     .when_some(self.meta.as_ref(), |this, meta| {
-                        this.child(format!(
-                            "Ln {}, Col {}",
-                            meta.cursor_pos.line + 1,
-                            meta.cursor_pos.col + 1
-                        ))
-                        .child(format!("{} words", meta.word_count))
-                        .child(format!("{} chars", meta.char_count))
+                        let line_str = (meta.cursor_pos.line + 1).to_string();
+                        let col_str = (meta.cursor_pos.col + 1).to_string();
+                        let line_col = cx.tf(
+                            TextKey::StatusLineCol,
+                            &[("line", &line_str), ("col", &col_str)],
+                        );
+                        let words = cx.t_plural(WORD_PLURALS, meta.word_count);
+                        let chars = cx.t_plural(CHAR_PLURALS, meta.char_count);
+                        this.child(line_col).child(words).child(chars)
                     }),
             )
             .child(right_group)
@@ -315,7 +339,7 @@ impl Render for StatusBar {
 
 fn external_change_button(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     action: Box<dyn Action>,
     theme: &Theme,
 ) -> impl IntoElement {
@@ -326,7 +350,7 @@ fn external_change_button(
         .text_color(theme.text_accent)
         .hover(|style| style.text_color(theme.text_primary))
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
-        .child(label)
+        .child(label.into())
 }
 
 /// One panel toggle; highlighted while its panel is on screen.

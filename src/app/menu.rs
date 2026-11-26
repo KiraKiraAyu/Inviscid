@@ -11,6 +11,7 @@ use crate::editor::RenderMode;
 use crate::editor::actions::{
     CopyAction, CutAction, PasteAction, RedoAction, SelectAll, UndoAction,
 };
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
 use crate::ui::{
     ControlHeight, FontSize, Icon, IconButton, IconName, IconSize, MenuItem, Radius, Spacing,
@@ -35,6 +36,18 @@ pub enum TextMenu {
     Edit,
     View,
     Theme,
+}
+
+impl TextMenu {
+    const fn debug_name(self) -> &'static str {
+        match self {
+            TextMenu::Inviscid => "Inviscid",
+            TextMenu::File => "File",
+            TextMenu::Edit => "Edit",
+            TextMenu::View => "View",
+            TextMenu::Theme => "Theme",
+        }
+    }
 }
 
 impl From<TextMenu> for ActiveMenu {
@@ -80,17 +93,21 @@ pub struct ViewMenuState {
 #[derive(IntoElement)]
 pub struct MenuTrigger {
     category: TextMenu,
-    label: &'static str,
+    label: SharedString,
     active_menu: Option<ActiveMenu>,
     view_state: Option<ViewMenuState>,
     edit_target: Option<FocusHandle>,
 }
 
 impl MenuTrigger {
-    pub fn new(category: TextMenu, label: &'static str, active_menu: Option<ActiveMenu>) -> Self {
+    pub fn new(
+        category: TextMenu,
+        label: impl Into<SharedString>,
+        active_menu: Option<ActiveMenu>,
+    ) -> Self {
         Self {
             category,
-            label,
+            label: label.into(),
             active_menu,
             view_state: None,
             edit_target: None,
@@ -131,7 +148,7 @@ impl RenderOnce for MenuTrigger {
 
         div()
             .relative()
-            .debug_selector(|| format!("menu_trigger_{}", self.label))
+            .debug_selector(move || format!("menu_trigger_{}", category.debug_name()))
             .id(ElementId::NamedInteger(
                 "menu_trigger".into(),
                 category as u64,
@@ -187,22 +204,28 @@ impl RenderOnce for MenuTrigger {
 }
 
 fn render_menu_item(
-    label: &'static str,
+    id: &'static str,
+    debug_selector: &'static str,
+    label: impl Into<SharedString>,
     shortcut: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    MenuItem::from_name(label)
+    MenuItem::new(id, label)
+        .debug_selector(debug_selector)
         .shortcut(shortcut)
         .on_click(on_click)
 }
 
 fn render_menu_selectable_item(
-    label: &'static str,
+    id: &'static str,
+    debug_selector: &'static str,
+    label: impl Into<SharedString>,
     shortcut: impl Into<SharedString>,
     is_selected: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    MenuItem::from_name(label)
+    MenuItem::new(id, label)
+        .debug_selector(debug_selector)
         .shortcut(shortcut)
         .selected(is_selected)
         .on_click(on_click)
@@ -251,16 +274,26 @@ pub fn render_menu_dropdown(
 }
 
 fn render_inviscid_dropdown(cx: &mut App) -> impl IntoElement {
+    let about_label = cx.t(TextKey::MenuAboutInviscid).to_string();
+    let settings_label = cx.t(TextKey::MenuSettings).to_string();
     render_menu_dropdown(
-        180.0,
+        210.0,
         vec![
-            render_menu_item("About Inviscid", "", |_, window, cx| {
-                window.dispatch_action(crate::app::actions::OpenAbout.boxed_clone(), cx);
-            })
+            render_menu_item(
+                "menu_about_inviscid",
+                "menu_item_About Inviscid",
+                about_label,
+                "",
+                |_, window, cx| {
+                    window.dispatch_action(crate::app::actions::OpenAbout.boxed_clone(), cx);
+                },
+            )
             .into_any_element(),
             render_menu_separator(cx).into_any_element(),
             render_menu_item(
-                "Settings",
+                "menu_settings",
+                "menu_item_Settings",
+                settings_label,
                 display_keystroke_for("OpenSettings", cx),
                 |_, window, cx| {
                     window.dispatch_action(crate::app::actions::OpenSettings.boxed_clone(), cx);
@@ -273,12 +306,16 @@ fn render_inviscid_dropdown(cx: &mut App) -> impl IntoElement {
 }
 
 fn render_file_dropdown(can_export: bool, cx: &mut App) -> impl IntoElement {
-    let item = |label: &'static str,
+    let item = |id: &'static str,
+                selector: &'static str,
+                key: TextKey,
                 action_id: &'static str,
                 action: Box<dyn Action>,
                 disabled: bool,
                 cx: &mut App| {
-        MenuItem::from_name(label)
+        let label = cx.t(key).to_string();
+        MenuItem::new(id, label)
+            .debug_selector(selector)
             .shortcut(display_keystroke_for(action_id, cx))
             .disabled(disabled)
             .on_click(move |_, window, cx| {
@@ -288,33 +325,57 @@ fn render_file_dropdown(can_export: bool, cx: &mut App) -> impl IntoElement {
     };
 
     render_menu_dropdown(
-        250.0,
+        280.0,
         vec![
-            item("New Tab", "NewTab", NewTab.boxed_clone(), false, cx),
             item(
-                "New Window",
+                "menu_new_tab",
+                "menu_item_New Tab",
+                TextKey::MenuNewTab,
+                "NewTab",
+                NewTab.boxed_clone(),
+                false,
+                cx,
+            ),
+            item(
+                "menu_new_window",
+                "menu_item_New Window",
+                TextKey::MenuNewWindow,
                 "NewWindow",
                 NewWindow.boxed_clone(),
                 false,
                 cx,
             ),
             item(
-                "Open File...",
+                "menu_open_file",
+                "menu_item_Open File...",
+                TextKey::MenuOpenFile,
                 "OpenFile",
                 OpenFile.boxed_clone(),
                 false,
                 cx,
             ),
             item(
-                "Open Folder...",
+                "menu_open_folder",
+                "menu_item_Open Folder...",
+                TextKey::MenuOpenFolder,
                 "OpenFolder",
                 OpenFolder.boxed_clone(),
                 false,
                 cx,
             ),
-            item("Save", "SaveFile", SaveFile.boxed_clone(), false, cx),
             item(
-                "Save As...",
+                "menu_save",
+                "menu_item_Save",
+                TextKey::MenuSave,
+                "SaveFile",
+                SaveFile.boxed_clone(),
+                false,
+                cx,
+            ),
+            item(
+                "menu_save_as",
+                "menu_item_Save As...",
+                TextKey::MenuSaveAs,
                 "SaveFileAs",
                 SaveFileAs.boxed_clone(),
                 false,
@@ -322,30 +383,52 @@ fn render_file_dropdown(can_export: bool, cx: &mut App) -> impl IntoElement {
             ),
             render_menu_separator(cx).into_any_element(),
             item(
-                "Export as HTML...",
+                "menu_export_html",
+                "menu_item_Export as HTML...",
+                TextKey::MenuExportHtml,
                 "ExportHtml",
                 ExportHtml.boxed_clone(),
                 !can_export,
                 cx,
             ),
             item(
-                "Export as PDF...",
+                "menu_export_pdf",
+                "menu_item_Export as PDF...",
+                TextKey::MenuExportPdf,
                 "ExportPdf",
                 ExportPdf.boxed_clone(),
                 !can_export,
                 cx,
             ),
             render_menu_separator(cx).into_any_element(),
-            item("Close Tab", "CloseTab", CloseTab.boxed_clone(), false, cx),
             item(
-                "Close Workspace",
+                "menu_close_tab",
+                "menu_item_Close Tab",
+                TextKey::MenuCloseTab,
+                "CloseTab",
+                CloseTab.boxed_clone(),
+                false,
+                cx,
+            ),
+            item(
+                "menu_close_workspace",
+                "menu_item_Close Workspace",
+                TextKey::MenuCloseWorkspace,
                 "CloseWorkspace",
                 CloseWorkspace.boxed_clone(),
                 false,
                 cx,
             ),
             render_menu_separator(cx).into_any_element(),
-            item("Exit", "Quit", Quit.boxed_clone(), false, cx),
+            item(
+                "menu_exit",
+                "menu_item_Exit",
+                TextKey::MenuExit,
+                "Quit",
+                Quit.boxed_clone(),
+                false,
+                cx,
+            ),
         ],
         cx,
     )
@@ -354,49 +437,118 @@ fn render_file_dropdown(can_export: bool, cx: &mut App) -> impl IntoElement {
 fn render_edit_dropdown(editor: Option<FocusHandle>, cx: &mut App) -> impl IntoElement {
     // Edit actions belong to the focused editor (see `editor::keymap`), so they are dispatched at
     // its handle instead of going through an app-level handler that guesses the active tab.
-    let item =
-        |label: &'static str, action_id: &'static str, action: Box<dyn Action>, cx: &mut App| {
-            let editor = editor.clone();
-            render_menu_item(
-                label,
-                display_keystroke_for(action_id, cx),
-                move |_, window, cx| {
-                    if let Some(editor) = &editor {
-                        editor.dispatch_action(action.as_ref(), window, cx);
-                    }
-                },
-            )
-            .into_any_element()
-        };
+    let item = |id: &'static str,
+                selector: &'static str,
+                key: TextKey,
+                action_id: &'static str,
+                action: Box<dyn Action>,
+                cx: &mut App| {
+        let editor = editor.clone();
+        let label = cx.t(key).to_string();
+        render_menu_item(
+            id,
+            selector,
+            label,
+            display_keystroke_for(action_id, cx),
+            move |_, window, cx| {
+                if let Some(editor) = &editor {
+                    editor.dispatch_action(action.as_ref(), window, cx);
+                }
+            },
+        )
+        .into_any_element()
+    };
 
     render_menu_dropdown(
-        180.0,
+        240.0,
         vec![
-            item("Undo", "UndoAction", UndoAction.boxed_clone(), cx),
-            item("Redo", "RedoAction", RedoAction.boxed_clone(), cx),
-            render_menu_separator(cx).into_any_element(),
-            item("Cut", "CutAction", CutAction.boxed_clone(), cx),
-            item("Copy", "CopyAction", CopyAction.boxed_clone(), cx),
-            item("Paste", "PasteAction", PasteAction.boxed_clone(), cx),
-            render_menu_separator(cx).into_any_element(),
-            item("Select All", "SelectAll", SelectAll.boxed_clone(), cx),
-            render_menu_separator(cx).into_any_element(),
-            item("Find", "FindInDocument", FindInDocument.boxed_clone(), cx),
             item(
-                "Replace",
+                "menu_undo",
+                "menu_item_Undo",
+                TextKey::MenuUndo,
+                "UndoAction",
+                UndoAction.boxed_clone(),
+                cx,
+            ),
+            item(
+                "menu_redo",
+                "menu_item_Redo",
+                TextKey::MenuRedo,
+                "RedoAction",
+                RedoAction.boxed_clone(),
+                cx,
+            ),
+            render_menu_separator(cx).into_any_element(),
+            item(
+                "menu_cut",
+                "menu_item_Cut",
+                TextKey::MenuCut,
+                "CutAction",
+                CutAction.boxed_clone(),
+                cx,
+            ),
+            item(
+                "menu_copy",
+                "menu_item_Copy",
+                TextKey::MenuCopy,
+                "CopyAction",
+                CopyAction.boxed_clone(),
+                cx,
+            ),
+            item(
+                "menu_paste",
+                "menu_item_Paste",
+                TextKey::MenuPaste,
+                "PasteAction",
+                PasteAction.boxed_clone(),
+                cx,
+            ),
+            render_menu_separator(cx).into_any_element(),
+            item(
+                "menu_select_all",
+                "menu_item_Select All",
+                TextKey::MenuSelectAll,
+                "SelectAll",
+                SelectAll.boxed_clone(),
+                cx,
+            ),
+            render_menu_separator(cx).into_any_element(),
+            item(
+                "menu_find",
+                "menu_item_Find",
+                TextKey::MenuFind,
+                "FindInDocument",
+                FindInDocument.boxed_clone(),
+                cx,
+            ),
+            item(
+                "menu_replace",
+                "menu_item_Replace",
+                TextKey::MenuReplace,
                 "ReplaceInDocument",
                 ReplaceInDocument.boxed_clone(),
                 cx,
             ),
             item(
-                "Find in Files",
+                "menu_find_in_files",
+                "menu_item_Find in Files",
+                TextKey::MenuFindInFiles,
                 "FindInWorkspace",
                 FindInWorkspace.boxed_clone(),
                 cx,
             ),
-            item("Find Next", "FindNext", FindNext.boxed_clone(), cx),
             item(
-                "Find Previous",
+                "menu_find_next",
+                "menu_item_Find Next",
+                TextKey::MenuFindNext,
+                "FindNext",
+                FindNext.boxed_clone(),
+                cx,
+            ),
+            item(
+                "menu_find_previous",
+                "menu_item_Find Previous",
+                TextKey::MenuFindPrevious,
                 "FindPrevious",
                 FindPrevious.boxed_clone(),
                 cx,
@@ -413,9 +565,18 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
     let is_sidebar_visible = view_state.map(|s| s.is_sidebar_visible).unwrap_or(true);
     let is_fps_visible = view_state.map(|s| s.is_fps_visible).unwrap_or(false);
 
+    let sidebar_label = cx.t(TextKey::MenuSidebar).to_string();
+    let live_preview_label = cx.t(TextKey::MenuLivePreview).to_string();
+    let source_mode_label = cx.t(TextKey::MenuSourceMode).to_string();
+    let next_tab_label = cx.t(TextKey::MenuNextTab).to_string();
+    let prev_tab_label = cx.t(TextKey::MenuPreviousTab).to_string();
+    let fps_counter_label = cx.t(TextKey::MenuFpsCounter).to_string();
+
     let items = vec![
         render_menu_selectable_item(
-            "Sidebar",
+            "menu_sidebar",
+            "menu_item_Sidebar",
+            sidebar_label,
             display_keystroke_for("ToggleSidebar", cx),
             is_sidebar_visible,
             |_, window, cx| {
@@ -425,7 +586,9 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
         .into_any_element(),
         render_menu_separator(cx).into_any_element(),
         render_menu_selectable_item(
-            "Live Preview",
+            "menu_live_preview",
+            "menu_item_Live Preview",
+            live_preview_label,
             "",
             cur_render_mode == RenderMode::LivePreview,
             |_, window, cx| {
@@ -437,7 +600,9 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
         )
         .into_any_element(),
         render_menu_selectable_item(
-            "Source Mode",
+            "menu_source_mode",
+            "menu_item_Source Mode",
+            source_mode_label,
             "",
             cur_render_mode == RenderMode::Source,
             |_, window, cx| {
@@ -450,7 +615,9 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
         .into_any_element(),
         render_menu_separator(cx).into_any_element(),
         render_menu_item(
-            "Next Tab",
+            "menu_next_tab",
+            "menu_item_Next Tab",
+            next_tab_label,
             display_keystroke_for("NextTab", cx),
             |_, window, cx| {
                 window.dispatch_action(crate::app::actions::NextTab.boxed_clone(), cx);
@@ -458,7 +625,9 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
         )
         .into_any_element(),
         render_menu_item(
-            "Previous Tab",
+            "menu_previous_tab",
+            "menu_item_Previous Tab",
+            prev_tab_label,
             display_keystroke_for("PrevTab", cx),
             |_, window, cx| {
                 window.dispatch_action(crate::app::actions::PrevTab.boxed_clone(), cx);
@@ -467,7 +636,9 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
         .into_any_element(),
         render_menu_separator(cx).into_any_element(),
         render_menu_selectable_item(
-            "FPS Counter",
+            "menu_fps_counter",
+            "menu_item_FPS Counter",
+            fps_counter_label,
             display_keystroke_for("ToggleFpsDisplay", cx),
             is_fps_visible,
             |_, window, cx| {
@@ -477,7 +648,7 @@ fn render_view_dropdown(view_state: Option<ViewMenuState>, cx: &mut App) -> impl
         .into_any_element(),
     ];
 
-    render_menu_dropdown(200.0, items, cx)
+    render_menu_dropdown(240.0, items, cx)
 }
 
 fn render_theme_dropdown(cx: &mut App) -> impl IntoElement {
@@ -521,6 +692,12 @@ pub fn render_workspace_dropdown(
     let collocated_mode = config.collocated_mode;
     let recent_workspaces = config.session.recent_workspaces.clone();
 
+    let recent_header = cx.t(TextKey::MenuRecentWorkspaces).to_string();
+    let no_recent_label = cx.t(TextKey::MenuNoRecentWorkspaces).to_string();
+    let clear_recent_label = cx.t(TextKey::MenuClearRecentWorkspaces).to_string();
+    let open_folder_label = cx.t(TextKey::MenuOpenFolder).to_string();
+    let open_file_label = cx.t(TextKey::MenuOpenFile).to_string();
+
     let mut items = Vec::new();
 
     items.push(
@@ -530,7 +707,7 @@ pub fn render_workspace_dropdown(
             .text_size(FontSize::CAPTION)
             .font_weight(FontWeight::BOLD)
             .text_color(theme.text_muted)
-            .child("RECENT WORKSPACES")
+            .child(recent_header)
             .into_any_element(),
     );
 
@@ -547,7 +724,7 @@ pub fn render_workspace_dropdown(
                 .py(Spacing::SMD)
                 .text_size(FontSize::SM)
                 .text_color(theme.text_muted)
-                .child("No recent workspaces")
+                .child(no_recent_label)
                 .into_any_element(),
         );
     } else {
@@ -558,18 +735,17 @@ pub fn render_workspace_dropdown(
             {
                 name.to_string()
             } else {
-                let name = crate::app::workspace::extract_workspace_name_from_paths(
+                crate::app::workspace::try_extract_workspace_name_from_paths(
                     [
                         ws_state.active_file.as_deref(),
                         ws_state.open_files.first().map(|p| p.as_path()),
                     ],
                     collocated_mode,
-                );
-                if name == "Open Workspace" {
-                    format!("Workspace #{}", i + 1)
-                } else {
-                    name
-                }
+                )
+                .unwrap_or_else(|| {
+                    let idx_str = (i + 1).to_string();
+                    cx.tf(TextKey::MenuWorkspaceFallback, &[("index", &idx_str)])
+                })
             };
 
             let subtitle = ws_state
@@ -607,10 +783,18 @@ pub fn render_workspace_dropdown(
 
         items.push(render_menu_separator(cx).into_any_element());
         items.push(
-            render_menu_item("Clear Recent Workspaces", "", |_, window, cx| {
-                window
-                    .dispatch_action(crate::app::actions::ClearRecentWorkspaces.boxed_clone(), cx);
-            })
+            render_menu_item(
+                "menu_clear_recent_workspaces",
+                "menu_item_Clear Recent Workspaces",
+                clear_recent_label,
+                "",
+                |_, window, cx| {
+                    window.dispatch_action(
+                        crate::app::actions::ClearRecentWorkspaces.boxed_clone(),
+                        cx,
+                    );
+                },
+            )
             .into_any_element(),
         );
     }
@@ -619,7 +803,9 @@ pub fn render_workspace_dropdown(
 
     items.push(
         render_menu_item(
-            "Open Folder...",
+            "menu_ws_open_folder",
+            "menu_item_Open Folder...",
+            open_folder_label,
             display_keystroke_for("OpenFolder", cx),
             |_, window, cx| {
                 window.dispatch_action(crate::app::actions::OpenFolder.boxed_clone(), cx);
@@ -630,7 +816,9 @@ pub fn render_workspace_dropdown(
 
     items.push(
         render_menu_item(
-            "Open File...",
+            "menu_ws_open_file",
+            "menu_item_Open File...",
+            open_file_label,
             display_keystroke_for("OpenFile", cx),
             |_, window, cx| {
                 window.dispatch_action(crate::app::actions::OpenFile.boxed_clone(), cx);
@@ -639,7 +827,7 @@ pub fn render_workspace_dropdown(
         .into_any_element(),
     );
 
-    render_menu_dropdown(300.0, items, cx)
+    render_menu_dropdown(320.0, items, cx)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -662,6 +850,9 @@ fn render_workspace_item(
     let remove_btn_id = SharedString::from(format!("recent_ws_remove_{root_key}"));
     let group_name = SharedString::from(format!("recent_ws_row_{index}"));
     let root_dir_for_remove = root_dir.to_path_buf();
+
+    let open_new_window_tooltip = cx.t(TextKey::MenuOpenInNewWindow).to_string();
+    let remove_ws_tooltip = cx.t(TextKey::MenuRemoveFromRecentWorkspaces).to_string();
 
     div()
         .id(ElementId::Name(row_id))
@@ -768,7 +959,7 @@ fn render_workspace_item(
                                 .icon_size(IconSize::XSmall)
                                 .hover_bg(theme.text_primary.opacity(0.12))
                                 .active_bg(theme.text_primary.opacity(0.18))
-                                .tooltip("Open in New Window")
+                                .tooltip(open_new_window_tooltip)
                                 .debug_selector(format!("recent_ws_open_new_window_{index}"))
                                 .stop_propagation(true)
                                 .on_click(move |_, window, cx| {
@@ -785,7 +976,7 @@ fn render_workspace_item(
                                 .hover_color(theme.text_danger)
                                 .hover_bg(theme.text_danger.opacity(0.15))
                                 .active_bg(theme.text_danger.opacity(0.24))
-                                .tooltip("Remove from recent workspaces")
+                                .tooltip(remove_ws_tooltip)
                                 .debug_selector(format!("recent_ws_remove_{index}"))
                                 .stop_propagation(true)
                                 .on_click(move |_, window, cx| {

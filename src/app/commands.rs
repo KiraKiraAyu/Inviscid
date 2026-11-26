@@ -7,6 +7,7 @@ use crate::buffer::{LineSource, SourceSnapshot};
 use crate::config::{AppConfig, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, WindowLayoutState};
 use crate::editor::{Editor, RenderMode};
 use crate::export::{ExportOptions, export_html_to_path, export_pdf_to_path};
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::{Theme, ThemeManager};
 
 pub fn main_window_options(
@@ -161,11 +162,13 @@ pub fn open_file(app: &mut InviscidWindow, path: PathBuf, cx: &mut Context<Invis
 }
 
 pub fn open_file_prompt(app: &mut InviscidWindow, cx: &mut Context<InviscidWindow>) {
-    app.defer_after_menu_close(cx, |_, cx| {
+    let md_filter = cx.t(TextKey::DialogFilterMarkdown).to_string();
+    let all_filter = cx.t(TextKey::DialogFilterAll).to_string();
+    app.defer_after_menu_close(cx, move |_, cx| {
         cx.spawn(async move |this, cx| {
             let file = rfd::AsyncFileDialog::new()
-                .add_filter("Markdown Files", &["md", "markdown", "txt"])
-                .add_filter("All Files", &["*"])
+                .add_filter(&md_filter, &["md", "markdown", "txt"])
+                .add_filter(&all_filter, &["*"])
                 .pick_file()
                 .await;
 
@@ -243,10 +246,11 @@ pub fn save_file_as_prompt(app: &mut InviscidWindow, cx: &mut Context<InviscidWi
         return;
     }
 
-    app.defer_after_menu_close(cx, |_, cx| {
+    let md_filter = cx.t(TextKey::DialogFilterMarkdown).to_string();
+    app.defer_after_menu_close(cx, move |_, cx| {
         cx.spawn(async move |this, cx| {
             let file = rfd::AsyncFileDialog::new()
-                .add_filter("Markdown Files", &["md"])
+                .add_filter(&md_filter, &["md"])
                 .set_file_name("document.md")
                 .save_file()
                 .await;
@@ -313,10 +317,10 @@ impl ExportTargetKind {
         }
     }
 
-    fn file_filter(self) -> (&'static str, &'static [&'static str]) {
+    fn file_filter(self, cx: &App) -> (String, &'static [&'static str]) {
         match self {
-            Self::Html => ("HTML Files", &["html", "htm"]),
-            Self::Pdf => ("PDF Files", &["pdf"]),
+            Self::Html => (cx.t(TextKey::DialogFilterHtml).to_string(), &["html", "htm"]),
+            Self::Pdf => (cx.t(TextKey::DialogFilterPdf).to_string(), &["pdf"]),
         }
     }
 }
@@ -419,6 +423,7 @@ fn export_active_document_prompt(
         let Some(prepared) = prepare_active_export(app, kind, cx) else {
             return;
         };
+        let (filter_label, extensions) = prepared.kind.file_filter(cx);
 
         cx.spawn(async move |_this, cx| {
             let resolved_dir = match prepared.initial_dir {
@@ -434,9 +439,8 @@ fn export_active_document_prompt(
             if let Some(dir) = resolved_dir.as_deref() {
                 dialog = dialog.set_directory(dir);
             }
-            let (filter_label, extensions) = prepared.kind.file_filter();
             dialog = dialog
-                .add_filter(filter_label, extensions)
+                .add_filter(&filter_label, extensions)
                 .set_file_name(&prepared.default_file_name);
 
             let Some(file) = dialog.save_file().await else {
@@ -594,14 +598,15 @@ pub struct SettingsWindowState {
 impl gpui::Global for SettingsWindowState {}
 
 pub fn open_settings_window(cx: &mut App) {
+    let settings_title = cx.t(TextKey::SettingsTitle).to_string();
     open_singleton_window::<SettingsWindowState, crate::app::settings::SettingsWindow>(
         cx,
         |state| &mut state.handle,
         size(px(800.0), px(560.0)),
-        |bounds| WindowOptions {
+        move |bounds| WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
-                title: Some("Settings".into()),
+                title: Some(settings_title.into()),
                 appears_transparent: true,
                 traffic_light_position: None,
             }),

@@ -2,13 +2,14 @@ use gpui::prelude::*;
 use gpui::*;
 
 use crate::app::actions::display_keystroke_for;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::Theme;
 use crate::ui::{FontSize, Icon, IconName, IconSize, Radius, Spacing};
 
 pub fn render_welcome_button(
     id: &'static str,
     icon: IconName,
-    label: &'static str,
+    label: impl Into<SharedString>,
     shortcut: impl Into<SharedString>,
     theme: &Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -43,7 +44,7 @@ pub fn render_welcome_button(
                     div()
                         .text_size(FontSize::SM)
                         .text_color(theme.text_primary)
-                        .child(label),
+                        .child(label.into()),
                 ),
         )
         .child(
@@ -84,9 +85,9 @@ pub fn render_welcome_view(
                     "welcome_new_file_btn",
                     IconName::FileText,
                     if collocated_mode {
-                        "New Document"
+                        cx.t(TextKey::WelcomeNewDocument).to_string()
                     } else {
-                        "New File"
+                        cx.t(TextKey::WelcomeNewFile).to_string()
                     },
                     display_keystroke_for("NewTab", cx),
                     theme,
@@ -99,9 +100,9 @@ pub fn render_welcome_view(
                     "welcome_open_file_btn",
                     IconName::FileText,
                     if collocated_mode {
-                        "Open Document"
+                        cx.t(TextKey::WelcomeOpenDocument).to_string()
                     } else {
-                        "Open File"
+                        cx.t(TextKey::WelcomeOpenFile).to_string()
                     },
                     display_keystroke_for("OpenFile", cx),
                     theme,
@@ -113,7 +114,7 @@ pub fn render_welcome_view(
                 .child(render_welcome_button(
                     "welcome_open_folder_btn",
                     IconName::Folder,
-                    "Open Folder",
+                    cx.t(TextKey::WelcomeOpenFolder).to_string(),
                     display_keystroke_for("OpenFolder", cx),
                     theme,
                     move |_, window, cx| {

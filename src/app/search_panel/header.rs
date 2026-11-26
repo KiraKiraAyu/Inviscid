@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use super::SearchPanel;
+use crate::i18n::{ActiveLocale, PluralKeys, TextKey};
 use crate::search::SearchToggle;
 use crate::theme::Theme;
 use crate::ui::icon::{Icon, IconName, IconSize};
@@ -9,7 +10,28 @@ use crate::ui::tokens::{FontSize, Radius, Spacing};
 
 const BUTTON_SIZE: Pixels = px(22.0);
 /// The fixed trailing controls area keeps the search and replacement inputs aligned.
-const RIGHT_SECTION_WIDTH: Pixels = px(96.0);
+const RIGHT_SECTION_WIDTH: Pixels = px(120.0);
+
+const REPLACED_PLURALS: PluralKeys = PluralKeys {
+    one: TextKey::SearchReplacedOne,
+    few: TextKey::SearchReplacedFew,
+    many: TextKey::SearchReplacedMany,
+    other: TextKey::SearchReplacedOther,
+};
+
+const MATCH_PLURALS: PluralKeys = PluralKeys {
+    one: TextKey::SearchResultMatchesOne,
+    few: TextKey::SearchResultMatchesFew,
+    many: TextKey::SearchResultMatchesMany,
+    other: TextKey::SearchResultMatchesOther,
+};
+
+const FILE_PLURALS: PluralKeys = PluralKeys {
+    one: TextKey::SearchResultFilesOne,
+    few: TextKey::SearchResultFilesFew,
+    many: TextKey::SearchResultFilesMany,
+    other: TextKey::SearchResultFilesOther,
+};
 const OPTION_TOGGLES: [(SearchToggle, &str); 3] = [
     (SearchToggle::CaseSensitive, "Aa"),
     (SearchToggle::WholeWord, "ab"),
@@ -122,9 +144,9 @@ impl SearchPanel {
                                                 }))
                                         })
                                         .child(if self.replacing {
-                                            "Replacing..."
+                                            cx.t(TextKey::SearchReplacing).to_string()
                                         } else {
-                                            "Replace All"
+                                            cx.t(TextKey::SearchReplaceAll).to_string()
                                         }),
                                 ),
                         ),
@@ -143,7 +165,7 @@ impl SearchPanel {
                     div()
                         .text_size(FontSize::CAPTION)
                         .text_color(theme.text_muted)
-                        .child(format!("Replaced {count} matches")),
+                        .child(cx.t_plural(REPLACED_PLURALS, count)),
                 )
             })
             .child(
@@ -176,7 +198,7 @@ impl SearchPanel {
                                     div()
                                         .text_size(FontSize::CAPTION)
                                         .text_color(theme.text_muted)
-                                        .child(self.results_summary()),
+                                        .child(self.results_summary(cx)),
                                 )
                                 .child(
                                     icon_button("search_toggle_expand_all", expand_icon, theme)
@@ -189,12 +211,17 @@ impl SearchPanel {
             )
     }
 
-    fn results_summary(&self) -> String {
+    fn results_summary(&self, cx: &App) -> String {
         let cap = if self.results.is_capped() { "+" } else { "" };
-        format!(
-            "{}{cap} results in {} files",
+        let matches = cx.t_plural_with(
+            MATCH_PLURALS,
             self.results.total_matches(),
-            self.results.files().len()
+            &[("cap", cap)],
+        );
+        let files = cx.t_plural(FILE_PLURALS, self.results.files().len());
+        cx.tf(
+            TextKey::SearchResultsSummary,
+            &[("matches", &matches), ("files", &files)],
         )
     }
 
@@ -224,7 +251,7 @@ impl SearchPanel {
                 .size(IconSize::XSmall)
                 .color(theme.text_secondary),
             )
-            .child("Replace")
+            .child(cx.t(TextKey::SearchReplaceToggle).to_string())
     }
 
     fn render_option_toggle(

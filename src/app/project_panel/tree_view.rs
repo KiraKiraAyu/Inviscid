@@ -420,7 +420,9 @@ pub fn render_empty_state(
     cx: &App,
 ) -> AnyElement {
     if !has_root {
-        dock_panel::empty_state("No folder opened", theme).into_any_element()
+        use crate::i18n::{ActiveLocale, TextKey};
+        dock_panel::empty_state(cx.t(TextKey::ProjectNoFolderOpened).to_string(), theme)
+            .into_any_element()
     } else if let Some(input) = inline_input {
         div()
             .flex_1()
@@ -429,10 +431,11 @@ pub fn render_empty_state(
             .child(render_inline_row(input, false, collocated_mode, theme, cx))
             .into_any_element()
     } else {
+        use crate::i18n::{ActiveLocale, TextKey};
         let message = if collocated_mode {
-            "No documents"
+            cx.t(TextKey::ProjectNoDocuments).to_string()
         } else {
-            "Empty folder"
+            cx.t(TextKey::ProjectEmptyFolder).to_string()
         };
         dock_panel::empty_state(message, theme).into_any_element()
     }

@@ -102,6 +102,7 @@ pub struct TextInput {
     pub(crate) buffer: TextBuffer,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) placeholder: Option<SharedString>,
+    pub(crate) placeholder_key: Option<crate::i18n::TextKey>,
     pub(crate) char_filter: fn(char) -> bool,
     pub(crate) key_context: &'static str,
     pub(crate) height: Pixels,
@@ -148,6 +149,7 @@ impl TextInput {
             buffer,
             focus_handle,
             placeholder: None,
+            placeholder_key: None,
             char_filter: default_single_line_filter,
             key_context: crate::ui::key_context::TEXT_INPUT,
             height: ControlHeight::XS,
@@ -185,6 +187,13 @@ impl TextInput {
 
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = Some(placeholder.into());
+        self.placeholder_key = None;
+        self
+    }
+
+    pub fn placeholder_key(mut self, key: crate::i18n::TextKey) -> Self {
+        self.placeholder_key = Some(key);
+        self.placeholder = None;
         self
     }
 
@@ -1122,12 +1131,20 @@ impl TextInput {
             TextInputBg::Transparent => gpui::transparent_black(),
         };
 
+        let resolved_placeholder = self
+            .placeholder_key
+            .map(|key| {
+                use crate::i18n::ActiveLocale;
+                SharedString::from(cx.t(key).to_string())
+            })
+            .or_else(|| self.placeholder.clone());
+
         let snapshot = TextInputSnapshot {
             line_str: self.text(),
             selection: self.buffer.selection(),
             cursor_col: self.buffer.cursor_pos().col,
             cursor_opacity: self.cursor_opacity,
-            placeholder: self.placeholder.clone(),
+            placeholder: resolved_placeholder,
             marked_range: self.marked_range.clone(),
             padding_x: self.padding_x,
             is_dragging: self.is_dragging,

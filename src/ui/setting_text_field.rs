@@ -83,6 +83,15 @@ impl SettingTextField {
         let placeholder = placeholder.into();
         self.input.update(cx, |input, _cx| {
             input.placeholder = Some(placeholder);
+            input.placeholder_key = None;
+        });
+        self
+    }
+
+    pub fn placeholder_key(self, key: crate::i18n::TextKey, cx: &mut Context<Self>) -> Self {
+        self.input.update(cx, |input, _cx| {
+            input.placeholder_key = Some(key);
+            input.placeholder = None;
         });
         self
     }

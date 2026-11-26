@@ -4,6 +4,7 @@
 //! (`General`, `Appearance`, `Editor`, and `Keybindings`), along with their
 //! display labels and icons.
 
+use crate::i18n::TextKey;
 use crate::ui::IconName;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -24,12 +25,21 @@ impl SettingsCategory {
         ]
     }
 
-    pub const fn label(self) -> &'static str {
+    pub const fn id(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
             Self::Keybindings => "Keybindings",
+        }
+    }
+
+    pub const fn label_key(self) -> TextKey {
+        match self {
+            Self::General => TextKey::SettingsCategoryGeneral,
+            Self::Appearance => TextKey::SettingsCategoryAppearance,
+            Self::Editor => TextKey::SettingsCategoryEditor,
+            Self::Keybindings => TextKey::SettingsCategoryKeybindings,
         }
     }
 
@@ -51,8 +61,10 @@ mod tests {
     #[test]
     fn test_settings_categories_have_unique_labels() {
         let all = SettingsCategory::all();
-        let labels: HashSet<_> = all.iter().map(|c| c.label()).collect();
-        assert_eq!(labels.len(), all.len());
-        assert!(all.iter().all(|c| !c.label().is_empty()));
+        let ids: HashSet<_> = all.iter().map(|c| c.id()).collect();
+        let keys: HashSet<_> = all.iter().map(|c| c.label_key()).collect();
+        assert_eq!(ids.len(), all.len());
+        assert_eq!(keys.len(), all.len());
+        assert!(all.iter().all(|c| !c.id().is_empty()));
     }
 }

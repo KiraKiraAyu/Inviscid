@@ -12,6 +12,7 @@ use gpui::*;
 use super::{ActiveInput, SettingsWindow};
 use crate::app::actions::{KeybindingMeta, apply_configured_keys, keybindings};
 use crate::config::AppConfig;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::{Theme, ThemeManager};
 use crate::ui::{ControlHeight, FontSize, Radius, Spacing, format_keystroke_for_display};
 
@@ -80,6 +81,7 @@ impl SettingsWindow {
     }
 
     fn reset_all_button(&self, theme: &Theme, cx: &mut Context<Self>) -> Stateful<Div> {
+        let label = cx.t(TextKey::CommonResetAll).to_string();
         div()
             .id("reset_all_keybindings_btn")
             .h(ControlHeight::SM)
@@ -100,7 +102,7 @@ impl SettingsWindow {
                 cfg.reset_all_keybindings();
                 this.commit_keybindings(cfg, cx);
             }))
-            .child("Reset All")
+            .child(label)
     }
 
     fn keybinding_row(
@@ -119,6 +121,8 @@ impl SettingsWindow {
         let is_modified = custom_binding.is_some();
         let badge = self.key_badge(index, meta, custom_binding.as_deref(), theme, cx);
         let reset = is_modified.then(|| self.reset_button(index, meta, theme, cx));
+        let category_label = meta.display_category(cx).to_string();
+        let name_label = meta.display_name(cx).to_string();
 
         let row = div()
             .h(KEYBINDING_ROW_HEIGHT)
@@ -137,6 +141,8 @@ impl SettingsWindow {
             })
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -145,15 +151,16 @@ impl SettingsWindow {
                     .text_color(theme.text_primary)
                     .child(
                         div()
+                            .flex_none()
                             .px(Spacing::SMD)
                             .py(Spacing::XXS)
                             .rounded(Radius::XS)
                             .bg(theme.btn_bg)
                             .text_size(FontSize::CAPTION)
                             .text_color(theme.text_muted)
-                            .child(meta.category),
+                            .child(category_label),
                     )
-                    .child(meta.name),
+                    .child(div().min_w_0().truncate().child(name_label)),
             );
 
         if let Some(reset) = reset {
@@ -237,7 +244,7 @@ impl SettingsWindow {
                 badge.child(display_key)
             }
         } else {
-            badge.child("Recording...")
+            badge.child(cx.t(TextKey::SettingsKeybindingRecording).to_string())
         }
     }
 
@@ -248,6 +255,7 @@ impl SettingsWindow {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let label = cx.t(TextKey::CommonReset).to_string();
         div()
             .id(("reset_btn", index))
             .h(ControlHeight::SM)
@@ -266,6 +274,6 @@ impl SettingsWindow {
                 cfg.reset_keybinding(meta.id);
                 this.commit_keybindings(cfg, cx);
             }))
-            .child("Reset")
+            .child(label)
     }
 }

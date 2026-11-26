@@ -10,6 +10,7 @@ use super::SettingsWindow;
 use super::bounds::UI_FONT_SIZE_BOUNDS;
 use super::persistence::update_config_all_windows;
 use crate::config::AppConfig;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
 use crate::ui::{
     FontSize, Icon, IconName, IconSize, SelectableRow, SettingRow, Spacing, Stepper, Switch,
@@ -46,7 +47,7 @@ impl SettingsWindow {
                             .text_size(FontSize::BODY)
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_primary)
-                            .child("Color Theme"),
+                            .child(cx.t(TextKey::SettingsColorTheme).to_string()),
                     )
                     .child(
                         div()
@@ -100,9 +101,10 @@ impl SettingsWindow {
 
     fn ui_font_size_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let value = cx.global::<AppConfig>().ui_font_size;
+        let bounds = UI_FONT_SIZE_BOUNDS.describe_px();
 
         SettingRow::new(
-            "UI Font Size",
+            cx.t(TextKey::SettingsUiFontSize).to_string(),
             Stepper::new("ui_font_size", format!("{:.0} px", value))
                 .on_decrement(cx.listener(|_, _, _, cx| {
                     update_config_all_windows(cx, |cfg| {
@@ -115,17 +117,14 @@ impl SettingsWindow {
                     })
                 })),
         )
-        .description(format!(
-            "Scale application interface text and controls ({}).",
-            UI_FONT_SIZE_BOUNDS.describe_px()
-        ))
+        .description(cx.tf(TextKey::SettingsUiFontSizeDesc, &[("bounds", &bounds)]))
     }
 
     fn fps_counter_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let show_fps = cx.global::<AppConfig>().show_fps;
 
         SettingRow::new(
-            "FPS Counter",
+            cx.t(TextKey::SettingsFpsCounter).to_string(),
             div()
                 .debug_selector(|| "toggle_show_fps".to_string())
                 .child(
@@ -136,7 +135,7 @@ impl SettingsWindow {
                     )),
                 ),
         )
-        .description("Display real-time frame rate and frame time in the status bar.")
+        .description(cx.t(TextKey::SettingsFpsCounterDesc).to_string())
     }
 }
 

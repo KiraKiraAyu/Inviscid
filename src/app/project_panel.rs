@@ -16,8 +16,7 @@ pub mod fs_ops;
 mod inline_input;
 mod tree_view;
 
-pub use confirm_modal::ConfirmModalKind;
-pub(crate) use confirm_modal::ConfirmModalState;
+pub use confirm_modal::{ConfirmModalKind, ConfirmModalState};
 use context_menu::{ContextMenuAction, ContextMenuState, FileClipboard};
 pub(crate) use inline_input::InlineInputEvent;
 pub use inline_input::{InlineInput, InlineInputKind};
@@ -342,7 +341,7 @@ impl ProjectPanel {
         let input = cx.new(|cx| {
             TextInput::new("", cx)
                 .id("project_file_filter")
-                .placeholder("Filter files")
+                .placeholder_key(crate::i18n::TextKey::ProjectFilterPlaceholder)
                 .height(ControlHeight::SM)
                 .radius(Radius::LG)
                 .padding_x(Spacing::SM)
@@ -1630,7 +1629,13 @@ impl Render for ProjectPanel {
             )
             .on_mouse_down(MouseButton::Right, bg_right_click)
             .on_mouse_down(MouseButton::Left, bg_left_click)
-            .child(crate::ui::dock_panel::section_header("EXPLORER", &theme))
+            .child(crate::ui::dock_panel::section_header(
+                {
+                    use crate::i18n::{ActiveLocale, TextKey};
+                    cx.t(TextKey::ProjectExplorerHeader).to_string()
+                },
+                &theme,
+            ))
             .when(self.show_filter, |this| {
                 let input = self.ensure_filter_input(cx);
                 this.child(div().flex_none().w_full().p(Spacing::SM).child(input))
@@ -1638,6 +1643,10 @@ impl Render for ProjectPanel {
             .when(
                 has_root && entries_count == 0 && self.filter_scan_pending,
                 |this| {
+                    let scanning = {
+                        use crate::i18n::{ActiveLocale, TextKey};
+                        cx.t(TextKey::ProjectScanningFiles).to_string()
+                    };
                     this.child(
                         div()
                             .flex_1()
@@ -1646,13 +1655,17 @@ impl Render for ProjectPanel {
                             .items_center()
                             .justify_center()
                             .text_color(theme.text_muted)
-                            .child("Scanning files..."),
+                            .child(scanning),
                     )
                 },
             )
             .when(
                 has_root && is_filtering && entries_count == 0 && !self.filter_scan_pending,
                 |this| {
+                    let no_matching = {
+                        use crate::i18n::{ActiveLocale, TextKey};
+                        cx.t(TextKey::ProjectNoMatchingFiles).to_string()
+                    };
                     this.child(
                         div()
                             .flex_1()
@@ -1661,7 +1674,7 @@ impl Render for ProjectPanel {
                             .items_center()
                             .justify_center()
                             .text_color(theme.text_muted)
-                            .child("No matching files"),
+                            .child(no_matching),
                     )
                 },
             )
@@ -1696,6 +1709,7 @@ impl Render for ProjectPanel {
                     on_confirm_modal,
                     on_cancel_modal,
                     &theme,
+                    cx,
                 )))
             })
     }

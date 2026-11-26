@@ -6,6 +6,7 @@ use gpui::*;
 use super::{ResultRow, SearchPanel};
 use crate::app::actions::OpenWorkspaceMatch;
 use crate::buffer::Position;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::search::{FileSearchResult, WorkspaceMatch};
 use crate::theme::{Theme, ThemeManager};
 use crate::ui::icon::{Icon, IconName, IconSize};
@@ -61,6 +62,7 @@ impl SearchPanel {
                                         this.show_replace,
                                         &panel,
                                         theme,
+                                        cx,
                                     )
                                     .into_any_element()
                                 }
@@ -80,7 +82,10 @@ impl SearchPanel {
     }
 }
 
-pub(super) fn render_empty_state(message: &'static str, theme: &Theme) -> impl IntoElement {
+pub(super) fn render_empty_state(
+    message: impl Into<SharedString>,
+    theme: &Theme,
+) -> impl IntoElement {
     div()
         .flex_1()
         .w_full()
@@ -92,7 +97,7 @@ pub(super) fn render_empty_state(message: &'static str, theme: &Theme) -> impl I
             div()
                 .text_size(FontSize::CAPTION)
                 .text_color(theme.text_muted)
-                .child(message),
+                .child(message.into()),
         )
 }
 
@@ -200,6 +205,7 @@ fn render_file_header(
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_match_row(
     row_idx: usize,
     path: &Path,
@@ -208,7 +214,9 @@ fn render_match_row(
     show_replace: bool,
     panel: &Entity<SearchPanel>,
     theme: &Theme,
+    cx: &App,
 ) -> impl IntoElement {
+    let replace_label = cx.t(TextKey::SearchReplaceOne).to_string();
     let (pre, matched, post) = split_preview(m);
     let action = OpenWorkspaceMatch {
         path: path.to_path_buf(),
@@ -298,7 +306,7 @@ fn render_match_row(
                             },
                         )
                     })
-                    .child("Replace"),
+                    .child(replace_label),
             )
         })
 }

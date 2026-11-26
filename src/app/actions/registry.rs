@@ -1,6 +1,7 @@
 use crate::app::actions::defs::*;
 use crate::config::AppConfig;
 use crate::editor::actions::*;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::ui::format_keystroke_for_display;
 use crate::ui::key_context;
 use gpui::App;
@@ -19,6 +20,8 @@ pub struct KeybindingMeta {
     pub id: &'static str,
     pub name: &'static str,
     pub category: &'static str,
+    pub name_key: Option<TextKey>,
+    pub category_key: Option<TextKey>,
     /// Every keystroke bound by default. The first one is what the UI advertises; the rest are
     /// platform habits that would otherwise be lost, such as `secondary-y` for redo.
     pub default_keystrokes: &'static [&'static str],
@@ -28,6 +31,18 @@ impl KeybindingMeta {
     /// The keystroke shown in menus and in the settings list.
     pub fn primary_keystroke(&self) -> &str {
         self.default_keystrokes.first().copied().unwrap_or("")
+    }
+
+    pub fn display_name<'a>(&self, cx: &'a App) -> &'a str {
+        self.name_key
+            .map(|key| cx.t(key))
+            .unwrap_or(self.name)
+    }
+
+    pub fn display_category<'a>(&self, cx: &'a App) -> &'a str {
+        self.category_key
+            .map(|key| cx.t(key))
+            .unwrap_or(self.category)
     }
 }
 
@@ -62,7 +77,7 @@ pub struct KeybindingSpec {
 }
 
 macro_rules! define_keybindings {
-    ($( $(#[$attr:meta])* ($id:ident, $name:expr, $cat:expr, $strokes:expr, $ctx:expr, $platform:expr) ),* $(,)?) => {
+    ($( $(#[$attr:meta])* ($id:ident, $name:expr, $cat:expr, $name_key:expr, $cat_key:expr, $strokes:expr, $ctx:expr, $platform:expr) ),* $(,)?) => {
         pub static KEYBINDINGS: &[KeybindingSpec] = &[
             $(
                 $(#[$attr])*
@@ -71,6 +86,8 @@ macro_rules! define_keybindings {
                         id: stringify!($id),
                         name: $name,
                         category: $cat,
+                        name_key: $name_key,
+                        category_key: $cat_key,
                         default_keystrokes: $strokes,
                     },
                     context: $ctx,
@@ -102,124 +119,124 @@ use Platform::{All, Macos, NonMacos};
 
 #[rustfmt::skip]
 define_keybindings!(
-    (NewTab, "New Tab", "File", &["secondary-n"], APP, All),
-    (NewWindow, "New Window", "File", &["secondary-shift-n"], APP, All),
-    (OpenFile, "Open File...", "File", &["secondary-o"], APP, All),
-    (OpenFolder, "Open Folder...", "File", &["secondary-shift-o"], APP, All),
-    (SaveFile, "Save", "File", &["secondary-s"], APP, All),
-    (SaveFileAs, "Save As...", "File", &["secondary-shift-s"], APP, All),
-    (ExportHtml, "Export as HTML...", "File", &["secondary-shift-e"], APP, All),
-    (ExportPdf, "Export as PDF...", "File", &["secondary-shift-p"], APP, All),
-    (CloseTab, "Close Tab", "File", &["secondary-w"], APP, All),
-    (CloseWorkspace, "Close Workspace", "File", &["secondary-shift-w"], APP, All),
-    (NextTab, "Next Tab", "View", &["secondary-tab"], APP, All),
-    (PrevTab, "Previous Tab", "View", &["secondary-shift-tab"], APP, All),
-    (ToggleSidebar, "Toggle Sidebar", "View", &["secondary-b"], APP, All),
-    (ToggleRenderMode, "Toggle Render Mode", "View", &["secondary-e"], APP, All),
-    (ToggleFpsDisplay, "Toggle FPS Counter", "View", &["f8"], APP, All),
-    (OpenSettings, "Settings", "General", &["secondary-,"], APP, All),
-    (Quit, "Exit", "General", &["secondary-q"], APP, All),
-    (DismissOverlay, "Dismiss Overlay", "General", &["escape"], MENU_OPEN, All),
-    (UndoAction, "Undo", "Edit", &["secondary-z"], EDITOR_OR_INLINE, All),
-    (RedoAction, "Redo", "Edit", &["secondary-shift-z", "secondary-y"], EDITOR_OR_INLINE, All),
-    (CutAction, "Cut", "Edit", &["secondary-x"], EDITOR_OR_INLINE, All),
-    (CopyAction, "Copy", "Edit", &["secondary-c"], EDITOR_OR_INLINE, All),
-    (PasteAction, "Paste", "Edit", &["secondary-v"], EDITOR_OR_INLINE, All),
-    (SelectAll, "Select All", "Edit", &["secondary-a"], EDITOR_OR_INLINE, All),
-    (FindInDocument, "Find", "Edit", &["secondary-f"], EDITOR_PANE, All),
-    (ReplaceInDocument, "Replace in Document", "Edit", &["secondary-h"], EDITOR_PANE, All),
-    (FindInWorkspace, "Find in Files", "Edit", &["secondary-shift-f"], APP, All),
-    (CloseSearchPanel, "Close Search Panel", "Edit", &["escape"], SEARCH_PANEL, All),
-    (FindNext, "Find Next", "Edit", &["f3", "secondary-g"], EDITOR_PANE, All),
-    (FindPrevious, "Find Previous", "Edit", &["shift-f3", "secondary-shift-g"], EDITOR_PANE, All),
-    (CloseFindBar, "Close Find Bar", "Edit", &["escape"], FIND_ACTIVE, All),
-    (ToggleCaseSensitive, "Toggle Match Case", "Edit", &["alt-c"], FIND_BAR, NonMacos),
-    (ToggleCaseSensitive, "Toggle Match Case", "Edit", &["cmd-alt-c"], FIND_BAR, Macos),
-    (ToggleWholeWord, "Toggle Whole Word", "Edit", &["alt-w"], FIND_BAR, NonMacos),
-    (ToggleWholeWord, "Toggle Whole Word", "Edit", &["cmd-alt-w"], FIND_BAR, Macos),
-    (ToggleRegex, "Toggle Regex", "Edit", &["alt-r"], FIND_BAR, NonMacos),
-    (ToggleRegex, "Toggle Regex", "Edit", &["cmd-alt-r"], FIND_BAR, Macos),
+    (NewTab, "New Tab", "File", Some(TextKey::ActionNewTab), Some(TextKey::KeybindingCategoryFile), &["secondary-n"], APP, All),
+    (NewWindow, "New Window", "File", Some(TextKey::ActionNewWindow), Some(TextKey::KeybindingCategoryFile), &["secondary-shift-n"], APP, All),
+    (OpenFile, "Open File...", "File", Some(TextKey::ActionOpenFile), Some(TextKey::KeybindingCategoryFile), &["secondary-o"], APP, All),
+    (OpenFolder, "Open Folder...", "File", Some(TextKey::ActionOpenFolder), Some(TextKey::KeybindingCategoryFile), &["secondary-shift-o"], APP, All),
+    (SaveFile, "Save", "File", Some(TextKey::ActionSaveFile), Some(TextKey::KeybindingCategoryFile), &["secondary-s"], APP, All),
+    (SaveFileAs, "Save As...", "File", Some(TextKey::ActionSaveFileAs), Some(TextKey::KeybindingCategoryFile), &["secondary-shift-s"], APP, All),
+    (ExportHtml, "Export as HTML...", "File", Some(TextKey::ActionExportHtml), Some(TextKey::KeybindingCategoryFile), &["secondary-shift-e"], APP, All),
+    (ExportPdf, "Export as PDF...", "File", Some(TextKey::ActionExportPdf), Some(TextKey::KeybindingCategoryFile), &["secondary-shift-p"], APP, All),
+    (CloseTab, "Close Tab", "File", Some(TextKey::ActionCloseTab), Some(TextKey::KeybindingCategoryFile), &["secondary-w"], APP, All),
+    (CloseWorkspace, "Close Workspace", "File", Some(TextKey::ActionCloseWorkspace), Some(TextKey::KeybindingCategoryFile), &["secondary-shift-w"], APP, All),
+    (NextTab, "Next Tab", "View", Some(TextKey::ActionNextTab), Some(TextKey::KeybindingCategoryView), &["secondary-tab"], APP, All),
+    (PrevTab, "Previous Tab", "View", Some(TextKey::ActionPrevTab), Some(TextKey::KeybindingCategoryView), &["secondary-shift-tab"], APP, All),
+    (ToggleSidebar, "Toggle Sidebar", "View", Some(TextKey::ActionToggleSidebar), Some(TextKey::KeybindingCategoryView), &["secondary-b"], APP, All),
+    (ToggleRenderMode, "Toggle Render Mode", "View", Some(TextKey::ActionToggleRenderMode), Some(TextKey::KeybindingCategoryView), &["secondary-e"], APP, All),
+    (ToggleFpsDisplay, "Toggle FPS Counter", "View", Some(TextKey::ActionToggleFpsDisplay), Some(TextKey::KeybindingCategoryView), &["f8"], APP, All),
+    (OpenSettings, "Settings", "General", Some(TextKey::ActionOpenSettings), Some(TextKey::KeybindingCategoryGeneral), &["secondary-,"], APP, All),
+    (Quit, "Exit", "General", Some(TextKey::ActionQuit), Some(TextKey::KeybindingCategoryGeneral), &["secondary-q"], APP, All),
+    (DismissOverlay, "Dismiss Overlay", "General", Some(TextKey::ActionDismissOverlay), Some(TextKey::KeybindingCategoryGeneral), &["escape"], MENU_OPEN, All),
+    (UndoAction, "Undo", "Edit", Some(TextKey::ActionUndo), Some(TextKey::KeybindingCategoryEdit), &["secondary-z"], EDITOR_OR_INLINE, All),
+    (RedoAction, "Redo", "Edit", Some(TextKey::ActionRedo), Some(TextKey::KeybindingCategoryEdit), &["secondary-shift-z", "secondary-y"], EDITOR_OR_INLINE, All),
+    (CutAction, "Cut", "Edit", Some(TextKey::ActionCut), Some(TextKey::KeybindingCategoryEdit), &["secondary-x"], EDITOR_OR_INLINE, All),
+    (CopyAction, "Copy", "Edit", Some(TextKey::ActionCopy), Some(TextKey::KeybindingCategoryEdit), &["secondary-c"], EDITOR_OR_INLINE, All),
+    (PasteAction, "Paste", "Edit", Some(TextKey::ActionPaste), Some(TextKey::KeybindingCategoryEdit), &["secondary-v"], EDITOR_OR_INLINE, All),
+    (SelectAll, "Select All", "Edit", Some(TextKey::ActionSelectAll), Some(TextKey::KeybindingCategoryEdit), &["secondary-a"], EDITOR_OR_INLINE, All),
+    (FindInDocument, "Find", "Edit", Some(TextKey::ActionFindInDocument), Some(TextKey::KeybindingCategoryEdit), &["secondary-f"], EDITOR_PANE, All),
+    (ReplaceInDocument, "Replace in Document", "Edit", Some(TextKey::ActionReplaceInDocument), Some(TextKey::KeybindingCategoryEdit), &["secondary-h"], EDITOR_PANE, All),
+    (FindInWorkspace, "Find in Files", "Edit", Some(TextKey::ActionFindInWorkspace), Some(TextKey::KeybindingCategoryEdit), &["secondary-shift-f"], APP, All),
+    (CloseSearchPanel, "Close Search Panel", "Edit", Some(TextKey::ActionCloseSearchPanel), Some(TextKey::KeybindingCategoryEdit), &["escape"], SEARCH_PANEL, All),
+    (FindNext, "Find Next", "Edit", Some(TextKey::ActionFindNext), Some(TextKey::KeybindingCategoryEdit), &["f3", "secondary-g"], EDITOR_PANE, All),
+    (FindPrevious, "Find Previous", "Edit", Some(TextKey::ActionFindPrevious), Some(TextKey::KeybindingCategoryEdit), &["shift-f3", "secondary-shift-g"], EDITOR_PANE, All),
+    (CloseFindBar, "Close Find Bar", "Edit", Some(TextKey::ActionCloseFindBar), Some(TextKey::KeybindingCategoryEdit), &["escape"], FIND_ACTIVE, All),
+    (ToggleCaseSensitive, "Toggle Match Case", "Edit", Some(TextKey::ActionToggleCaseSensitive), Some(TextKey::KeybindingCategoryEdit), &["alt-c"], FIND_BAR, NonMacos),
+    (ToggleCaseSensitive, "Toggle Match Case", "Edit", Some(TextKey::ActionToggleCaseSensitive), Some(TextKey::KeybindingCategoryEdit), &["cmd-alt-c"], FIND_BAR, Macos),
+    (ToggleWholeWord, "Toggle Whole Word", "Edit", Some(TextKey::ActionToggleWholeWord), Some(TextKey::KeybindingCategoryEdit), &["alt-w"], FIND_BAR, NonMacos),
+    (ToggleWholeWord, "Toggle Whole Word", "Edit", Some(TextKey::ActionToggleWholeWord), Some(TextKey::KeybindingCategoryEdit), &["cmd-alt-w"], FIND_BAR, Macos),
+    (ToggleRegex, "Toggle Regex", "Edit", Some(TextKey::ActionToggleRegex), Some(TextKey::KeybindingCategoryEdit), &["alt-r"], FIND_BAR, NonMacos),
+    (ToggleRegex, "Toggle Regex", "Edit", Some(TextKey::ActionToggleRegex), Some(TextKey::KeybindingCategoryEdit), &["cmd-alt-r"], FIND_BAR, Macos),
 
     // Project panel: scoped to the file tree (`PROJECT_PANEL_TREE` also excludes the rename box),
     // so the same keystrokes keep their text meaning in the editor and in the inline input.
 
-    (CopyEntry, "Copy File", PROJECT_PANEL_CATEGORY, &["secondary-c"], PROJECT_PANEL_TREE, All),
-    (CutEntry, "Cut File", PROJECT_PANEL_CATEGORY, &["secondary-x"], PROJECT_PANEL_TREE, All),
-    (PasteEntry, "Paste File", PROJECT_PANEL_CATEGORY, &["secondary-v"], PROJECT_PANEL_TREE, All),
-    (RenameEntry, "Rename File", PROJECT_PANEL_CATEGORY, &["f2"], PROJECT_PANEL_TREE, All),
-    (TrashEntry, "Move File to Trash", PROJECT_PANEL_CATEGORY, &["delete"], PROJECT_PANEL_TREE, All),
-    (DeleteEntry, "Delete File Permanently", PROJECT_PANEL_CATEGORY, &["secondary-delete"], PROJECT_PANEL_TREE, All),
+    (CopyEntry, "Copy File", PROJECT_PANEL_CATEGORY, Some(TextKey::ActionCopyEntry), Some(TextKey::KeybindingCategoryProjectPanel), &["secondary-c"], PROJECT_PANEL_TREE, All),
+    (CutEntry, "Cut File", PROJECT_PANEL_CATEGORY, Some(TextKey::ActionCutEntry), Some(TextKey::KeybindingCategoryProjectPanel), &["secondary-x"], PROJECT_PANEL_TREE, All),
+    (PasteEntry, "Paste File", PROJECT_PANEL_CATEGORY, Some(TextKey::ActionPasteEntry), Some(TextKey::KeybindingCategoryProjectPanel), &["secondary-v"], PROJECT_PANEL_TREE, All),
+    (RenameEntry, "Rename File", PROJECT_PANEL_CATEGORY, Some(TextKey::ActionRenameEntry), Some(TextKey::KeybindingCategoryProjectPanel), &["f2"], PROJECT_PANEL_TREE, All),
+    (TrashEntry, "Move File to Trash", PROJECT_PANEL_CATEGORY, Some(TextKey::ActionTrashEntry), Some(TextKey::KeybindingCategoryProjectPanel), &["delete"], PROJECT_PANEL_TREE, All),
+    (DeleteEntry, "Delete File Permanently", PROJECT_PANEL_CATEGORY, Some(TextKey::ActionDeleteEntry), Some(TextKey::KeybindingCategoryProjectPanel), &["secondary-delete"], PROJECT_PANEL_TREE, All),
 
     // Editor commands: bound from this same table, hidden from the settings UI
 
     // Navigation & selection
-    (MoveLeft, "Move Left", EDITOR_CATEGORY, &["left"], EDITOR_OR_INLINE, All),
-    (SelectLeft, "Select Left", EDITOR_CATEGORY, &["shift-left"], EDITOR_OR_INLINE, All),
-    (MoveRight, "Move Right", EDITOR_CATEGORY, &["right"], EDITOR_OR_INLINE, All),
-    (SelectRight, "Select Right", EDITOR_CATEGORY, &["shift-right"], EDITOR_OR_INLINE, All),
-    (MoveUp, "Move Up", EDITOR_CATEGORY, &["up"], EDITOR, All),
-    (SelectUp, "Select Up", EDITOR_CATEGORY, &["shift-up"], EDITOR, All),
-    (MoveDown, "Move Down", EDITOR_CATEGORY, &["down"], EDITOR, All),
-    (SelectDown, "Select Down", EDITOR_CATEGORY, &["shift-down"], EDITOR, All),
-    (PageUp, "Page Up", EDITOR_CATEGORY, &["pageup"], EDITOR, All),
-    (SelectPageUp, "Select Page Up", EDITOR_CATEGORY, &["shift-pageup"], EDITOR, All),
-    (PageDown, "Page Down", EDITOR_CATEGORY, &["pagedown"], EDITOR, All),
-    (SelectPageDown, "Select Page Down", EDITOR_CATEGORY, &["shift-pagedown"], EDITOR, All),
+    (MoveLeft, "Move Left", EDITOR_CATEGORY, None, None, &["left"], EDITOR_OR_INLINE, All),
+    (SelectLeft, "Select Left", EDITOR_CATEGORY, None, None, &["shift-left"], EDITOR_OR_INLINE, All),
+    (MoveRight, "Move Right", EDITOR_CATEGORY, None, None, &["right"], EDITOR_OR_INLINE, All),
+    (SelectRight, "Select Right", EDITOR_CATEGORY, None, None, &["shift-right"], EDITOR_OR_INLINE, All),
+    (MoveUp, "Move Up", EDITOR_CATEGORY, None, None, &["up"], EDITOR, All),
+    (SelectUp, "Select Up", EDITOR_CATEGORY, None, None, &["shift-up"], EDITOR, All),
+    (MoveDown, "Move Down", EDITOR_CATEGORY, None, None, &["down"], EDITOR, All),
+    (SelectDown, "Select Down", EDITOR_CATEGORY, None, None, &["shift-down"], EDITOR, All),
+    (PageUp, "Page Up", EDITOR_CATEGORY, None, None, &["pageup"], EDITOR, All),
+    (SelectPageUp, "Select Page Up", EDITOR_CATEGORY, None, None, &["shift-pageup"], EDITOR, All),
+    (PageDown, "Page Down", EDITOR_CATEGORY, None, None, &["pagedown"], EDITOR, All),
+    (SelectPageDown, "Select Page Down", EDITOR_CATEGORY, None, None, &["shift-pagedown"], EDITOR, All),
 
     // Line manipulation
-    (MoveLineUp, "Move Line Up", EDITOR_CATEGORY, &["alt-up"], EDITOR, All),
-    (MoveLineDown, "Move Line Down", EDITOR_CATEGORY, &["alt-down"], EDITOR, All),
-    (DuplicateLineUp, "Duplicate Line Up", EDITOR_CATEGORY, &["alt-shift-up"], EDITOR, All),
-    (DuplicateLineDown, "Duplicate Line Down", EDITOR_CATEGORY, &["alt-shift-down"], EDITOR, All),
-    (DeleteLine, "Delete Line", EDITOR_CATEGORY, &["secondary-shift-k", "secondary-d"], EDITOR, All),
-    (ToggleComment, "Toggle Comment", EDITOR_CATEGORY, &["secondary-/"], EDITOR, All),
+    (MoveLineUp, "Move Line Up", EDITOR_CATEGORY, None, None, &["alt-up"], EDITOR, All),
+    (MoveLineDown, "Move Line Down", EDITOR_CATEGORY, None, None, &["alt-down"], EDITOR, All),
+    (DuplicateLineUp, "Duplicate Line Up", EDITOR_CATEGORY, None, None, &["alt-shift-up"], EDITOR, All),
+    (DuplicateLineDown, "Duplicate Line Down", EDITOR_CATEGORY, None, None, &["alt-shift-down"], EDITOR, All),
+    (DeleteLine, "Delete Line", EDITOR_CATEGORY, None, None, &["secondary-shift-k", "secondary-d"], EDITOR, All),
+    (ToggleComment, "Toggle Comment", EDITOR_CATEGORY, None, None, &["secondary-/"], EDITOR, All),
 
     // Indent & newline
-    (Indent, "Indent", EDITOR_CATEGORY, &["tab"], EDITOR, All),
-    (Outdent, "Outdent", EDITOR_CATEGORY, &["shift-tab"], EDITOR, All),
-    (Newline, "Newline", EDITOR_CATEGORY, &["enter"], EDITOR, All),
-    (NewlineBelow, "Newline Below", EDITOR_CATEGORY, &["secondary-enter"], EDITOR, All),
-    (NewlineBelowBlock, "Newline Below Block", EDITOR_CATEGORY, &["shift-enter"], EDITOR, All),
-    (NewlineAbove, "Newline Above", EDITOR_CATEGORY, &["secondary-shift-enter"], EDITOR, All),
+    (Indent, "Indent", EDITOR_CATEGORY, None, None, &["tab"], EDITOR, All),
+    (Outdent, "Outdent", EDITOR_CATEGORY, None, None, &["shift-tab"], EDITOR, All),
+    (Newline, "Newline", EDITOR_CATEGORY, None, None, &["enter"], EDITOR, All),
+    (NewlineBelow, "Newline Below", EDITOR_CATEGORY, None, None, &["secondary-enter"], EDITOR, All),
+    (NewlineBelowBlock, "Newline Below Block", EDITOR_CATEGORY, None, None, &["shift-enter"], EDITOR, All),
+    (NewlineAbove, "Newline Above", EDITOR_CATEGORY, None, None, &["secondary-shift-enter"], EDITOR, All),
 
     // Deletion
-    (Backspace, "Backspace", EDITOR_CATEGORY, &["backspace"], EDITOR_OR_INLINE, All),
-    (Delete, "Delete", EDITOR_CATEGORY, &["delete"], EDITOR_OR_INLINE, All),
+    (Backspace, "Backspace", EDITOR_CATEGORY, None, None, &["backspace"], EDITOR_OR_INLINE, All),
+    (Delete, "Delete", EDITOR_CATEGORY, None, None, &["delete"], EDITOR_OR_INLINE, All),
 
     // Word navigation
-    (MoveToPreviousWord, "Previous Word", EDITOR_CATEGORY, &["alt-left"], EDITOR_OR_INLINE, Macos),
-    (SelectToPreviousWord, "Select Previous Word", EDITOR_CATEGORY, &["alt-shift-left"], EDITOR_OR_INLINE, Macos),
-    (MoveToNextWord, "Next Word", EDITOR_CATEGORY, &["alt-right"], EDITOR_OR_INLINE, Macos),
-    (SelectToNextWord, "Select Next Word", EDITOR_CATEGORY, &["alt-shift-right"], EDITOR_OR_INLINE, Macos),
-    (DeleteToPreviousWord, "Delete Previous Word", EDITOR_CATEGORY, &["alt-backspace"], EDITOR_OR_INLINE, Macos),
-    (DeleteToNextWord, "Delete Next Word", EDITOR_CATEGORY, &["alt-delete"], EDITOR_OR_INLINE, Macos),
+    (MoveToPreviousWord, "Previous Word", EDITOR_CATEGORY, None, None, &["alt-left"], EDITOR_OR_INLINE, Macos),
+    (SelectToPreviousWord, "Select Previous Word", EDITOR_CATEGORY, None, None, &["alt-shift-left"], EDITOR_OR_INLINE, Macos),
+    (MoveToNextWord, "Next Word", EDITOR_CATEGORY, None, None, &["alt-right"], EDITOR_OR_INLINE, Macos),
+    (SelectToNextWord, "Select Next Word", EDITOR_CATEGORY, None, None, &["alt-shift-right"], EDITOR_OR_INLINE, Macos),
+    (DeleteToPreviousWord, "Delete Previous Word", EDITOR_CATEGORY, None, None, &["alt-backspace"], EDITOR_OR_INLINE, Macos),
+    (DeleteToNextWord, "Delete Next Word", EDITOR_CATEGORY, None, None, &["alt-delete"], EDITOR_OR_INLINE, Macos),
 
     // Line & document navigation
-    (MoveToBeginningOfLine, "Line Start", EDITOR_CATEGORY, &["cmd-left", "home"], EDITOR_OR_INLINE, Macos),
-    (SelectToBeginningOfLine, "Select to Line Start", EDITOR_CATEGORY, &["cmd-shift-left", "shift-home"], EDITOR_OR_INLINE, Macos),
-    (MoveToEndOfLine, "Line End", EDITOR_CATEGORY, &["cmd-right", "end"], EDITOR_OR_INLINE, Macos),
-    (SelectToEndOfLine, "Select to Line End", EDITOR_CATEGORY, &["cmd-shift-right", "shift-end"], EDITOR_OR_INLINE, Macos),
-    (MoveToBeginningOfDocument, "Document Start", EDITOR_CATEGORY, &["cmd-up", "cmd-home"], EDITOR, Macos),
-    (SelectToBeginningOfDocument, "Select to Document Start", EDITOR_CATEGORY, &["cmd-shift-up", "cmd-shift-home"], EDITOR, Macos),
-    (MoveToEndOfDocument, "Document End", EDITOR_CATEGORY, &["cmd-down", "cmd-end"], EDITOR, Macos),
-    (SelectToEndOfDocument, "Select to Document End", EDITOR_CATEGORY, &["cmd-shift-down", "cmd-shift-end"], EDITOR, Macos),
-    (DeleteLine, "Delete Line", EDITOR_CATEGORY, &["cmd-backspace"], EDITOR, Macos),
+    (MoveToBeginningOfLine, "Line Start", EDITOR_CATEGORY, None, None, &["cmd-left", "home"], EDITOR_OR_INLINE, Macos),
+    (SelectToBeginningOfLine, "Select to Line Start", EDITOR_CATEGORY, None, None, &["cmd-shift-left", "shift-home"], EDITOR_OR_INLINE, Macos),
+    (MoveToEndOfLine, "Line End", EDITOR_CATEGORY, None, None, &["cmd-right", "end"], EDITOR_OR_INLINE, Macos),
+    (SelectToEndOfLine, "Select to Line End", EDITOR_CATEGORY, None, None, &["cmd-shift-right", "shift-end"], EDITOR_OR_INLINE, Macos),
+    (MoveToBeginningOfDocument, "Document Start", EDITOR_CATEGORY, None, None, &["cmd-up", "cmd-home"], EDITOR, Macos),
+    (SelectToBeginningOfDocument, "Select to Document Start", EDITOR_CATEGORY, None, None, &["cmd-shift-up", "cmd-shift-home"], EDITOR, Macos),
+    (MoveToEndOfDocument, "Document End", EDITOR_CATEGORY, None, None, &["cmd-down", "cmd-end"], EDITOR, Macos),
+    (SelectToEndOfDocument, "Select to Document End", EDITOR_CATEGORY, None, None, &["cmd-shift-down", "cmd-shift-end"], EDITOR, Macos),
+    (DeleteLine, "Delete Line", EDITOR_CATEGORY, None, None, &["cmd-backspace"], EDITOR, Macos),
 
     // Word navigation
-    (MoveToPreviousWord, "Previous Word", EDITOR_CATEGORY, &["ctrl-left", "alt-left"], EDITOR_OR_INLINE, NonMacos),
-    (SelectToPreviousWord, "Select Previous Word", EDITOR_CATEGORY, &["ctrl-shift-left", "alt-shift-left"], EDITOR_OR_INLINE, NonMacos),
-    (MoveToNextWord, "Next Word", EDITOR_CATEGORY, &["ctrl-right", "alt-right"], EDITOR_OR_INLINE, NonMacos),
-    (SelectToNextWord, "Select Next Word", EDITOR_CATEGORY, &["ctrl-shift-right", "alt-shift-right"], EDITOR_OR_INLINE, NonMacos),
-    (DeleteToPreviousWord, "Delete Previous Word", EDITOR_CATEGORY, &["ctrl-backspace"], EDITOR_OR_INLINE, NonMacos),
-    (DeleteToNextWord, "Delete Next Word", EDITOR_CATEGORY, &["ctrl-delete"], EDITOR_OR_INLINE, NonMacos),
-    (MoveToBeginningOfLine, "Line Start", EDITOR_CATEGORY, &["home"], EDITOR_OR_INLINE, NonMacos),
-    (SelectToBeginningOfLine, "Select to Line Start", EDITOR_CATEGORY, &["shift-home"], EDITOR_OR_INLINE, NonMacos),
-    (MoveToEndOfLine, "Line End", EDITOR_CATEGORY, &["end"], EDITOR_OR_INLINE, NonMacos),
-    (SelectToEndOfLine, "Select to Line End", EDITOR_CATEGORY, &["shift-end"], EDITOR_OR_INLINE, NonMacos),
-    (MoveToBeginningOfDocument, "Document Start", EDITOR_CATEGORY, &["ctrl-home"], EDITOR, NonMacos),
-    (SelectToBeginningOfDocument, "Select to Document Start", EDITOR_CATEGORY, &["ctrl-shift-home"], EDITOR, NonMacos),
-    (MoveToEndOfDocument, "Document End", EDITOR_CATEGORY, &["ctrl-end"], EDITOR, NonMacos),
-    (SelectToEndOfDocument, "Select to Document End", EDITOR_CATEGORY, &["ctrl-shift-end"], EDITOR, NonMacos),
+    (MoveToPreviousWord, "Previous Word", EDITOR_CATEGORY, None, None, &["ctrl-left", "alt-left"], EDITOR_OR_INLINE, NonMacos),
+    (SelectToPreviousWord, "Select Previous Word", EDITOR_CATEGORY, None, None, &["ctrl-shift-left", "alt-shift-left"], EDITOR_OR_INLINE, NonMacos),
+    (MoveToNextWord, "Next Word", EDITOR_CATEGORY, None, None, &["ctrl-right", "alt-right"], EDITOR_OR_INLINE, NonMacos),
+    (SelectToNextWord, "Select Next Word", EDITOR_CATEGORY, None, None, &["ctrl-shift-right", "alt-shift-right"], EDITOR_OR_INLINE, NonMacos),
+    (DeleteToPreviousWord, "Delete Previous Word", EDITOR_CATEGORY, None, None, &["ctrl-backspace"], EDITOR_OR_INLINE, NonMacos),
+    (DeleteToNextWord, "Delete Next Word", EDITOR_CATEGORY, None, None, &["ctrl-delete"], EDITOR_OR_INLINE, NonMacos),
+    (MoveToBeginningOfLine, "Line Start", EDITOR_CATEGORY, None, None, &["home"], EDITOR_OR_INLINE, NonMacos),
+    (SelectToBeginningOfLine, "Select to Line Start", EDITOR_CATEGORY, None, None, &["shift-home"], EDITOR_OR_INLINE, NonMacos),
+    (MoveToEndOfLine, "Line End", EDITOR_CATEGORY, None, None, &["end"], EDITOR_OR_INLINE, NonMacos),
+    (SelectToEndOfLine, "Select to Line End", EDITOR_CATEGORY, None, None, &["shift-end"], EDITOR_OR_INLINE, NonMacos),
+    (MoveToBeginningOfDocument, "Document Start", EDITOR_CATEGORY, None, None, &["ctrl-home"], EDITOR, NonMacos),
+    (SelectToBeginningOfDocument, "Select to Document Start", EDITOR_CATEGORY, None, None, &["ctrl-shift-home"], EDITOR, NonMacos),
+    (MoveToEndOfDocument, "Document End", EDITOR_CATEGORY, None, None, &["ctrl-end"], EDITOR, NonMacos),
+    (SelectToEndOfDocument, "Select to Document End", EDITOR_CATEGORY, None, None, &["ctrl-shift-end"], EDITOR, NonMacos),
 );
 
 /// Metadata for the settings UI: everything the user is allowed to rebind on this platform.

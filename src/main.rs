@@ -7,6 +7,7 @@ use inviscid::app;
 use inviscid::assets::Assets;
 use inviscid::config::AppConfig;
 use inviscid::http::UreqClient;
+use inviscid::i18n::LocaleManager;
 use inviscid::theme::ThemeManager;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,6 +31,8 @@ fn main() {
             inviscid::syntax::set_global_grammar_base_url(config.effective_grammar_base_url());
             let theme_manager = ThemeManager::from_config(&config);
             cx.set_global(theme_manager);
+            let locale_manager = LocaleManager::from_config(&config);
+            cx.set_global(locale_manager);
 
             // Bind default and configured keybindings
             app::actions::apply_configured_keys(&config, cx);

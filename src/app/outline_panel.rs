@@ -6,6 +6,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use crate::buffer::{LineSource, SourceLine, SourceSnapshot, StructureIndex};
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::markdown::{OutlineItem, collect_outline_from_source, parse_heading_line};
 use crate::theme::ThemeManager;
 use crate::ui::dock_panel::{self, LIST_VERTICAL_PADDING};
@@ -287,7 +288,7 @@ impl OutlinePanel {
                             let panel_click = panel.downgrade();
                             let editor_focus_handle = editor_focus_handle.clone();
                             let label = if entry.title.is_empty() {
-                                "Untitled heading".to_string()
+                                cx.t(TextKey::OutlineUntitledHeading).to_string()
                             } else {
                                 entry.title
                             };
@@ -351,7 +352,8 @@ impl Render for OutlinePanel {
                 }
                 LoadingIndicatorState::Pending => div().w_full().h_full().into_any_element(),
                 LoadingIndicatorState::Idle => {
-                    dock_panel::empty_state("No headings", &theme).into_any_element()
+                    dock_panel::empty_state(cx.t(TextKey::OutlineNoHeadings).to_string(), &theme)
+                        .into_any_element()
                 }
             }
         };
@@ -365,7 +367,10 @@ impl Render for OutlinePanel {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(dock_panel::section_header("OUTLINE", &theme))
+            .child(dock_panel::section_header(
+                cx.t(TextKey::OutlineHeader).to_string(),
+                &theme,
+            ))
             .child(entries)
     }
 }

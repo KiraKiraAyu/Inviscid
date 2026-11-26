@@ -19,6 +19,7 @@ pub(crate) mod persistence;
 pub use category::SettingsCategory;
 
 use crate::config::{AppConfig, UserPreferences};
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::syntax::{GrammarSource, normalize_grammar_base_url};
 use crate::theme::ThemeManager;
 use crate::ui::{
@@ -27,7 +28,7 @@ use crate::ui::{
 };
 
 /// Width of the left category navigation sidebar.
-const SIDEBAR_WIDTH: Pixels = px(190.0);
+const SIDEBAR_WIDTH: Pixels = px(216.0);
 
 /// Mutually exclusive transient input state within the settings window.
 pub(crate) enum ActiveInput {
@@ -61,7 +62,7 @@ impl SettingsWindow {
 
         let grammar_url_field = cx.new(|cx| {
             SettingTextField::new("grammar_url_field", initial_custom_grammar_url, cx)
-                .placeholder("https://... (leave empty for offline)", cx)
+                .placeholder_key(TextKey::SettingsGrammarUrlPlaceholder, cx)
                 .return_focus_to(focus_handle.clone())
                 .on_commit(|draft, cx| {
                     let normalized = normalize_grammar_base_url(&draft);
@@ -151,6 +152,7 @@ impl SettingsWindow {
 
     fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<ThemeManager>().theme();
+        let title = cx.t(TextKey::SettingsTitle).to_string();
 
         WindowTitleBar::new().left(
             div()
@@ -169,13 +171,13 @@ impl SettingsWindow {
                         .text_size(FontSize::BODY)
                         .font_weight(FontWeight::BOLD)
                         .text_color(theme.text_primary)
-                        .child("Settings"),
+                        .child(title),
                 ),
         )
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<ThemeManager>().theme();
+        let theme = cx.global::<ThemeManager>().theme().clone();
         let active = self.active_category;
 
         div()
@@ -189,6 +191,7 @@ impl SettingsWindow {
             .gap(Spacing::XS)
             .children(SettingsCategory::all().iter().map(|&cat| {
                 let is_selected = cat == active;
+                let label = cx.t(cat.label_key()).to_string();
                 let bg_color = if is_selected {
                     theme.btn_active
                 } else {
@@ -201,7 +204,7 @@ impl SettingsWindow {
                 };
 
                 div()
-                    .id(ElementId::Name(cat.label().into()))
+                    .id(ElementId::Name(cat.id().into()))
                     .w_full()
                     .h(ControlHeight::LG)
                     .px(Spacing::MDS)
@@ -227,6 +230,8 @@ impl SettingsWindow {
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .truncate()
                             .text_size(FontSize::BODY)
                             .font_weight(if is_selected {
                                 FontWeight::MEDIUM
@@ -234,7 +239,7 @@ impl SettingsWindow {
                                 FontWeight::NORMAL
                             })
                             .text_color(text_color)
-                            .child(cat.label()),
+                            .child(label),
                     )
             }))
     }

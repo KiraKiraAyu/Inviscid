@@ -7,7 +7,7 @@ mod sidebar;
 mod tabs;
 mod welcome;
 
-pub(crate) use fs::{extract_workspace_name_from_paths, workspace_safe_bounds};
+pub(crate) use fs::{try_extract_workspace_name_from_paths, workspace_safe_bounds};
 pub use sidebar::{DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 pub(crate) use tabs::TabItem;
 use tabs::TabKind;
@@ -1265,7 +1265,7 @@ impl Workspace {
         }
     }
 
-    pub fn workspace_name(&self, _cx: &App) -> String {
+    pub fn workspace_name(&self, cx: &App) -> String {
         match &self.root_dir {
             Some(root) => root
                 .file_name()
@@ -1273,7 +1273,10 @@ impl Workspace {
                 .filter(|n| !n.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| root.to_string_lossy().into_owned()),
-            None => "Open Workspace".to_string(),
+            None => {
+                use crate::i18n::{ActiveLocale, TextKey};
+                cx.t(TextKey::WorkspaceOpenWorkspace).to_string()
+            }
         }
     }
 

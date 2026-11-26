@@ -2,6 +2,7 @@ use gpui::*;
 use std::rc::Rc;
 
 use crate::app::actions::display_keystroke_for;
+use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
 use crate::ui::ContextMenuBuilder;
 
@@ -47,29 +48,29 @@ pub fn render_tab_context_menu(
     let border_subtle = theme.border_subtle;
 
     let (ro_label, ro_disabled) = if !state.is_whitelisted {
-        ("Make Tab Read-Only", true)
+        (cx.t(TextKey::TabCmMakeReadOnly).to_string(), true)
     } else if state.is_read_only {
-        ("Make Tab Writable", false)
+        (cx.t(TextKey::TabCmMakeWritable).to_string(), false)
     } else {
-        ("Make Tab Read-Only", false)
+        (cx.t(TextKey::TabCmMakeReadOnly).to_string(), false)
     };
 
     let reveal_label = if cfg!(target_os = "macos") {
-        "Reveal in Finder"
+        cx.t(TextKey::TabCmRevealFinder).to_string()
     } else {
-        "Reveal in File Explorer"
+        cx.t(TextKey::TabCmRevealExplorer).to_string()
     };
 
     let pin_label = if state.is_pinned {
-        "Unpin Tab"
+        cx.t(TextKey::TabCmUnpin).to_string()
     } else {
-        "Pin Tab"
+        cx.t(TextKey::TabCmPin).to_string()
     };
 
     ContextMenuBuilder::new()
         .action_item(
             "tab_cm_close",
-            "Close",
+            cx.t(TextKey::TabCmClose).to_string(),
             display_keystroke_for("CloseTab", cx),
             TabContextMenuAction::Close,
             false,
@@ -77,7 +78,7 @@ pub fn render_tab_context_menu(
         )
         .action_item(
             "tab_cm_close_others",
-            "Close Others",
+            cx.t(TextKey::TabCmCloseOthers).to_string(),
             String::new(),
             TabContextMenuAction::CloseOthers,
             state.tab_count <= 1,
@@ -86,7 +87,7 @@ pub fn render_tab_context_menu(
         .separator(border_subtle)
         .action_item(
             "tab_cm_close_left",
-            "Close Left",
+            cx.t(TextKey::TabCmCloseLeft).to_string(),
             String::new(),
             TabContextMenuAction::CloseLeft,
             state.tab_idx == 0,
@@ -94,7 +95,7 @@ pub fn render_tab_context_menu(
         )
         .action_item(
             "tab_cm_close_right",
-            "Close Right",
+            cx.t(TextKey::TabCmCloseRight).to_string(),
             String::new(),
             TabContextMenuAction::CloseRight,
             state.tab_idx >= state.tab_count.saturating_sub(1),
@@ -103,7 +104,7 @@ pub fn render_tab_context_menu(
         .separator(border_subtle)
         .action_item(
             "tab_cm_close_clean",
-            "Close Clean",
+            cx.t(TextKey::TabCmCloseClean).to_string(),
             String::new(),
             TabContextMenuAction::CloseClean,
             !state.has_clean_tabs,
@@ -111,7 +112,7 @@ pub fn render_tab_context_menu(
         )
         .action_item(
             "tab_cm_close_all",
-            "Close All",
+            cx.t(TextKey::TabCmCloseAll).to_string(),
             String::new(),
             TabContextMenuAction::CloseAll,
             state.tab_count == 0,
@@ -129,7 +130,7 @@ pub fn render_tab_context_menu(
         .separator(border_subtle)
         .action_item(
             "tab_cm_copy_path",
-            "Copy Path",
+            cx.t(TextKey::TabCmCopyPath).to_string(),
             String::new(),
             TabContextMenuAction::CopyPath,
             !state.has_file_path,
@@ -137,7 +138,7 @@ pub fn render_tab_context_menu(
         )
         .action_item(
             "tab_cm_copy_relative_path",
-            "Copy Relative Path",
+            cx.t(TextKey::TabCmCopyRelativePath).to_string(),
             String::new(),
             TabContextMenuAction::CopyRelativePath,
             !state.has_file_path,
@@ -163,7 +164,7 @@ pub fn render_tab_context_menu(
         )
         .action_item(
             "tab_cm_reveal_project_panel",
-            "Reveal In Panel",
+            cx.t(TextKey::TabCmRevealInPanel).to_string(),
             String::new(),
             TabContextMenuAction::RevealInProjectPanel,
             !state.has_file_path || !state.has_workspace_root,
