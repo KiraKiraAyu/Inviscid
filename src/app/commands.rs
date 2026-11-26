@@ -820,7 +820,7 @@ pub fn cancel_theme_preview_global(cx: &mut App) {
 }
 
 pub fn quit(cx: &mut App) {
-    cx.quit();
+    crate::app::lifecycle::request_graceful_quit(cx, |cx| cx.quit());
 }
 
 #[cfg(test)]

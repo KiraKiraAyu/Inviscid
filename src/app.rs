@@ -5,6 +5,7 @@ pub mod about;
 pub mod actions;
 pub mod commands;
 pub(crate) mod image_cache;
+pub mod lifecycle;
 pub(crate) mod menu;
 pub(crate) mod outline_panel;
 pub mod project_panel;

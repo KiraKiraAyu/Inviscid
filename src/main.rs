@@ -48,25 +48,7 @@ fn main() {
             .detach();
 
             cx.on_app_quit(|cx| {
-                let active = cx.active_window();
-                for handle in cx.windows() {
-                    if Some(handle) != active
-                        && let Some(window_handle) = handle.downcast::<InviscidWindow>()
-                    {
-                        let _ = window_handle.update(cx, |app, window, cx| {
-                            app.persist_window_state_sync(window, cx);
-                        });
-                    }
-                }
-                if let Some(window_handle) =
-                    active.and_then(|handle| handle.downcast::<InviscidWindow>())
-                {
-                    let _ = window_handle.update(cx, |app, window, cx| {
-                        app.persist_window_state_sync(window, cx);
-                    });
-                } else if let Some(config) = cx.try_global::<AppConfig>() {
-                    config.save_session();
-                }
+                inviscid::app::lifecycle::persist_all_windows_state_sync(cx);
                 async {}
             })
             .detach();

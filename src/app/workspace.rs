@@ -10,7 +10,7 @@ mod welcome;
 pub(crate) use fs::{try_extract_workspace_name_from_paths, workspace_safe_bounds};
 pub use sidebar::{DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 pub(crate) use tabs::TabItem;
-use tabs::TabKind;
+pub(crate) use tabs::TabKind;
 
 use crate::app::search_panel::SearchPanel;
 use crate::app::{OutlinePanel, OutlinePanelEvent, SidebarView, status_bar, tab_bar};
