@@ -137,7 +137,10 @@ impl HttpWorkerPool {
     }
 }
 
-const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Inviscid/0.1.0";
+const DEFAULT_USER_AGENT: &str = concat!(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Inviscid/",
+    env!("CARGO_PKG_VERSION")
+);
 const MAX_CONCURRENT_HTTP_WORKERS: usize = 6;
 const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 

@@ -5,7 +5,7 @@
 <h1 align="center">Inviscid</h1>
 
 <p align="center">
-    <a href="./README.zh-CN.md">English</a> | 简体中文
+    <a href="./README.md">English</a> | 简体中文
 </p>
 
 Inviscid 是一个使用 Rust 与 [GPUI](https://www.gpui.rs/) 构建的原生 GPU 加速 Markdown 编辑器。
