@@ -223,11 +223,14 @@ pub fn apply_staged_update(staged: &StagedUpdate) -> Result<ApplyOutcome, ApplyE
             );
         }
 
+        // Capture the running executable path BEFORE self_replace unlinks the old binary;
+        // on Linux reading `/proc/self/exe` afterward returns `<path> (deleted)`.
+        let current_exe = std::env::current_exe()?;
+
         self_replace::self_replace(&staged.extracted_entry)
             .map_err(|err| ApplyError::ReplaceFailed(err.to_string()))?;
 
         let _ = fs::remove_dir_all(&staged.staging_dir);
-        let current_exe = std::env::current_exe()?;
         Ok(ApplyOutcome {
             relaunch_path: current_exe,
         })
