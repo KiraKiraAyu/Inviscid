@@ -1,3 +1,4 @@
+pub mod apply;
 pub mod archive;
 pub mod config;
 pub mod install_env;
@@ -17,6 +18,7 @@ use crate::http::{
     DownloadOptions, DownloadProgress, download_to_file_streaming, fetch_bytes_sync,
 };
 
+pub use apply::{ApplyError, ApplyOutcome, apply_staged_update, relaunch_updated_app};
 pub use config::{
     UpdateChannel, UpdateSource, asset_url, manifest_url, normalize_update_base_url,
     signature_url, validate_update_base_url,
@@ -362,6 +364,27 @@ impl UpdateManager {
             Self::notify_locked(&mut inner, &self.version);
         }
         skipped
+    }
+
+    /// Transitions `ReadyToInstall(staged)` to `Applying` and returns the staged update.
+    pub fn take_staged_for_apply(&self) -> Option<StagedUpdate> {
+        let mut inner = self.inner.lock();
+        let UpdateStatus::ReadyToInstall(staged) = inner.status.clone() else {
+            return None;
+        };
+        inner.status = UpdateStatus::Applying {
+            version: staged.release.version.clone(),
+        };
+        Self::notify_locked(&mut inner, &self.version);
+        Some(staged)
+    }
+
+    /// Marks an in-progress apply as failed so the user is notified and can retry.
+    pub fn mark_apply_failed(&self, message: String) {
+        self.set_status(UpdateStatus::Failed {
+            message,
+            manual: true,
+        });
     }
 }
 
