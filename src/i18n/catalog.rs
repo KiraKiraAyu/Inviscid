@@ -105,6 +105,7 @@ define_messages! {
 
     // Inviscid Menu
     MenuAboutInviscid => "menu_about_inviscid",
+    MenuCheckForUpdates => "menu_check_for_updates",
     MenuSettings => "menu_settings",
 
     // File Menu
@@ -174,6 +175,20 @@ define_messages! {
     SettingsGrammarCustom => "settings_grammar_custom",
     SettingsGrammarOfflineStatus => "settings_grammar_offline_status",
     SettingsGrammarUrlPlaceholder => "settings_grammar_url_placeholder",
+    SettingsAutoCheckUpdates => "settings_auto_check_updates",
+    SettingsAutoCheckUpdatesDesc => "settings_auto_check_updates_desc",
+    SettingsUpdateChannel => "settings_update_channel",
+    SettingsUpdateChannelDesc => "settings_update_channel_desc",
+    SettingsUpdateChannelStable => "settings_update_channel_stable",
+    SettingsUpdateChannelBeta => "settings_update_channel_beta",
+    SettingsUpdateSource => "settings_update_source",
+    SettingsUpdateSourceDesc => "settings_update_source_desc",
+    SettingsUpdateSourceGitHub => "settings_update_source_github",
+    SettingsUpdateSourceDisabled => "settings_update_source_disabled",
+    SettingsUpdateSourceCustom => "settings_update_source_custom",
+    SettingsUpdateDisabledStatus => "settings_update_disabled_status",
+    SettingsUpdateUrlPlaceholder => "settings_update_url_placeholder",
+    SettingsCheckUpdatesNow => "settings_check_updates_now",
 
     // Settings - Appearance
     SettingsUiFontSize => "settings_ui_font_size",
@@ -252,6 +267,30 @@ define_messages! {
     // About Window
     AboutVersion => "about_version",
     AboutLicense => "about_license",
+    AboutCheckForUpdates => "about_check_for_updates",
+
+    // Auto-Update Banner & Status
+    UpdateChecking => "update_checking",
+    UpdateUpToDate => "update_up_to_date",
+    UpdateAvailableTitle => "update_available_title",
+    UpdateManualTitle => "update_manual_title",
+    UpdateManualPackageManager => "update_manual_package_manager",
+    UpdateManualReadOnly => "update_manual_read_only",
+    UpdateManualDevBuild => "update_manual_dev_build",
+    UpdateDownloading => "update_downloading",
+    UpdateVerifying => "update_verifying",
+    UpdateExtracting => "update_extracting",
+    UpdateReadyTitle => "update_ready_title",
+    UpdateApplying => "update_applying",
+    UpdateFailed => "update_failed",
+    UpdateActionDownload => "update_action_download",
+    UpdateActionRestart => "update_action_restart",
+    UpdateActionReleaseNotes => "update_action_release_notes",
+    UpdateActionSkip => "update_action_skip",
+    UpdateActionRetry => "update_action_retry",
+    UpdateStatusBadgeAvailable => "update_status_badge_available",
+    UpdateStatusBadgeDownloading => "update_status_badge_downloading",
+    UpdateStatusBadgeReady => "update_status_badge_ready",
 
     // File Dialogs
     DialogFilterMarkdown => "dialog_filter_markdown",
