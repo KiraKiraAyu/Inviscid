@@ -620,36 +620,42 @@ impl Element for EditorElement {
                         line.paint(window, cx);
                     }
                     if let Some(ind) = &prepaint.drop_indicator {
-                        let line_bounds = Bounds::new(
-                            point(ind.left, ind.y - px(1.5)),
-                            size(ind.width, px(3.0)),
-                        );
-                        let glow_bounds = Bounds::new(
-                            point(ind.left, ind.y - px(3.5)),
-                            size(ind.width, px(7.0)),
-                        );
-                        window.paint_quad(
-                            fill(glow_bounds, ind.color.opacity(0.22)).corner_radii(px(3.5)),
-                        );
-                        window.paint_quad(fill(line_bounds, ind.color).corner_radii(px(1.5)));
-                        if ind.width >= px(7.0) {
-                            let dot_size = size(px(7.0), px(7.0));
+                        let line_y = ind.y - px(1.0);
+                        let line_h = px(2.0);
+                        let fade_w = px(24.0);
+                        if ind.width > fade_w * 2.5 {
+                            let mid_w = ind.width - fade_w * 2.0;
+                            let transparent = ind.color.opacity(0.0);
+                            window.paint_quad(fill(
+                                Bounds::new(point(ind.left, line_y), size(fade_w, line_h)),
+                                linear_gradient(
+                                    90.0,
+                                    linear_color_stop(transparent, 0.0),
+                                    linear_color_stop(ind.color, 1.0),
+                                ),
+                            ));
+                            window.paint_quad(fill(
+                                Bounds::new(point(ind.left + fade_w, line_y), size(mid_w, line_h)),
+                                ind.color,
+                            ));
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(ind.left + fade_w + mid_w, line_y),
+                                    size(fade_w, line_h),
+                                ),
+                                linear_gradient(
+                                    90.0,
+                                    linear_color_stop(ind.color, 0.0),
+                                    linear_color_stop(transparent, 1.0),
+                                ),
+                            ));
+                        } else {
                             window.paint_quad(
                                 fill(
-                                    Bounds::new(point(ind.left, ind.y - px(3.5)), dot_size),
+                                    Bounds::new(point(ind.left, line_y), size(ind.width, line_h)),
                                     ind.color,
                                 )
-                                .corner_radii(px(3.5)),
-                            );
-                            window.paint_quad(
-                                fill(
-                                    Bounds::new(
-                                        point(ind.left + ind.width - px(7.0), ind.y - px(3.5)),
-                                        dot_size,
-                                    ),
-                                    ind.color,
-                                )
-                                .corner_radii(px(3.5)),
+                                .corner_radii(px(1.0)),
                             );
                         }
                     }
