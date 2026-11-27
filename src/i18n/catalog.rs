@@ -181,9 +181,7 @@ define_messages! {
     SettingsUpdateSourceDesc => "settings_update_source_desc",
     SettingsUpdateSourceGitHub => "settings_update_source_github",
     SettingsUpdateSourceDisabled => "settings_update_source_disabled",
-    SettingsUpdateSourceCustom => "settings_update_source_custom",
     SettingsUpdateDisabledStatus => "settings_update_disabled_status",
-    SettingsUpdateUrlPlaceholder => "settings_update_url_placeholder",
     SettingsCheckUpdatesNow => "settings_check_updates_now",
 
     // Settings - Appearance

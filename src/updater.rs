@@ -19,21 +19,17 @@ use crate::http::{
 };
 
 pub use apply::{ApplyError, ApplyOutcome, apply_staged_update, relaunch_updated_app};
-pub use config::{
-    UpdateSource, asset_url, manifest_url, normalize_update_base_url, signature_url,
-    validate_update_base_url,
-};
+pub use config::{UpdateSource, asset_url, manifest_url, validate_update_base_url};
 pub use install_env::{
     InstallCapability, ManualUpdateReason, UPDATE_EXPLANATION_ENV, detect_install_capability,
 };
 pub use manifest::{
-    ArchiveFormat, ManifestError, TRUSTED_MINISIGN_PUBLIC_KEYS, TargetAsset, UpdateManifest,
-    VersionComparison, compare_manifest_version, current_target_triple, select_target_asset,
-    verify_and_parse_manifest,
+    ArchiveFormat, ManifestError, TargetAsset, UpdateManifest, VersionComparison,
+    compare_manifest_version, current_target_triple, parse_and_validate_manifest,
+    select_target_asset,
 };
 
 const MANIFEST_MAX_BYTES: u64 = 1024 * 1024; // 1 MiB
-const SIGNATURE_MAX_BYTES: u64 = 64 * 1024; // 64 KiB
 const MANIFEST_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const AUTO_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
@@ -179,7 +175,6 @@ impl UpdateManager {
     pub fn start_check(
         &self,
         source: UpdateSource,
-        custom_url: String,
         skipped_version: Option<String>,
         manual: bool,
     ) {
@@ -211,13 +206,12 @@ impl UpdateManager {
         let _ = std::thread::Builder::new()
             .name("inviscid-update-check".to_string())
             .spawn(move || {
-                let effective_base = source.resolve_base_url(&custom_url).to_string();
+                let effective_base = source.resolve_base_url();
                 let capability = detect_install_capability();
                 let next_status = check_for_updates_sync(
-                    &effective_base,
+                    effective_base,
                     env!("CARGO_PKG_VERSION"),
                     current_target_triple(),
-                    TRUSTED_MINISIGN_PUBLIC_KEYS,
                     capability,
                     skipped_version.as_deref(),
                     manual,
@@ -365,13 +359,11 @@ pub enum StageError {
     Failed(String),
 }
 
-/// Fetches, verifies, and parses the signed manifest synchronously.
-#[allow(clippy::too_many_arguments)]
+/// Fetches, validates, and parses the update manifest synchronously.
 pub fn check_for_updates_sync(
     base_url: &str,
     current_version: &str,
     target_triple: &str,
-    public_keys: &[&str],
     capability: InstallCapability,
     skipped_version: Option<&str>,
     manual: bool,
@@ -384,7 +376,6 @@ pub fn check_for_updates_sync(
     }
 
     let json_url = manifest_url(base_url);
-    let sig_url = signature_url(base_url);
 
     let raw_manifest = match fetch_bytes_sync(&json_url, MANIFEST_FETCH_TIMEOUT, MANIFEST_MAX_BYTES)
     {
@@ -397,25 +388,7 @@ pub fn check_for_updates_sync(
         }
     };
 
-    let raw_sig_bytes =
-        match fetch_bytes_sync(&sig_url, MANIFEST_FETCH_TIMEOUT, SIGNATURE_MAX_BYTES) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                return UpdateStatus::Failed {
-                    message: format!("Failed to fetch manifest signature: {err}"),
-                    manual,
-                };
-            }
-        };
-
-    let Ok(raw_sig) = std::str::from_utf8(&raw_sig_bytes) else {
-        return UpdateStatus::Failed {
-            message: "Manifest signature is not valid UTF-8".to_string(),
-            manual,
-        };
-    };
-
-    let manifest = match verify_and_parse_manifest(&raw_manifest, raw_sig, public_keys) {
+    let manifest = match parse_and_validate_manifest(&raw_manifest) {
         Ok(m) => m,
         Err(err) => {
             return UpdateStatus::Failed {
@@ -489,7 +462,7 @@ pub fn check_for_updates_sync(
     }
 }
 
-/// Downloads `release`, verifies its exact byte size and SHA-256 against the signed manifest,
+/// Downloads `release`, verifies its exact byte size and SHA-256 against the manifest,
 /// and extracts it into a clean staging directory under `updates_root`.
 pub fn download_and_stage_sync<FP, FS>(
     release: &ReleaseInfo,
@@ -558,7 +531,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::manifest::test_signing::TestMinisignSigner;
     use super::*;
     use ring::digest::{Context as DigestContext, SHA256};
     use std::io::{Read, Write};
@@ -638,7 +610,6 @@ mod tests {
 
     #[test]
     fn test_end_to_end_check_download_verify_and_stage_mock_http() {
-        let signer = TestMinisignSigner::generate();
         let archive_bytes = make_zip_bytes("inviscid.exe", b"MZfake-new-binary");
         let archive_sha = sha256_hex(&archive_bytes);
         let triple = current_target_triple();
@@ -664,11 +635,9 @@ mod tests {
             archive_bytes.len()
         )
         .into_bytes();
-        let sig = signer.sign_prehashed(&manifest_json, "update.json");
 
         let mut routes = HashMap::new();
         routes.insert("/updates/update.json".to_string(), manifest_json);
-        routes.insert("/updates/update.json.minisig".to_string(), sig.into_bytes());
         routes.insert(
             "/v0.2.0/inviscid-v0.2.0.zip".to_string(),
             archive_bytes.clone(),
@@ -680,7 +649,6 @@ mod tests {
             &base_url,
             "0.1.0",
             triple,
-            &[&signer.public_key_b64],
             InstallCapability::SelfUpdatable,
             None,
             false,
@@ -707,7 +675,6 @@ mod tests {
 
     #[test]
     fn test_tampered_archive_sha256_rejected_and_cleaned() {
-        let signer = TestMinisignSigner::generate();
         let expected_bytes = make_zip_bytes("inviscid.exe", b"MZgood");
         let tampered_bytes = make_zip_bytes("inviscid.exe", b"MZevil");
         assert_eq!(expected_bytes.len(), tampered_bytes.len());
@@ -734,11 +701,9 @@ mod tests {
             expected_bytes.len()
         )
         .into_bytes();
-        let sig = signer.sign_prehashed(&manifest_json, "update.json");
 
         let mut routes = HashMap::new();
         routes.insert("/updates/update.json".to_string(), manifest_json);
-        routes.insert("/updates/update.json.minisig".to_string(), sig.into_bytes());
         routes.insert("/v0.2.0/inviscid-v0.2.0.zip".to_string(), tampered_bytes);
 
         let (base_url, server) = spawn_mock_server(routes);
@@ -746,7 +711,6 @@ mod tests {
             &base_url,
             "0.1.0",
             triple,
-            &[&signer.public_key_b64],
             InstallCapability::SelfUpdatable,
             None,
             false,
@@ -773,7 +737,6 @@ mod tests {
 
     #[test]
     fn test_skipped_version_and_manual_only_capability() {
-        let signer = TestMinisignSigner::generate();
         let triple = current_target_triple();
         let manifest_json = format!(
             r#"{{
@@ -794,14 +757,9 @@ mod tests {
 }}"#
         )
         .into_bytes();
-        let sig = signer.sign_prehashed(&manifest_json, "update.json");
 
         let mut routes = HashMap::new();
         routes.insert("/updates/update.json".to_string(), manifest_json.clone());
-        routes.insert(
-            "/updates/update.json.minisig".to_string(),
-            sig.clone().into_bytes(),
-        );
         let (base_url1, s1) = spawn_mock_server(routes);
 
         // Silent check skips 0.2.0
@@ -809,7 +767,6 @@ mod tests {
             &base_url1,
             "0.1.0",
             triple,
-            &[&signer.public_key_b64],
             InstallCapability::SelfUpdatable,
             Some("0.2.0"),
             false,
@@ -820,13 +777,11 @@ mod tests {
         // Manual check ignores skipped_version and surfaces ManualUpdateOnly when read-only
         let mut routes2 = HashMap::new();
         routes2.insert("/updates/update.json".to_string(), manifest_json);
-        routes2.insert("/updates/update.json.minisig".to_string(), sig.into_bytes());
         let (base_url2, s2) = spawn_mock_server(routes2);
         let manual = check_for_updates_sync(
             &base_url2,
             "0.1.0",
             triple,
-            &[&signer.public_key_b64],
             InstallCapability::ManualOnly(ManualUpdateReason::PackageManager("Scoop".into())),
             Some("0.2.0"),
             true,

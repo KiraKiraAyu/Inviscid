@@ -353,40 +353,34 @@ impl SettingsWindow {
         let effective_url = cfg.effective_update_base_url().to_string();
         let is_github = source == UpdateSource::GitHub;
         let is_disabled = source == UpdateSource::Disabled;
-        let is_custom = source == UpdateSource::Custom;
 
-        let url_bar = if is_custom {
-            self.update_url_field.clone().into_any_element()
+        let display_text = if effective_url.is_empty() {
+            cx.t(TextKey::SettingsUpdateDisabledStatus).to_string()
         } else {
-            let display_text = if effective_url.is_empty() {
-                cx.t(TextKey::SettingsUpdateDisabledStatus).to_string()
-            } else {
-                effective_url
-            };
-            let text_color = if is_disabled {
-                theme.text_muted
-            } else {
-                theme.text_secondary
-            };
-
-            div()
-                .id("update_url_display")
-                .h(ControlHeight::MD)
-                .flex()
-                .flex_row()
-                .items_center()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(FontSize::CAPTION)
-                        .text_color(text_color)
-                        .child(display_text),
-                )
-                .into_any_element()
+            effective_url
         };
+        let text_color = if is_disabled {
+            theme.text_muted
+        } else {
+            theme.text_secondary
+        };
+
+        let url_bar = div()
+            .id("update_url_display")
+            .h(ControlHeight::MD)
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(FontSize::CAPTION)
+                    .text_color(text_color)
+                    .child(display_text),
+            );
 
         div()
             .w_full()
@@ -421,16 +415,6 @@ impl SettingsWindow {
                                 this.select_update_source(UpdateSource::Disabled, cx);
                                 this.focus(window);
                             })),
-                        )
-                        .child(
-                            OptionPill::new(
-                                "update_source_custom",
-                                cx.t(TextKey::SettingsUpdateSourceCustom).to_string(),
-                                is_custom,
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.select_custom_update_mode(window, cx);
-                            })),
                         ),
                 )
                 .description(cx.t(TextKey::SettingsUpdateSourceDesc).to_string()),
@@ -445,20 +429,7 @@ impl SettingsWindow {
     ) {
         self.active_input = None;
         update_config(cx, move |cfg| cfg.update_source = source);
-        self.update_url_field
-            .update(cx, |field, cx| field.commit_if_changed(cx));
         cx.notify();
-    }
-
-    pub(crate) fn select_custom_update_mode(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.select_update_source(UpdateSource::Custom, cx);
-        self.update_url_field.update(cx, |field, cx| {
-            field.focus_and_select_all(window, cx);
-        });
     }
 
     fn check_updates_now_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -889,49 +860,23 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let field = cx.update(|window, cx| {
-            settings.update(cx, |s, cx| {
-                assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::GitHub);
-
-                s.select_custom_update_mode(window, cx);
-                assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::Custom);
-                s.update_url_field.clone()
-            })
-        });
-        cx.run_until_parked();
-
-        cx.update(|_window, cx| {
-            let input = field.read(cx).input().clone();
-            input.update(cx, |inp, cx| {
-                inp.set_text("https://mirror.example.com/inviscid/", cx);
-            });
-        });
-        cx.update(|window, cx| {
-            settings.read(cx).focus(window);
-        });
-        cx.run_until_parked();
-
         cx.update(|_window, cx| {
             settings.update(cx, |s, cx| {
-                assert_eq!(
-                    cx.global::<AppConfig>().custom_update_url,
-                    "https://mirror.example.com/inviscid"
-                );
-                s.select_update_source(UpdateSource::GitHub, cx);
                 assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::GitHub);
                 assert_eq!(
                     cx.global::<AppConfig>().effective_update_base_url(),
                     UpdateSource::GITHUB_BASE_URL
                 );
-                assert_eq!(
-                    cx.global::<AppConfig>().custom_update_url,
-                    "https://mirror.example.com/inviscid"
-                );
+
                 s.select_update_source(UpdateSource::Disabled, cx);
+                assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::Disabled);
                 assert_eq!(cx.global::<AppConfig>().effective_update_base_url(), "");
+
+                s.select_update_source(UpdateSource::GitHub, cx);
+                assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::GitHub);
                 assert_eq!(
-                    cx.global::<AppConfig>().custom_update_url,
-                    "https://mirror.example.com/inviscid"
+                    cx.global::<AppConfig>().effective_update_base_url(),
+                    UpdateSource::GITHUB_BASE_URL
                 );
             });
         });

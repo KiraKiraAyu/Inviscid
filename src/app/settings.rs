@@ -26,7 +26,6 @@ use crate::ui::{
     ControlHeight, FontSize, Icon, IconName, IconSize, LineHeight, Radius, SettingTextField,
     SettingTextFieldEvent, Spacing, WindowTitleBar, keystroke_from_gpui,
 };
-use crate::updater::normalize_update_base_url;
 
 /// Width of the left category navigation sidebar.
 const SIDEBAR_WIDTH: Pixels = px(216.0);
@@ -41,7 +40,6 @@ pub struct SettingsWindow {
     pub(crate) active_category: SettingsCategory,
     pub(crate) active_input: Option<ActiveInput>,
     pub(crate) grammar_url_field: Entity<SettingTextField>,
-    pub(crate) update_url_field: Entity<SettingTextField>,
     pub(crate) asset_dir_field: Entity<SettingTextField>,
     _field_subscriptions: Vec<Subscription>,
     scroll_handle: ScrollHandle,
@@ -57,22 +55,10 @@ impl Focusable for SettingsWindow {
 impl SettingsWindow {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let (initial_custom_grammar_url, initial_custom_update_url, initial_asset_dir) = cx
+        let (initial_custom_grammar_url, initial_asset_dir) = cx
             .try_global::<AppConfig>()
-            .map(|cfg| {
-                (
-                    cfg.custom_grammar_url.clone(),
-                    cfg.custom_update_url.clone(),
-                    cfg.asset_dir.clone(),
-                )
-            })
-            .unwrap_or_else(|| {
-                (
-                    String::new(),
-                    String::new(),
-                    UserPreferences::DEFAULT_ASSET_DIR.to_string(),
-                )
-            });
+            .map(|cfg| (cfg.custom_grammar_url.clone(), cfg.asset_dir.clone()))
+            .unwrap_or_else(|| (String::new(), UserPreferences::DEFAULT_ASSET_DIR.to_string()));
 
         let grammar_url_field = cx.new(|cx| {
             SettingTextField::new("grammar_url_field", initial_custom_grammar_url, cx)
@@ -91,20 +77,6 @@ impl SettingsWindow {
                             cfg.effective_grammar_base_url(),
                         );
                     }
-                    normalized
-                })
-        });
-
-        let update_url_field = cx.new(|cx| {
-            SettingTextField::new("update_url_field", initial_custom_update_url, cx)
-                .placeholder_key(TextKey::SettingsUpdateUrlPlaceholder, cx)
-                .return_focus_to(focus_handle.clone())
-                .on_commit(|draft, cx| {
-                    let normalized = normalize_update_base_url(&draft);
-                    persistence::update_config_app(cx, {
-                        let normalized = normalized.clone();
-                        move |cfg| cfg.custom_update_url = normalized
-                    });
                     normalized
                 })
         });
@@ -129,13 +101,6 @@ impl SettingsWindow {
             },
         );
 
-        let update_sub = cx.subscribe(
-            &update_url_field,
-            |_this, _emitter, _event: &SettingTextFieldEvent, cx| {
-                cx.notify();
-            },
-        );
-
         let asset_sub = cx.subscribe(
             &asset_dir_field,
             |_this, _emitter, _event: &SettingTextFieldEvent, cx| {
@@ -148,9 +113,8 @@ impl SettingsWindow {
             active_category: SettingsCategory::General,
             active_input: None,
             grammar_url_field,
-            update_url_field,
             asset_dir_field,
-            _field_subscriptions: vec![grammar_sub, update_sub, asset_sub],
+            _field_subscriptions: vec![grammar_sub, asset_sub],
             scroll_handle: ScrollHandle::new(),
             content_scroll: crate::ui::SmoothScrollController::vertical(),
         }
@@ -158,8 +122,6 @@ impl SettingsWindow {
 
     pub(crate) fn flush_setting_inputs(&mut self, cx: &mut Context<Self>) {
         self.grammar_url_field
-            .update(cx, |field, cx| field.commit_if_changed(cx));
-        self.update_url_field
             .update(cx, |field, cx| field.commit_if_changed(cx));
         self.asset_dir_field
             .update(cx, |field, cx| field.commit_if_changed(cx));

@@ -371,7 +371,6 @@ pub struct UserPreferences {
     pub custom_keybindings: std::collections::HashMap<String, String>,
     pub auto_check_updates: bool,
     pub update_source: crate::updater::UpdateSource,
-    pub custom_update_url: String,
 }
 
 impl UserPreferences {
@@ -389,7 +388,7 @@ impl UserPreferences {
 
     #[inline]
     pub fn effective_update_base_url(&self) -> &str {
-        self.update_source.resolve_base_url(&self.custom_update_url)
+        self.update_source.resolve_base_url()
     }
 }
 
@@ -415,7 +414,6 @@ impl Default for UserPreferences {
             custom_keybindings: std::collections::HashMap::new(),
             auto_check_updates: true,
             update_source: crate::updater::UpdateSource::default(),
-            custom_update_url: String::new(),
         }
     }
 }
@@ -631,14 +629,10 @@ impl AppConfig {
                             crate::syntax::normalize_grammar_base_url(&parsed.custom_grammar_url);
                         let normalized_asset_dir =
                             crate::media::normalize_asset_dir(&parsed.asset_dir);
-                        let normalized_update_url =
-                            crate::updater::normalize_update_base_url(&parsed.custom_update_url);
                         changed |= normalized_custom_url != parsed.custom_grammar_url
-                            || normalized_asset_dir != parsed.asset_dir
-                            || normalized_update_url != parsed.custom_update_url;
+                            || normalized_asset_dir != parsed.asset_dir;
                         parsed.custom_grammar_url = normalized_custom_url;
                         parsed.asset_dir = normalized_asset_dir;
-                        parsed.custom_update_url = normalized_update_url;
                         config.preferences = parsed;
                         if changed {
                             config.save_preferences();
@@ -1514,10 +1508,23 @@ mod tests {
         assert_eq!(loaded.session.last_update_check_epoch, None);
         assert_eq!(loaded.session.skipped_update_version, None);
 
+        // Legacy TOML with removed `custom` source falls back to GitHub.
+        fs::write(
+            &cfg_path,
+            "theme = \"Nord\"\nupdate_source = \"custom\"\ncustom_update_url = \"https://mirror.example.com\"\n",
+        )
+        .unwrap();
+        let legacy_custom = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
+        assert_eq!(legacy_custom.theme, "Nord");
+        assert_eq!(legacy_custom.update_source, UpdateSource::GitHub);
+        assert_eq!(
+            legacy_custom.effective_update_base_url(),
+            UpdateSource::GITHUB_BASE_URL
+        );
+
         let mut cfg = loaded;
         cfg.auto_check_updates = false;
-        cfg.update_source = UpdateSource::Custom;
-        cfg.custom_update_url = "  https://mirror.example.com/inviscid/  ".to_string();
+        cfg.update_source = UpdateSource::Disabled;
         cfg.session.last_update_check_epoch = Some(1_700_000_000);
         cfg.session.skipped_update_version = Some("0.2.0-beta.1".to_string());
         cfg.save_preferences();
@@ -1525,12 +1532,8 @@ mod tests {
 
         let reloaded = AppConfig::load_from_paths(cfg_path, state_path);
         assert!(!reloaded.auto_check_updates);
-        assert_eq!(reloaded.update_source, UpdateSource::Custom);
-        assert_eq!(reloaded.custom_update_url, "https://mirror.example.com/inviscid");
-        assert_eq!(
-            reloaded.effective_update_base_url(),
-            "https://mirror.example.com/inviscid"
-        );
+        assert_eq!(reloaded.update_source, UpdateSource::Disabled);
+        assert_eq!(reloaded.effective_update_base_url(), "");
         assert_eq!(reloaded.session.last_update_check_epoch, Some(1_700_000_000));
         assert_eq!(
             reloaded.session.skipped_update_version.as_deref(),

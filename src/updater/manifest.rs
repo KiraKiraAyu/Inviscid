@@ -1,18 +1,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use minisign_verify::{PublicKey, Signature};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-
-/// Embedded Minisign public keys trusted for release manifest verification.
-///
-/// Replace the placeholder key with the real public key generated via `minisign -G`
-/// before publishing the first public release (see `docs/RELEASING.md`).
-pub const TRUSTED_MINISIGN_PUBLIC_KEYS: &[&str] = &[
-    // Placeholder key (all-zero Ed25519 bytes; syntactically valid, no private key exists).
-    "RWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,7 +88,6 @@ pub const fn current_target_triple() -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
     UnsupportedSchema(u32),
-    InvalidSignature(String),
     InvalidJson(String),
     InvalidVersion(String),
     MissingTarget(String),
@@ -110,7 +99,6 @@ impl fmt::Display for ManifestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedSchema(v) => write!(f, "Unsupported manifest schema version: {v}"),
-            Self::InvalidSignature(msg) => write!(f, "Manifest signature verification failed: {msg}"),
             Self::InvalidJson(msg) => write!(f, "Invalid manifest JSON: {msg}"),
             Self::InvalidVersion(msg) => write!(f, "Invalid version string: {msg}"),
             Self::MissingTarget(triple) => {
@@ -124,43 +112,8 @@ impl fmt::Display for ManifestError {
 
 impl std::error::Error for ManifestError {}
 
-/// Verifies the Minisign signature against `public_keys` BEFORE parsing JSON, then validates
-/// schema version and semantic version syntax.
-pub fn verify_and_parse_manifest(
-    raw_manifest: &[u8],
-    raw_signature: &str,
-    public_keys: &[&str],
-) -> Result<UpdateManifest, ManifestError> {
-    if public_keys.is_empty() {
-        return Err(ManifestError::InvalidSignature(
-            "No trusted public keys configured".to_string(),
-        ));
-    }
-
-    let sig = Signature::decode(raw_signature)
-        .map_err(|err| ManifestError::InvalidSignature(err.to_string()))?;
-
-    let mut verified = false;
-    let mut last_err = None;
-    for key_b64 in public_keys {
-        match PublicKey::from_base64(key_b64) {
-            Ok(pk) => match pk.verify(raw_manifest, &sig, false) {
-                Ok(()) => {
-                    verified = true;
-                    break;
-                }
-                Err(err) => last_err = Some(err.to_string()),
-            },
-            Err(err) => last_err = Some(err.to_string()),
-        }
-    }
-
-    if !verified {
-        return Err(ManifestError::InvalidSignature(
-            last_err.unwrap_or_else(|| "Signature did not match any trusted key".to_string()),
-        ));
-    }
-
+/// Parses raw manifest JSON and validates schema version and semantic version syntax.
+pub fn parse_and_validate_manifest(raw_manifest: &[u8]) -> Result<UpdateManifest, ManifestError> {
     let manifest: UpdateManifest = serde_json::from_slice(raw_manifest)
         .map_err(|err| ManifestError::InvalidJson(err.to_string()))?;
 
@@ -235,186 +188,7 @@ pub fn select_target_asset<'a>(
 }
 
 #[cfg(test)]
-pub(crate) mod test_signing {
-    use ring::rand::SystemRandom;
-    use ring::signature::{Ed25519KeyPair, KeyPair};
-
-    const BASE64_ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    pub(crate) fn encode_base64(input: &[u8]) -> String {
-        let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-        for chunk in input.chunks(3) {
-            let b0 = chunk[0] as u32;
-            let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-            let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-            let triple = (b0 << 16) | (b1 << 8) | b2;
-            out.push(BASE64_ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
-            out.push(BASE64_ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
-            out.push(if chunk.len() > 1 {
-                BASE64_ALPHABET[((triple >> 6) & 0x3F) as usize] as char
-            } else {
-                '='
-            });
-            out.push(if chunk.len() > 2 {
-                BASE64_ALPHABET[(triple & 0x3F) as usize] as char
-            } else {
-                '='
-            });
-        }
-        out
-    }
-
-    /// Minimal RFC 7693 unkeyed BLAKE2b-512 implementation used strictly by tests to create
-    /// pre-hashed Minisign signatures compatible with `minisign_verify::PublicKey::verify(..., false)`.
-    pub(crate) fn blake2b_512(data: &[u8]) -> [u8; 64] {
-        const IV: [u64; 8] = [
-            0x6a09e667f3bcc908,
-            0xbb67ae8584caa73b,
-            0x3c6ef372fe94f82b,
-            0xa54ff53a5f1d36f1,
-            0x510e527fade682d1,
-            0x9b05688c2b3e6c1f,
-            0x1f83d9abfb41bd6b,
-            0x5be0cd19137e2179,
-        ];
-        const SIGMA: [[usize; 16]; 12] = [
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-            [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
-            [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4],
-            [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
-            [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13],
-            [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
-            [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11],
-            [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
-            [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5],
-            [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-            [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
-        ];
-
-        fn g(v: &mut [u64; 16], a: usize, b: usize, c: usize, d: usize, x: u64, y: u64) {
-            v[a] = v[a].wrapping_add(v[b]).wrapping_add(x);
-            v[d] = (v[d] ^ v[a]).rotate_right(32);
-            v[c] = v[c].wrapping_add(v[d]);
-            v[b] = (v[b] ^ v[c]).rotate_right(24);
-            v[a] = v[a].wrapping_add(v[b]).wrapping_add(y);
-            v[d] = (v[d] ^ v[a]).rotate_right(16);
-            v[c] = v[c].wrapping_add(v[d]);
-            v[b] = (v[b] ^ v[c]).rotate_right(63);
-        }
-
-        fn compress(h: &mut [u64; 8], block: &[u8; 128], t: u128, last: bool) {
-            let mut m = [0u64; 16];
-            for (i, chunk) in block.chunks_exact(8).enumerate() {
-                m[i] = u64::from_le_bytes(chunk.try_into().unwrap());
-            }
-            let mut v = [0u64; 16];
-            v[..8].copy_from_slice(h);
-            v[8..16].copy_from_slice(&IV);
-            v[12] ^= t as u64;
-            v[13] ^= (t >> 64) as u64;
-            if last {
-                v[14] = !v[14];
-            }
-            for s in &SIGMA {
-                g(&mut v, 0, 4, 8, 12, m[s[0]], m[s[1]]);
-                g(&mut v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
-                g(&mut v, 2, 6, 10, 14, m[s[4]], m[s[5]]);
-                g(&mut v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
-                g(&mut v, 0, 5, 10, 15, m[s[8]], m[s[9]]);
-                g(&mut v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
-                g(&mut v, 2, 7, 8, 13, m[s[12]], m[s[13]]);
-                g(&mut v, 3, 4, 9, 14, m[s[14]], m[s[15]]);
-            }
-            for i in 0..8 {
-                h[i] ^= v[i] ^ v[i + 8];
-            }
-        }
-
-        let mut h = IV;
-        h[0] ^= 0x0101_0040; // fanout=1, depth=1, digest_len=64
-
-        if data.is_empty() {
-            compress(&mut h, &[0u8; 128], 0, true);
-        } else {
-            let chunks = data.chunks_exact(128);
-            let rem = chunks.remainder();
-            let mut offset: u128 = 0;
-            let full_blocks = data.len() / 128;
-            for (idx, block) in chunks.enumerate() {
-                offset += 128;
-                let is_last = rem.is_empty() && idx + 1 == full_blocks;
-                compress(&mut h, block.try_into().unwrap(), offset, is_last);
-            }
-            if !rem.is_empty() {
-                let mut padded = [0u8; 128];
-                padded[..rem.len()].copy_from_slice(rem);
-                offset += rem.len() as u128;
-                compress(&mut h, &padded, offset, true);
-            }
-        }
-
-        let mut out = [0u8; 64];
-        for (i, word) in h.iter().enumerate() {
-            out[i * 8..(i + 1) * 8].copy_from_slice(&word.to_le_bytes());
-        }
-        out
-    }
-
-    pub(crate) struct TestMinisignSigner {
-        key_pair: Ed25519KeyPair,
-        key_id: [u8; 8],
-        pub(crate) public_key_b64: String,
-    }
-
-    impl TestMinisignSigner {
-        pub(crate) fn generate() -> Self {
-            let rng = SystemRandom::new();
-            let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
-            let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
-            let key_id = [0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F, 0x70, 0x81];
-
-            let mut pk_bytes = Vec::with_capacity(42);
-            pk_bytes.extend_from_slice(&[0x45, 0x64]); // "Ed"
-            pk_bytes.extend_from_slice(&key_id);
-            pk_bytes.extend_from_slice(key_pair.public_key().as_ref());
-
-            Self {
-                key_pair,
-                key_id,
-                public_key_b64: encode_base64(&pk_bytes),
-            }
-        }
-
-        pub(crate) fn sign_prehashed(&self, data: &[u8], filename: &str) -> String {
-            let digest = blake2b_512(data);
-            let sig1 = self.key_pair.sign(&digest);
-
-            let trusted_comment = format!("timestamp:1700000000\tfile:{filename}\thashed");
-            let mut global_msg = Vec::with_capacity(64 + trusted_comment.len());
-            global_msg.extend_from_slice(sig1.as_ref());
-            global_msg.extend_from_slice(trusted_comment.as_bytes());
-            let sig2 = self.key_pair.sign(&global_msg);
-
-            let mut bin1 = Vec::with_capacity(74);
-            bin1.extend_from_slice(&[0x45, 0x44]); // "ED" (prehashed)
-            bin1.extend_from_slice(&self.key_id);
-            bin1.extend_from_slice(sig1.as_ref());
-
-            format!(
-                "untrusted comment: signature from test minisign key\n{}\ntrusted comment: {}\n{}\n",
-                encode_base64(&bin1),
-                trusted_comment,
-                encode_base64(sig2.as_ref())
-            )
-        }
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use super::test_signing::TestMinisignSigner;
     use super::*;
 
     fn sample_manifest_json(version: &str, min_updater: Option<&str>) -> Vec<u8> {
@@ -449,58 +223,39 @@ mod tests {
     }
 
     #[test]
-    fn test_placeholder_public_key_parses() {
-        for key in TRUSTED_MINISIGN_PUBLIC_KEYS {
-            PublicKey::from_base64(key).expect("trusted minisign public key must decode");
-        }
-    }
-
-    #[test]
-    fn test_verify_and_parse_manifest_success_and_tamper_rejection() {
-        let signer = TestMinisignSigner::generate();
+    fn test_parse_and_validate_manifest_success_and_rejections() {
         let raw = sample_manifest_json("0.2.0", None);
-        let sig = signer.sign_prehashed(&raw, "update.json");
-
-        let parsed = verify_and_parse_manifest(&raw, &sig, &[&signer.public_key_b64]).unwrap();
+        let parsed = parse_and_validate_manifest(&raw).unwrap();
         assert_eq!(parsed.version, "0.2.0");
         assert_eq!(parsed.localized_notes("zh-Hans"), Some("中文更新说明"));
         assert_eq!(parsed.localized_notes("fr"), Some("English notes"));
 
-        // Tampered payload must fail BEFORE parsing JSON (even if invalid JSON)
-        let mut tampered_raw = raw.clone();
-        tampered_raw[5] = b'X';
+        // Invalid JSON fails cleanly
         assert!(matches!(
-            verify_and_parse_manifest(&tampered_raw, &sig, &[&signer.public_key_b64]),
-            Err(ManifestError::InvalidSignature(_))
+            parse_and_validate_manifest(b"{not valid json"),
+            Err(ManifestError::InvalidJson(_))
         ));
 
-        // Tampered signature must fail (deterministically mutate a byte in the signature line)
-        let mut sig_lines: Vec<String> = sig.lines().map(str::to_string).collect();
-        let mut sig_bytes = sig_lines[1].as_bytes().to_vec();
-        sig_bytes[20] = if sig_bytes[20] == b'A' { b'B' } else { b'A' };
-        sig_lines[1] = String::from_utf8(sig_bytes).unwrap();
-        let tampered_sig = format!("{}\n", sig_lines.join("\n"));
+        // Unsupported schema version fails cleanly
+        let raw_text = String::from_utf8(raw).unwrap();
+        let bad_schema = raw_text.replacen(r#""schema_version": 1"#, r#""schema_version": 2"#, 1);
         assert!(matches!(
-            verify_and_parse_manifest(&raw, &tampered_sig, &[&signer.public_key_b64]),
-            Err(ManifestError::InvalidSignature(_))
+            parse_and_validate_manifest(bad_schema.as_bytes()),
+            Err(ManifestError::UnsupportedSchema(2))
         ));
 
-        // Wrong public key must fail
-        let other = TestMinisignSigner::generate();
+        // Invalid SemVer fails cleanly
+        let bad_ver = sample_manifest_json("not-semver", None);
         assert!(matches!(
-            verify_and_parse_manifest(&raw, &sig, &[&other.public_key_b64]),
-            Err(ManifestError::InvalidSignature(_))
+            parse_and_validate_manifest(&bad_ver),
+            Err(ManifestError::InvalidVersion(_))
         ));
     }
 
     #[test]
     fn test_version_comparison_and_target_selection() {
-        let signer = TestMinisignSigner::generate();
         let raw_beta = sample_manifest_json("0.2.0-beta.1", None);
-        let sig_beta = signer.sign_prehashed(&raw_beta, "update.json");
-
-        let manifest =
-            verify_and_parse_manifest(&raw_beta, &sig_beta, &[&signer.public_key_b64]).unwrap();
+        let manifest = parse_and_validate_manifest(&raw_beta).unwrap();
         assert_eq!(
             compare_manifest_version("0.1.0", &manifest).unwrap(),
             VersionComparison::UpdateAvailable {
@@ -518,9 +273,7 @@ mod tests {
 
         // min_updater_version enforcement
         let raw_min = sample_manifest_json("0.5.0", Some("0.3.0"));
-        let sig_min = signer.sign_prehashed(&raw_min, "update.json");
-        let min_manifest =
-            verify_and_parse_manifest(&raw_min, &sig_min, &[&signer.public_key_b64]).unwrap();
+        let min_manifest = parse_and_validate_manifest(&raw_min).unwrap();
         assert_eq!(
             compare_manifest_version("0.2.0", &min_manifest).unwrap(),
             VersionComparison::UpdateAvailable {
