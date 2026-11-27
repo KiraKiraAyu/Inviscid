@@ -15,6 +15,7 @@ mod sidebar_view;
 pub mod status_bar;
 pub mod tab_bar;
 pub(crate) mod title_bar;
+pub(crate) mod update_modal;
 pub mod workspace;
 
 pub use about::AboutWindow;
@@ -30,10 +31,8 @@ pub use title_bar::TitleBar;
 pub use workspace::Workspace;
 
 use crate::config::{AppConfig, WindowLayoutState, WorkspaceState};
-use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
-use crate::ui::{AppBanner, BannerAction, BannerTone, IconName};
-use crate::updater::{ManualUpdateReason, UpdateManager, UpdateStatus};
+use crate::updater::UpdateManager;
 
 /// Root view entity for an Inviscid editor window.
 pub struct InviscidWindow {
@@ -41,6 +40,7 @@ pub struct InviscidWindow {
     titlebar: Entity<TitleBar>,
     workspace: Entity<Workspace>,
     active_menu: Option<ActiveMenu>,
+    update_changelog_open: bool,
     cached_window_bounds: Option<WindowLayoutState>,
     window_persistence_attached: bool,
     close_prompt_active: bool,
@@ -86,6 +86,13 @@ impl InviscidWindow {
                         cx.notify();
                     }
                 }
+                crate::app::title_bar::TitleBarEvent::OpenUpdateChangelog => {
+                    this.close_menu(cx);
+                    if !this.update_changelog_open {
+                        this.update_changelog_open = true;
+                        cx.notify();
+                    }
+                }
             },
         );
 
@@ -94,6 +101,7 @@ impl InviscidWindow {
             titlebar,
             workspace,
             active_menu: None,
+            update_changelog_open: false,
             cached_window_bounds: None,
             window_persistence_attached: false,
             close_prompt_active: false,
@@ -261,6 +269,17 @@ impl InviscidWindow {
         self.set_active_menu(None, cx);
     }
 
+    pub fn is_update_changelog_open(&self) -> bool {
+        self.update_changelog_open
+    }
+
+    pub fn close_update_changelog(&mut self, cx: &mut Context<Self>) {
+        if self.update_changelog_open {
+            self.update_changelog_open = false;
+            cx.notify();
+        }
+    }
+
     /// Closes the dropdown menu, then runs `f` once the closing repaint has been presented.
     ///
     /// gpui runs `Context::defer_in` and `Context::on_next_frame` callbacks *before*
@@ -284,242 +303,6 @@ impl InviscidWindow {
         })
         .detach();
     }
-
-    fn format_manual_reason(reason: &ManualUpdateReason, cx: &App) -> String {
-        match reason {
-            ManualUpdateReason::CompileTimeDisabled => {
-                cx.t(TextKey::UpdateManualCompileDisabled).to_string()
-            }
-            ManualUpdateReason::MinUpdaterVersion => {
-                cx.t(TextKey::UpdateManualMinVersion).to_string()
-            }
-            ManualUpdateReason::ExternalExplanation(msg) => msg.clone(),
-            ManualUpdateReason::DevBuild => cx.t(TextKey::UpdateManualDevBuild).to_string(),
-            ManualUpdateReason::PackageManager(mgr) => cx.tf(
-                TextKey::UpdateManualPackageManager,
-                &[("manager", mgr.as_str())],
-            ),
-            ManualUpdateReason::TranslocatedOrReadOnly(desc) => cx.tf(
-                TextKey::UpdateManualTranslocated,
-                &[("reason", desc.as_str())],
-            ),
-            ManualUpdateReason::ReadOnlyLocation => cx.t(TextKey::UpdateManualReadOnly).to_string(),
-        }
-    }
-
-    fn format_download_detail(
-        downloaded_bytes: u64,
-        total_bytes: Option<u64>,
-        bytes_per_sec: u64,
-    ) -> String {
-        let mb = |b: u64| format!("{:.1} MB", b as f64 / (1024.0 * 1024.0));
-        let speed = format!("{:.1} MB/s", bytes_per_sec as f64 / (1024.0 * 1024.0));
-        match total_bytes {
-            Some(total) if total > 0 => {
-                let pct = ((downloaded_bytes as f64 / total as f64) * 100.0).clamp(0.0, 100.0);
-                format!("{pct:.0}% ({} / {}, {speed})", mb(downloaded_bytes), mb(total))
-            }
-            _ => format!("{} ({speed})", mb(downloaded_bytes)),
-        }
-    }
-
-    fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let mgr = cx.try_global::<UpdateManager>()?;
-        if mgr.is_banner_dismissed() {
-            return None;
-        }
-
-        let cancel_label = cx.t(TextKey::CommonCancel).to_string();
-        match mgr.status() {
-            UpdateStatus::Idle
-            | UpdateStatus::Checking { manual: false }
-            | UpdateStatus::UpToDate { manual: false, .. }
-            | UpdateStatus::Failed { manual: false, .. } => None,
-            UpdateStatus::Checking { manual: true } => Some(
-                AppBanner::new("update_banner", cx.t(TextKey::UpdateChecking).to_string())
-                    .tone(BannerTone::Info)
-                    .icon(IconName::Settings)
-                    .on_dismiss(|_, _, cx| commands::dismiss_update_banner(cx))
-                    .into_any_element(),
-            ),
-            UpdateStatus::UpToDate { manual: true, .. } => Some(
-                AppBanner::new("update_banner", cx.t(TextKey::UpdateUpToDate).to_string())
-                    .tone(BannerTone::Info)
-                    .icon(IconName::Check)
-                    .on_dismiss(|_, _, cx| commands::dismiss_update_banner(cx))
-                    .into_any_element(),
-            ),
-            UpdateStatus::Available(release) => {
-                let title = cx.tf(
-                    TextKey::UpdateAvailableTitle,
-                    &[("version", release.version.as_str())],
-                );
-                let locale_code = cx.locale().code();
-                let notes_url = release.release_notes_url.clone();
-                let mut banner = AppBanner::new("update_banner", title)
-                    .tone(BannerTone::Accent)
-                    .icon(IconName::Settings)
-                    .action(
-                        BannerAction::new(
-                            "download",
-                            cx.t(TextKey::UpdateActionDownload).to_string(),
-                            |_, _, cx| commands::download_available_update(cx),
-                        )
-                        .primary(),
-                    )
-                    .action(BannerAction::new(
-                        "notes",
-                        cx.t(TextKey::UpdateActionReleaseNotes).to_string(),
-                        move |_, _, _| commands::open_update_release_notes(&notes_url),
-                    ))
-                    .action(BannerAction::new(
-                        "skip",
-                        cx.t(TextKey::UpdateActionSkip).to_string(),
-                        |_, _, cx| commands::skip_available_update(cx),
-                    ))
-                    .on_dismiss(|_, _, cx| commands::dismiss_update_banner(cx));
-                if let Some(note) = release.localized_notes(locale_code) {
-                    let first_line = note.lines().next().unwrap_or(note).trim();
-                    if !first_line.is_empty() {
-                        banner = banner.detail(first_line.to_string());
-                    }
-                }
-                Some(banner.into_any_element())
-            }
-            UpdateStatus::ManualUpdateOnly { release, reason } => {
-                let title = cx.tf(
-                    TextKey::UpdateManualTitle,
-                    &[("version", release.version.as_str())],
-                );
-                let detail = Self::format_manual_reason(&reason, cx);
-                let notes_url = release.release_notes_url.clone();
-                Some(
-                    AppBanner::new("update_banner", title)
-                        .tone(BannerTone::Warning)
-                        .icon(IconName::ExternalLink)
-                        .detail(detail)
-                        .action(
-                            BannerAction::new(
-                                "notes",
-                                cx.t(TextKey::UpdateActionReleaseNotes).to_string(),
-                                move |_, _, _| commands::open_update_release_notes(&notes_url),
-                            )
-                            .primary(),
-                        )
-                        .action(BannerAction::new(
-                            "skip",
-                            cx.t(TextKey::UpdateActionSkip).to_string(),
-                            |_, _, cx| commands::skip_available_update(cx),
-                        ))
-                        .on_dismiss(|_, _, cx| commands::dismiss_update_banner(cx))
-                        .into_any_element(),
-                )
-            }
-            UpdateStatus::Downloading {
-                release,
-                downloaded_bytes,
-                total_bytes,
-                bytes_per_sec,
-            } => {
-                let title = cx.tf(
-                    TextKey::UpdateDownloading,
-                    &[("version", release.version.as_str())],
-                );
-                let detail =
-                    Self::format_download_detail(downloaded_bytes, total_bytes, bytes_per_sec);
-                let fraction = match total_bytes {
-                    Some(total) if total > 0 => (downloaded_bytes as f32 / total as f32).clamp(0.0, 1.0),
-                    _ => 0.0,
-                };
-                Some(
-                    AppBanner::new("update_banner", title)
-                        .tone(BannerTone::Accent)
-                        .icon(IconName::Settings)
-                        .detail(detail)
-                        .progress(fraction)
-                        .action(BannerAction::new("cancel", cancel_label, |_, _, cx| {
-                            commands::cancel_update_download(cx)
-                        }))
-                        .into_any_element(),
-                )
-            }
-            UpdateStatus::Verifying { release } => Some(
-                AppBanner::new(
-                    "update_banner",
-                    cx.tf(
-                        TextKey::UpdateVerifying,
-                        &[("version", release.version.as_str())],
-                    ),
-                )
-                .tone(BannerTone::Accent)
-                .icon(IconName::Lock)
-                .progress(1.0)
-                .into_any_element(),
-            ),
-            UpdateStatus::Extracting { release } => Some(
-                AppBanner::new(
-                    "update_banner",
-                    cx.tf(
-                        TextKey::UpdateExtracting,
-                        &[("version", release.version.as_str())],
-                    ),
-                )
-                .tone(BannerTone::Accent)
-                .icon(IconName::Settings)
-                .progress(1.0)
-                .into_any_element(),
-            ),
-            UpdateStatus::ReadyToInstall(staged) => Some(
-                AppBanner::new(
-                    "update_banner",
-                    cx.tf(
-                        TextKey::UpdateReadyTitle,
-                        &[("version", staged.release.version.as_str())],
-                    ),
-                )
-                .tone(BannerTone::Accent)
-                .icon(IconName::Check)
-                .action(
-                    BannerAction::new(
-                        "restart",
-                        cx.t(TextKey::UpdateActionRestart).to_string(),
-                        |_, _, cx| commands::install_staged_update(cx),
-                    )
-                    .primary(),
-                )
-                .on_dismiss(|_, _, cx| commands::dismiss_update_banner(cx))
-                .into_any_element(),
-            ),
-            UpdateStatus::Applying { version } => Some(
-                AppBanner::new(
-                    "update_banner",
-                    cx.tf(TextKey::UpdateApplying, &[("version", version.as_str())]),
-                )
-                .tone(BannerTone::Accent)
-                .icon(IconName::Settings)
-                .progress(1.0)
-                .into_any_element(),
-            ),
-            UpdateStatus::Failed {
-                message,
-                manual: true,
-            } => Some(
-                AppBanner::new(
-                    "update_banner",
-                    cx.tf(TextKey::UpdateFailed, &[("error", message.as_str())]),
-                )
-                .tone(BannerTone::Error)
-                .icon(IconName::Close)
-                .action(BannerAction::new(
-                    "retry",
-                    cx.t(TextKey::UpdateActionRetry).to_string(),
-                    |_, _, cx| commands::check_for_updates(cx),
-                ))
-                .on_dismiss(|_, _, cx| commands::dismiss_update_banner(cx))
-                .into_any_element(),
-            ),
-        }
-    }
 }
 
 impl Render for InviscidWindow {
@@ -533,8 +316,31 @@ impl Render for InviscidWindow {
         let config = cx.global::<AppConfig>();
         let ui_font_size = config.ui_font_size;
 
-        // `escape` is only claimable while a menu is actually open; see `key_context::MENU_OPEN`.
-        let app_context = if self.active_menu.is_some() {
+        let view_entity = cx.entity().downgrade();
+        let changelog_modal = if self.update_changelog_open {
+            let status = cx
+                .try_global::<UpdateManager>()
+                .map(UpdateManager::status)
+                .unwrap_or(crate::updater::UpdateStatus::Idle);
+            let modal = update_modal::render_update_changelog_modal(
+                &status,
+                move |_, cx| {
+                    let _ = view_entity.update(cx, |this, cx| {
+                        this.close_update_changelog(cx);
+                    });
+                },
+                cx,
+            );
+            if modal.is_none() {
+                self.update_changelog_open = false;
+            }
+            modal
+        } else {
+            None
+        };
+
+        // `escape` is only claimable while a menu or modal overlay is open; see `key_context::MENU_OPEN`.
+        let app_context = if self.active_menu.is_some() || self.update_changelog_open {
             crate::ui::key_context::APP_WITH_MENU_OPEN
         } else {
             crate::ui::key_context::APP
@@ -554,8 +360,8 @@ impl Render for InviscidWindow {
                 .flex_col()
                 .relative()
                 .child(self.titlebar.clone())
-                .children(self.render_update_banner(cx))
-                .child(self.workspace.clone()),
+                .child(self.workspace.clone())
+                .children(changelog_modal),
             cx,
         )
     }
@@ -658,9 +464,12 @@ mod tests {
     }
 
     #[gpui::test]
-    fn update_banner_dismisses_and_restores_from_status_bar_badge(cx: &mut TestAppContext) {
-        use crate::updater::{ArchiveFormat, ReleaseInfo, TargetAsset, UpdateChannel};
+    fn titlebar_update_container_avoids_layout_jitter_and_changelog_modal_works(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::updater::{ArchiveFormat, ReleaseInfo, StagedUpdate, TargetAsset, UpdateChannel, UpdateStatus};
         use std::collections::HashMap;
+        use std::path::PathBuf;
 
         let mgr = UpdateManager::new(None);
         cx.update(|cx| {
@@ -672,20 +481,22 @@ mod tests {
             commands::start_update_event_pump(cx);
         });
 
-        let (_app, cx) = cx.add_window_view(|_, cx| InviscidWindow::new(cx));
+        let (app, cx) = cx.add_window_view(|_, cx| InviscidWindow::new(cx));
         cx.run_until_parked();
 
-        assert!(cx.debug_bounds("banner_action_download").is_none());
-        assert!(cx.debug_bounds("status_bar_update_badge").is_none());
+        assert!(cx.debug_bounds("titlebar_update_container").is_none());
 
-        mgr.set_test_status(UpdateStatus::Available(ReleaseInfo {
+        let release = ReleaseInfo {
             version: "0.2.0".to_string(),
             tag: "v0.2.0".to_string(),
             channel: UpdateChannel::Stable,
             pub_date: "2026-12-01T00:00:00Z".to_string(),
             release_notes_url: "https://github.com/KiraKiraAyu/Inviscid/releases/tag/v0.2.0"
                 .to_string(),
-            notes: HashMap::from([("en".to_string(), "New features".to_string())]),
+            notes: HashMap::from([(
+                "en".to_string(),
+                "- Added changelog modal\n- Circular progress indicator".to_string(),
+            )]),
             target: TargetAsset {
                 asset_name: "inviscid-v0.2.0.zip".to_string(),
                 size: 1024,
@@ -694,36 +505,90 @@ mod tests {
                 entry: "inviscid.exe".to_string(),
             },
             download_url: "https://example.com/inviscid-v0.2.0.zip".to_string(),
+        };
+
+        // 1. Available: container and both icon buttons visible.
+        mgr.set_test_status(UpdateStatus::Available(release.clone()));
+        cx.run_until_parked();
+
+        let container_bounds_avail = cx
+            .debug_bounds("titlebar_update_container")
+            .expect("titlebar update container bounds");
+        let changelog_bounds_avail = cx
+            .debug_bounds("titlebar_update_changelog_btn")
+            .expect("titlebar changelog btn bounds");
+        assert!(cx.debug_bounds("titlebar_update_download_btn").is_some());
+
+        // 2. Downloading (50%): icon swaps to read-only CircularProgress with ZERO layout jitter.
+        mgr.set_test_status(UpdateStatus::Downloading {
+            release: release.clone(),
+            downloaded_bytes: 512,
+            total_bytes: Some(1024),
+            bytes_per_sec: 256,
+        });
+        cx.run_until_parked();
+
+        let progress_bounds = cx
+            .debug_bounds("titlebar_update_progress")
+            .expect("titlebar progress bounds");
+        let container_bounds_dl = cx.debug_bounds("titlebar_update_container").unwrap();
+        let changelog_bounds_dl = cx.debug_bounds("titlebar_update_changelog_btn").unwrap();
+        assert_eq!(container_bounds_avail, container_bounds_dl);
+        assert_eq!(changelog_bounds_avail, changelog_bounds_dl);
+
+        // Progress indicator must be read-only (clicking it does not alter download status).
+        cx.simulate_click(progress_bounds.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(matches!(mgr.status(), UpdateStatus::Downloading { .. }));
+
+        // 3. ReadyToInstall: icon swaps to restart button, still ZERO layout jitter.
+        mgr.set_test_status(UpdateStatus::ReadyToInstall(StagedUpdate {
+            release: release.clone(),
+            staging_dir: PathBuf::from("staging"),
+            extracted_entry: PathBuf::from("staging/inviscid.exe"),
         }));
         cx.run_until_parked();
 
-        assert!(cx.debug_bounds("banner_action_download").is_some());
-        assert!(cx.debug_bounds("status_bar_update_badge").is_some());
-
-        let skip_pos = cx.debug_bounds("banner_action_skip").unwrap().center();
-        let dismiss_pos = cx.debug_bounds("banner_dismiss").unwrap().center();
-        let badge_pos = cx.debug_bounds("status_bar_update_badge").unwrap().center();
-
-        cx.simulate_click(dismiss_pos, Modifiers::default());
-        cx.run_until_parked();
-
-        assert!(
-            cx.read(|cx| cx.global::<UpdateManager>().is_banner_dismissed()),
-            "clicking banner_dismiss at {dismiss_pos:?} must mark banner dismissed"
+        assert!(cx.debug_bounds("titlebar_update_restart_btn").is_some());
+        assert_eq!(
+            container_bounds_avail,
+            cx.debug_bounds("titlebar_update_container").unwrap()
         );
-        // GPUI 0.2.2 `Frame::clear` omits `debug_bounds.clear()`, leaving stale entries in the
-        // double-buffered frame map after unmount; verify unmount directly via click hit-testing.
+        assert_eq!(
+            changelog_bounds_avail,
+            cx.debug_bounds("titlebar_update_changelog_btn").unwrap()
+        );
+
+        // 4. Changelog modal: open, close via X, re-open, and skip version.
+        mgr.set_test_status(UpdateStatus::Available(release));
+        cx.run_until_parked();
+
+        cx.simulate_click(changelog_bounds_avail.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(cx.read(|cx| app.read(cx).is_update_changelog_open()));
+        assert!(cx.debug_bounds("update_changelog_modal").is_some());
+        assert!(cx.debug_bounds("changelog_action_skip").is_some());
+        assert!(cx.debug_bounds("changelog_action_download").is_some());
+
+        let close_pos = cx
+            .debug_bounds("update_changelog_close")
+            .expect("changelog close btn")
+            .center();
+        cx.simulate_click(close_pos, Modifiers::default());
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| app.read(cx).is_update_changelog_open()));
+
+        cx.simulate_click(changelog_bounds_avail.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(cx.read(|cx| app.read(cx).is_update_changelog_open()));
+
+        let skip_pos = cx
+            .debug_bounds("changelog_action_skip")
+            .expect("changelog skip btn")
+            .center();
         cx.simulate_click(skip_pos, Modifiers::default());
         cx.run_until_parked();
-        assert!(matches!(mgr.status(), UpdateStatus::Available(_)));
-        assert!(cx.debug_bounds("status_bar_update_badge").is_some());
-
-        cx.simulate_click(badge_pos, Modifiers::default());
-        cx.run_until_parked();
-
-        assert!(!cx.read(|cx| cx.global::<UpdateManager>().is_banner_dismissed()));
-        cx.simulate_click(skip_pos, Modifiers::default());
-        cx.run_until_parked();
+        assert!(!cx.read(|cx| app.read(cx).is_update_changelog_open()));
         assert!(matches!(mgr.status(), UpdateStatus::Idle));
         assert_eq!(
             cx.read(|cx| cx.global::<AppConfig>().session.skipped_update_version.clone())

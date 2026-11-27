@@ -253,56 +253,7 @@ impl Render for StatusBar {
                 })
             });
 
-        let update_badge_label = cx
-            .try_global::<crate::updater::UpdateManager>()
-            .and_then(|mgr| match mgr.status() {
-                crate::updater::UpdateStatus::Available(rel)
-                | crate::updater::UpdateStatus::ManualUpdateOnly { release: rel, .. } => {
-                    Some(cx.tf(
-                        TextKey::UpdateStatusBadgeAvailable,
-                        &[("version", rel.version.as_str())],
-                    ))
-                }
-                crate::updater::UpdateStatus::Downloading {
-                    downloaded_bytes,
-                    total_bytes,
-                    ..
-                } => {
-                    let pct = match total_bytes {
-                        Some(total) if total > 0 => {
-                            ((downloaded_bytes as f64 / total as f64) * 100.0).round() as u64
-                        }
-                        _ => 0,
-                    }
-                    .to_string();
-                    Some(cx.tf(
-                        TextKey::UpdateStatusBadgeDownloading,
-                        &[("percent", pct.as_str())],
-                    ))
-                }
-                crate::updater::UpdateStatus::ReadyToInstall(_) => {
-                    Some(cx.t(TextKey::UpdateStatusBadgeReady).to_string())
-                }
-                _ => None,
-            });
-
         let right_group = right_group
-            .when_some(update_badge_label, |this, label| {
-                this.child(
-                    div()
-                        .id("status_bar_update_badge")
-                        .debug_selector(|| "status_bar_update_badge".to_string())
-                        .px(Spacing::XS)
-                        .rounded(Radius::SM)
-                        .cursor_pointer()
-                        .text_color(theme.text_accent)
-                        .hover(|s| s.bg(theme.btn_hover).text_color(theme.text_primary))
-                        .on_click(|_, _, cx| {
-                            crate::app::commands::restore_update_banner(cx);
-                        })
-                        .child(label),
-                )
-            })
             .when_some(fps_label, |this, label| {
             this.child(
                 div()

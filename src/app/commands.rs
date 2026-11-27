@@ -852,12 +852,6 @@ pub fn download_available_update(cx: &mut App) {
     }
 }
 
-pub fn cancel_update_download(cx: &mut App) {
-    if let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>() {
-        mgr.cancel_download();
-    }
-}
-
 pub fn skip_available_update(cx: &mut App) {
     let skipped = cx
         .try_global::<crate::updater::UpdateManager>()
@@ -873,20 +867,6 @@ pub fn skip_available_update(cx: &mut App) {
         if let Some(cfg) = cfg_to_save {
             cfg.persist_session_async(cx.background_executor());
         }
-        cx.refresh_windows();
-    }
-}
-
-pub fn dismiss_update_banner(cx: &mut App) {
-    if let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>() {
-        mgr.dismiss_banner();
-        cx.refresh_windows();
-    }
-}
-
-pub fn restore_update_banner(cx: &mut App) {
-    if let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>() {
-        mgr.restore_banner();
         cx.refresh_windows();
     }
 }
@@ -930,6 +910,14 @@ pub fn start_update_event_pump(cx: &mut App) {
     cx.spawn(async move |cx| {
         while rx.next().await.is_some() {
             let status = mgr.status();
+            if let crate::updater::UpdateStatus::Failed {
+                ref message,
+                manual,
+            } = status
+            {
+                let _ = (message, manual);
+                // TODO: Surface update errors via the future toast notification system.
+            }
             let completed_epoch = match &status {
                 crate::updater::UpdateStatus::UpToDate {
                     checked_at_epoch, ..

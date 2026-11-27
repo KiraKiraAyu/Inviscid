@@ -105,8 +105,6 @@ pub enum UpdateStatus {
 
 struct UpdateManagerInner {
     status: UpdateStatus,
-    banner_dismissed: bool,
-    active_cancel: Option<Arc<AtomicBool>>,
     cache_dir: Option<PathBuf>,
     subscribers: Vec<mpsc::UnboundedSender<()>>,
 }
@@ -131,8 +129,6 @@ impl UpdateManager {
         Self {
             inner: Arc::new(Mutex::new(UpdateManagerInner {
                 status: UpdateStatus::Idle,
-                banner_dismissed: false,
-                active_cancel: None,
                 cache_dir,
                 subscribers: Vec::new(),
             })),
@@ -161,26 +157,6 @@ impl UpdateManager {
 
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::Acquire)
-    }
-
-    pub fn is_banner_dismissed(&self) -> bool {
-        self.inner.lock().banner_dismissed
-    }
-
-    pub fn dismiss_banner(&self) {
-        let mut inner = self.inner.lock();
-        if !inner.banner_dismissed {
-            inner.banner_dismissed = true;
-            Self::notify_locked(&mut inner, &self.version);
-        }
-    }
-
-    pub fn restore_banner(&self) {
-        let mut inner = self.inner.lock();
-        if inner.banner_dismissed {
-            inner.banner_dismissed = false;
-            Self::notify_locked(&mut inner, &self.version);
-        }
     }
 
     pub fn subscribe(&self) -> mpsc::UnboundedReceiver<()> {
@@ -229,9 +205,6 @@ impl UpdateManager {
                 | UpdateStatus::Applying { .. } => return,
                 _ => {}
             }
-            if manual {
-                inner.banner_dismissed = false;
-            }
             inner.status = UpdateStatus::Checking { manual };
             Self::notify_locked(&mut inner, &self.version);
         }
@@ -254,14 +227,6 @@ impl UpdateManager {
                 );
 
                 let mut inner = mgr.inner.lock();
-                if matches!(
-                    next_status,
-                    UpdateStatus::Available(_)
-                        | UpdateStatus::ManualUpdateOnly { .. }
-                        | UpdateStatus::ReadyToInstall(_)
-                ) {
-                    inner.banner_dismissed = false;
-                }
                 inner.status = next_status;
                 Self::notify_locked(&mut inner, &mgr.version);
             });
@@ -275,8 +240,6 @@ impl UpdateManager {
                 return;
             };
             let cancel_token = Arc::new(AtomicBool::new(false));
-            inner.active_cancel = Some(cancel_token.clone());
-            inner.banner_dismissed = false;
             inner.status = UpdateStatus::Downloading {
                 release: release.clone(),
                 downloaded_bytes: 0,
@@ -321,10 +284,8 @@ impl UpdateManager {
                 );
 
                 let mut inner = mgr.inner.lock();
-                inner.active_cancel = None;
                 match result {
                     Ok(staged) => {
-                        inner.banner_dismissed = false;
                         inner.status = UpdateStatus::ReadyToInstall(staged);
                     }
                     Err(StageError::Cancelled) => {
@@ -341,13 +302,6 @@ impl UpdateManager {
             });
     }
 
-    pub fn cancel_download(&self) {
-        let inner = self.inner.lock();
-        if let Some(ref token) = inner.active_cancel {
-            token.store(true, Ordering::Relaxed);
-        }
-    }
-
     /// Marks the currently available release as skipped and returns its version string for
     /// persistence in `state.toml`.
     pub fn skip_version(&self) -> Option<String> {
@@ -360,7 +314,6 @@ impl UpdateManager {
         };
         if skipped.is_some() {
             inner.status = UpdateStatus::Idle;
-            inner.banner_dismissed = false;
             Self::notify_locked(&mut inner, &self.version);
         }
         skipped
@@ -398,7 +351,6 @@ impl UpdateManager {
     #[cfg(test)]
     pub(crate) fn set_test_status(&self, status: UpdateStatus) {
         let mut inner = self.inner.lock();
-        inner.banner_dismissed = false;
         inner.status = status;
         Self::notify_locked(&mut inner, &self.version);
     }

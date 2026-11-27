@@ -1,17 +1,21 @@
 use crate::app::actions::{OpenMenu, ToggleMenu};
+use crate::app::commands;
 use crate::app::menu::{ActiveMenu, MenuTrigger, TextMenu, ViewMenuState};
+use crate::app::update_modal::format_manual_reason;
 use crate::app::workspace::Workspace;
 use crate::config::AppConfig;
 use crate::i18n::{ActiveLocale, TextKey};
 use crate::theme::ThemeManager;
 use crate::ui::tokens::{ControlHeight, FontSize, Radius, Spacing};
-use crate::ui::{Icon, IconName, IconSize, WindowTitleBar};
+use crate::ui::{CircularProgress, Icon, IconButton, IconName, IconSize, Tooltip, WindowTitleBar};
+use crate::updater::{UpdateManager, UpdateStatus};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TitleBarEvent {
     MenuChanged(Option<ActiveMenu>),
+    OpenUpdateChangelog,
 }
 
 impl EventEmitter<TitleBarEvent> for TitleBar {}
@@ -48,6 +52,202 @@ impl TitleBar {
 
     pub fn notify_workspace_updated(&mut self, cx: &mut Context<Self>) {
         cx.notify();
+    }
+
+    fn render_update_controls(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let mgr = cx.try_global::<UpdateManager>()?;
+        let status = mgr.status();
+        let theme = cx.global::<ThemeManager>().theme().clone();
+
+        let (primary_slot, has_changelog) = match &status {
+            UpdateStatus::Available(release) => {
+                let tooltip = cx.tf(
+                    TextKey::UpdateTooltipDownload,
+                    &[("version", release.version.as_str())],
+                );
+                let slot = IconButton::new("titlebar_update_download_btn", IconName::Download)
+                    .debug_selector("titlebar_update_download_btn")
+                    .size(ControlHeight::SM)
+                    .icon_size(IconSize::Small)
+                    .color(theme.text_accent)
+                    .tooltip(tooltip)
+                    .on_click(|_, _, cx| commands::download_available_update(cx))
+                    .into_any_element();
+                (slot, true)
+            }
+            UpdateStatus::ManualUpdateOnly { release, reason } => {
+                let tooltip = format_manual_reason(reason, cx);
+                let notes_url = release.release_notes_url.clone();
+                let slot = IconButton::new("titlebar_update_manual_btn", IconName::ExternalLink)
+                    .debug_selector("titlebar_update_manual_btn")
+                    .size(ControlHeight::SM)
+                    .icon_size(IconSize::Small)
+                    .color(theme.text_warning)
+                    .tooltip(tooltip)
+                    .on_click(move |_, _, _| commands::open_update_release_notes(&notes_url))
+                    .into_any_element();
+                (slot, true)
+            }
+            UpdateStatus::Downloading {
+                release,
+                downloaded_bytes,
+                total_bytes,
+                ..
+            } => {
+                let fraction = match total_bytes {
+                    Some(total) if *total > 0 => {
+                        (*downloaded_bytes as f32 / *total as f32).clamp(0.0, 1.0)
+                    }
+                    _ => 0.0,
+                };
+                let pct = (fraction * 100.0).round() as u32;
+                let pct_str = pct.to_string();
+                let tooltip = cx.tf(
+                    TextKey::UpdateTooltipDownloading,
+                    &[
+                        ("version", release.version.as_str()),
+                        ("percent", pct_str.as_str()),
+                    ],
+                );
+                let slot = div()
+                    .id("titlebar_update_progress")
+                    .debug_selector(|| "titlebar_update_progress".to_string())
+                    .flex_none()
+                    .size(ControlHeight::SM)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .tooltip(Tooltip::text(tooltip))
+                    .child(CircularProgress::determinate(fraction).size(IconSize::Small.pixels()))
+                    .into_any_element();
+                (slot, true)
+            }
+            UpdateStatus::Verifying { release } => {
+                let tooltip = cx.tf(
+                    TextKey::UpdateVerifying,
+                    &[("version", release.version.as_str())],
+                );
+                let slot = div()
+                    .id("titlebar_update_progress")
+                    .debug_selector(|| "titlebar_update_progress".to_string())
+                    .flex_none()
+                    .size(ControlHeight::SM)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .tooltip(Tooltip::text(tooltip))
+                    .child(
+                        CircularProgress::indeterminate("titlebar_update_verifying")
+                            .size(IconSize::Small.pixels()),
+                    )
+                    .into_any_element();
+                (slot, true)
+            }
+            UpdateStatus::Extracting { release } => {
+                let tooltip = cx.tf(
+                    TextKey::UpdateExtracting,
+                    &[("version", release.version.as_str())],
+                );
+                let slot = div()
+                    .id("titlebar_update_progress")
+                    .debug_selector(|| "titlebar_update_progress".to_string())
+                    .flex_none()
+                    .size(ControlHeight::SM)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .tooltip(Tooltip::text(tooltip))
+                    .child(
+                        CircularProgress::indeterminate("titlebar_update_extracting")
+                            .size(IconSize::Small.pixels()),
+                    )
+                    .into_any_element();
+                (slot, true)
+            }
+            UpdateStatus::ReadyToInstall(staged) => {
+                let tooltip = cx.tf(
+                    TextKey::UpdateTooltipRestart,
+                    &[("version", staged.release.version.as_str())],
+                );
+                let slot = IconButton::new("titlebar_update_restart_btn", IconName::RotateCw)
+                    .debug_selector("titlebar_update_restart_btn")
+                    .size(ControlHeight::SM)
+                    .icon_size(IconSize::Small)
+                    .color(theme.text_accent)
+                    .tooltip(tooltip)
+                    .on_click(|_, _, cx| commands::install_staged_update(cx))
+                    .into_any_element();
+                (slot, true)
+            }
+            UpdateStatus::Applying { version } => {
+                let tooltip = cx.tf(TextKey::UpdateApplying, &[("version", version.as_str())]);
+                let slot = div()
+                    .id("titlebar_update_progress")
+                    .debug_selector(|| "titlebar_update_progress".to_string())
+                    .flex_none()
+                    .size(ControlHeight::SM)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .tooltip(Tooltip::text(tooltip))
+                    .child(
+                        CircularProgress::indeterminate("titlebar_update_applying")
+                            .size(IconSize::Small.pixels()),
+                    )
+                    .into_any_element();
+                (slot, false)
+            }
+            UpdateStatus::Idle
+            | UpdateStatus::Checking { .. }
+            | UpdateStatus::UpToDate { .. }
+            | UpdateStatus::Failed { .. } => return None,
+        };
+
+        let changelog_slot = if has_changelog {
+            IconButton::new("titlebar_update_changelog_btn", IconName::Changelog)
+                .debug_selector("titlebar_update_changelog_btn")
+                .size(ControlHeight::SM)
+                .icon_size(IconSize::Small)
+                .tooltip(cx.t(TextKey::UpdateTooltipChangelog).to_string())
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(TitleBarEvent::OpenUpdateChangelog);
+                }))
+                .into_any_element()
+        } else {
+            div()
+                .flex_none()
+                .size(ControlHeight::SM)
+                .flex()
+                .items_center()
+                .justify_center()
+                .opacity(0.4)
+                .child(
+                    Icon::new(IconName::Changelog)
+                        .size(IconSize::Small)
+                        .color(theme.text_muted),
+                )
+                .into_any_element()
+        };
+
+        Some(
+            div()
+                .id("titlebar_update_container")
+                .debug_selector(|| "titlebar_update_container".to_string())
+                .flex_none()
+                .h(ControlHeight::MD)
+                .px(Spacing::XXS)
+                .rounded(Radius::FULL)
+                .bg(theme.text_primary.opacity(0.05))
+                .border_1()
+                .border_color(theme.border_subtle)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(2.0))
+                .child(primary_slot)
+                .child(changelog_slot)
+                .into_any_element(),
+        )
     }
 }
 
@@ -230,7 +430,11 @@ impl Render for TitleBar {
                     .into_any_element()
             });
 
-        WindowTitleBar::new().left(left_group)
+        let mut titlebar = WindowTitleBar::new().left(left_group);
+        if let Some(update_controls) = self.render_update_controls(cx) {
+            titlebar = titlebar.right(update_controls);
+        }
+        titlebar
     }
 }
 

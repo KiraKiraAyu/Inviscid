@@ -1,4 +1,3 @@
-mod banner;
 mod circular_progress;
 mod context_menu;
 pub(crate) mod dock_panel;
@@ -20,7 +19,6 @@ pub mod tokens;
 mod tooltip;
 mod window_controls;
 
-pub use banner::{AppBanner, BannerAction, BannerTone};
 pub use circular_progress::CircularProgress;
 pub(crate) use context_menu::ContextMenuBuilder;
 pub use context_menu::{calculate_menu_height, compute_context_menu_coords};

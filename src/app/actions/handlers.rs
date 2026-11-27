@@ -92,7 +92,13 @@ fn attach_menu_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
         cx.listener(|this, action: &OpenMenu, _, cx| commands::open_menu(this, action.0, cx)),
     )
     .on_action(cx.listener(|this, _: &CloseMenu, _, cx| commands::close_menu(this, cx)))
-    .on_action(cx.listener(|this, _: &DismissOverlay, _, cx| commands::close_menu(this, cx)))
+    .on_action(cx.listener(|this, _: &DismissOverlay, _, cx| {
+        if this.is_update_changelog_open() {
+            this.close_update_changelog(cx);
+        } else {
+            commands::close_menu(this, cx);
+        }
+    }))
 }
 
 fn attach_view_actions(div: Div, cx: &mut Context<InviscidWindow>) -> Div {
