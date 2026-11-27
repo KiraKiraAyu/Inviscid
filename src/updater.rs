@@ -20,8 +20,8 @@ use crate::http::{
 
 pub use apply::{ApplyError, ApplyOutcome, apply_staged_update, relaunch_updated_app};
 pub use config::{
-    UpdateChannel, UpdateSource, asset_url, manifest_url, normalize_update_base_url,
-    signature_url, validate_update_base_url,
+    UpdateSource, asset_url, manifest_url, normalize_update_base_url, signature_url,
+    validate_update_base_url,
 };
 pub use install_env::{
     InstallCapability, ManualUpdateReason, UPDATE_EXPLANATION_ENV, detect_install_capability,
@@ -41,7 +41,6 @@ const AUTO_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 pub struct ReleaseInfo {
     pub version: String,
     pub tag: String,
-    pub channel: UpdateChannel,
     pub pub_date: String,
     pub release_notes_url: String,
     pub notes: HashMap<String, String>,
@@ -181,7 +180,6 @@ impl UpdateManager {
         &self,
         source: UpdateSource,
         custom_url: String,
-        channel: UpdateChannel,
         skipped_version: Option<String>,
         manual: bool,
     ) {
@@ -217,7 +215,6 @@ impl UpdateManager {
                 let capability = detect_install_capability();
                 let next_status = check_for_updates_sync(
                     &effective_base,
-                    channel,
                     env!("CARGO_PKG_VERSION"),
                     current_target_triple(),
                     TRUSTED_MINISIGN_PUBLIC_KEYS,
@@ -372,7 +369,6 @@ pub enum StageError {
 #[allow(clippy::too_many_arguments)]
 pub fn check_for_updates_sync(
     base_url: &str,
-    channel: UpdateChannel,
     current_version: &str,
     target_triple: &str,
     public_keys: &[&str],
@@ -387,8 +383,8 @@ pub fn check_for_updates_sync(
         };
     }
 
-    let json_url = manifest_url(base_url, channel);
-    let sig_url = signature_url(base_url, channel);
+    let json_url = manifest_url(base_url);
+    let sig_url = signature_url(base_url);
 
     let raw_manifest = match fetch_bytes_sync(&json_url, MANIFEST_FETCH_TIMEOUT, MANIFEST_MAX_BYTES)
     {
@@ -419,7 +415,7 @@ pub fn check_for_updates_sync(
         };
     };
 
-    let manifest = match verify_and_parse_manifest(&raw_manifest, raw_sig, channel, public_keys) {
+    let manifest = match verify_and_parse_manifest(&raw_manifest, raw_sig, public_keys) {
         Ok(m) => m,
         Err(err) => {
             return UpdateStatus::Failed {
@@ -473,7 +469,6 @@ pub fn check_for_updates_sync(
     let release = ReleaseInfo {
         version: manifest.version,
         tag: manifest.tag,
-        channel: manifest.channel,
         pub_date: manifest.pub_date,
         release_notes_url: manifest.release_notes_url,
         notes: manifest.notes,
@@ -651,7 +646,6 @@ mod tests {
         let manifest_json = format!(
             r#"{{
   "schema_version": 1,
-  "channel": "stable",
   "version": "0.2.0",
   "tag": "v0.2.0",
   "pub_date": "2026-12-01T00:00:00Z",
@@ -670,17 +664,11 @@ mod tests {
             archive_bytes.len()
         )
         .into_bytes();
-        let sig = signer.sign_prehashed(&manifest_json, "update-stable.json");
+        let sig = signer.sign_prehashed(&manifest_json, "update.json");
 
         let mut routes = HashMap::new();
-        routes.insert(
-            "/channel-stable/update-stable.json".to_string(),
-            manifest_json,
-        );
-        routes.insert(
-            "/channel-stable/update-stable.json.minisig".to_string(),
-            sig.into_bytes(),
-        );
+        routes.insert("/updates/update.json".to_string(), manifest_json);
+        routes.insert("/updates/update.json.minisig".to_string(), sig.into_bytes());
         routes.insert(
             "/v0.2.0/inviscid-v0.2.0.zip".to_string(),
             archive_bytes.clone(),
@@ -690,7 +678,6 @@ mod tests {
 
         let status = check_for_updates_sync(
             &base_url,
-            UpdateChannel::Stable,
             "0.1.0",
             triple,
             &[&signer.public_key_b64],
@@ -730,7 +717,6 @@ mod tests {
         let manifest_json = format!(
             r#"{{
   "schema_version": 1,
-  "channel": "stable",
   "version": "0.2.0",
   "tag": "v0.2.0",
   "pub_date": "2026-12-01T00:00:00Z",
@@ -748,23 +734,16 @@ mod tests {
             expected_bytes.len()
         )
         .into_bytes();
-        let sig = signer.sign_prehashed(&manifest_json, "update-stable.json");
+        let sig = signer.sign_prehashed(&manifest_json, "update.json");
 
         let mut routes = HashMap::new();
-        routes.insert(
-            "/channel-stable/update-stable.json".to_string(),
-            manifest_json,
-        );
-        routes.insert(
-            "/channel-stable/update-stable.json.minisig".to_string(),
-            sig.into_bytes(),
-        );
+        routes.insert("/updates/update.json".to_string(), manifest_json);
+        routes.insert("/updates/update.json.minisig".to_string(), sig.into_bytes());
         routes.insert("/v0.2.0/inviscid-v0.2.0.zip".to_string(), tampered_bytes);
 
         let (base_url, server) = spawn_mock_server(routes);
         let status = check_for_updates_sync(
             &base_url,
-            UpdateChannel::Stable,
             "0.1.0",
             triple,
             &[&signer.public_key_b64],
@@ -799,7 +778,6 @@ mod tests {
         let manifest_json = format!(
             r#"{{
   "schema_version": 1,
-  "channel": "stable",
   "version": "0.2.0",
   "tag": "v0.2.0",
   "pub_date": "2026-12-01T00:00:00Z",
@@ -816,15 +794,12 @@ mod tests {
 }}"#
         )
         .into_bytes();
-        let sig = signer.sign_prehashed(&manifest_json, "update-stable.json");
+        let sig = signer.sign_prehashed(&manifest_json, "update.json");
 
         let mut routes = HashMap::new();
+        routes.insert("/updates/update.json".to_string(), manifest_json.clone());
         routes.insert(
-            "/channel-stable/update-stable.json".to_string(),
-            manifest_json.clone(),
-        );
-        routes.insert(
-            "/channel-stable/update-stable.json.minisig".to_string(),
+            "/updates/update.json.minisig".to_string(),
             sig.clone().into_bytes(),
         );
         let (base_url1, s1) = spawn_mock_server(routes);
@@ -832,7 +807,6 @@ mod tests {
         // Silent check skips 0.2.0
         let silent = check_for_updates_sync(
             &base_url1,
-            UpdateChannel::Stable,
             "0.1.0",
             triple,
             &[&signer.public_key_b64],
@@ -845,15 +819,11 @@ mod tests {
 
         // Manual check ignores skipped_version and surfaces ManualUpdateOnly when read-only
         let mut routes2 = HashMap::new();
-        routes2.insert("/channel-stable/update-stable.json".to_string(), manifest_json);
-        routes2.insert(
-            "/channel-stable/update-stable.json.minisig".to_string(),
-            sig.into_bytes(),
-        );
+        routes2.insert("/updates/update.json".to_string(), manifest_json);
+        routes2.insert("/updates/update.json.minisig".to_string(), sig.into_bytes());
         let (base_url2, s2) = spawn_mock_server(routes2);
         let manual = check_for_updates_sync(
             &base_url2,
-            UpdateChannel::Stable,
             "0.1.0",
             triple,
             &[&signer.public_key_b64],

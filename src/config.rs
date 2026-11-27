@@ -370,7 +370,6 @@ pub struct UserPreferences {
     pub asset_dir: String,
     pub custom_keybindings: std::collections::HashMap<String, String>,
     pub auto_check_updates: bool,
-    pub update_channel: crate::updater::UpdateChannel,
     pub update_source: crate::updater::UpdateSource,
     pub custom_update_url: String,
 }
@@ -415,7 +414,6 @@ impl Default for UserPreferences {
             asset_dir: Self::DEFAULT_ASSET_DIR.to_string(),
             custom_keybindings: std::collections::HashMap::new(),
             auto_check_updates: true,
-            update_channel: crate::updater::UpdateChannel::default(),
             update_source: crate::updater::UpdateSource::default(),
             custom_update_url: String::new(),
         }
@@ -1498,7 +1496,7 @@ mod tests {
 
     #[test]
     fn test_update_config_and_session_roundtrip() {
-        use crate::updater::{UpdateChannel, UpdateSource};
+        use crate::updater::UpdateSource;
 
         let dir = tempfile::tempdir().unwrap();
         let cfg_path = dir.path().join("config.toml");
@@ -1508,7 +1506,6 @@ mod tests {
         fs::write(&cfg_path, "theme = \"Nord\"\n").unwrap();
         let loaded = AppConfig::load_from_paths(cfg_path.clone(), state_path.clone());
         assert!(loaded.auto_check_updates);
-        assert_eq!(loaded.update_channel, UpdateChannel::Stable);
         assert_eq!(loaded.update_source, UpdateSource::GitHub);
         assert_eq!(
             loaded.effective_update_base_url(),
@@ -1519,7 +1516,6 @@ mod tests {
 
         let mut cfg = loaded;
         cfg.auto_check_updates = false;
-        cfg.update_channel = UpdateChannel::Beta;
         cfg.update_source = UpdateSource::Custom;
         cfg.custom_update_url = "  https://mirror.example.com/inviscid/  ".to_string();
         cfg.session.last_update_check_epoch = Some(1_700_000_000);
@@ -1529,7 +1525,6 @@ mod tests {
 
         let reloaded = AppConfig::load_from_paths(cfg_path, state_path);
         assert!(!reloaded.auto_check_updates);
-        assert_eq!(reloaded.update_channel, UpdateChannel::Beta);
         assert_eq!(reloaded.update_source, UpdateSource::Custom);
         assert_eq!(reloaded.custom_update_url, "https://mirror.example.com/inviscid");
         assert_eq!(

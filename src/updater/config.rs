@@ -1,31 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// Release channel tracked by the updater.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum UpdateChannel {
-    #[default]
-    Stable,
-    Beta,
-}
-
-impl UpdateChannel {
-    #[inline]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Stable => "stable",
-            Self::Beta => "beta",
-        }
-    }
-
-    #[inline]
-    pub const fn channel_tag(self) -> &'static str {
-        match self {
-            Self::Stable => "channel-stable",
-            Self::Beta => "channel-beta",
-        }
-    }
-}
+pub const UPDATES_RELEASE_TAG: &str = "updates";
+pub const MANIFEST_FILENAME: &str = "update.json";
+pub const SIGNATURE_FILENAME: &str = "update.json.minisig";
 
 /// Configured download origin for release manifests and archives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -73,24 +50,14 @@ pub fn validate_update_base_url(url: &str) -> Result<(), String> {
     Err("Update URL must use HTTPS".to_string())
 }
 
-pub fn manifest_url(base_url: &str, channel: UpdateChannel) -> String {
+pub fn manifest_url(base_url: &str) -> String {
     let base = normalize_update_base_url(base_url);
-    format!(
-        "{}/{}/update-{}.json",
-        base,
-        channel.channel_tag(),
-        channel.as_str()
-    )
+    format!("{base}/{UPDATES_RELEASE_TAG}/{MANIFEST_FILENAME}")
 }
 
-pub fn signature_url(base_url: &str, channel: UpdateChannel) -> String {
+pub fn signature_url(base_url: &str) -> String {
     let base = normalize_update_base_url(base_url);
-    format!(
-        "{}/{}/update-{}.json.minisig",
-        base,
-        channel.channel_tag(),
-        channel.as_str()
-    )
+    format!("{base}/{UPDATES_RELEASE_TAG}/{SIGNATURE_FILENAME}")
 }
 
 pub fn asset_url(base_url: &str, tag: &str, asset_name: &str) -> String {
@@ -105,22 +72,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_channel_tags_and_url_builders() {
-        assert_eq!(UpdateChannel::Stable.as_str(), "stable");
-        assert_eq!(UpdateChannel::Stable.channel_tag(), "channel-stable");
-        assert_eq!(UpdateChannel::Beta.as_str(), "beta");
-        assert_eq!(UpdateChannel::Beta.channel_tag(), "channel-beta");
-
+    fn test_url_builders() {
         assert_eq!(
-            manifest_url(
-                "https://github.com/KiraKiraAyu/Inviscid/releases/download/",
-                UpdateChannel::Stable
-            ),
-            "https://github.com/KiraKiraAyu/Inviscid/releases/download/channel-stable/update-stable.json"
+            manifest_url("https://github.com/KiraKiraAyu/Inviscid/releases/download/"),
+            "https://github.com/KiraKiraAyu/Inviscid/releases/download/updates/update.json"
         );
         assert_eq!(
-            signature_url("https://mirror.example.com/inviscid/", UpdateChannel::Beta),
-            "https://mirror.example.com/inviscid/channel-beta/update-beta.json.minisig"
+            signature_url("https://mirror.example.com/inviscid/"),
+            "https://mirror.example.com/inviscid/updates/update.json.minisig"
         );
         assert_eq!(
             asset_url(

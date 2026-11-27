@@ -827,13 +827,12 @@ pub fn check_for_updates(cx: &mut App) {
     let Some(mgr) = cx.try_global::<crate::updater::UpdateManager>().cloned() else {
         return;
     };
-    let (source, custom_url, channel, skipped_version) = cx
+    let (source, custom_url, skipped_version) = cx
         .try_global::<AppConfig>()
         .map(|cfg| {
             (
                 cfg.update_source,
                 cfg.custom_update_url.clone(),
-                cfg.update_channel,
                 cfg.session.skipped_update_version.clone(),
             )
         })
@@ -843,7 +842,7 @@ pub fn check_for_updates(cx: &mut App) {
         cx.refresh_windows();
         return;
     }
-    mgr.start_check(source, custom_url, channel, skipped_version, true);
+    mgr.start_check(source, custom_url, skipped_version, true);
 }
 
 pub fn download_available_update(cx: &mut App) {
@@ -979,7 +978,6 @@ pub fn schedule_startup_update_check(cx: &mut App) {
             mgr.start_check(
                 cfg.update_source,
                 cfg.custom_update_url.clone(),
-                cfg.update_channel,
                 cfg.session.skipped_update_version.clone(),
                 false,
             );

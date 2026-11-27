@@ -18,7 +18,7 @@ use crate::theme::ThemeManager;
 use crate::ui::{
     ControlHeight, FontSize, LineHeight, OptionPill, Radius, SettingRow, Spacing, Switch,
 };
-use crate::updater::{UpdateChannel, UpdateManager, UpdateSource, UpdateStatus};
+use crate::updater::{UpdateManager, UpdateSource, UpdateStatus};
 
 impl SettingsWindow {
     pub(crate) fn render_general_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -41,7 +41,6 @@ impl SettingsWindow {
                     .child(self.collocated_mode_row(cx))
                     .child(self.grammar_base_url_row(cx))
                     .child(self.auto_check_updates_row(cx))
-                    .child(self.update_channel_row(cx))
                     .child(self.update_source_row(cx))
                     .child(self.check_updates_now_row(cx)),
             )
@@ -345,51 +344,6 @@ impl SettingsWindow {
             )),
         )
         .description(cx.t(TextKey::SettingsAutoCheckUpdatesDesc).to_string())
-    }
-
-    fn update_channel_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let channel = cx.global::<AppConfig>().update_channel;
-        let is_stable = channel == UpdateChannel::Stable;
-        let is_beta = channel == UpdateChannel::Beta;
-
-        SettingRow::new(
-            cx.t(TextKey::SettingsUpdateChannel).to_string(),
-            div()
-                .flex()
-                .flex_row()
-                .gap(Spacing::SMD)
-                .child(
-                    OptionPill::new(
-                        "update_channel_stable",
-                        cx.t(TextKey::SettingsUpdateChannelStable).to_string(),
-                        is_stable,
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.select_update_channel(UpdateChannel::Stable, cx);
-                        this.focus(window);
-                    })),
-                )
-                .child(
-                    OptionPill::new(
-                        "update_channel_beta",
-                        cx.t(TextKey::SettingsUpdateChannelBeta).to_string(),
-                        is_beta,
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.select_update_channel(UpdateChannel::Beta, cx);
-                        this.focus(window);
-                    })),
-                ),
-        )
-        .description(cx.t(TextKey::SettingsUpdateChannelDesc).to_string())
-    }
-
-    pub(crate) fn select_update_channel(
-        &mut self,
-        channel: UpdateChannel,
-        cx: &mut Context<Self>,
-    ) {
-        update_config(cx, move |cfg| cfg.update_channel = channel);
     }
 
     fn update_source_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -927,7 +881,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_settings_update_channel_and_source_isolation(cx: &mut gpui::TestAppContext) {
+    fn test_settings_update_source_isolation(cx: &mut gpui::TestAppContext) {
         init_test_globals(cx);
         let (settings, cx) = cx.add_window_view(|window, cx| {
             window.activate_window();
@@ -937,11 +891,7 @@ mod tests {
 
         let field = cx.update(|window, cx| {
             settings.update(cx, |s, cx| {
-                assert_eq!(cx.global::<AppConfig>().update_channel, UpdateChannel::Stable);
                 assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::GitHub);
-
-                s.select_update_channel(UpdateChannel::Beta, cx);
-                assert_eq!(cx.global::<AppConfig>().update_channel, UpdateChannel::Beta);
 
                 s.select_custom_update_mode(window, cx);
                 assert_eq!(cx.global::<AppConfig>().update_source, UpdateSource::Custom);

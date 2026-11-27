@@ -5,8 +5,6 @@ use minisign_verify::{PublicKey, Signature};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use super::config::UpdateChannel;
-
 /// Embedded Minisign public keys trusted for release manifest verification.
 ///
 /// Replace the placeholder key with the real public key generated via `minisign -G`
@@ -36,7 +34,6 @@ pub struct TargetAsset {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateManifest {
     pub schema_version: u32,
-    pub channel: UpdateChannel,
     pub version: String,
     pub tag: String,
     pub pub_date: String,
@@ -103,10 +100,6 @@ pub enum ManifestError {
     UnsupportedSchema(u32),
     InvalidSignature(String),
     InvalidJson(String),
-    ChannelMismatch {
-        expected: UpdateChannel,
-        actual: UpdateChannel,
-    },
     InvalidVersion(String),
     MissingTarget(String),
     InvalidSha256(String),
@@ -119,12 +112,6 @@ impl fmt::Display for ManifestError {
             Self::UnsupportedSchema(v) => write!(f, "Unsupported manifest schema version: {v}"),
             Self::InvalidSignature(msg) => write!(f, "Manifest signature verification failed: {msg}"),
             Self::InvalidJson(msg) => write!(f, "Invalid manifest JSON: {msg}"),
-            Self::ChannelMismatch { expected, actual } => write!(
-                f,
-                "Manifest channel mismatch: expected '{}', got '{}'",
-                expected.as_str(),
-                actual.as_str()
-            ),
             Self::InvalidVersion(msg) => write!(f, "Invalid version string: {msg}"),
             Self::MissingTarget(triple) => {
                 write!(f, "No update package available for target '{triple}'")
@@ -138,11 +125,10 @@ impl fmt::Display for ManifestError {
 impl std::error::Error for ManifestError {}
 
 /// Verifies the Minisign signature against `public_keys` BEFORE parsing JSON, then validates
-/// schema version, channel match, and semantic version syntax.
+/// schema version and semantic version syntax.
 pub fn verify_and_parse_manifest(
     raw_manifest: &[u8],
     raw_signature: &str,
-    expected_channel: UpdateChannel,
     public_keys: &[&str],
 ) -> Result<UpdateManifest, ManifestError> {
     if public_keys.is_empty() {
@@ -180,12 +166,6 @@ pub fn verify_and_parse_manifest(
 
     if manifest.schema_version != 1 {
         return Err(ManifestError::UnsupportedSchema(manifest.schema_version));
-    }
-    if manifest.channel != expected_channel {
-        return Err(ManifestError::ChannelMismatch {
-            expected: expected_channel,
-            actual: manifest.channel,
-        });
     }
     Version::parse(&manifest.version)
         .map_err(|err| ManifestError::InvalidVersion(format!("{}: {err}", manifest.version)))?;
@@ -437,14 +417,13 @@ mod tests {
     use super::test_signing::TestMinisignSigner;
     use super::*;
 
-    fn sample_manifest_json(channel: &str, version: &str, min_updater: Option<&str>) -> Vec<u8> {
+    fn sample_manifest_json(version: &str, min_updater: Option<&str>) -> Vec<u8> {
         let min_line = min_updater
             .map(|m| format!(r#""min_updater_version": "{m}","#))
             .unwrap_or_default();
         let json = format!(
             r#"{{
   "schema_version": 1,
-  "channel": "{channel}",
   "version": "{version}",
   "tag": "v{version}",
   "pub_date": "2026-12-01T10:00:00Z",
@@ -479,16 +458,10 @@ mod tests {
     #[test]
     fn test_verify_and_parse_manifest_success_and_tamper_rejection() {
         let signer = TestMinisignSigner::generate();
-        let raw = sample_manifest_json("stable", "0.2.0", None);
-        let sig = signer.sign_prehashed(&raw, "update-stable.json");
+        let raw = sample_manifest_json("0.2.0", None);
+        let sig = signer.sign_prehashed(&raw, "update.json");
 
-        let parsed = verify_and_parse_manifest(
-            &raw,
-            &sig,
-            UpdateChannel::Stable,
-            &[&signer.public_key_b64],
-        )
-        .unwrap();
+        let parsed = verify_and_parse_manifest(&raw, &sig, &[&signer.public_key_b64]).unwrap();
         assert_eq!(parsed.version, "0.2.0");
         assert_eq!(parsed.localized_notes("zh-Hans"), Some("中文更新说明"));
         assert_eq!(parsed.localized_notes("fr"), Some("English notes"));
@@ -497,12 +470,7 @@ mod tests {
         let mut tampered_raw = raw.clone();
         tampered_raw[5] = b'X';
         assert!(matches!(
-            verify_and_parse_manifest(
-                &tampered_raw,
-                &sig,
-                UpdateChannel::Stable,
-                &[&signer.public_key_b64]
-            ),
+            verify_and_parse_manifest(&tampered_raw, &sig, &[&signer.public_key_b64]),
             Err(ManifestError::InvalidSignature(_))
         ));
 
@@ -513,56 +481,26 @@ mod tests {
         sig_lines[1] = String::from_utf8(sig_bytes).unwrap();
         let tampered_sig = format!("{}\n", sig_lines.join("\n"));
         assert!(matches!(
-            verify_and_parse_manifest(
-                &raw,
-                &tampered_sig,
-                UpdateChannel::Stable,
-                &[&signer.public_key_b64]
-            ),
+            verify_and_parse_manifest(&raw, &tampered_sig, &[&signer.public_key_b64]),
             Err(ManifestError::InvalidSignature(_))
         ));
 
         // Wrong public key must fail
         let other = TestMinisignSigner::generate();
         assert!(matches!(
-            verify_and_parse_manifest(
-                &raw,
-                &sig,
-                UpdateChannel::Stable,
-                &[&other.public_key_b64]
-            ),
+            verify_and_parse_manifest(&raw, &sig, &[&other.public_key_b64]),
             Err(ManifestError::InvalidSignature(_))
         ));
     }
 
     #[test]
-    fn test_manifest_channel_mismatch_and_version_comparison() {
+    fn test_version_comparison_and_target_selection() {
         let signer = TestMinisignSigner::generate();
-        let raw_beta = sample_manifest_json("beta", "0.2.0-beta.1", None);
-        let sig_beta = signer.sign_prehashed(&raw_beta, "update-beta.json");
+        let raw_beta = sample_manifest_json("0.2.0-beta.1", None);
+        let sig_beta = signer.sign_prehashed(&raw_beta, "update.json");
 
-        let err = verify_and_parse_manifest(
-            &raw_beta,
-            &sig_beta,
-            UpdateChannel::Stable,
-            &[&signer.public_key_b64],
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            ManifestError::ChannelMismatch {
-                expected: UpdateChannel::Stable,
-                actual: UpdateChannel::Beta
-            }
-        ));
-
-        let manifest = verify_and_parse_manifest(
-            &raw_beta,
-            &sig_beta,
-            UpdateChannel::Beta,
-            &[&signer.public_key_b64],
-        )
-        .unwrap();
+        let manifest =
+            verify_and_parse_manifest(&raw_beta, &sig_beta, &[&signer.public_key_b64]).unwrap();
         assert_eq!(
             compare_manifest_version("0.1.0", &manifest).unwrap(),
             VersionComparison::UpdateAvailable {
@@ -579,15 +517,10 @@ mod tests {
         );
 
         // min_updater_version enforcement
-        let raw_min = sample_manifest_json("stable", "0.5.0", Some("0.3.0"));
-        let sig_min = signer.sign_prehashed(&raw_min, "update-stable.json");
-        let min_manifest = verify_and_parse_manifest(
-            &raw_min,
-            &sig_min,
-            UpdateChannel::Stable,
-            &[&signer.public_key_b64],
-        )
-        .unwrap();
+        let raw_min = sample_manifest_json("0.5.0", Some("0.3.0"));
+        let sig_min = signer.sign_prehashed(&raw_min, "update.json");
+        let min_manifest =
+            verify_and_parse_manifest(&raw_min, &sig_min, &[&signer.public_key_b64]).unwrap();
         assert_eq!(
             compare_manifest_version("0.2.0", &min_manifest).unwrap(),
             VersionComparison::UpdateAvailable {

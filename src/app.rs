@@ -467,7 +467,7 @@ mod tests {
     fn titlebar_update_container_avoids_layout_jitter_and_changelog_modal_works(
         cx: &mut TestAppContext,
     ) {
-        use crate::updater::{ArchiveFormat, ReleaseInfo, StagedUpdate, TargetAsset, UpdateChannel, UpdateStatus};
+        use crate::updater::{ArchiveFormat, ReleaseInfo, StagedUpdate, TargetAsset, UpdateStatus};
         use std::collections::HashMap;
         use std::path::PathBuf;
 
@@ -489,7 +489,6 @@ mod tests {
         let release = ReleaseInfo {
             version: "0.2.0".to_string(),
             tag: "v0.2.0".to_string(),
-            channel: UpdateChannel::Stable,
             pub_date: "2026-12-01T00:00:00Z".to_string(),
             release_notes_url: "https://github.com/KiraKiraAyu/Inviscid/releases/tag/v0.2.0"
                 .to_string(),
