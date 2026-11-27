@@ -14,7 +14,6 @@ import tomllib
 
 SCHEMA_VERSION = 1
 DEFAULT_REPO = "KiraKiraAyu/Inviscid"
-ALLOWED_CHANNELS = ("stable", "beta")
 
 # Strict SemVer 2.0.0 pattern (major.minor.patch[-prerelease][+build])
 SEMVER_RE = re.compile(
@@ -44,21 +43,6 @@ def validate_semver(value: str, label: str) -> str:
     if not SEMVER_RE.match(value):
         raise ManifestError(f"{label} is not valid SemVer 2.0.0: {value!r}")
     return value
-
-
-def resolve_channel(version: str, requested_channel: str | None) -> str:
-    is_prerelease = "-" in version
-    if requested_channel is None:
-        return "beta" if is_prerelease else "stable"
-    if requested_channel not in ALLOWED_CHANNELS:
-        raise ManifestError(
-            f"Unsupported channel {requested_channel!r}; expected one of {ALLOWED_CHANNELS}"
-        )
-    if is_prerelease and requested_channel == "stable":
-        raise ManifestError(
-            f"Refusing to publish prerelease version {version!r} to 'stable' channel"
-        )
-    return requested_channel
 
 
 def verify_cargo_version(cargo_toml: Path, version: str) -> None:
@@ -100,7 +84,6 @@ def build_manifest(
     *,
     version: str,
     tag: str,
-    channel: str | None,
     artifacts_dir: Path,
     cargo_toml: Path | None,
     repo: str,
@@ -109,7 +92,6 @@ def build_manifest(
     notes_file: Path | None,
 ) -> tuple[dict[str, object], list[tuple[str, str]]]:
     validate_semver(version, "--version")
-    resolved_channel = resolve_channel(version, channel)
     if min_updater_version is not None:
         validate_semver(min_updater_version, "--min-updater-version")
 
@@ -147,7 +129,6 @@ def build_manifest(
     effective_pub_date = pub_date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     manifest: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
-        "channel": resolved_channel,
         "version": version,
         "tag": tag,
         "pub_date": effective_pub_date,
@@ -166,7 +147,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True, help="SemVer version without leading 'v'")
     parser.add_argument("--tag", help="Git release tag (defaults to v<version>)")
-    parser.add_argument("--channel", choices=ALLOWED_CHANNELS, help="Override release channel")
     parser.add_argument("--artifacts-dir", type=Path, required=True, help="Directory with release archives")
     parser.add_argument("--output", type=Path, required=True, help="Output manifest JSON path")
     parser.add_argument(
@@ -190,7 +170,6 @@ def main(argv: list[str] | None = None) -> int:
         manifest, checksums = build_manifest(
             version=args.version,
             tag=tag,
-            channel=args.channel,
             artifacts_dir=args.artifacts_dir,
             cargo_toml=args.cargo_toml,
             repo=args.repo,

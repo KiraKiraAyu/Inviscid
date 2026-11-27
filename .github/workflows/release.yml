@@ -25,7 +25,6 @@ jobs:
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
-      channel: ${{ steps.meta.outputs.channel }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
     steps:
@@ -58,13 +57,11 @@ jobs:
               sys.exit(f"Cargo.toml version ({cargo_version!r}) != tag version ({version!r})")
 
           is_prerelease = "-" in version
-          channel = "beta" if is_prerelease else "stable"
           dry_run = os.environ.get("INPUT_DRY_RUN", "false").lower() == "true"
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"tag={tag}\n")
               fh.write(f"version={version}\n")
-              fh.write(f"channel={channel}\n")
               fh.write(f"prerelease={'true' if is_prerelease else 'false'}\n")
               fh.write(f"dry_run={'true' if dry_run else 'false'}\n")
 
@@ -184,9 +181,8 @@ jobs:
           python3 scripts/generate-manifest.py \
             --version "${{ needs.validate.outputs.version }}" \
             --tag "${{ needs.validate.outputs.tag }}" \
-            --channel "${{ needs.validate.outputs.channel }}" \
             --artifacts-dir dist \
-            --output "dist/update-${{ needs.validate.outputs.channel }}.json" \
+            --output dist/update.json \
             --sha256sums-out dist/SHA256SUMS.txt
 
       - name: Install minisign CLI
@@ -205,7 +201,6 @@ jobs:
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-          CHANNEL: ${{ needs.validate.outputs.channel }}
         run: |
           set -euo pipefail
           if [[ -z "${MINISIGN_SECRET_KEY:-}" || -z "${MINISIGN_PASSWORD:-}" ]]; then
@@ -217,7 +212,7 @@ jobs:
           trap 'rm -f "$key_file"' EXIT
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key_file"
 
-          manifest="dist/update-${CHANNEL}.json"
+          manifest="dist/update.json"
           printf '%s\n' "$MINISIGN_PASSWORD" | minisign -Sm "$manifest" -s "$key_file" -t "inviscid ${{ needs.validate.outputs.tag }}"
 
           # Self-verify against TRUSTED_MINISIGN_PUBLIC_KEYS embedded in src/updater/manifest.rs.
@@ -257,23 +252,22 @@ jobs:
             dist/inviscid-*
             dist/SHA256SUMS.txt
 
-      - name: Update rolling channel pointer tag
+      - name: Update rolling updates pointer tag
         if: needs.validate.outputs.dry_run != 'true'
         run: |
-          channel_tag="channel-${{ needs.validate.outputs.channel }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f "$channel_tag" "${{ github.sha }}"
-          git push -f origin "refs/tags/${channel_tag}"
+          git tag -f updates "${{ github.sha }}"
+          git push -f origin refs/tags/updates
 
-      - name: Publish signed manifest to rolling channel release
+      - name: Publish signed manifest to rolling updates release
         if: needs.validate.outputs.dry_run != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: channel-${{ needs.validate.outputs.channel }}
-          name: Update Channel (${{ needs.validate.outputs.channel }})
-          prerelease: ${{ needs.validate.outputs.channel == 'beta' }}
-          body: Rolling update manifest pointer for the `${{ needs.validate.outputs.channel }}` channel (latest version `${{ needs.validate.outputs.version }}`).
+          tag_name: updates
+          name: Update Manifest
+          prerelease: false
+          body: Rolling update manifest pointer (latest version `${{ needs.validate.outputs.version }}`).
           files: |
-            dist/update-${{ needs.validate.outputs.channel }}.json
-            dist/update-${{ needs.validate.outputs.channel }}.json.minisig
+            dist/update.json
+            dist/update.json.minisig

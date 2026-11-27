@@ -40,7 +40,7 @@ class GenerateManifestTests(unittest.TestCase):
             (dist / "inviscid-v0.2.0-macos-aarch64.tar.gz").write_bytes(mac_bytes)
             (dist / "inviscid-v0.2.0-linux-x86_64.tar.gz").write_bytes(lin_bytes)
 
-            out_json = dist / "update-stable.json"
+            out_json = dist / "update.json"
             out_sums = dist / "SHA256SUMS.txt"
 
             exit_code = generate_manifest.main(
@@ -63,7 +63,7 @@ class GenerateManifestTests(unittest.TestCase):
 
             manifest = json.loads(out_json.read_text(encoding="utf-8"))
             self.assertEqual(manifest["schema_version"], 1)
-            self.assertEqual(manifest["channel"], "stable")
+            self.assertNotIn("channel", manifest)
             self.assertEqual(manifest["version"], "0.2.0")
             self.assertEqual(manifest["tag"], "v0.2.0")
             self.assertEqual(manifest["pub_date"], "2026-12-01T10:00:00Z")
@@ -116,53 +116,38 @@ class GenerateManifestTests(unittest.TestCase):
                     "--artifacts-dir",
                     str(dist),
                     "--output",
-                    str(root / "update-stable.json"),
+                    str(root / "update.json"),
                     "--cargo-toml",
                     str(cargo_toml),
                 ]
             )
             self.assertNotEqual(exit_code, 0)
 
-    def test_prerelease_channel_inference_and_stable_rejection(self) -> None:
+    def test_prerelease_semver_accepted_without_channel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            cargo_toml = write_cargo_toml(root, "0.2.0-beta.1")
+            cargo_toml = write_cargo_toml(root, "0.1.0-alpha.1")
             dist = root / "dist"
             dist.mkdir()
-            (dist / "inviscid-v0.2.0-beta.1-linux-x86_64.tar.gz").write_bytes(b"tgz")
+            (dist / "inviscid-v0.1.0-alpha.1-linux-x86_64.tar.gz").write_bytes(b"tgz")
 
-            out_beta = root / "update-beta.json"
+            out_json = root / "update.json"
             exit_code = generate_manifest.main(
                 [
                     "--version",
-                    "0.2.0-beta.1",
+                    "0.1.0-alpha.1",
                     "--artifacts-dir",
                     str(dist),
                     "--output",
-                    str(out_beta),
+                    str(out_json),
                     "--cargo-toml",
                     str(cargo_toml),
                 ]
             )
             self.assertEqual(exit_code, 0)
-            manifest = json.loads(out_beta.read_text(encoding="utf-8"))
-            self.assertEqual(manifest["channel"], "beta")
-
-            bad_code = generate_manifest.main(
-                [
-                    "--version",
-                    "0.2.0-beta.1",
-                    "--channel",
-                    "stable",
-                    "--artifacts-dir",
-                    str(dist),
-                    "--output",
-                    str(root / "bad.json"),
-                    "--cargo-toml",
-                    str(cargo_toml),
-                ]
-            )
-            self.assertNotEqual(bad_code, 0)
+            manifest = json.loads(out_json.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["version"], "0.1.0-alpha.1")
+            self.assertNotIn("channel", manifest)
 
     def test_rejects_empty_dir_and_zero_byte_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -213,7 +198,7 @@ class GenerateManifestTests(unittest.TestCase):
                 json.dumps({"en": "Faster startup", "zh-Hans": "启动速度提升"}, ensure_ascii=False),
                 encoding="utf-8",
             )
-            out_json = root / "update-stable.json"
+            out_json = root / "update.json"
             exit_code = generate_manifest.main(
                 [
                     "--version",
