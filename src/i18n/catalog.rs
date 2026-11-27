@@ -295,6 +295,13 @@ define_messages! {
     UpdateStatusBadgeAvailable => "update_status_badge_available",
     UpdateStatusBadgeDownloading => "update_status_badge_downloading",
     UpdateStatusBadgeReady => "update_status_badge_ready",
+    UpdateChangelogTitle => "update_changelog_title",
+    UpdateChangelogEmpty => "update_changelog_empty",
+    UpdateChangelogOpenExternal => "update_changelog_open_external",
+    UpdateTooltipDownload => "update_tooltip_download",
+    UpdateTooltipDownloading => "update_tooltip_downloading",
+    UpdateTooltipRestart => "update_tooltip_restart",
+    UpdateTooltipChangelog => "update_tooltip_changelog",
 
     // Quit / Unsaved Changes Guard
     QuitUnsavedTitle => "quit_unsaved_title",
