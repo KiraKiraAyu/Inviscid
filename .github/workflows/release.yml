@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: 'Skip Minisign signing and GitHub Release publishing'
+        description: 'Skip GitHub Release publishing'
         required: false
         default: false
         type: boolean
@@ -161,10 +161,9 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  publish-and-sign:
+  publish:
     needs: [validate, build]
     runs-on: ubuntu-22.04
-    environment: release
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -184,61 +183,6 @@ jobs:
             --artifacts-dir dist \
             --output dist/update.json \
             --sha256sums-out dist/SHA256SUMS.txt
-
-      - name: Install minisign CLI
-        if: needs.validate.outputs.dry_run != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y minisign || {
-            MINISIGN_VER="0.11"
-            curl -fsSL "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VER}/minisign-${MINISIGN_VER}-linux.tar.gz" -o /tmp/minisign.tar.gz
-            tar -xzf /tmp/minisign.tar.gz -C /tmp
-            sudo install -m 755 /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
-          }
-
-      - name: Sign and self-verify update manifest
-        if: needs.validate.outputs.dry_run != 'true'
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${MINISIGN_SECRET_KEY:-}" || -z "${MINISIGN_PASSWORD:-}" ]]; then
-            echo "error: MINISIGN_SECRET_KEY and MINISIGN_PASSWORD secrets must be configured in the 'release' environment." >&2
-            exit 1
-          fi
-
-          key_file="$(mktemp)"
-          trap 'rm -f "$key_file"' EXIT
-          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key_file"
-
-          manifest="dist/update.json"
-          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -Sm "$manifest" -s "$key_file" -t "inviscid ${{ needs.validate.outputs.tag }}"
-
-          # Self-verify against TRUSTED_MINISIGN_PUBLIC_KEYS embedded in src/updater/manifest.rs.
-          trusted_keys=$(python3 - <<'PY'
-          import re
-          from pathlib import Path
-          src = Path("src/updater/manifest.rs").read_text(encoding="utf-8")
-          m = re.search(r"TRUSTED_MINISIGN_PUBLIC_KEYS:\s*&\[&str\]\s*=\s*&\[(.*?)\];", src, re.S)
-          if not m:
-              raise SystemExit("Could not locate TRUSTED_MINISIGN_PUBLIC_KEYS")
-          for key in re.findall(r'"(RW[^"]+)"', m.group(1)):
-              print(key)
-          PY
-          )
-
-          verified=0
-          for pubkey in $trusted_keys; do
-            if minisign -Vm "$manifest" -P "$pubkey"; then
-              verified=1
-              break
-            fi
-          done
-          if [[ "$verified" -ne 1 ]]; then
-            echo "error: signed manifest failed verification against TRUSTED_MINISIGN_PUBLIC_KEYS in src/updater/manifest.rs" >&2
-            exit 1
-          fi
 
       - name: Publish versioned GitHub Release
         if: needs.validate.outputs.dry_run != 'true'
@@ -260,7 +204,7 @@ jobs:
           git tag -f updates "${{ github.sha }}"
           git push -f origin refs/tags/updates
 
-      - name: Publish signed manifest to rolling updates release
+      - name: Publish manifest to rolling updates release
         if: needs.validate.outputs.dry_run != 'true'
         uses: softprops/action-gh-release@v2
         with:
@@ -268,6 +212,4 @@ jobs:
           name: Update Manifest
           prerelease: false
           body: Rolling update manifest pointer (latest version `${{ needs.validate.outputs.version }}`).
-          files: |
-            dist/update.json
-            dist/update.json.minisig
+          files: dist/update.json
