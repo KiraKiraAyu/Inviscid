@@ -1,4 +1,5 @@
 mod banner;
+mod circular_progress;
 mod context_menu;
 pub(crate) mod dock_panel;
 pub(crate) mod icon;
@@ -20,6 +21,7 @@ mod tooltip;
 mod window_controls;
 
 pub use banner::{AppBanner, BannerAction, BannerTone};
+pub use circular_progress::CircularProgress;
 pub(crate) use context_menu::ContextMenuBuilder;
 pub use context_menu::{calculate_menu_height, compute_context_menu_coords};
 pub use icon::{Icon, IconName, IconSize};
@@ -42,6 +44,6 @@ pub use stepper::Stepper;
 pub use switch::Switch;
 pub use text_input::TextInput;
 pub(crate) use text_input::{TextInputBg, TextInputEvent};
-pub(crate) use title_bar::WindowTitleBar;
+pub use title_bar::WindowTitleBar;
 pub use tokens::{ControlHeight, FontSize, LineHeight, Radius, Spacing, SwitchMetrics};
 pub use tooltip::Tooltip;

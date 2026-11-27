@@ -23,6 +23,9 @@ pub enum IconName {
     Pin,
     Search,
     ExternalLink,
+    Download,
+    RotateCw,
+    Changelog,
 }
 
 impl IconName {
@@ -49,6 +52,9 @@ impl IconName {
             Self::Pin => "icons/pin.svg",
             Self::Search => "icons/search.svg",
             Self::ExternalLink => "icons/external_link.svg",
+            Self::Download => "icons/download.svg",
+            Self::RotateCw => "icons/rotate_cw.svg",
+            Self::Changelog => "icons/changelog.svg",
         }
     }
 
@@ -75,6 +81,9 @@ impl IconName {
             Self::Pin,
             Self::Search,
             Self::ExternalLink,
+            Self::Download,
+            Self::RotateCw,
+            Self::Changelog,
         ]
     }
 
